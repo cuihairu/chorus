@@ -20,6 +20,7 @@ eventEnqueueMaxWaitMs = 50
 tickTimeoutMs = 250
 maxSessions = 200
 idleEvictAfterMs = 600000
+maxSnapshotBytes = 1048576
 ```
 
 关键参数：
@@ -33,6 +34,7 @@ idleEvictAfterMs = 600000
 - `maxPendingEvents` / `eventEnqueueMaxWaitMs`（阶段二过载保护）
 - `tickTimeoutMs`（阶段二超时检测）
 - `maxSessions` / `idleEvictAfterMs`（阶段二会话生命周期）
+- `maxSnapshotBytes`（阶段三快照体积上限）
 
 ## 参数说明
 
@@ -142,6 +144,25 @@ idleEvictAfterMs = 600000
 - 值太小会导致抖动式恢复
 - 值太大又会让问题客户端长时间无法重新对齐
 
+### `maxSnapshotBytes`
+
+含义：
+
+- 单条快照序列化后的体积上限，单位字节
+
+默认值：
+
+- `1048576`（1 MiB）
+
+影响：
+
+- 序列化后超限的快照**跳过发送**，并计入 `chorus_snapshots_oversize_total`
+- 跳过后不会断开客户端；客户端侧的 ACK 水位与重连 resync 机制负责兜底
+- 反复超限说明状态有界失控（如 `Dictionary<userId,...>` 只增不减），应先修状态体积而不是调大该值
+
+建议：
+
+- 结合 `snapshotEveryTicks` 与在线客户端数估算带宽：单客户端约 `snapshotBytes × 客户端数 / snapshotEveryTicks / tickDurationMs` 的持续下行
 ## Ingress 与 listener face（2026-10-12 起）
 
 单体与 Gateway 同构。两类 listener face 配置分道（见 `docs/design/process-topology.md`），
@@ -173,3 +194,7 @@ idleEvictAfterMs = 600000
 - [帧同步最佳实践](../design/frame-sync-best-practices.md)
 - [平台对接参考：抖音](./platform-douyin.md)
 - [平台对接参考：快手](./platform-kuaishou.md)
+- [平台适配器契约](./adapter-contract.md)
+- [部署与安全](./deployment.md)
+- [版本策略与兼容性](./versioning.md)
+

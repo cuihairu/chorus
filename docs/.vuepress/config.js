@@ -12,7 +12,12 @@ module.exports = {
       { text: "参考", link: "/reference/protocol.html" }
     ],
     sidebar: {
-      "/guide/": ["/guide/getting-started.md", "/guide/split-mode.md", "/guide/load-testing.md"],
+      "/guide/": [
+        "/guide/getting-started.md",
+        "/guide/split-mode.md",
+        "/guide/load-testing.md",
+        "/guide/game-module.md"
+      ],
       "/design/": [
         "/design/architecture.md",
         "/design/frame-sync.md",
@@ -32,7 +37,10 @@ module.exports = {
         "/reference/platform-douyin.md",
         "/reference/platform-kuaishou.md",
         "/reference/tuning.md",
-        "/reference/troubleshooting.md"
+        "/reference/troubleshooting.md",
+        "/reference/adapter-contract.md",
+        "/reference/deployment.md",
+        "/reference/versioning.md"
       ]
     }
   },
