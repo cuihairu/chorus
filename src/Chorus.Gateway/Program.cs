@@ -243,37 +243,37 @@ app.Map("/ws", async context =>
     var clientId = string.IsNullOrWhiteSpace(hello.ClientId) ? $"c_{Guid.NewGuid():N}" : hello.ClientId!;
 
     var conn = new GatewayClientConnection(sessionId, clientId, ws);
-
-    var welcomeTask = ipc.CreateWelcomeWaiter(sessionId, clientId, context.RequestAborted);
     try
     {
-        await ipc.RegisterClientAsync(conn, context.RequestAborted);
-    }
-    catch
-    {
-        await WebSocketHelpers.SendJsonAsync(ws, new ServerError(ProtocolTypes.Error, "Engine unavailable"), context.RequestAborted);
-        return;
-    }
+        var welcomeTask = ipc.CreateWelcomeWaiter(sessionId, clientId, context.RequestAborted);
+        try
+        {
+            await ipc.RegisterClientAsync(conn, context.RequestAborted);
+        }
+        catch
+        {
+            await WebSocketHelpers.SendJsonAsync(ws, new ServerError(ProtocolTypes.Error, "Engine unavailable"), context.RequestAborted);
+            return;
+        }
 
-    ServerWelcome welcome;
-    try
-    {
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, timeoutCts.Token);
-        welcome = await welcomeTask.WaitAsync(linkedCts.Token);
-    }
-    catch
-    {
-        await WebSocketHelpers.SendJsonAsync(ws, new ServerError(ProtocolTypes.Error, "Engine welcome timeout"), context.RequestAborted);
-        return;
-    }
+        ServerWelcome welcome;
+        try
+        {
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, timeoutCts.Token);
+            welcome = await welcomeTask.WaitAsync(linkedCts.Token);
+        }
+        catch
+        {
+            await WebSocketHelpers.SendJsonAsync(ws, new ServerError(ProtocolTypes.Error, "Engine welcome timeout"), context.RequestAborted);
+            return;
+        }
 
-    await WebSocketHelpers.SendJsonAsync(ws, welcome, context.RequestAborted);
+        await WebSocketHelpers.SendJsonAsync(ws, welcome, context.RequestAborted);
 
-    var ackWindowStartMs = 0L;
-    var ackCount = 0;
-    try
-    {
+        var ackWindowStartMs = 0L;
+        var ackCount = 0;
+
         while (ws.State == WebSocketState.Open && !context.RequestAborted.IsCancellationRequested)
         {
             string text;
@@ -337,6 +337,7 @@ app.Map("/ws", async context =>
     {
         await ipc.UnregisterClientAsync(sessionId, clientId, CancellationToken.None);
         try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None); } catch { }
+        await conn.DisposeAsync();
     }
 });
 

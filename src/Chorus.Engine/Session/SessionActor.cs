@@ -19,7 +19,7 @@ public sealed class SessionActor : IAsyncDisposable
     private readonly Channel<ICommand> _control;
     private readonly Channel<IngestAudienceEventCmd> _events;
 
-    private readonly Dictionary<string, (ISessionClient Client, SessionClientState State)> _clients = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (OutboundClientQueue Client, SessionClientState State)> _clients = new(StringComparer.Ordinal);
     private readonly Dictionary<long, List<AudienceEvent>> _scheduledByTick = new();
 
     private readonly SessionConfig _config;
@@ -135,6 +135,13 @@ public sealed class SessionActor : IAsyncDisposable
             _runTask = null;
             _runCts.Dispose();
             _runCts = null;
+
+            foreach (var (_, client) in _clients)
+            {
+                await client.Client.DisposeAsync().ConfigureAwait(false);
+            }
+
+            _clients.Clear();
         }
     }
 
@@ -284,14 +291,22 @@ public sealed class SessionActor : IAsyncDisposable
         }
     }
 
-    private ValueTask HandleCommandAsync(ICommand cmd, CancellationToken cancellationToken)
+    private async ValueTask HandleCommandAsync(ICommand cmd, CancellationToken cancellationToken)
     {
         switch (cmd)
         {
             case AddClientCmd c:
                 {
                     var now = NowMs();
-                    _clients[c.Client.ClientId] = (c.Client, new SessionClientState
+                    // Review stage-2: sends go through a latest-wins queue so a
+                    // slow client never blocks the tick. Re-adding the same id
+                    // replaces (and stops) the previous queue.
+                    if (_clients.Remove(c.Client.ClientId, out var previous))
+                    {
+                        await previous.Client.DisposeAsync().ConfigureAwait(false);
+                    }
+
+                    _clients[c.Client.ClientId] = (new OutboundClientQueue(c.Client), new SessionClientState
                     {
                         ClientId = c.Client.ClientId,
                         ConnectedTickId = TickId,
@@ -303,7 +318,11 @@ public sealed class SessionActor : IAsyncDisposable
                 }
                 break;
             case RemoveClientCmd c:
-                _clients.Remove(c.ClientId);
+                if (_clients.Remove(c.ClientId, out var removed))
+                {
+                    await removed.Client.DisposeAsync().ConfigureAwait(false);
+                }
+
                 break;
             case AckCmd c:
                 HandleAck(c);
@@ -311,8 +330,6 @@ public sealed class SessionActor : IAsyncDisposable
             default:
                 throw new InvalidOperationException($"Unknown command: {cmd.GetType().Name}");
         }
-
-        return ValueTask.CompletedTask;
     }
 
     /// <summary>
