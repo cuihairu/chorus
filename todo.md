@@ -122,7 +122,7 @@
 - [x] ACK 单调性与 Tick 上界：拒绝负数/未来 Tick/倒退，绑定 Client 身份，分类计数（2026-10-12，commit 499f01c，验收 `SessionActorAckTests` 6 例；顺带修复 run loop 在命令驱动 drain 后因 PeriodicTimer 并发等待异常而静默死亡的 bug）
 - [ ] 生产默认拒绝未验证 Ingress：`AllowAllPlatformEventVerifier` 退为显式 dev 开关，缺验证器即拒
 - [x] 去重原子化：`EventDeduplicator.TryMark` 改原子占位；IPC 发布失败不得被记成重复（投递状态 Received/Accepted/Applied/Failed）（2026-10-12，commit 78f2597：reserve/commit/rollback 原子协议 + token 守卫 + TTL 清扫 + 容量安全阀，两端 ingress 发布失败即 Rollback；验收 `EventDeduplicatorTests` 13 例含 32 并发同 id 恰一赢家；生命周期与四态落 `docs/design/spec.md` §3.6）
-- [x] Match 权威语义定性：展示聚合 vs 权威对抗状态（结论写进 `docs/design/spec.md`，不先上 MatchActor）（2026-10-12，commit 见下一条 docs 提交：spec.md §2.3——MatchStateStore 定性为展示级共享聚合，权威裁决需单 Match 定序点（MatchActor 或收敛到单 SessionActor），触发条件=公平对抗/结算需求出现）
+- [x] Match 权威语义定性：展示聚合 vs 权威对抗状态（结论写进 `docs/design/spec.md`，不先上 MatchActor）（2026-10-12，commit 0409cf2：spec.md §2.3——MatchStateStore 定性为展示级共享聚合，权威裁决需单 Match 定序点（MatchActor 或收敛到单 SessionActor），触发条件=公平对抗/结算需求出现）
 
 ### 阶段二：稳定性与过载保护
 - [ ] 有界邮箱 + 事件缓冲（Session 总量/每 Tick/最长等待），控制命令与观众事件分道，礼物类不可静默丢弃
