@@ -31,7 +31,10 @@ title: 版本策略与兼容性
 
 - `ClientHello.ClientVersion` 是自由字符串，**不是**协议版本协商字段。
 - 未知 `type` 的消息被拒绝/忽略，不导致连接关闭。
-- 当前 `hello` 无 `protocolVersion` 字段：**这是已知缺口**，1.0 前需要补上（新增可选字段，属向后兼容变更）。
+- `hello.protocolVersion` / `welcome.protocolVersion`（2026-10-12 起，见 [协议参考](./protocol.md)）：
+  缺省视为旧版客户端放行；传入且不等于服务端 `ProtocolVersionPolicy.Current` → `protocol_mismatch` 拒绝。
+  仍是**已知缺口**的部分：该字段为单值检查而非区间协商（服务端不能声明「支持 ≤N」），
+  服务端升级大版本时旧客户端需要读 `welcome.protocolVersion` 主动断开。
 
 ### 2) 快照状态 Schema
 

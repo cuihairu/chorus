@@ -177,7 +177,8 @@ public sealed class EngineIpcService : BackgroundService
                         TickDurationMs: _sessionConfig.TickDurationMs,
                         InputDelayTicks: _sessionConfig.InputDelayTicks,
                         SnapshotEveryTicks: _sessionConfig.SnapshotEveryTicks,
-                        ServerTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        ServerTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        ProtocolVersion: Chorus.Protocol.ProtocolVersionPolicy.Current
                     );
                     await _outgoing.PublishAsync(
                         EnvelopeFactory.Create(IpcMessageTypes.EngineWelcome, cmd.SessionId, welcome),

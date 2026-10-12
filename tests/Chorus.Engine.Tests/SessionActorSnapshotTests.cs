@@ -49,8 +49,12 @@ public sealed class SessionActorSnapshotTests
         await actor.AddClientAsync(new CapturingClient("c1", received));
         actor.Start();
 
+        // Poll until the oversize skip is observed AND the actor has advanced
+        // past the first tick (the first tick alone can satisfy the oversize
+        // condition, so wait for tick >= 2 to prove survival before asserting).
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (actor.Diagnostics.TotalSnapshotsOversize == 0 && sw.ElapsedMilliseconds < 5000)
+        while ((actor.Diagnostics.TotalSnapshotsOversize == 0 || actor.Diagnostics.TickId < 2)
+               && sw.ElapsedMilliseconds < 5000)
         {
             await Task.Delay(10);
         }

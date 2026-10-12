@@ -32,13 +32,25 @@ public sealed class SessionActorResyncTests
         // Phase 1: no ACKs at all -> lag grows past MaxLagTicks -> forced resync.
         await AnyAsync(received, s => s.Forced == true);
         Assert.True(actor.Diagnostics.TotalResyncSnapshotsSent >= 1);
-        Assert.Contains(received, s => s.Forced == true && s.Reason == "lag");
+        SessionSnapshot forced;
+        long latest;
+        int countAfterAck;
+        Lock.Wait();
+        try
+        {
+            forced = received.First(s => s.Forced == true && s.Reason == "lag");
+            latest = received.Max(s => s.TickId);
+            countAfterAck = received.Count;
+        }
+        finally
+        {
+            Lock.Release();
+        }
+
+        Assert.Equal("lag", forced.Reason);
 
         // Phase 2: the client catches up -> snapshots are no longer forced.
-        var latest = received.Max(s => s.TickId);
         await actor.AckAsync("c1", latest, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-
-        var countAfterAck = received.Count;
         await AnyAsync(received, s => s.Forced == false, startIndex: countAfterAck);
     }
 

@@ -7,7 +7,7 @@ title: 协议参考
 ## hello（client -> server）
 
 ```json
-{"type":"hello","sessionId":"optional","clientId":"optional","token":"optional"}
+{"type":"hello","sessionId":"optional","clientId":"optional","token":"optional","protocolVersion":1}
 ```
 
 字段说明：
@@ -15,6 +15,19 @@ title: 协议参考
 - `sessionId`：客户端希望加入的会话，可选
 - `clientId`：客户端标识，可选；未提供时可由服务端分配
 - `token`：接入凭据，可选；服务端校验（见下）
+- `protocolVersion`：线协议版本，可选；当前为 `1`（见下）
+
+### hello 协议版本（2026-10-12 起）
+
+`hello.protocolVersion` / `welcome.protocolVersion` 标识**线协议**版本（由服务端 `Chorus.Protocol`
+的 `ProtocolVersionPolicy.Current` 决定），与 `clientVersion`（客户端自身构建号，自由字符串）无关：
+
+- 缺省（`null`/不传）→ 视为旧版客户端，**放行**（向后兼容，不做硬升级）；
+- 传了且等于服务端版本 → 放行；
+- 传了且不等于服务端版本 → 服务端先回 `error`（`protocol_mismatch: client=N server=M`），
+  随后以 `PolicyViolation` 关闭连接，并计入 `/faces` 的 `streamerWs.protocolMismatch`
+  与 `chorus_ws_protocol_mismatch_total`；
+- 版本校验在鉴权**之前**：版本不对的客户端不消耗鉴权判定。
 
 ### hello 鉴权（2026-10-12 起，fail-closed）
 
@@ -40,7 +53,8 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
   "tickDurationMs":66,
   "inputDelayTicks":3,
   "snapshotEveryTicks":2,
-  "serverTimeMs":1710000000000
+  "serverTimeMs":1710000000000,
+  "protocolVersion":1
 }
 ```
 
@@ -50,6 +64,7 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 - `inputDelayTicks`：输入被调度到未来多少 tick 后结算
 - `snapshotEveryTicks`：周期快照频率
 - `serverTimeMs`：服务端当前时间戳，可用于客户端做漂移估计
+- `protocolVersion`：服务端线协议版本；客户端应比对其与自身实现版本，不一致时主动断开而不是猜字段
 
 客户端在收到 `welcome` 后，应以其作为权威节拍配置，而不是继续沿用本地默认值。
 

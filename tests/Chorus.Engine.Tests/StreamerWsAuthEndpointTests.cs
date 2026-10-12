@@ -260,13 +260,29 @@ public sealed class StreamerWsAuthEndpointTests
 
         // Ping after the acks: receiving the pong proves the server processed
         // every ack above (the receive loop is FIFO), so the counters are settled.
+        // Snapshot pushes are interleaved on the same socket, so drain messages
+        // until the pong arrives instead of asserting on the first receive.
         var ping = Encoding.UTF8.GetBytes("{\"type\":\"ping\"}");
         await ws.SendAsync(ping, WebSocketMessageType.Text, true, CancellationToken.None);
         var buffer = new byte[8192];
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var pong = await ws.ReceiveAsync(buffer, cts.Token);
-        Assert.Equal(WebSocketMessageType.Text, pong.MessageType);
-        Assert.Contains("pong", Encoding.UTF8.GetString(buffer, 0, pong.Count));
+        string pongText = "";
+        while (!cts.IsCancellationRequested)
+        {
+            var pong = await ws.ReceiveAsync(buffer, cts.Token);
+            if (pong.MessageType == WebSocketMessageType.Close)
+            {
+                Assert.Fail($"Connection closed while waiting for pong: {pong.CloseStatus}");
+            }
+
+            pongText = Encoding.UTF8.GetString(buffer, 0, pong.Count);
+            if (pongText.Contains("\"type\":\"pong\""))
+            {
+                break;
+            }
+        }
+
+        Assert.Contains("pong", pongText);
 
         var facesAfter = await GetFacesAsync(factory);
         Assert.Equal(facesBefore.GetProperty("ackAccepted").GetInt64() + 2, facesAfter.GetProperty("ackAccepted").GetInt64());

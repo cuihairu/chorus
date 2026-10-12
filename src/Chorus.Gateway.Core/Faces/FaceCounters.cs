@@ -21,6 +21,7 @@ public sealed class FaceCounters
     // streamer-ws face
     private long _wsConnections;
     private long _wsUnauthorized;
+    private long _wsProtocolMismatch;
     private long _wsMessageTooLarge;
     private long _wsAckAccepted;
     private long _wsAckDropped;
@@ -39,6 +40,7 @@ public sealed class FaceCounters
     public StreamerWsFaceSnapshot StreamerWs => new(
         Interlocked.Read(ref _wsConnections),
         Interlocked.Read(ref _wsUnauthorized),
+        Interlocked.Read(ref _wsProtocolMismatch),
         Interlocked.Read(ref _wsMessageTooLarge),
         Interlocked.Read(ref _wsAckAccepted),
         Interlocked.Read(ref _wsAckDropped));
@@ -53,6 +55,7 @@ public sealed class FaceCounters
 
     public void WsConnection() => Interlocked.Increment(ref _wsConnections);
     public void WsUnauthorized() => Interlocked.Increment(ref _wsUnauthorized);
+    public void WsProtocolMismatch() => Interlocked.Increment(ref _wsProtocolMismatch);
     public void WsMessageTooLarge() => Interlocked.Increment(ref _wsMessageTooLarge);
     public void WsAckAccepted() => Interlocked.Increment(ref _wsAckAccepted);
     public void WsAckDropped() => Interlocked.Increment(ref _wsAckDropped);
@@ -70,6 +73,7 @@ public sealed record IngressFaceSnapshot(
 public sealed record StreamerWsFaceSnapshot(
     long Connections,
     long Unauthorized,
+    long ProtocolMismatch,
     long MessageTooLarge,
     long AckAccepted,
     long AckDropped);

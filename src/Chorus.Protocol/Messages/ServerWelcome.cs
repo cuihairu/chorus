@@ -1,3 +1,5 @@
+using Chorus.Protocol;
+
 namespace Chorus.Protocol.Messages;
 
 public sealed record ServerWelcome(
@@ -7,6 +9,9 @@ public sealed record ServerWelcome(
     int TickDurationMs,
     int InputDelayTicks,
     int SnapshotEveryTicks,
-    long ServerTimeMs
+    long ServerTimeMs,
+    // Defaulted so an older EngineHost deserializing a newer Gateway's relayed
+    // welcome (or vice versa) still binds; hosts pass ProtocolVersionPolicy.Current.
+    int ProtocolVersion = ProtocolVersionPolicy.Current
 );
 

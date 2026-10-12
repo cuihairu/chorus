@@ -86,6 +86,7 @@ scrape_configs:
 | --- | --- | --- |
 | `chorus_ws_connections_total` | counter | WS 连接建立数 |
 | `chorus_ws_unauthorized_total` | counter | hello 鉴权失败被关闭的连接数 |
+| `chorus_ws_protocol_mismatch_total` | counter | hello 协议版本不匹配被拒绝的连接数（`protocolVersion` 非空且 ≠ 服务端当前版本） |
 | `chorus_ws_message_too_large_total` | counter | 消息体超限被拒的次数 |
 | `chorus_ws_acks_accepted_total` | counter | 被接受（未触发限流）的 WS ACK 数 |
 | `chorus_ws_acks_dropped_total` | counter | 触发限流被丢弃的 WS ACK 数 |

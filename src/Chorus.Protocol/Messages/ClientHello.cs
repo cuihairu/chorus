@@ -5,6 +5,7 @@ public sealed record ClientHello(
     string? SessionId = null,
     string? ClientId = null,
     string? Token = null,
-    string? ClientVersion = null
+    string? ClientVersion = null,
+    int? ProtocolVersion = null
 );
 

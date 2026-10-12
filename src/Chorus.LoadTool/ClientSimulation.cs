@@ -103,7 +103,9 @@ public sealed class ClientSimulation
 
     private async Task SendHelloAsync(ClientWebSocket ws, CancellationToken cancellationToken)
     {
-        var hello = new ClientHello(ProtocolTypes.Hello, _sessionId, _clientId, _token);
+        var hello = new ClientHello(
+            ProtocolTypes.Hello, _sessionId, _clientId, _token,
+            ProtocolVersion: Chorus.Protocol.ProtocolVersionPolicy.Current);
         await SendTextAsync(ws, JsonSerializer.SerializeToUtf8Bytes(hello, ProtocolJson.SerializerOptions), cancellationToken).ConfigureAwait(false);
     }
 

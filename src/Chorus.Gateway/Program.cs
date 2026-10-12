@@ -233,6 +233,16 @@ app.Map("/ws", async context =>
         return;
     }
 
+    var versionReason = ProtocolVersionPolicy.CheckRejectionReason(hello.ProtocolVersion);
+    if (versionReason != null)
+    {
+        faces.WsProtocolMismatch();
+        logger.LogWarning("WS connection rejected ({Reason}) session={SessionId}", versionReason, hello.SessionId);
+        await RejectConnectionAsync(ws, WebSocketCloseStatus.PolicyViolation, versionReason,
+            new ServerError(ProtocolTypes.Error, versionReason), context.RequestAborted);
+        return;
+    }
+
     var auth = faceOptions.Authenticate(hello.Token, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
     if (!auth.Ok)
     {

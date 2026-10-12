@@ -121,6 +121,7 @@ public static class ChorusMetricsText
         var ws = faces.StreamerWs;
         AppendCounter(sb, "chorus_ws_connections_total", ws.Connections);
         AppendCounter(sb, "chorus_ws_unauthorized_total", ws.Unauthorized);
+        AppendCounter(sb, "chorus_ws_protocol_mismatch_total", ws.ProtocolMismatch);
         AppendCounter(sb, "chorus_ws_message_too_large_total", ws.MessageTooLarge);
         AppendCounter(sb, "chorus_ws_acks_accepted_total", ws.AckAccepted);
         AppendCounter(sb, "chorus_ws_acks_dropped_total", ws.AckDropped);
