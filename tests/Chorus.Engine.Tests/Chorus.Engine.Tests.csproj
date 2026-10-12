@@ -15,6 +15,7 @@
     <ProjectReference Include="..\..\src\Chorus.Gateway\Chorus.Gateway.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Gateway.Core\Chorus.Gateway.Core.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Protocol\Chorus.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.LoadTool\Chorus.LoadTool.csproj" />
     <ProjectReference Include="..\..\src\Chorus.SampleGame\Chorus.SampleGame.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Server\Chorus.Server.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Messaging\Chorus.Messaging.csproj" />
