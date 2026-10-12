@@ -146,6 +146,9 @@ resyncCooldownMs = 2000
 | `Ingress:FactionRules:GiftIds` | 空 | 礼物 ID → 阵营映射 |
 | `Ingress:Douyin:AppSecret` | 无 | 抖音回调验签密钥；缺失时 `/ingress/douyin` 全部拒绝（fail-closed） |
 | `Ingress:Douyin:SignatureHeader` | `X-Douyin-Signature` | 签名 header 名（待联调确认，见平台参考文档） |
+| `Ingress:Kuaishou:VerifyToken` | 无 | 快手「消息验证Token」；缺失时 `/ingress/kuaishou` 全部拒绝（fail-closed） |
+| `Ingress:Kuaishou:MsgEncryptKey` | 无 | 快手「消息加密解密KEY」（base64，32 字节）；缺失时事件无法解密（400） |
+| `Ingress:Kuaishou:SignatureHeader` | `kwaisign` | 官方签名 header 名 |
 | `Faces:PlatformIngress:MaxBodyBytes` | `65536` | platform-ingress 面请求体上限，超限 413 |
 | `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | platform-ingress 面每来源每分钟上限，超限 429 |
 | `Faces:PlatformIngress:TimeoutMs` | `5000` | platform-ingress 面单请求预算，超时 504 |
@@ -156,3 +159,4 @@ resyncCooldownMs = 2000
 - [故障排查](./troubleshooting.md)
 - [帧同步最佳实践](../design/frame-sync-best-practices.md)
 - [平台对接参考：抖音](./platform-douyin.md)
+- [平台对接参考：快手](./platform-kuaishou.md)

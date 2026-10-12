@@ -22,17 +22,23 @@
   - 两者皆无 → **拒绝（fail-closed）** 并打 WARN。
 - **影响**：新平台接入 = 注册一个 named verifier + 一个 mapper，路由零改动。
 
-### D3 抖音/快手官方口径未核实部分：占位契约 + TODO，不做猜测实现
+### D3 两平台官方口径未核实部分：占位契约 + TODO，不做猜测实现
 
-- **背景**：官方文档站登录墙 + 反爬，签名算法/事件字段/推送通道形态四项均未核实（详见
-  [platform-douyin.md §1](./reference/platform-douyin.md)）。
-- **决策**：验签按 HMAC-SHA256(appSecret, body) 占位、事件信封用 Chorus 自定义占位字段，
-  代码注释与平台参考文档全部明示「待联调」；替换点收敛到单文件（verifier 的 ComputeSignature / mapper 的字段抽取）。
-- **影响**：联调时改动面 = 1 个 verifier 方法 + 1 个 mapper 文件 + 配置 header 名；管道、路由、测试结构不变。
+- **背景**：抖音官方文档站登录墙 + 反爬，签名算法/事件字段/推送通道形态均未核实（详见
+  [platform-douyin.md §1](./reference/platform-douyin.md)）；快手拿到官方《消息加解密和签名验证》正文，
+  签名（sha1Hex(body+Token) / kwaisign）与 AES 信封按官方实现，直播事件内层 JSON 官方未给
+  （详见 [platform-kuaishou.md §1](./reference/platform-kuaishou.md)）。
+- **决策**：
+  - 抖音：验签按 HMAC-SHA256(appSecret, body) 占位、事件信封用 Chorus 自定义占位字段；
+  - 快手：验签与信封解密按官方算法实现，仅内层事件字段用占位契约（与抖音同构，便于联调时同点替换）；
+  - 占位部分在代码注释与平台参考文档全部明示「待联调」；替换点收敛到单文件
+    （verifier 的 ComputeSignature / mapper 的字段抽取）。
+- **影响**：联调时改动面 = 每平台 1 个 verifier 方法 + 1 个 mapper 文件 + 配置 header 名；管道、路由、测试结构不变。
 
 ### D4 两平台凭据走配置，不硬编码
 
-- **决策**：`Ingress:{Platform}:AppSecret`（及 header 名）从 `IConfiguration` 注入；缺密钥 → fail-closed。
+- **决策**：`Ingress:Douyin:AppSecret`、`Ingress:Kuaishou:VerifyToken` / `Ingress:Kuaishou:MsgEncryptKey`
+  （及 header 名）从 `IConfiguration` 注入；缺密钥 → fail-closed。
 - **影响**：生产密钥经环境变量/配置中心下发；仓库不落真实密钥。
 
 ### D5 单体内先做 listener 代码分层（platform-ingress / streamer-ws），不拆进程

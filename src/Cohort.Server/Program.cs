@@ -27,13 +27,20 @@ builder.Services.AddSingleton(sp =>
     new DouyinPlatformEventVerifier(
         secret: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:AppSecret"],
         signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:SignatureHeader"]));
+builder.Services.AddSingleton(sp =>
+    new KuaishouPlatformEventVerifier(
+        verifyToken: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:VerifyToken"],
+        signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:SignatureHeader"]));
 builder.Services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredService<DouyinPlatformEventVerifier>());
+builder.Services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredService<KuaishouPlatformEventVerifier>());
 builder.Services.AddSingleton<PlatformEventVerifierRouter>(sp => new PlatformEventVerifierRouter(
     sp.GetServices<IPlatformNamedEventVerifier>(),
     fallback: sp.GetService<AllowAllPlatformEventVerifier>()));
 builder.Services.AddSingleton<IPlatformEventVerifier>(sp => sp.GetRequiredService<PlatformEventVerifierRouter>());
 builder.Services.AddSingleton<IPlatformEventMapper, TestPlatformEventMapper>();
 builder.Services.AddSingleton<IPlatformEventMapper, DouyinPlatformEventMapper>();
+builder.Services.AddSingleton<IPlatformEventMapper>(sp => new KuaishouPlatformEventMapper(
+    messageEncryptKey: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:MsgEncryptKey"]));
 builder.Services.AddSingleton<IAudienceFactionRule>(_ =>
     new KeywordGiftAudienceFactionRule(
         commentKeywords: BuildFactionMap(builder.Configuration.GetSection("Ingress:FactionRules:CommentKeywords")),
