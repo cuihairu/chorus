@@ -1,6 +1,6 @@
 using Chorus.Protocol.Models;
 
-namespace Chorus.Server;
+namespace Chorus.Gateway.Core.Faces;
 
 public sealed class MatchRegistry
 {

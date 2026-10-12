@@ -1,5 +1,5 @@
 using Chorus.Protocol.Models;
-using Chorus.Server;
+using Chorus.Gateway.Core.Faces;
 
 namespace Chorus.Engine.Tests;
 

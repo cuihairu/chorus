@@ -1,10 +1,9 @@
 using Chorus.Adapters.Abstractions;
 using Chorus.Adapters.Platforms;
 using Chorus.Gateway;
+using Chorus.Gateway.Core.Actors;
 using Chorus.Gateway.Core.Faces;
 using Chorus.Gateway.Core.Metrics;
-using Chorus.Messaging.Ipc;
-using Chorus.Protocol.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 
@@ -16,6 +15,18 @@ builder.Services.AddSingleton<IngressFaceGuard>();
 builder.Services.AddSingleton<FaceCounters>();
 builder.Services.AddSingleton(StreamerWsFaceOptions.FromConfiguration(builder.Configuration));
 builder.Services.AddSingleton(sp => new IpcSessionRouter(sp.GetRequiredService<GatewayIpcService>()));
+
+// Tell seam (todo §3.5): the ingress face delivers events through the shared
+// ISessionActorRouter; this host routes Tells over the engine IPC.
+builder.Services.AddSingleton<ISessionActorRouter>(sp => new IpcSessionActorRouter(sp.GetRequiredService<GatewayIpcService>()));
+builder.Services.AddSingleton(sp => new PlatformIngressFace(
+    sp.GetRequiredService<IPlatformEventVerifier>(),
+    sp.GetServices<IPlatformEventMapper>(),
+    sp.GetRequiredService<IAudienceFactionRule>(),
+    sp.GetRequiredService<EventDeduplicator>(),
+    sp.GetRequiredService<IngressFaceGuard>(),
+    sp.GetRequiredService<FaceCounters>(),
+    sp.GetRequiredService<ISessionActorRouter>()));
 builder.Services.AddSingleton(sp => new StreamerWsFace(
     sp.GetRequiredService<StreamerWsFaceOptions>(),
     sp.GetRequiredService<IpcSessionRouter>(),
@@ -100,95 +111,9 @@ app.MapGet("/ready", (GatewayIpcService ipc) =>
         : Results.Json(new { ready = false, engineSilenceMs = ipc.EngineSilenceMs(nowMs) }, statusCode: 503);
 });
 
-// platform-ingress listener face: rate limit, body cap, timeout, per-platform
-// verification and dedup (docs/design/process-topology.md §4).
-app.MapPost("/ingress/{platform}", async (
-    HttpContext context,
-    string platform,
-    GatewayIpcService ipc,
-    IPlatformEventVerifier verifier,
-    IEnumerable<IPlatformEventMapper> mappers,
-    IAudienceFactionRule factionRule,
-    EventDeduplicator dedup,
-    IngressFaceGuard faceGuard,
-    FaceCounters faces) =>
-{
-    var sourceKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-    if (!faceGuard.AllowRequest(sourceKey, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
-    {
-        faces.IngressRateLimited();
-        return Results.StatusCode(StatusCodes.Status429TooManyRequests);
-    }
-
-    using var requestCts = faceGuard.CreateRequestCancellationToken(context.RequestAborted);
-    try
-    {
-        var body = await faceGuard.ReadBodyAsync(context.Request.Body, requestCts.Token);
-        if (!body.Ok)
-        {
-            faces.IngressTooLarge();
-            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
-        }
-        var raw = body.Body!;
-
-        var headers = context.Request.Headers.ToDictionary(k => k.Key, v => v.Value.ToString(), StringComparer.OrdinalIgnoreCase);
-        if (!verifier.Verify(platform, raw, headers))
-        {
-            faces.IngressUnverified();
-            return Results.Unauthorized();
-        }
-
-        var ingestTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        AudienceEvent? ev = null;
-        foreach (var mapper in mappers)
-        {
-            ev = mapper.TryMap(platform, raw, ingestTimeMs);
-            if (ev != null)
-            {
-                break;
-            }
-        }
-
-        if (ev == null)
-        {
-            faces.IngressUnmapped();
-            return Results.BadRequest(new { error = "unmapped_event", platform });
-        }
-
-        ev = factionRule.Apply(ev);
-
-        if (!dedup.TryReserve(ev.Platform, ev.EventId, out var lease))
-        {
-            faces.IngressDuplicates();
-            return Results.Ok(new { ok = true, duplicated = true, sessionId = ev.SessionId, eventId = ev.EventId });
-        }
-
-        try
-        {
-            await ipc.PublishAudienceEventAsync(EnvelopeFactory.Create(IpcMessageTypes.GatewayAudienceEvent, ev.SessionId, ev, sourceEventId: ev.EventId), requestCts.Token);
-        }
-        catch
-        {
-            // Delivery failed: release the claim so a platform retry is treated
-            // as a fresh delivery (Failed), never misremembered as a duplicate.
-            dedup.Rollback(lease);
-            throw;
-        }
-
-        dedup.Commit(lease);
-        faces.IngressAccepted();
-        return Results.Ok(new { ok = true, sessionId = ev.SessionId, eventId = ev.EventId });
-    }
-    catch (OperationCanceledException) when (!context.RequestAborted.IsCancellationRequested)
-    {
-        faces.IngressTimedOut();
-        return Results.StatusCode(StatusCodes.Status504GatewayTimeout);
-    }
-    catch
-    {
-        return Results.StatusCode(503);
-    }
-});
+// platform-ingress listener face (docs/design/process-topology.md §4): shared
+// with the monolith via PlatformIngressFace; this host tells over engine IPC.
+app.MapPost("/ingress/{platform}", (string platform, HttpContext context, PlatformIngressFace face) => face.HandleAsync(platform, context));
 
 // streamer-ws listener face: hello token auth (fail-closed), message body
 // cap, ACK rate limit (docs/design/process-topology.md §4). Shared with the

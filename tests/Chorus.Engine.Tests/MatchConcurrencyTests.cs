@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text;
 using Chorus.Engine.Session;
 using Chorus.Protocol.Models;
+using Chorus.Gateway.Core.Faces;
 using Chorus.Server;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
