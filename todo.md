@@ -131,7 +131,7 @@
 - [x] Session 生命周期：空闲回收、上限、异常隔离（GameModule 抛异常不得静默退出 Actor）（2026-10-12，commit 362b435：SessionManager `MaxSessions`=200 最久未见驱逐 + `IdleEvictAfterMs`=600s 客户端空闲回收 + 维护循环；EngineHost 同策略惰性执行；异常隔离在 5592d62（tick 异常计数、actor 存活）；验收 `SessionManagerLifecycleTests` + `GameModule_Throws_ActorSurvivesAndCountsErrors`）
 
 ### 阶段三：可观测性与恢复
-- [ ] `chorus_*` 指标 12 项（tick_duration/lag、ingress/applied/merged/dropped/duplicates、mailbox_depth、ack_lag、snapshot_send/resync、ipc_publish_failures）+ 事件关联 ID
+- [x] `chorus_*` 指标（28 项：tick_duration/lag、ingress/applied/merged/dropped/duplicates、mailbox_depth、ack_lag、snapshot_send/resync/oversize、ws、ipc_publish_failures）+ 事件关联 ID（2026-10-12，commit b86f5a8 三端 `/metrics`；commit 68f29a9 `Envelope.SourceEventId` 贯穿 ingress→Engine（不一致打 `Correlation mismatch` warning）+ `docs/reference/observability.md` 指标清单/关联链/抓取示例；验收 `CorrelationTests` 3 例）
 - [ ] 快照版本与大小上限、应用失败路径、客户端重同步闭环
 - [x] IPC 断连/重启/回退（UDS↔NamedPipe 协商）验证（2026-10-12，commit d5d2d64：服务器重启后客户端惰性重连下次 publish 即恢复；publish 期间服务器宕机必须显式失败（上行即 `chorus_ipc_publish_failures_total`，绝不静默丢弃）；Auto 在 Linux 选 UDS，UDS 无法 bind 时回退 NamedPipe；验收 `IpcResilienceTests` 3 例）
 - [ ] 独立压测工具（多 Session × 观众事件 × 变速客户端 × 随机断连）
