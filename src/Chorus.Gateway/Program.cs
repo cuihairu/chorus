@@ -9,6 +9,11 @@ using Microsoft.Extensions.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Role packaging for the three-process topology (docs/design/process-topology.md
+// §4): one gateway process hosts both listener roles by default; platform /
+// streamer run it as platform-gw / streamer-gw with the same shared faces.
+var gatewayRoles = GatewayRoles.Parse(builder.Configuration["Gateway:Roles"]);
+
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton(IngressFaceOptions.FromConfiguration(builder.Configuration));
 builder.Services.AddSingleton<IngressFaceGuard>();
@@ -111,17 +116,25 @@ app.MapGet("/ready", (GatewayIpcService ipc) =>
         : Results.Json(new { ready = false, engineSilenceMs = ipc.EngineSilenceMs(nowMs) }, statusCode: 503);
 });
 
-// platform-ingress listener face (docs/design/process-topology.md §4): shared
-// with the monolith via PlatformIngressFace; this host tells over engine IPC.
-app.MapPost("/ingress/{platform}", (string platform, HttpContext context, PlatformIngressFace face) => face.HandleAsync(platform, context));
-
-// streamer-ws listener face: hello token auth (fail-closed), message body
-// cap, ACK rate limit (docs/design/process-topology.md §4). Shared with the
-// monolith via StreamerWsFace; this host routes clients over the engine IPC.
-app.Map("/ws", async context =>
+// The two listener endpoints are gated by Gateway:Roles; host-level surface
+// (health/faces/metrics/ready) stays regardless of the packaging.
+if (gatewayRoles is GatewayRoleSet.All or GatewayRoleSet.Platform)
 {
-    await context.RequestServices.GetRequiredService<StreamerWsFace>().HandleAsync(context);
-});
+    // platform-ingress listener face (docs/design/process-topology.md §4): shared
+    // with the monolith via PlatformIngressFace; this host tells over engine IPC.
+    app.MapPost("/ingress/{platform}", (string platform, HttpContext context, PlatformIngressFace face) => face.HandleAsync(platform, context));
+}
+
+if (gatewayRoles is GatewayRoleSet.All or GatewayRoleSet.Streamer)
+{
+    // streamer-ws listener face: hello token auth (fail-closed), message body
+    // cap, ACK rate limit (docs/design/process-topology.md §4). Shared with the
+    // monolith via StreamerWsFace; this host routes clients over the engine IPC.
+    app.Map("/ws", async context =>
+    {
+        await context.RequestServices.GetRequiredService<StreamerWsFace>().HandleAsync(context);
+    });
+}
 
 app.Run();
 
