@@ -2,6 +2,21 @@ using Chorus.Protocol.Models;
 
 namespace Chorus.Engine.Session;
 
+/// <summary>
+/// Merges audience events when a tick exceeds its event budget.
+///
+/// GROUPING (review P0-3): likes group by (SessionId, MatchId, FactionId,
+/// UserId) and gifts by (SessionId, MatchId, FactionId, UserId, GiftId) so
+/// events from different factions/matches/sessions can never merge into each
+/// other - a merged event carries its own group's context, never the context
+/// of some unrelated first event.
+///
+/// COUNT SEMANTICS: a merged like event carries the source event count in
+/// <see cref="AudienceEvent.Text"/> (parsed by game modules); a merged gift
+/// event carries the summed GiftCount and the summed total value in
+/// GiftValue. Source-count provenance per faction is therefore preserved and
+/// per-faction totals stay conserved across the merge.
+/// </summary>
 public sealed class DefaultAudienceEventReducer : IAudienceEventReducer
 {
     public AudienceEventReduceResult Reduce(IReadOnlyList<AudienceEvent> events, int maxEventsPerTick)
@@ -11,8 +26,9 @@ public sealed class DefaultAudienceEventReducer : IAudienceEventReducer
             return new AudienceEventReduceResult(events, MergedInputEvents: 0, DroppedInputEvents: 0);
         }
 
-        var likesByUser = new Dictionary<string, int>(StringComparer.Ordinal);
-        var giftsByUserGift = new Dictionary<(string UserId, string GiftId), (int Count, int Value)>();
+        // Per-group accumulators: firstIngestMs preserves a meaningful ordering hint.
+        var likesByGroup = new Dictionary<(string SessionId, string MatchId, string FactionId, string UserId), (int Count, long FirstIngestMs)>();
+        var giftsByGroup = new Dictionary<(string SessionId, string MatchId, string FactionId, string UserId, string GiftId), (int Count, int Value, long FirstIngestMs)>();
         var comments = new List<AudienceEvent>(capacity: Math.Min(events.Count, maxEventsPerTick));
         var passthrough = new List<AudienceEvent>();
         var likeEventCount = 0;
@@ -24,7 +40,17 @@ public sealed class DefaultAudienceEventReducer : IAudienceEventReducer
             {
                 case AudienceEventKind.Like:
                     likeEventCount++;
-                    likesByUser[e.UserId] = likesByUser.TryGetValue(e.UserId, out var c) ? c + 1 : 1;
+                    {
+                        var key = (e.SessionId, e.MatchId ?? "", e.FactionId ?? "", e.UserId);
+                        if (likesByGroup.TryGetValue(key, out var v))
+                        {
+                            likesByGroup[key] = (v.Count + 1, v.FirstIngestMs);
+                        }
+                        else
+                        {
+                            likesByGroup[key] = (1, e.IngestTimeMs);
+                        }
+                    }
                     break;
                 case AudienceEventKind.Gift:
                     {
@@ -32,14 +58,14 @@ public sealed class DefaultAudienceEventReducer : IAudienceEventReducer
                         var giftId = e.GiftId ?? "unknown";
                         var giftCount = e.GiftCount ?? 1;
                         var giftValue = e.GiftValue ?? 0;
-                        var key = (e.UserId, giftId);
-                        if (giftsByUserGift.TryGetValue(key, out var v))
+                        var key = (e.SessionId, e.MatchId ?? "", e.FactionId ?? "", e.UserId, giftId);
+                        if (giftsByGroup.TryGetValue(key, out var v))
                         {
-                            giftsByUserGift[key] = (v.Count + giftCount, v.Value + giftValue * giftCount);
+                            giftsByGroup[key] = (v.Count + giftCount, v.Value + giftValue * giftCount, v.FirstIngestMs);
                         }
                         else
                         {
-                            giftsByUserGift[key] = (giftCount, giftValue * giftCount);
+                            giftsByGroup[key] = (giftCount, giftValue * giftCount, e.IngestTimeMs);
                         }
                     }
                     break;
@@ -53,9 +79,8 @@ public sealed class DefaultAudienceEventReducer : IAudienceEventReducer
         }
 
         var reduced = new List<AudienceEvent>(capacity: maxEventsPerTick);
-        var firstEvent = events[0];
-        var mergedInputEvents = Math.Max(0, likeEventCount - likesByUser.Count)
-            + Math.Max(0, giftEventCount - giftsByUserGift.Count);
+        var mergedInputEvents = Math.Max(0, likeEventCount - likesByGroup.Count)
+            + Math.Max(0, giftEventCount - giftsByGroup.Count);
 
         foreach (var e in passthrough)
         {
@@ -66,20 +91,20 @@ public sealed class DefaultAudienceEventReducer : IAudienceEventReducer
             }
         }
 
-        foreach (var kv in giftsByUserGift)
+        foreach (var kv in giftsByGroup)
         {
             reduced.Add(new AudienceEvent(
-                EventId: $"merged:gift:{kv.Key.UserId}:{kv.Key.GiftId}:{Guid.NewGuid():N}",
+                EventId: $"merged:gift:{kv.Key.SessionId}:{kv.Key.MatchId}:{kv.Key.FactionId}:{kv.Key.UserId}:{kv.Key.GiftId}:{Guid.NewGuid():N}",
                 Platform: "merged",
-                SessionId: firstEvent.SessionId,
+                SessionId: kv.Key.SessionId,
                 UserId: kv.Key.UserId,
                 Kind: AudienceEventKind.Gift,
-                IngestTimeMs: firstEvent.IngestTimeMs,
+                IngestTimeMs: kv.Value.FirstIngestMs,
                 GiftId: kv.Key.GiftId,
                 GiftCount: kv.Value.Count,
                 GiftValue: kv.Value.Value,
-                MatchId: firstEvent.MatchId,
-                FactionId: firstEvent.FactionId
+                MatchId: NullIfEmpty(kv.Key.MatchId),
+                FactionId: NullIfEmpty(kv.Key.FactionId)
             ));
             if (reduced.Count >= maxEventsPerTick)
             {
@@ -87,18 +112,18 @@ public sealed class DefaultAudienceEventReducer : IAudienceEventReducer
             }
         }
 
-        foreach (var kv in likesByUser)
+        foreach (var kv in likesByGroup)
         {
             reduced.Add(new AudienceEvent(
-                EventId: $"merged:like:{kv.Key}:{Guid.NewGuid():N}",
+                EventId: $"merged:like:{kv.Key.SessionId}:{kv.Key.MatchId}:{kv.Key.FactionId}:{kv.Key.UserId}:{Guid.NewGuid():N}",
                 Platform: "merged",
-                SessionId: firstEvent.SessionId,
-                UserId: kv.Key,
+                SessionId: kv.Key.SessionId,
+                UserId: kv.Key.UserId,
                 Kind: AudienceEventKind.Like,
-                IngestTimeMs: firstEvent.IngestTimeMs,
-                Text: kv.Value.ToString(),
-                MatchId: firstEvent.MatchId,
-                FactionId: firstEvent.FactionId
+                IngestTimeMs: kv.Value.FirstIngestMs,
+                Text: kv.Value.Count.ToString(),
+                MatchId: NullIfEmpty(kv.Key.MatchId),
+                FactionId: NullIfEmpty(kv.Key.FactionId)
             ));
             if (reduced.Count >= maxEventsPerTick)
             {
@@ -117,6 +142,8 @@ public sealed class DefaultAudienceEventReducer : IAudienceEventReducer
 
         return BuildResult(events.Count, reduced, mergedInputEvents);
     }
+
+    private static string? NullIfEmpty(string value) => value.Length == 0 ? null : value;
 
     private static AudienceEventReduceResult BuildResult(int inputCount, IReadOnlyList<AudienceEvent> reduced, int mergedInputEvents)
     {
