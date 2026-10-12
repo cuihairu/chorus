@@ -14,6 +14,11 @@ namespace Chorus.Engine.Tests;
 /// (baseline LastAckTickId = 0); ACKs are only sent after the required ticks
 /// have provably elapsed, and "future" uses a huge value so the rejection is
 /// deterministic regardless of tick speed.
+///
+/// Ack application is gated on the counters themselves, not on TickId: the ack
+/// sits in the control lane until the next lane drain, and observing TickId
+/// advance does not prove the ack was classified yet, so under parallel test
+/// load the asserts could read counters still mid-flight.
 /// </summary>
 public sealed class SessionActorAckTests
 {
@@ -41,6 +46,31 @@ public sealed class SessionActorAckTests
         }
     }
 
+    /// <summary>
+    /// Waits until every ACK sent in the test has been classified into one of
+    /// the four counters, then lets the caller assert the exact split.
+    /// </summary>
+    private static async Task WaitForAcksClassifiedAsync(SessionActor actor, int expected, int timeoutMs = 5000)
+    {
+        long Classified(SessionActor a)
+        {
+            var d = a.Diagnostics;
+            return d.TotalAcksAccepted + d.TotalAcksInvalid + d.TotalAcksStale + d.TotalAcksDuplicate;
+        }
+
+        var sw = Stopwatch.StartNew();
+        while (Classified(actor) < expected)
+        {
+            if (sw.ElapsedMilliseconds > timeoutMs)
+            {
+                throw new TimeoutException(
+                    $"Only {Classified(actor)}/{expected} acks classified after {timeoutMs}ms");
+            }
+
+            await Task.Delay(10);
+        }
+    }
+
     [Fact]
     public async Task FutureTickAck_Rejected_AsInvalid()
     {
@@ -50,7 +80,7 @@ public sealed class SessionActorAckTests
         await WaitForTickAsync(actor, 1);
 
         await actor.AckAsync("c1", lastAppliedTickId: long.MaxValue - 1, clientTimeMs: 0);
-        await WaitForTickAsync(actor, actor.Diagnostics.TickId + 1);
+        await WaitForAcksClassifiedAsync(actor, 1);
 
         Assert.Equal(0, actor.Diagnostics.TotalAcksAccepted);
         Assert.Equal(1, actor.Diagnostics.TotalAcksInvalid);
@@ -66,7 +96,7 @@ public sealed class SessionActorAckTests
         await WaitForTickAsync(actor, 1);
 
         await actor.AckAsync("c1", lastAppliedTickId: -1, clientTimeMs: 0);
-        await WaitForTickAsync(actor, actor.Diagnostics.TickId + 1);
+        await WaitForAcksClassifiedAsync(actor, 1);
 
         Assert.Equal(1, actor.Diagnostics.TotalAcksInvalid);
         Assert.All(actor.Diagnostics.Clients, c => Assert.Equal(0, c.LastAckTickId));
@@ -82,7 +112,7 @@ public sealed class SessionActorAckTests
 
         // Unknown client id cannot move anyone's progress.
         await actor.AckAsync("not-registered", lastAppliedTickId: 1, clientTimeMs: 0);
-        await WaitForTickAsync(actor, actor.Diagnostics.TickId + 1);
+        await WaitForAcksClassifiedAsync(actor, 1);
 
         Assert.Equal(1, actor.Diagnostics.TotalAcksInvalid);
         Assert.All(actor.Diagnostics.Clients, c => Assert.Equal(0, c.LastAckTickId));
@@ -98,7 +128,7 @@ public sealed class SessionActorAckTests
 
         await actor.AckAsync("c1", lastAppliedTickId: 1, clientTimeMs: 0);
         await actor.AckAsync("c1", lastAppliedTickId: 0, clientTimeMs: 0);
-        await WaitForTickAsync(actor, actor.Diagnostics.TickId + 1);
+        await WaitForAcksClassifiedAsync(actor, 2);
 
         Assert.Equal(1, actor.Diagnostics.TotalAcksAccepted);
         Assert.Equal(1, actor.Diagnostics.TotalAcksStale);
@@ -116,7 +146,7 @@ public sealed class SessionActorAckTests
 
         await actor.AckAsync("c1", lastAppliedTickId: 1, clientTimeMs: 0);
         await actor.AckAsync("c1", lastAppliedTickId: 1, clientTimeMs: 0);
-        await WaitForTickAsync(actor, actor.Diagnostics.TickId + 1);
+        await WaitForAcksClassifiedAsync(actor, 2);
 
         Assert.Equal(1, actor.Diagnostics.TotalAcksAccepted);
         Assert.Equal(1, actor.Diagnostics.TotalAcksDuplicate);
@@ -134,7 +164,7 @@ public sealed class SessionActorAckTests
 
         await actor.AckAsync("c1", lastAppliedTickId: 1, clientTimeMs: 0);
         await actor.AckAsync("c2", lastAppliedTickId: 2, clientTimeMs: 0);
-        await WaitForTickAsync(actor, actor.Diagnostics.TickId + 1);
+        await WaitForAcksClassifiedAsync(actor, 2);
 
         Assert.Equal(2, actor.Diagnostics.TotalAcksAccepted);
         Assert.Equal(1, actor.Diagnostics.Clients.Single(c => c.ClientId == "c1").LastAckTickId);
