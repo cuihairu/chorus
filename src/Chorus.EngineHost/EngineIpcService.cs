@@ -42,7 +42,14 @@ public sealed class EngineIpcService : BackgroundService
             HttpGatewayToEngineUrl: config["Ipc:HttpGatewayToEngineUrl"] ?? "http://127.0.0.1:27600/gw-to-eng/",
             HttpEngineToGatewayUrl: config["Ipc:HttpEngineToGatewayUrl"] ?? "http://127.0.0.1:27601/eng-to-gw/"
         );
+
+        // Liveness ping on the eng->gw channel (docs/reference/deployment.md
+        // "split-mode readiness probe"): keeps the Gateway's /ready honest even
+        // when no client is connected (no welcomes/snapshots flowing). 0 = off.
+        _heartbeatIntervalMs = int.TryParse(config["Ipc:HeartbeatIntervalMs"], out var hb) ? Math.Max(0, hb) : 5000;
     }
+
+    private readonly int _heartbeatIntervalMs;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -51,8 +58,12 @@ public sealed class EngineIpcService : BackgroundService
         _incoming = IpcMessageBusFactory.CreateServer(_ipcSettings.Transport, endpoints.GatewayToEngine);
         _outgoing = IpcMessageBusFactory.CreateClient(_ipcSettings.Transport, endpoints.EngineToGateway);
 
-        _logger.LogInformation("EngineHost IPC started: transport={Transport} gw->eng={GwToEngUds} eng->gw={EngToGwUds}",
-            _ipcSettings.Transport, endpoints.GatewayToEngine.UnixSocketPath, endpoints.EngineToGateway.UnixSocketPath);
+        _logger.LogInformation("EngineHost IPC started: transport={Transport} gw->eng={GwToEngUds} eng->gw={EngToGwUds} heartbeatMs={HeartbeatMs}",
+            _ipcSettings.Transport, endpoints.GatewayToEngine.UnixSocketPath, endpoints.EngineToGateway.UnixSocketPath, _heartbeatIntervalMs);
+
+        var heartbeatLoop = _heartbeatIntervalMs > 0
+            ? Task.Run(() => HeartbeatLoopAsync(stoppingToken), stoppingToken)
+            : Task.CompletedTask;
 
         await foreach (var env in _incoming.SubscribeAsync(stoppingToken))
         {
@@ -63,6 +74,37 @@ public sealed class EngineIpcService : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Failed to handle IPC message type={Type} session={SessionId}", env.Type, env.SessionId);
+            }
+        }
+
+        await heartbeatLoop;
+    }
+
+    private async Task HeartbeatLoopAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            await Task.Delay(_heartbeatIntervalMs, stoppingToken).ConfigureAwait(false);
+            try
+            {
+                // EnvelopeFactory rejects empty session ids; heartbeats are not
+                // session-scoped, so carry the well-known sentinel instead.
+                await _outgoing!.PublishAsync(
+                    EnvelopeFactory.Create(
+                        IpcMessageTypes.EngineHeartbeat,
+                        "__heartbeat",
+                        new EngineHeartbeatCmd(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())),
+                    stoppingToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Heartbeats are best-effort liveness; the Gateway flips /ready
+                // to 503 on silence, so a failed beat must not crash the loop.
+                _logger.LogDebug(ex, "Engine heartbeat publish failed");
             }
         }
     }

@@ -17,9 +17,33 @@ public sealed class GatewayIpcService : BackgroundService
     private IMessageBus? _outgoing;
     private IpcSettings _ipcSettings;
     private long _publishFailures;
+    private long _lastEngineMessageMs;
+    private readonly int _readinessMaxSilenceMs;
 
     /// <summary>Failed outgoing IPC publishes (chorus_ipc_publish_failures_total).</summary>
     public long PublishFailures => Interlocked.Read(ref _publishFailures);
+
+    /// <summary>
+    /// Readiness gate (docs/reference/deployment.md "split-mode readiness probe"):
+    /// the engine is considered reachable while messages (heartbeats, welcomes,
+    /// snapshots) keep arriving within the configured silence window. Never
+    /// having received one is also not-ready - fail-closed before first contact.
+    /// </summary>
+    public bool IsEngineReady(long nowMs)
+    {
+        var last = Interlocked.Read(ref _lastEngineMessageMs);
+        return last != 0 && nowMs - last <= _readinessMaxSilenceMs;
+    }
+
+    /// <summary>Milliseconds since the last engine message; -1 before the first one.</summary>
+    public long EngineSilenceMs(long nowMs)
+    {
+        var last = Interlocked.Read(ref _lastEngineMessageMs);
+        return last == 0 ? -1 : Math.Max(0, nowMs - last);
+    }
+
+    /// <summary>Records engine-channel liveness. Called by the receive loop; tests call it directly.</summary>
+    public void RecordEngineMessage(long nowMs) => Interlocked.Exchange(ref _lastEngineMessageMs, nowMs);
 
     public GatewayIpcService(ILogger<GatewayIpcService> logger, IConfiguration config)
     {
@@ -36,6 +60,9 @@ public sealed class GatewayIpcService : BackgroundService
             HttpGatewayToEngineUrl: _config["Ipc:HttpGatewayToEngineUrl"] ?? "http://127.0.0.1:27600/gw-to-eng/",
             HttpEngineToGatewayUrl: _config["Ipc:HttpEngineToGatewayUrl"] ?? "http://127.0.0.1:27601/eng-to-gw/"
         );
+
+        // Recommend >= 3x the engine heartbeat (default 5000) - see deployment.md.
+        _readinessMaxSilenceMs = int.TryParse(_config["Ipc:ReadinessMaxSilenceMs"], out var w) ? Math.Max(1, w) : 15000;
     }
 
     public Task<ServerWelcome> CreateWelcomeWaiter(string sessionId, string clientId, CancellationToken cancellationToken)
@@ -127,6 +154,8 @@ public sealed class GatewayIpcService : BackgroundService
 
         await foreach (var env in _incoming.SubscribeAsync(stoppingToken))
         {
+            RecordEngineMessage(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
             if (env.Type == IpcMessageTypes.EngineWelcome)
             {
                 try

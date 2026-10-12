@@ -187,6 +187,17 @@ maxSnapshotBytes = 1048576
 | `Faces:StreamerWs:MaxMessageBytes` | `65536` | 单条 WS 消息上限，超限以 `MessageTooBig` 关闭连接 |
 | `Faces:StreamerWs:AckPerMinute` | `600` | 每连接每分钟 ACK 上限，超限静默丢弃（计数 `/faces` → `streamerWs.ackDropped`） |
 
+## IPC 与就绪（拆分模式）
+
+`Ipc` 段映射到 `Chorus.Messaging.Ipc.IpcSettings`（端口/传输），就绪判定另有两个键：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `Ipc:HeartbeatIntervalMs`（EngineHost） | `5000` | 引擎在 eng→gw 通道发 `eng.heartbeat` 的间隔；`0` 关闭 |
+| `Ipc:ReadinessMaxSilenceMs`（Gateway） | `15000` | Gateway `GET /ready` 判 200 的最大静默窗口，超窗 503（fail-closed） |
+
+详见 [部署与安全](./deployment.md) 的「拆分模式就绪探针」。
+
 ## 推荐阅读
 
 - [参数调优](./tuning.md)

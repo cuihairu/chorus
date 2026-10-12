@@ -43,6 +43,7 @@ DOTNET_ENVIRONMENT=Production dotnet ./publish/Chorus.Server.dll
 | 端点 | 用途 | 单进程 | 拆分 |
 | --- | --- | --- | --- |
 | `GET /health` | 存活探针 | ✅ | ✅（Gateway / EngineHost 各自） |
+| `GET /ready` | **就绪探针（仅拆分 Gateway）**：EngineHost 心跳在 `Ipc:ReadinessMaxSilenceMs` 内收到 → 200，否则 503 | ❌ | ✅（Gateway） |
 | `GET /sessions` | 会话/客户端指标 JSON | ✅ | ❌ 仅 EngineHost 侧有权威数据，但**未暴露**；用 `/metrics` |
 | `GET /matches` | match 级聚合视图 JSON | ✅ | ❌ 同上 |
 | `GET /faces` | listener face 计数器 JSON | ✅ | ✅（Gateway） |
@@ -53,6 +54,23 @@ DOTNET_ENVIRONMENT=Production dotnet ./publish/Chorus.Server.dll
 默认端口见各自 `Properties/launchSettings.json`：Server `5083`、Gateway `5168`、EngineHost `5067`。
 
 拆分模式 IPC 端口（`Ipc:TcpGatewayToEnginePort=27500`、`Ipc:TcpEngineToGatewayPort=27501`，HTTP 传输用 `27600/27601`）。
+
+### 拆分模式就绪探针（2026-10-12 起）
+
+EngineHost 每 `Ipc:HeartbeatIntervalMs`（默认 5000，`0` 关闭）在 eng→gw 通道发一条
+`eng.heartbeat`；Gateway 收到任何引擎消息（心跳/欢迎/快照）都刷新静默计时。
+Gateway 的 `GET /ready`：
+
+- 从未收到引擎消息，或静默超过 `Ipc:ReadinessMaxSilenceMs`（默认 15000）→ **503**（fail-closed，
+  编排器不把流量切过来）；返回体带 `engineSilenceMs` 便于诊断；
+- 心跳在窗口内 → 200。
+
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `Ipc:HeartbeatIntervalMs`（EngineHost） | `5000` | 引擎心跳间隔；`0` 关闭（关闭后 Gateway 只有在有客户端连接产生欢迎/快照时才能判就绪） |
+| `Ipc:ReadinessMaxSilenceMs`（Gateway） | `15000` | 就绪判定的最大静默窗口，建议 ≥ 3× 心跳间隔 |
+
+单进程形态没有 IPC 跳，不暴露 `/ready`（`/health` 即足够）。
 
 ## 安全配置（fail-closed）
 
@@ -124,5 +142,6 @@ DOTNET_ENVIRONMENT=Production dotnet ./publish/Chorus.Server.dll
 ## 拆分模式容器化
 
 - 两台容器：Gateway 与 EngineHost；`Ipc:Transport=Tcp`，映射 `27500/27501`（HTTP 则 `27600/27601`）。
-- 健康检查分别探 `/health`；Gateway 就绪建议连 `/faces`（有 ingress 计数说明链路通），EngineHost 侧用 `/metrics` 的 `chorus_snapshots_sent_total` 判断引擎是否在出快照。
+- 健康检查分别探 `/health`（存活）；**Gateway 就绪探 `/ready`**（200 = EngineHost 心跳在窗口内），
+  EngineHost 侧用 `/metrics` 的 `chorus_snapshots_sent_total` 判断引擎是否在出快照。
 - 顺序无强制：Gateway 启动时 EngineHost 未就绪，事件发布会失败并计入 `chorus_ipc_publish_failures_total`（客户端侧幂等重试），EngineHost 就绪后自动恢复。

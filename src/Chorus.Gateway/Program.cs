@@ -84,8 +84,20 @@ app.MapGet("/", () => new { name = "Chorus.Gateway", ok = true });
 app.MapGet("/health", () => Results.Ok());
 app.MapGet("/faces", (FaceCounters faces) => faces);
 app.MapGet("/metrics", (FaceCounters faces, GatewayIpcService ipc) => Results.Text(
-    ChorusMetricsText.RenderGateway(faces, ipc.PublishFailures),
+    ChorusMetricsText.RenderGateway(faces, ipc.PublishFailures, ipc.EngineSilenceMs(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())),
     ChorusMetricsText.ContentTypeValue));
+
+// Readiness probe (docs/reference/deployment.md "split-mode readiness probe"):
+// 200 only while EngineHost messages (heartbeats/welcomes/snapshots) arrive
+// within Ipc:ReadinessMaxSilenceMs; 503 - and no traffic - otherwise.
+app.MapGet("/ready", (GatewayIpcService ipc) =>
+{
+    var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    var ready = ipc.IsEngineReady(nowMs);
+    return ready
+        ? Results.Ok(new { ready = true, engineSilenceMs = ipc.EngineSilenceMs(nowMs) })
+        : Results.Json(new { ready = false, engineSilenceMs = ipc.EngineSilenceMs(nowMs) }, statusCode: 503);
+});
 
 // platform-ingress listener face: rate limit, body cap, timeout, per-platform
 // verification and dedup (docs/design/process-topology.md §4).

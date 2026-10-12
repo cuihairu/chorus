@@ -12,6 +12,7 @@
     <ProjectReference Include="..\..\src\Chorus.Adapters.Abstractions\Chorus.Adapters.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Adapters.Platforms\Chorus.Adapters.Platforms.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Engine\Chorus.Engine.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.EngineHost\Chorus.EngineHost.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Gateway\Chorus.Gateway.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Gateway.Core\Chorus.Gateway.Core.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Protocol\Chorus.Protocol.csproj" />

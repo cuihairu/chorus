@@ -37,12 +37,14 @@ public static class ChorusMetricsText
     }
 
     /// <summary>Gateway surface: faces + IPC.</summary>
-    public static string RenderGateway(FaceCounters faces, long ipcPublishFailures)
+    public static string RenderGateway(FaceCounters faces, long ipcPublishFailures, long engineSilenceMs)
     {
         var sb = new StringBuilder();
         AppendFaceMetrics(sb, faces);
         sb.AppendLine("# TYPE chorus_ipc_publish_failures_total counter");
         sb.AppendLine($"chorus_ipc_publish_failures_total {ipcPublishFailures}");
+        sb.AppendLine("# TYPE chorus_ipc_engine_silence_ms gauge");
+        sb.AppendLine($"chorus_ipc_engine_silence_ms {engineSilenceMs}");
         return sb.ToString();
     }
 

@@ -96,6 +96,7 @@ scrape_configs:
 | 指标 | 类型 | 含义 |
 | --- | --- | --- |
 | `chorus_ipc_publish_failures_total` | counter | IPC 发布失败次数（Gateway→Engine 事件、Engine→Gateway 快照/欢迎） |
+| `chorus_ipc_engine_silence_ms` | gauge | Gateway 距最近一次收到 EngineHost 消息（心跳/欢迎/快照）的毫秒数；从未收到为 `-1`。`/ready` 依此判定（阈值 `Ipc:ReadinessMaxSilenceMs`） |
 
 ## 关联 ID（correlation）
 

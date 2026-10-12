@@ -9,4 +9,5 @@ public static class IpcMessageTypes
 
     public const string EngineSnapshot = "eng.snapshot";
     public const string EngineWelcome = "eng.welcome";
+    public const string EngineHeartbeat = "eng.heartbeat";
 }
