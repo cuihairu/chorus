@@ -33,7 +33,7 @@
 |---|---|---|---|
 | 一 | 单体内**代码分层**：`platform-ingress` 与 `streamer-ws` 两个 listener 共用一套门面实现（`PlatformIngressFace` / `StreamerWsFace`，验证/限流/超时/去重/门禁单点），同进程部署（单体仍是默认部署形态） | 平台接入批次 | **已完成**：todo §2 平台接入三项、§3 Match/阵营三项全勾；两个 listener 的门禁与投递均已合一（下两节） |
 | 二 | **四角色、三进程**：platform-gw、streamer-gw、room-worker（承载多房间）；`RoomManager` 作为逻辑组件寄宿 worker 侧，由 `MatchRegistry` 升级为房间注册 + 路由表 | todo.md 阶段一正确性五项完成 | **已触发（5/5：9ad322d、499f01c、def21d2、78f2597、0409cf2），进行中**：进程可拆已交付（`Gateway:Roles`，15a6dad）——一个 Gateway 进程可只承载 `platform` 或 `streamer` 角色，platform-gw / streamer-gw / room-worker（EngineHost）三进程成为配置选项，门面零复制；房间侧尚未升级（见下「RoomManager 何时上」） |
-| 三 | room-worker 独立多进程/多机，room-manager 才单独成进程（房间粘性 + 快照恢复） | 单 worker 高峰 CPU > 60%，或单机房间数达数百量级 | **未满足，差 2 条**：①单 worker 高峰 CPU 无数据（`Chorus.LoadTool` 冒烟是功能验证，量级数百事件，不是峰值测量）；②单机房间数无数百量级部署数据。两条都是运行期指标，仓内无法自证，留待生产/长期压测峰值数据 |
+| 三 | room-worker 独立多进程/多机，room-manager 才单独成进程（房间粘性 + 快照恢复） | 单 worker 高峰 CPU > 60%，或单机房间数达数百量级 | **未满足，差 2 条**：①单 worker 高峰 CPU 无数据（`Chorus.LoadTool` 冒烟是功能验证，量级数百事件，不是峰值测量）；②单机房间数无数百量级部署数据。两条都是运行期指标，仓内无法自证，留待生产/长期压测峰值数据。**不依赖数据的代码半边已先行交付（be2eff7，2026-10-13）**：`RoomAffinity`（FNV-1a 稳定散列 + 排序 worker 集合的纯函数映射——同一房间在同一 worker 集合下恒得同一 worker，§5.1 单写者不变式）+ `RoomRouteTable`（整体换图的共享路由表，room-manager 推送、双网关同读，§5.3），守卫 `RoomAffinityTests` 7 例；**暂无生产接线**，消费者（room-manager 发布路由、网关预路由）等阶段三触发再接。恢复半边（§5.2）不被这两条数据门控，但需先定 `IGameModule` 快照恢复契约（见 §5），待拍板后另行开工 |
 
 
 **streamer-ws 门面已合一（§3.5 路由抽象的第一片）**：两个 listener 的 `streamer-ws` 门禁此前是 Server/Gateway 两份漂移拷贝，现已抽为 `Chorus.Gateway.Core/Faces/StreamerWsFace` 一份，两宿主只在 `IStreamerSessionRouter` / `IStreamerSessionBinding` 缝上分叉：
@@ -55,7 +55,7 @@ hello 鉴权（fail-closed）、协议版本门禁、消息体积上限、ACK �
 ## 5. 拆分前必须先解决的两个前置问题
 
 1. **房间事件的单点排序**：同一房间全部输入必须在唯一 actor 内排序（现单消费者邮箱即此职责）。拆进程靠**房间粘性**保证，不允许两处同时写同一房间。
-2. **恢复路径**：房间进程重启需有权威快照可回。当前快照仅存在于内存、无持久化——先补评审阶段三的快照版本/大小上限/应用失败路径与恢复闭环，再谈跨机。
+2. **恢复路径**：房间进程重启需有权威快照可回。当前快照仅存在于内存、无持久化——先补评审阶段三的快照版本/大小上限/应用失败路径与恢复闭环，再谈跨机。落地前的第一个契约缺口：`IGameModule` 只有 `GetStateSnapshot()`（读出），没有「从权威快照重建模块状态」的回写入口（2026-10-13 盘点），恢复闭环需要先定这个公开契约（接口形状、与 `ApplyEvents` 的启动顺序、应用失败如何处置），属设计决策，待拍板。
 
 跨进程路由形态（沿用现有模式推广）：manager 维护 `房间 → worker` 映射并推送给网关；网关据此选择到 worker 的通道（或走 worker 的反向通道），主播网关与平台网关共用同一张路由表。
 
