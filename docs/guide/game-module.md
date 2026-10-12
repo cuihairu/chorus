@@ -48,7 +48,9 @@ builder.Services.AddSingleton<IGameModuleFactory, SampleGameModuleFactory>();
   即 [规格 §2.3](../design/spec.md) 的「展示聚合非权威」——权威判定仍由引擎按 Session 执行；
 - **快照有界**：`GetStateSnapshot` 只返回 totals + top-10 列表，不返回全量用户表，避免 `MaxSnapshotBytes` 超限。
 
-接入新玩法时，把它当模板改，或另建工程实现 `IGameModuleFactory` 后替换上面这一行注册。
+接入新玩法时，把它当模板改，或另建工程实现 `IGameModuleFactory`，然后把 `Chorus.Server/Program.cs`
+与 `Chorus.EngineHost/Program.cs` 里那一行 `AddSingleton<IGameModuleFactory, SampleGameModuleFactory>()`
+换成自己的工厂。引擎、协议、客户端都不用动。
 
 ## 调用模型（必须遵守）
 
