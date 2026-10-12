@@ -14,9 +14,8 @@ public sealed class EngineIpcService : BackgroundService
     private readonly SessionConfig _sessionConfig;
     private readonly IpcSettings _ipcSettings;
 
-    private readonly Dictionary<string, SessionActor> _sessions = new(StringComparer.Ordinal);
+    private readonly SessionRegistry _registry;
     private readonly Dictionary<(string SessionId, string ClientId), EngineBusSessionClient> _clients = new();
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _lastSeen = new(StringComparer.Ordinal);
     private long _lastSweepMs;
 
     private IMessageBus? _incoming;
@@ -31,6 +30,17 @@ public sealed class EngineIpcService : BackgroundService
         _logger = logger;
         _gameFactory = gameFactory;
         _sessionConfig = sessionConfig;
+
+        // Session lifecycle (cap, idle eviction, sweep) is shared with the
+        // monolith's SessionManager. The sweep loop stays off: the engine
+        // sweeps amortized on session creation, on the IPC receive loop
+        // thread, keeping all registry mutations single-threaded with the
+        // connect/ack/event handlers (the client probe below reads _clients).
+        _registry = new SessionRegistry(
+            sessionConfig,
+            CreateActor,
+            id => _clients.Keys.Any(k => k.SessionId == id),
+            runSweepLoop: false);
 
         _ipcSettings = new IpcSettings(
             Transport: Enum.TryParse<IpcTransport>(config["Ipc:Transport"], ignoreCase: true, out var t) ? t : IpcTransport.Auto,
@@ -109,90 +119,29 @@ public sealed class EngineIpcService : BackgroundService
         }
     }
 
-    private SessionActor GetOrCreateSession(string sessionId)
+    private SessionActor CreateActor(string sessionId)
     {
-        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        if (_sessions.TryGetValue(sessionId, out var s))
-        {
-            _lastSeen[sessionId] = now;
-            return s;
-        }
-
-        MaybeEnforceSessionLifecycle(now);
-
         var game = _gameFactory.Create(sessionId);
         var actor = new SessionActor(sessionId, _sessionConfig, game);
         actor.Start();
-        _sessions[sessionId] = actor;
-        _lastSeen[sessionId] = now;
         return actor;
     }
 
-    /// <summary>
-    /// Session lifecycle (review stage-2, EngineHost topology): a session cap
-    /// with idlest-first eviction and a lazy idle sweep for client-less
-    /// sessions. Runs amortized on session creation.
-    /// </summary>
-    private void MaybeEnforceSessionLifecycle(long nowMs)
+    private SessionActor GetOrCreateSession(string sessionId)
     {
-        if (nowMs - _lastSweepMs < 30_000 && _sessions.Count < Math.Max(1, _sessionConfig.MaxSessions))
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        // Amortized lazy sweep for client-less sessions (review stage-2,
+        // EngineHost topology): runs on the receive loop thread so registry
+        // mutations stay single-threaded with the handlers. Cap eviction with
+        // idlest-first victims happens inside the registry's GetOrCreate.
+        if (now - _lastSweepMs >= 30_000 || _registry.Count >= Math.Max(1, _sessionConfig.MaxSessions))
         {
-            return;
+            _lastSweepMs = now;
+            _ = _registry.SweepIdleAsync(now);
         }
 
-        _lastSweepMs = nowMs;
-
-        // Idle eviction: no gateway clients and no recent activity.
-        if (_sessionConfig.IdleEvictAfterMs > 0)
-        {
-            List<string> idle = new();
-            foreach (var (id, actor) in _sessions)
-            {
-                if (_clients.Keys.Any(k => k.SessionId == id))
-                {
-                    continue;
-                }
-
-                _lastSeen.TryGetValue(id, out var seen);
-                if (nowMs - seen >= _sessionConfig.IdleEvictAfterMs)
-                {
-                    idle.Add(id);
-                }
-            }
-
-            foreach (var id in idle)
-            {
-                if (_sessions.Remove(id, out var victim))
-                {
-                    _lastSeen.TryRemove(id, out _);
-                    _ = victim.DisposeAsync().AsTask();
-                }
-            }
-        }
-
-        // Cap: evict least-recently-seen sessions to make room.
-        while (_sessionConfig.MaxSessions > 0 && _sessions.Count >= _sessionConfig.MaxSessions)
-        {
-            string? idlest = null;
-            long idlestSeen = long.MaxValue;
-            foreach (var (id, _) in _sessions)
-            {
-                _lastSeen.TryGetValue(id, out var seen);
-                if (seen < idlestSeen)
-                {
-                    idlestSeen = seen;
-                    idlest = id;
-                }
-            }
-
-            if (idlest == null || !_sessions.Remove(idlest, out var victim))
-            {
-                break;
-            }
-
-            _lastSeen.TryRemove(idlest, out _);
-            _ = victim.DisposeAsync().AsTask();
-        }
+        return _registry.GetOrCreate(sessionId, now);
     }
 
     private async Task HandleAsync(Envelope env, CancellationToken cancellationToken)
@@ -231,9 +180,9 @@ public sealed class EngineIpcService : BackgroundService
             case IpcMessageTypes.GatewayDisconnect:
                 {
                     var cmd = EnvelopeFactory.DeserializeBody<GatewayDisconnectCmd>(env);
-                    if (_sessions.TryGetValue(cmd.SessionId, out var session))
+                    if (_registry.TryGet(cmd.SessionId, out var session))
                     {
-                        await session.RemoveClientAsync(cmd.ClientId);
+                        await session!.RemoveClientAsync(cmd.ClientId);
                     }
                     _clients.Remove((cmd.SessionId, cmd.ClientId));
                 }
@@ -242,9 +191,9 @@ public sealed class EngineIpcService : BackgroundService
             case IpcMessageTypes.GatewayAck:
                 {
                     var cmd = EnvelopeFactory.DeserializeBody<GatewayAckCmd>(env);
-                    if (_sessions.TryGetValue(cmd.SessionId, out var session))
+                    if (_registry.TryGet(cmd.SessionId, out var session))
                     {
-                        await session.AckAsync(cmd.ClientId, cmd.LastAppliedTickId, cmd.ClientTimeMs);
+                        await session!.AckAsync(cmd.ClientId, cmd.LastAppliedTickId, cmd.ClientTimeMs);
                     }
                 }
                 break;
@@ -274,21 +223,11 @@ public sealed class EngineIpcService : BackgroundService
     }
 
     /// <summary>Session diagnostics for the /metrics surface.</summary>
-    public IReadOnlyList<SessionDiagnostics> GetDiagnostics()
-    {
-        lock (_sessions)
-        {
-            return _sessions.Values.Select(s => s.Diagnostics).ToArray();
-        }
-    }
+    public IReadOnlyList<SessionDiagnostics> GetDiagnostics() => _registry.GetDiagnostics();
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        foreach (var s in _sessions.Values)
-        {
-            await s.DisposeAsync();
-        }
-        _sessions.Clear();
+        await _registry.DisposeAsync();
         _clients.Clear();
 
         if (_incoming != null) await _incoming.DisposeAsync();
