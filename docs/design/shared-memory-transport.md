@@ -33,6 +33,16 @@ todo §3.5 要求评估并规划共享内存 transport（MemoryMappedFile + Flat
    侧每个 `EngineBusSessionClient` 各发布一条完整 JSON。改为每个 session
    每 tick 发布一条（客户端差异只存在于定向 resync 快照），eng→gw 的消息量
    直接从「客户端数 × tick 频率」降为「tick 频率」，JSON 编码同样省掉 N-1 份。
+   ✅ **已交付（50f0045）**：`EngineBusSessionClient` 只在两种情况下发布——
+   无 `TargetClientId` 的广播快照仅由该 session 的**广播所有者**发布
+   （`BroadcastOwnerRegistry`：首个接入者当 owner，owner 掉线转移到剩余
+   客户端，最后一个掉线清空、重连重选；转移窗口内当 tick 广播可跳过一次，
+   下一 tick 追上）；定向 resync 快照仅由被定向的那个客户端发布。Gateway
+   零改动（null-target 本就扇出全 session）。回归守卫：
+   `EngineBroadcastOwnerTests`（5 例选举/转移/独立）、
+   `EngineBusSessionClientTests`（3 例发布过滤）、
+   `SplitModeEndToEndTests.TwoClientsSameSession_BothReceiveSnapshots`
+   （双客户端同 session 均收到广播的端到端验收）。
 2. **JSON → 二进制 envelope（MessagePack/FlatBuffers）**。快照 wire 格式
    （streamer-ws 面）已评估暂不引入（见 `docs/reference/tuning.md`
    「快照序列化成本」）；IPC 面的 envelope 格式与 wire 格式解耦，可以单独换，

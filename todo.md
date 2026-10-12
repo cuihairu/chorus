@@ -42,7 +42,7 @@
 - [x] 提供 Unix Domain Socket bus（本机 IPC 示例）
 - [x] 提供 TCP transport（localhost / 容器）
 - [x] 提供 HTTP transport（远程 / 网关层）
-- [x] 评估并规划共享内存 transport（MemoryMappedFile + FlatBuffers）（docs/design/shared-memory-transport.md：现状成本、方案轮廓、更便宜替代（eng→gw 按 tick 去重发布）、风险表、触发条件与 A/B/C 阶段；结论暂不实现）
+- [x] 评估并规划共享内存 transport（MemoryMappedFile + FlatBuffers）（docs/design/shared-memory-transport.md：现状成本、方案轮廓、更便宜替代（eng→gw 按 tick 去重发布）、风险表、触发条件与 A/B/C 阶段；结论暂不实现。阶段 A 已交付（50f0045）：广播快照每 session 每 tick 仅发布一条（`BroadcastOwnerRegistry` 选举/转移 + `EngineBusSessionClient` 发布过滤，定向 resync 保持逐客户端），Gateway 零改动，eng→gw 消息量从「客户端数×tick 频率」降为「tick 频率」；守卫 `EngineBroadcastOwnerTests` 5 例 + `EngineBusSessionClientTests` 3 例 + `TwoClientsSameSession_BothReceiveSnapshots`；阶段 B/C 仍按触发条件等待真实瓶颈）
 
 ## 3.6 拆分模式（Gateway + EngineHost）
 
