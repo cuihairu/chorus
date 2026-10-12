@@ -20,13 +20,13 @@ jobs:
           dotnet-version: "9.0.x"
 
       - name: Restore
-        run: dotnet restore Cohort.sln
+        run: dotnet restore Chorus.sln
 
       - name: Build
-        run: dotnet build Cohort.sln -c Release --no-restore
+        run: dotnet build Chorus.sln -c Release --no-restore
 
       - name: Test (with coverage)
-        run: dotnet test Cohort.sln -c Release --no-build --collect:"XPlat Code Coverage" --results-directory ./TestResults
+        run: dotnet test Chorus.sln -c Release --no-build --collect:"XPlat Code Coverage" --results-directory ./TestResults
 
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4

@@ -12,10 +12,10 @@ title: 快速开始
 ## 运行服务器（本地）
 
 ```bash
-dotnet run --project src/Cohort.Server
+dotnet run --project src/Chorus.Server
 ```
 
-服务端口取决于 `src/Cohort.Server/Properties/launchSettings.json`（默认类似 `http://localhost:5083`，也可用 `ASPNETCORE_URLS` 覆盖）：
+服务端口取决于 `src/Chorus.Server/Properties/launchSettings.json`（默认类似 `http://localhost:5083`，也可用 `ASPNETCORE_URLS` 覆盖）：
 
 - `GET /health`：健康检查
 - `GET /sessions`：会话/客户端指标

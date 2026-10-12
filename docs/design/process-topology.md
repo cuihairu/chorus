@@ -17,7 +17,7 @@
 
 - **两个故障域**：平台侧突发洪峰、验签、限流与主播侧的鉴权、ACK、重同步互不相干，分开后一边被打爆不带走另一边；限流/验证/超时各配各的（对应评审 P0-4「Ingress 默认放行」与 P1-10「客户端消息边界」）。
 - **调度与执行分离**：房间注册/分配/健康/路由归 manager，权威 tick 与玩法归 worker，跨机扩展不用重构。
-- **已有底座**：`Cohort.Messaging` 的 `Envelope` + UDS/NamedPipe/TCP/HTTP 就是进程间通道；现有 Gateway ↔ EngineHost 拆分模式即「主播网关 ↔ worker」的原型。
+- **已有底座**：`Chorus.Messaging` 的 `Envelope` + UDS/NamedPipe/TCP/HTTP 就是进程间通道；现有 Gateway ↔ EngineHost 拆分模式即「主播网关 ↔ worker」的原型。
 
 ## 3. 关键事实：瓶颈是事件吞吐，不是连接数
 

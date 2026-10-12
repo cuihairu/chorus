@@ -12,7 +12,7 @@ flowchart LR
     P1["弹幕/礼物/点赞事件"]
   end
 
-  subgraph Cohort["Cohort Server"]
+  subgraph Chorus["Chorus Server"]
     Ingress["Platform Ingress (HTTP/Webhook)"]
     GW["Client Gateway (WebSocket)"]
     SM["SessionManager"]

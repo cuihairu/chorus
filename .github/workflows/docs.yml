@@ -31,7 +31,7 @@ jobs:
 
       - name: Build docs
         env:
-          VUEPRESS_BASE: "/Cohort/"
+          VUEPRESS_BASE: "/chorus/"
         run: npm run docs:build
 
       - name: Setup Pages

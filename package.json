@@ -1,7 +1,7 @@
 {
-  "name": "cohort",
+  "name": "chorus",
   "private": true,
-  "description": "Cohort docs site (VuePress)",
+  "description": "Chorus docs site (VuePress)",
   "license": "Apache-2.0",
   "scripts": {
     "docs:dev": "vuepress dev docs",

@@ -32,8 +32,8 @@ title: 通信抽象（进程内/进程间）
 
 ## 当前仓库状态
 
-- v1 目前的 Cohort 是 Monolith（同进程内存通信）
-- 同时开始引入 `Cohort.Messaging` 作为“channel 抽象”的起点：
+- v1 目前的 Chorus 是 Monolith（同进程内存通信）
+- 同时开始引入 `Chorus.Messaging` 作为“channel 抽象”的起点：
   - `InProcMessageBus`：进程内队列
   - `NamedPipeMessageBus`：本机进程间 IPC（Windows 友好）
   - `UnixDomainSocketMessageBus`：本机进程间 IPC（Linux/macOS，Windows 在较新版本也支持 AF_UNIX；实际落地建议保留 fallback）

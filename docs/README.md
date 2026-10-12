@@ -1,8 +1,8 @@
 ---
 home: true
-title: Cohort
+title: Chorus
 heroImage: /logo.svg
-heroText: Cohort
+heroText: Chorus
 tagline: 面向直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）
 actions:
   - text: 快速开始

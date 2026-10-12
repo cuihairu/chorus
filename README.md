@@ -1,24 +1,24 @@
 <p align="center">
-  <img src="docs/.vuepress/public/logo.svg" width="128" alt="Cohort logo" />
+  <img src="docs/.vuepress/public/logo.svg" width="64" height="64" alt="Chorus logo" />
 </p>
 
-<h1 align="center">Cohort</h1>
+<h1 align="center">Chorus</h1>
 
 <p align="center">
   面向直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）
 </p>
 
 <p align="center">
-  <a href="https://github.com/cuihairu/Cohort/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/Cohort/actions/workflows/ci.yml/badge.svg" /></a>
-  <a href="https://codecov.io/gh/cuihairu/Cohort"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/Cohort/branch/main/graph/badge.svg" /></a>
-  <a href="https://github.com/cuihairu/Cohort/releases"><img alt="Release" src="https://img.shields.io/github/v/release/cuihairu/Cohort?sort=semver" /></a>
+  <a href="https://github.com/cuihairu/chorus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/chorus/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://codecov.io/gh/cuihairu/chorus"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/chorus/branch/main/graph/badge.svg" /></a>
+  <a href="https://github.com/cuihairu/chorus/releases"><img alt="Release" src="https://img.shields.io/github/v/release/cuihairu/chorus?sort=semver" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
   <img alt=".NET" src="https://img.shields.io/badge/.NET-9.0-512BD4" />
 </p>
 
 ## 文档（VuePress）
 
-- 站点（GitHub Pages）：`https://cuihairu.github.io/Cohort/`
+- 站点（GitHub Pages）：`https://cuihairu.github.io/chorus/`
 - 源码：`docs/`
 - 本地预览：`npm install && npm run docs:dev`
 - 构建静态站：`npm run docs:build`（输出：`docs/.vuepress/dist`）
@@ -26,18 +26,31 @@
 ## 快速开始
 
 ```bash
-dotnet run --project src/Cohort.Server
+dotnet run --project src/Chorus.Server
 ```
 
-- HTTP：端口见 `src/Cohort.Server/Properties/launchSettings.json`（默认类似 `http://localhost:5083`）
+- HTTP：端口见 `src/Chorus.Server/Properties/launchSettings.json`（默认类似 `http://localhost:5083`）
 - WS：`ws://localhost:<serverPort>/ws`
-- 指标：`GET /sessions`
+- 指标：`GET /sessions`；listener face 计数：`GET /faces`
+
+### 鉴权与默认拒绝（重要）
+
+安全默认是**关**的，开发配置（`appsettings.Development.json`）已显式打开，方便本地直接跑：
+
+- 平台回调：`Ingress:AllowAll=true`（未签名回调放行，启动日志打 ERROR 告警）。生产配置必须走
+  各平台真实验签（抖音 `Ingress:Douyin:AppSecret`、快手 `Ingress:Kuaishou:VerifyToken` 等），
+  缺密钥时 `/ingress/{platform}` 一律 401（fail-closed）。
+- 主播 WS：`Faces:StreamerWs:AllowAnonymous=true`（无 token 可连）。生产配置必须给
+  `Faces:StreamerWs:AuthTokens`（`token` 或 `token@unixMs过期时间`，`;` 分隔），
+  否则所有 WS 连接被拒绝（fail-closed）。
+
+详见 [配置参考](docs/reference/config.md) 与 [协议参考](docs/reference/protocol.md)。
 
 ## 拆分模式（Gateway + EngineHost）
 
 ```bash
-dotnet run --project src/Cohort.EngineHost
-dotnet run --project src/Cohort.Gateway
+dotnet run --project src/Chorus.EngineHost
+dotnet run --project src/Chorus.Gateway
 ```
 
 - Gateway：对外提供 `/ws` 与 `/ingress/{platform}`
@@ -77,8 +90,6 @@ flowchart LR
 
 可借鉴其他项目的工程实践，但不直接依赖；本仓独立演进的问题是「如何让外部直播事件可靠地驱动一场实时游戏」。
 
-> **命名**：GitHub 仓库已更名为 `cuihairu/chorus`，产品名 Chorus；仓库内的 `Cohort.*` 程序集/命名空间/目录收尾见 [todo.md](./todo.md) 与 [外部评审归档](./docs/design/review-2026-10-12-chatgpt.md)。
-
 ## 技术栈与支持
 
 - 语言：C#（随 .NET 9 默认 C# 版本）
@@ -87,7 +98,8 @@ flowchart LR
 
 ## 发布与 Tag
 
-推荐使用语义化版本号打 tag：`v0.1.0`、`v0.1.1`。
+推荐使用语义化版本号打 tag：`v0.1.0`、`v0.1.1`。版本号由维护者手动给出并触发，
+不跑自动发版（每日构建/nightly 二进制除外，须通过验收测试）。
 
 ```bash
 git tag v0.1.0

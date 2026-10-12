@@ -138,7 +138,7 @@
 - [ ] 独立压测工具（多 Session × 观众事件 × 变速客户端 × 随机断连）
 
 ### 阶段四：发布与生态
-- [ ] **Cohort → Chorus 命名收尾**（仓库已改名）：`Chorus.sln`、各 `Chorus.*` 工程与命名空间、项目引用、CI 工作流、文档站标题、启动命令、README 徽章；不得纯文本替换，改完全量构建+测试
+- [x] **Cohort → Chorus 命名收尾**（仓库已改名）：`Chorus.sln`、各 `Chorus.*` 工程与命名空间、项目引用、CI 工作流、文档站标题、启动命令、README 徽章；不得纯文本替换，改完全量构建+测试（2026-10-12 完成，提前于原「最后一批」计划按用户指令执行：sln/csproj/目录/命名空间/项目引用/CI（sln 引用 + VUEPRESS_BASE /chorus/）/文档站与参考文档内标识/README（标题、徽章指向 cuihairu/chorus、新 logo 64x64、鉴权默认拒绝说明）/IPC 默认值 /tmp/chorus、pipe 前缀 chorus；未做盲替换——评审归档保持原文，替换点=标识符 `Cohort.` 与显式列出的配置值；全量构建 0 error + 110/110 测试通过。注：todo 前文与历史小节的 `Cohort.*` 字样为历史记录不改）
 - [ ] 进程拓扑：按 [process-topology.md](./docs/design/process-topology.md) 的阶段表推进（先代码分层 → 四角色三进程 → 触发条件满足再拆 room-manager）
 - [ ] 最小游戏模块示例、平台适配器模板与接入契约
 - [ ] 部署/安全/故障排查文档与版本策略

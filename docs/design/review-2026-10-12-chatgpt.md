@@ -79,15 +79,15 @@ Welcome、Snapshot、ACK、重连后的状态恢复
 
 ### 可选拆分模式
 
-**Cohort.Gateway**
+**Chorus.Gateway**
 
 公网 WebSocket、Ingress、客户端连接
 
-**Cohort.EngineHost**
+**Chorus.EngineHost**
 
 SessionActor、权威 Tick、GameModule
 
-**Cohort.Messaging**
+**Chorus.Messaging**
 
 IPC Envelope、消息总线、UDS / Named Pipe / TCP / HTTP 传输
 
@@ -374,7 +374,7 @@ IPC Envelope、消息总线、UDS / Named Pipe / TCP / HTTP 传输
 
 [复制检查清单]
 
-### 是否要把所有 `Cohort.*` 也改成 `Chorus.*`？
+### 是否要把所有 `Chorus.*` 也改成 `Chorus.*`？
 
 我的建议是：**如果 Chorus 是已经确定的长期项目品牌，就趁现在尚未广泛发布时统一更名。**
 
@@ -382,15 +382,15 @@ IPC Envelope、消息总线、UDS / Named Pipe / TCP / HTTP 传输
 
 | 当前标识 | 建议目标 |
 |--------|--------|
-| `Cohort.sln` | `Chorus.sln` |
-| `Cohort.Protocol` | `Chorus.Protocol` |
-| `Cohort.Engine` | `Chorus.Engine` |
-| `Cohort.Server` | `Chorus.Server` |
-| `Cohort.Gateway` | `Chorus.Gateway` |
-| `Cohort.EngineHost` | `Chorus.EngineHost` |
-| `Cohort.Messaging` | `Chorus.Messaging` |
-| `Cohort.SampleGame` | `Chorus.SampleGame` |
-| `Cohort.Engine.Tests` | `Chorus.Engine.Tests` |
+| `Chorus.sln` | `Chorus.sln` |
+| `Chorus.Protocol` | `Chorus.Protocol` |
+| `Chorus.Engine` | `Chorus.Engine` |
+| `Chorus.Server` | `Chorus.Server` |
+| `Chorus.Gateway` | `Chorus.Gateway` |
+| `Chorus.EngineHost` | `Chorus.EngineHost` |
+| `Chorus.Messaging` | `Chorus.Messaging` |
+| `Chorus.SampleGame` | `Chorus.SampleGame` |
+| `Chorus.Engine.Tests` | `Chorus.Engine.Tests` |
 
 但有一个例外：如果你已经发布了公开 NuGet 包、外部程序集依赖或对外承诺的协议名称，就需要考虑兼容策略。当前只是 GitHub 仓库名称更改的话，程序集重命名的成本相对可控。
 
@@ -548,7 +548,7 @@ If you want, I can:
 
 ## 落地跟踪（本仓执行记录，随做随勾）
 
-- [ ] **阶段一（正确性与安全边界）**：① 归并跨阵营串数据 ② ACK 单调性与 Tick 上界 ③ 生产默认拒绝未验证 Ingress ④ 去重原子化与投递失败语义 ⑤ Match 权威语义定性
+- [ ] **阶段一（正确性与安全边界）**：① 归并跨阵营串数据 ② ACK 单调性与 Tick 上界 ③ 生产默认拒绝未验证 Ingress（✅ 2026-10-12，`Ingress:AllowAll` 默认 false + fail-closed 路由，验收测试 `IngressAllowAllEndpointTests`，commit def21d2） ④ 去重原子化与投递失败语义 ⑤ Match 权威语义定性
 - [ ] **阶段二（稳定性与过载保护）**：有界邮箱与事件缓冲、权威 Tick 去阻塞发送、Tick 超时策略、Session 生命周期回收、故障注入测试
 - [ ] **阶段三（可观测性与恢复）**：tick/队列/事件/快照指标（`chorus_*` 命名）、快照版本与大小上限、IPC 断连回退验证、可重复压测
 - [ ] **阶段四（发布与生态）**：Cohort → Chorus 内部命名收尾（sln/程序集/命名空间/CI/文档/启动命令）、最小游戏模块示例、平台适配器模板、部署与故障排查文档

@@ -20,13 +20,13 @@ jobs:
           dotnet-version: "9.0.x"
 
       - name: Restore
-        run: dotnet restore Cohort.sln
+        run: dotnet restore Chorus.sln
 
       - name: Build
-        run: dotnet build Cohort.sln -c Release --no-restore
+        run: dotnet build Chorus.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test Cohort.sln -c Release --no-build
+        run: dotnet test Chorus.sln -c Release --no-build
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
