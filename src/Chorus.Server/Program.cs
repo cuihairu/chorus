@@ -17,7 +17,7 @@ using Microsoft.Extensions.Configuration;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<IGameModuleFactory, SampleGameModuleFactory>();
-builder.Services.AddSingleton(new SessionConfig());
+builder.Services.AddSingleton(builder.Configuration.GetSection("Session").Get<SessionConfig>() ?? new SessionConfig());
 builder.Services.AddSingleton<SessionManager>();
 builder.Services.AddSingleton<MatchRegistry>();
 builder.Services.AddMemoryCache();

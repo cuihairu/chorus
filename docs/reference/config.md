@@ -4,17 +4,22 @@ title: 配置参考
 
 # 配置参考
 
-目前配置通过 `Chorus.Engine.Session.SessionConfig` 提供默认值（后续会做 appsettings 映射）。
+配置来源：appsettings.json 的 `Session` 段映射到 `Chorus.Engine.Session.SessionConfig`（未配置时使用下述默认值）。
 
 当前默认值：
 
 ```text
-tickDurationMs = 100
+tickDurationMs = 66
 inputDelayTicks = 2
 snapshotEveryTicks = 1
 maxEventsPerTick = 200
 maxLagTicks = 50
 resyncCooldownMs = 2000
+maxPendingEvents = 8000
+eventEnqueueMaxWaitMs = 50
+tickTimeoutMs = 250
+maxSessions = 200
+idleEvictAfterMs = 600000
 ```
 
 关键参数：
@@ -25,6 +30,9 @@ resyncCooldownMs = 2000
 - `maxEventsPerTick`
 - `maxLagTicks`
 - `resyncCooldownMs`
+- `maxPendingEvents` / `eventEnqueueMaxWaitMs`（阶段二过载保护）
+- `tickTimeoutMs`（阶段二超时检测）
+- `maxSessions` / `idleEvictAfterMs`（阶段二会话生命周期）
 
 ## 参数说明
 
@@ -36,7 +44,7 @@ resyncCooldownMs = 2000
 
 默认值：
 
-- `100`
+- `66`（约 15fps 逻辑推进；2026-10-12 与 frame-sync-best-practices 建议统一，最终值以压测为准）
 
 影响：
 
@@ -45,8 +53,8 @@ resyncCooldownMs = 2000
 
 建议：
 
-- 直播互动场景通常建议落在 `50~66`
-- 当前默认值 `100` 更偏保守和易于打通链路，不一定适合作为最终线上参数
+- 直播互动场景通常建议落在 `50~66`，当前默认值 `66` 已与之统一，最终值以压测为准
+- 结合 `tickTimeoutMs`（默认 250）观察 `lastTickProcessMs` 是否超限
 
 ### `inputDelayTicks`
 

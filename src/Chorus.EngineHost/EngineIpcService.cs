@@ -16,6 +16,8 @@ public sealed class EngineIpcService : BackgroundService
 
     private readonly Dictionary<string, SessionActor> _sessions = new(StringComparer.Ordinal);
     private readonly Dictionary<(string SessionId, string ClientId), EngineBusSessionClient> _clients = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _lastSeen = new(StringComparer.Ordinal);
+    private long _lastSweepMs;
 
     private IMessageBus? _incoming;
     private IMessageBus? _outgoing;
@@ -67,16 +69,88 @@ public sealed class EngineIpcService : BackgroundService
 
     private SessionActor GetOrCreateSession(string sessionId)
     {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         if (_sessions.TryGetValue(sessionId, out var s))
         {
+            _lastSeen[sessionId] = now;
             return s;
         }
+
+        MaybeEnforceSessionLifecycle(now);
 
         var game = _gameFactory.Create(sessionId);
         var actor = new SessionActor(sessionId, _sessionConfig, game);
         actor.Start();
         _sessions[sessionId] = actor;
+        _lastSeen[sessionId] = now;
         return actor;
+    }
+
+    /// <summary>
+    /// Session lifecycle (review stage-2, EngineHost topology): a session cap
+    /// with idlest-first eviction and a lazy idle sweep for client-less
+    /// sessions. Runs amortized on session creation.
+    /// </summary>
+    private void MaybeEnforceSessionLifecycle(long nowMs)
+    {
+        if (nowMs - _lastSweepMs < 30_000 && _sessions.Count < Math.Max(1, _sessionConfig.MaxSessions))
+        {
+            return;
+        }
+
+        _lastSweepMs = nowMs;
+
+        // Idle eviction: no gateway clients and no recent activity.
+        if (_sessionConfig.IdleEvictAfterMs > 0)
+        {
+            List<string> idle = new();
+            foreach (var (id, actor) in _sessions)
+            {
+                if (_clients.Keys.Any(k => k.SessionId == id))
+                {
+                    continue;
+                }
+
+                _lastSeen.TryGetValue(id, out var seen);
+                if (nowMs - seen >= _sessionConfig.IdleEvictAfterMs)
+                {
+                    idle.Add(id);
+                }
+            }
+
+            foreach (var id in idle)
+            {
+                if (_sessions.Remove(id, out var victim))
+                {
+                    _lastSeen.TryRemove(id, out _);
+                    _ = victim.DisposeAsync().AsTask();
+                }
+            }
+        }
+
+        // Cap: evict least-recently-seen sessions to make room.
+        while (_sessionConfig.MaxSessions > 0 && _sessions.Count >= _sessionConfig.MaxSessions)
+        {
+            string? idlest = null;
+            long idlestSeen = long.MaxValue;
+            foreach (var (id, _) in _sessions)
+            {
+                _lastSeen.TryGetValue(id, out var seen);
+                if (seen < idlestSeen)
+                {
+                    idlestSeen = seen;
+                    idlest = id;
+                }
+            }
+
+            if (idlest == null || !_sessions.Remove(idlest, out var victim))
+            {
+                break;
+            }
+
+            _lastSeen.TryRemove(idlest, out _);
+            _ = victim.DisposeAsync().AsTask();
+        }
     }
 
     private async Task HandleAsync(Envelope env, CancellationToken cancellationToken)

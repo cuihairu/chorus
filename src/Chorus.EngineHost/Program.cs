@@ -10,12 +10,17 @@ builder.Services.AddSingleton(sp =>
 {
     var cfg = sp.GetRequiredService<IConfiguration>();
     return new SessionConfig(
-        TickDurationMs: cfg.GetValue("Session:TickDurationMs", 100),
+        TickDurationMs: cfg.GetValue("Session:TickDurationMs", 66),
         InputDelayTicks: cfg.GetValue("Session:InputDelayTicks", 2),
         SnapshotEveryTicks: cfg.GetValue("Session:SnapshotEveryTicks", 1),
         MaxEventsPerTick: cfg.GetValue("Session:MaxEventsPerTick", 200),
         MaxLagTicks: cfg.GetValue("Session:MaxLagTicks", 50),
-        ResyncCooldownMs: cfg.GetValue("Session:ResyncCooldownMs", 2000)
+        ResyncCooldownMs: cfg.GetValue("Session:ResyncCooldownMs", 2000),
+        MaxPendingEvents: cfg.GetValue("Session:MaxPendingEvents", 8000),
+        EventEnqueueMaxWaitMs: cfg.GetValue("Session:EventEnqueueMaxWaitMs", 50),
+        TickTimeoutMs: cfg.GetValue("Session:TickTimeoutMs", 250),
+        MaxSessions: cfg.GetValue("Session:MaxSessions", 200),
+        IdleEvictAfterMs: cfg.GetValue("Session:IdleEvictAfterMs", 600_000)
     );
 });
 builder.Services.AddHostedService<EngineIpcService>();

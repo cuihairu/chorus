@@ -1,0 +1,110 @@
+using Chorus.Engine.Abstractions;
+using Chorus.Engine.Session;
+using Chorus.Protocol.Models;
+using Chorus.Server;
+
+namespace Chorus.Engine.Tests;
+
+/// <summary>
+/// Review stage-2 acceptance (Session 生命周期): the session cap evicts the
+/// least-recently-seen session to keep new streams alive, and idle eviction
+/// only reaps client-less sessions.
+/// </summary>
+public sealed class SessionManagerLifecycleTests
+{
+    private static SessionManager CreateManager(int maxSessions, int idleEvictAfterMs)
+        => new(new StubGameModuleFactory(), new SessionConfig
+        {
+            TickDurationMs = 10,
+            SnapshotEveryTicks = 0,
+            MaxSessions = maxSessions,
+            IdleEvictAfterMs = idleEvictAfterMs,
+        });
+
+    [Fact]
+    public async Task CapExceeded_EvictsIdlestSession()
+    {
+        await using var manager = CreateManager(maxSessions: 2, idleEvictAfterMs: 600_000);
+
+        var s1 = manager.GetOrCreate("s1");
+        await Task.Delay(30);
+        manager.GetOrCreate("s2");
+        var s3 = manager.GetOrCreate("s3");
+
+        Assert.Equal(2, manager.Count);
+        var ids = manager.GetDiagnostics().Select(d => d.SessionId).ToList();
+        Assert.DoesNotContain("s1", ids);
+        Assert.Contains("s2", ids);
+        Assert.Contains("s3", ids);
+
+        // The evicted actor must be stopped.
+        await s1.StopAsync(); // idempotent; must not throw
+    }
+
+    [Fact]
+    public async Task SweepIdle_RemovesOnlyClientlessIdleSessions()
+    {
+        await using var manager = CreateManager(maxSessions: 100, idleEvictAfterMs: 100);
+
+        var idle = manager.GetOrCreate("idle");
+        var active = manager.GetOrCreate("active");
+        await active.AddClientAsync(new NullClient("c1"));
+
+        // Let the actor process the AddClient so diagnostics see the client.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (active.Diagnostics.Clients.Count == 0 && sw.ElapsedMilliseconds < 5000)
+        {
+            await Task.Delay(10);
+        }
+
+        var swept = await manager.SweepIdleAsync(nowMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 10_000);
+
+        Assert.Equal(1, swept);
+        Assert.Equal(1, manager.Count);
+        Assert.DoesNotContain(manager.GetDiagnostics(), d => d.SessionId == "idle");
+        Assert.Contains(manager.GetDiagnostics(), d => d.SessionId == "active");
+
+        await idle.StopAsync();
+    }
+
+    [Fact]
+    public async Task SweepIdle_RecentSession_IsKept()
+    {
+        await using var manager = CreateManager(maxSessions: 100, idleEvictAfterMs: 600_000);
+
+        manager.GetOrCreate("fresh");
+        var swept = await manager.SweepIdleAsync(nowMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+        Assert.Equal(0, swept);
+        Assert.Equal(1, manager.Count);
+    }
+
+    private sealed class StubGameModuleFactory : IGameModuleFactory
+    {
+        public IGameModule Create(string sessionId) => new StubGameModule();
+    }
+
+    private sealed class StubGameModule : IGameModule
+    {
+        public string Name => "stub-lifecycle";
+
+        public object GetStateSnapshot() => new { };
+
+        public void ApplyEvents(long tickId, IReadOnlyList<AudienceEvent> events)
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class NullClient : ISessionClient
+    {
+        public NullClient(string clientId) => ClientId = clientId;
+
+        public string ClientId { get; }
+
+        public ValueTask SendSnapshotAsync(SessionSnapshot snapshot, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
+}
