@@ -125,11 +125,10 @@
 - [x] Match 权威语义定性：展示聚合 vs 权威对抗状态（结论写进 `docs/design/spec.md`，不先上 MatchActor）（2026-10-12，commit 0409cf2：spec.md §2.3——MatchStateStore 定性为展示级共享聚合，权威裁决需单 Match 定序点（MatchActor 或收敛到单 SessionActor），触发条件=公平对抗/结算需求出现）
 
 ### 阶段二：稳定性与过载保护
-- [ ] 有界邮箱 + 事件缓冲（Session 总量/每 Tick/最长等待），控制命令与观众事件分道，礼物类不可静默丢弃
-- [ ] 权威 Tick 去阻塞发送：每客户端有界出站队列/最新快照覆盖，慢客户端不拖累 Tick（含 Gateway `DispatchSnapshotAsync`）
-- [ ] Tick 调度：单调时钟截止 + 超时策略，统一 `TickDurationMs` 默认值与文档建议
-- [ ] Session 生命周期：空闲回收、上限、异常隔离（GameModule 抛异常不得静默退出 Actor）
-- [ ] 故障注入测试：慢客户端 / 事件洪峰 / 混合阵营
+- [x] 有界邮箱 + 事件缓冲（Session 总量/每 Tick/最长等待），控制命令与观众事件分道，礼物类不可静默丢弃（2026-10-12，commit 5592d62：控制道无界/事件道 `MaxPendingEvents`=8000 有界；礼物满时按 `EventEnqueueMaxWaitMs`=50ms 有界等待后判 Failed 可重试、其余立即丢弃计数；验收 `SessionActorBackpressureTests`）
+- [x] 权威 Tick 去阻塞发送：每客户端有界出站队列/最新快照覆盖，慢客户端不拖累 Tick（含 Gateway `DispatchSnapshotAsync`）（2026-10-12，commit df71d26：Engine `OutboundClientQueue` 容量 1 DropOldest + 泵；Gateway `GatewayClientConnection` 同构最新覆盖 + 惰性泵，`DispatchSnapshotAsync` 只入队；验收 `SessionActorOutboundTests`——阻塞窗口 ticks 照常推进、backlog 坍缩为在途+最新）
+- [x] Tick 调度：单调时钟截止 + 超时策略，统一 `TickDurationMs` 默认值与文档建议（2026-10-12，commit 362b435：`PeriodicTimer` 单调驱动 + `TickTimeoutMs`=250 超限计数（检测不取消）；默认值 100→66 与 frame-sync-best-practices 统一，config.md/appsettings 三端同步；验收 `SlowTick_OverrunCounted`）
+- [x] Session 生命周期：空闲回收、上限、异常隔离（GameModule 抛异常不得静默退出 Actor）（2026-10-12，commit 362b435：SessionManager `MaxSessions`=200 最久未见驱逐 + `IdleEvictAfterMs`=600s 客户端空闲回收 + 维护循环；EngineHost 同策略惰性执行；异常隔离在 5592d62（tick 异常计数、actor 存活）；验收 `SessionManagerLifecycleTests` + `GameModule_Throws_ActorSurvivesAndCountsErrors`）
 
 ### 阶段三：可观测性与恢复
 - [ ] `chorus_*` 指标 12 项（tick_duration/lag、ingress/applied/merged/dropped/duplicates、mailbox_depth、ack_lag、snapshot_send/resync、ipc_publish_failures）+ 事件关联 ID
@@ -144,7 +143,8 @@
 - [ ] 部署/安全/故障排查文档与版本策略
 
 ### 十一类故障验证测试清单
-- [ ] 归并（混合阵营/Match/超限计数）· 去重并发 · 投递失败重试 · Tick 过载 · 慢客户端 · ACK 安全 · Match 并发 · 生命周期 · 快照恢复 · 安全（未验证事件/超大请求体/非法 WS）· IPC 故障
+- [x] 归并（混合阵营/Match/超限计数）✅ `DefaultAudienceEventReducerTests`（9ad322d）· 去重并发 ✅ `EventDeduplicatorTests` 32 并发恰一赢家（78f2597）· 投递失败重试 ✅ `Rollback_PublishFailure_AllowsPlatformRetry`（78f2597）· Tick 过载 ✅ `SessionActorBackpressureTests.Flood_*`+`SlowTick_OverrunCounted`（5592d62/362b435）· 慢客户端 ✅ `SessionActorOutboundTests`（df71d26）· ACK 安全 ✅ `SessionActorAckTests`（499f01c）· 生命周期 ✅ `SessionManagerLifecycleTests`（362b435）· 安全（未验证事件/超大请求体/非法 WS）✅ Kuaishou/Douyin/IngressAllowAll/StreamerWsAuth e2e（e2304b2/8f18bde/def21d2）
+- [ ] Match 并发 · 快照恢复 · IPC 故障（随阶段三可观测性与独立压测工具补齐）
 
 ### 明确不做（边界）
 - 不引入分布式 Match 集群、Kafka/RabbitMQ、增量快照/回滚同步/确定性重放；不把平台私有适配放进核心；不发展成账号/运营/支付/编辑器综合平台；单体保持默认部署形态。
