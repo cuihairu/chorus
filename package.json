@@ -8,7 +8,7 @@
     "docs:build": "vuepress build docs"
   },
   "devDependencies": {
-    "mermaid": "10.9.4",
+    "mermaid": "10.9.5",
     "vuepress": "1.9.10",
     "vuepress-plugin-mermaidjs": "1.3.0"
   }
