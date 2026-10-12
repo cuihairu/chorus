@@ -134,8 +134,25 @@ resyncCooldownMs = 2000
 - 值太小会导致抖动式恢复
 - 值太大又会让问题客户端长时间无法重新对齐
 
+## Ingress 与 listener face（2026-10-12 起）
+
+单体与 Gateway 同构。两类 listener face 配置分道（见 `docs/design/process-topology.md`），
+计数器经 `GET /faces` 暴露。
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `Ingress:DedupTtlSeconds` | `600` | 事件去重 TTL（platformEventId） |
+| `Ingress:FactionRules:CommentKeywords` | 空 | 弹幕口令 → 阵营映射 |
+| `Ingress:FactionRules:GiftIds` | 空 | 礼物 ID → 阵营映射 |
+| `Ingress:Douyin:AppSecret` | 无 | 抖音回调验签密钥；缺失时 `/ingress/douyin` 全部拒绝（fail-closed） |
+| `Ingress:Douyin:SignatureHeader` | `X-Douyin-Signature` | 签名 header 名（待联调确认，见平台参考文档） |
+| `Faces:PlatformIngress:MaxBodyBytes` | `65536` | platform-ingress 面请求体上限，超限 413 |
+| `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | platform-ingress 面每来源每分钟上限，超限 429 |
+| `Faces:PlatformIngress:TimeoutMs` | `5000` | platform-ingress 面单请求预算，超时 504 |
+
 ## 推荐阅读
 
 - [参数调优](./tuning.md)
 - [故障排查](./troubleshooting.md)
 - [帧同步最佳实践](../design/frame-sync-best-practices.md)
+- [平台对接参考：抖音](./platform-douyin.md)

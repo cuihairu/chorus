@@ -9,6 +9,7 @@ using Cohort.Server;
 using Cohort.SampleGame;
 using Cohort.Adapters.Abstractions;
 using Cohort.Adapters.Platforms;
+using Cohort.Gateway.Core.Faces;
 using Microsoft.Extensions.Caching.Memory;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,6 +19,9 @@ builder.Services.AddSingleton(new SessionConfig());
 builder.Services.AddSingleton<SessionManager>();
 builder.Services.AddSingleton<MatchRegistry>();
 builder.Services.AddMemoryCache();
+builder.Services.AddSingleton(IngressFaceOptions.FromConfiguration(builder.Configuration));
+builder.Services.AddSingleton<IngressFaceGuard>();
+builder.Services.AddSingleton<FaceCounters>();
 builder.Services.AddSingleton<AllowAllPlatformEventVerifier>();
 builder.Services.AddSingleton(sp =>
     new DouyinPlatformEventVerifier(
@@ -47,7 +51,10 @@ app.MapGet("/", () => new { name = "Cohort", ok = true });
 app.MapGet("/health", () => Results.Ok());
 app.MapGet("/sessions", (SessionManager sessions) => sessions.GetDiagnostics());
 app.MapGet("/matches", (MatchRegistry matches) => matches.GetDiagnostics());
+app.MapGet("/faces", (FaceCounters faces) => faces);
 
+// platform-ingress listener face: rate limit, body cap, timeout, per-platform
+// verification and dedup (docs/design/process-topology.md §4).
 app.MapPost("/ingress/{platform}", async (
     HttpContext context,
     string platform,
@@ -56,44 +63,72 @@ app.MapPost("/ingress/{platform}", async (
     IPlatformEventVerifier verifier,
     IEnumerable<IPlatformEventMapper> mappers,
     IAudienceFactionRule factionRule,
-    EventDeduplicator dedup) =>
+    EventDeduplicator dedup,
+    IngressFaceGuard faceGuard,
+    FaceCounters faces) =>
 {
-    using var reader = new StreamReader(context.Request.Body);
-    var raw = await reader.ReadToEndAsync(context.RequestAborted);
-
-    var headers = context.Request.Headers.ToDictionary(k => k.Key, v => v.Value.ToString(), StringComparer.OrdinalIgnoreCase);
-    if (!verifier.Verify(platform, raw, headers))
+    var sourceKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    if (!faceGuard.AllowRequest(sourceKey, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
     {
-        return Results.Unauthorized();
+        faces.IngressRateLimited();
+        return Results.StatusCode(StatusCodes.Status429TooManyRequests);
     }
 
-    var ingestTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    AudienceEvent? ev = null;
-    foreach (var mapper in mappers)
+    using var requestCts = faceGuard.CreateRequestCancellationToken(context.RequestAborted);
+    try
     {
-        ev = mapper.TryMap(platform, raw, ingestTimeMs);
-        if (ev != null)
+        var body = await faceGuard.ReadBodyAsync(context.Request.Body, requestCts.Token);
+        if (!body.Ok)
         {
-            break;
+            faces.IngressTooLarge();
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
         }
-    }
+        var raw = body.Body!;
 
-    if (ev == null)
+        var headers = context.Request.Headers.ToDictionary(k => k.Key, v => v.Value.ToString(), StringComparer.OrdinalIgnoreCase);
+        if (!verifier.Verify(platform, raw, headers))
+        {
+            faces.IngressUnverified();
+            return Results.Unauthorized();
+        }
+
+        var ingestTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        AudienceEvent? ev = null;
+        foreach (var mapper in mappers)
+        {
+            ev = mapper.TryMap(platform, raw, ingestTimeMs);
+            if (ev != null)
+            {
+                break;
+            }
+        }
+
+        if (ev == null)
+        {
+            faces.IngressUnmapped();
+            return Results.BadRequest(new { error = "unmapped_event", platform });
+        }
+
+        ev = factionRule.Apply(ev);
+
+        if (!dedup.TryMark(ev.Platform, ev.EventId))
+        {
+            faces.IngressDuplicates();
+            return Results.Ok(new { ok = true, duplicated = true, sessionId = ev.SessionId, eventId = ev.EventId });
+        }
+
+        var session = sessions.GetOrCreate(ev.SessionId);
+        matches.Track(ev);
+        await session.IngestAudienceEventAsync(ev);
+
+        faces.IngressAccepted();
+        return Results.Ok(new { ok = true, sessionId = ev.SessionId, eventId = ev.EventId, tick = session.TickId });
+    }
+    catch (OperationCanceledException) when (!context.RequestAborted.IsCancellationRequested)
     {
-        return Results.BadRequest(new { error = "unmapped_event", platform });
+        faces.IngressTimedOut();
+        return Results.StatusCode(StatusCodes.Status504GatewayTimeout);
     }
-
-    ev = factionRule.Apply(ev);
-
-    if (!dedup.TryMark(ev.Platform, ev.EventId))
-    {
-        return Results.Ok(new { ok = true, duplicated = true, sessionId = ev.SessionId, eventId = ev.EventId });
-    }
-
-    var session = sessions.GetOrCreate(ev.SessionId);
-    matches.Track(ev);
-    await session.IngestAudienceEventAsync(ev);
-    return Results.Ok(new { ok = true, sessionId = ev.SessionId, eventId = ev.EventId, tick = session.TickId });
 });
 
 app.Map("/ws", async context =>
@@ -106,7 +141,7 @@ app.Map("/ws", async context =>
     }
 
     var sessions = context.RequestServices.GetRequiredService<SessionManager>();
-    var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Cohort.WS");
+    var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Cohort.StreamerWs");
 
     using var ws = await context.WebSockets.AcceptWebSocketAsync();
 
@@ -187,12 +222,12 @@ app.Map("/ws", async context =>
 
 app.Run();
 
-// Exposes the entry point for WebApplicationFactory-based integration tests.
-public partial class Program { }
-
 static IReadOnlyDictionary<string, string> BuildFactionMap(IConfigurationSection section)
 {
     return section.GetChildren()
         .Where(x => !string.IsNullOrWhiteSpace(x.Key) && !string.IsNullOrWhiteSpace(x.Value))
         .ToDictionary(x => x.Key, x => x.Value!, StringComparer.OrdinalIgnoreCase);
 }
+
+// Exposes the entry point for WebApplicationFactory-based integration tests.
+public partial class Program { }

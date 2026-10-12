@@ -86,7 +86,7 @@
 
 ### P0 — 平台对接与安全（先做）
 
-- [ ] **抖音平台对接**：`Cohort.Adapters.Abstractions` 已有 `IPlatformEventMapper` / `IPlatformEventVerifier` / `IAudienceFactionRule`，但仓库里只有 `TestPlatformEventMapper`（拼装测试数据）与 `AllowAllPlatformEventVerifier`（无条件放行）。新增 `DouyinPlatformEventMapper` + `DouyinPlatformEventVerifier`：抖音开放平台直播事件回调接入（弹幕/礼物/点赞→`AudienceEvent`），回调验签与事件类型映射按官方文档实现；`/ingress/douyin` 路由挂上，去重继续走 `EventDeduplicator`（platformEventId+TTL）。
+- [x] **抖音平台对接**：`Cohort.Adapters.Abstractions` 已有 `IPlatformEventMapper` / `IPlatformEventVerifier` / `IAudienceFactionRule`，但仓库里只有 `TestPlatformEventMapper`（拼装测试数据）与 `AllowAllPlatformEventVerifier`（无条件放行）。新增 `DouyinPlatformEventMapper` + `DouyinPlatformEventVerifier`：抖音开放平台直播事件回调接入（弹幕/礼物/点赞→`AudienceEvent`），回调验签与事件类型映射按官方文档实现；`/ingress/douyin` 路由挂上，去重继续走 `EventDeduplicator`（platformEventId+TTL）。（2026-10-12 完成：官方口径未能在线核实，验签/字段为明示的联调占位契约，见 `docs/reference/platform-douyin.md`；验签 fail-closed，配置注入密钥；顺带落地 platform-ingress face 限流/请求体上限/超时）
 - [ ] **快手平台对接**：同上，`KuaishouPlatformEventMapper` + `KuaishouPlatformEventVerifier`，`/ingress/kuaishou`；两家的鉴权材料（app secret / 回调加密）走配置，不硬编码。
 - [ ] **两个平台的联调用例**：官方样例 payload 进仓做金测（签名正确通过、篡改拒绝、重复 event id 去重、未知事件类型不崩）。
 - [ ] **WebSocket 接入鉴权**：`hello` 目前无凭据，任何人可连 `/ws` 并收快照（`docs/design/spec.md:31` 把鉴权列为会话管理项但未实现）。加 token（服务端校验 + 过期），失败直接关连接。

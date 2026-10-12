@@ -3,6 +3,7 @@ using System.Text.Json;
 using Cohort.Adapters.Abstractions;
 using Cohort.Adapters.Platforms;
 using Cohort.Gateway;
+using Cohort.Gateway.Core.Faces;
 using Cohort.Messaging.Ipc;
 using Cohort.Protocol;
 using Cohort.Protocol.Messages;
@@ -12,6 +13,9 @@ using Microsoft.Extensions.Caching.Memory;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMemoryCache();
+builder.Services.AddSingleton(IngressFaceOptions.FromConfiguration(builder.Configuration));
+builder.Services.AddSingleton<IngressFaceGuard>();
+builder.Services.AddSingleton<FaceCounters>();
 builder.Services.AddSingleton<AllowAllPlatformEventVerifier>();
 builder.Services.AddSingleton(sp =>
     new DouyinPlatformEventVerifier(
@@ -42,7 +46,10 @@ app.UseWebSockets();
 
 app.MapGet("/", () => new { name = "Cohort.Gateway", ok = true });
 app.MapGet("/health", () => Results.Ok());
+app.MapGet("/faces", (FaceCounters faces) => faces);
 
+// platform-ingress listener face: rate limit, body cap, timeout, per-platform
+// verification and dedup (docs/design/process-topology.md §4).
 app.MapPost("/ingress/{platform}", async (
     HttpContext context,
     string platform,
@@ -50,44 +57,69 @@ app.MapPost("/ingress/{platform}", async (
     IPlatformEventVerifier verifier,
     IEnumerable<IPlatformEventMapper> mappers,
     IAudienceFactionRule factionRule,
-    EventDeduplicator dedup) =>
+    EventDeduplicator dedup,
+    IngressFaceGuard faceGuard,
+    FaceCounters faces) =>
 {
-    using var reader = new StreamReader(context.Request.Body);
-    var raw = await reader.ReadToEndAsync(context.RequestAborted);
-
-    var headers = context.Request.Headers.ToDictionary(k => k.Key, v => v.Value.ToString(), StringComparer.OrdinalIgnoreCase);
-    if (!verifier.Verify(platform, raw, headers))
+    var sourceKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    if (!faceGuard.AllowRequest(sourceKey, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
     {
-        return Results.Unauthorized();
+        faces.IngressRateLimited();
+        return Results.StatusCode(StatusCodes.Status429TooManyRequests);
     }
 
-    var ingestTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    AudienceEvent? ev = null;
-    foreach (var mapper in mappers)
-    {
-        ev = mapper.TryMap(platform, raw, ingestTimeMs);
-        if (ev != null)
-        {
-            break;
-        }
-    }
-
-    if (ev == null)
-    {
-        return Results.BadRequest(new { error = "unmapped_event", platform });
-    }
-
-    ev = factionRule.Apply(ev);
-
-    if (!dedup.TryMark(ev.Platform, ev.EventId))
-    {
-        return Results.Ok(new { ok = true, duplicated = true, sessionId = ev.SessionId, eventId = ev.EventId });
-    }
-
+    using var requestCts = faceGuard.CreateRequestCancellationToken(context.RequestAborted);
     try
     {
-        await ipc.PublishAudienceEventAsync(EnvelopeFactory.Create(IpcMessageTypes.GatewayAudienceEvent, ev.SessionId, ev), context.RequestAborted);
+        var body = await faceGuard.ReadBodyAsync(context.Request.Body, requestCts.Token);
+        if (!body.Ok)
+        {
+            faces.IngressTooLarge();
+            return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        }
+        var raw = body.Body!;
+
+        var headers = context.Request.Headers.ToDictionary(k => k.Key, v => v.Value.ToString(), StringComparer.OrdinalIgnoreCase);
+        if (!verifier.Verify(platform, raw, headers))
+        {
+            faces.IngressUnverified();
+            return Results.Unauthorized();
+        }
+
+        var ingestTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        AudienceEvent? ev = null;
+        foreach (var mapper in mappers)
+        {
+            ev = mapper.TryMap(platform, raw, ingestTimeMs);
+            if (ev != null)
+            {
+                break;
+            }
+        }
+
+        if (ev == null)
+        {
+            faces.IngressUnmapped();
+            return Results.BadRequest(new { error = "unmapped_event", platform });
+        }
+
+        ev = factionRule.Apply(ev);
+
+        if (!dedup.TryMark(ev.Platform, ev.EventId))
+        {
+            faces.IngressDuplicates();
+            return Results.Ok(new { ok = true, duplicated = true, sessionId = ev.SessionId, eventId = ev.EventId });
+        }
+
+        await ipc.PublishAudienceEventAsync(EnvelopeFactory.Create(IpcMessageTypes.GatewayAudienceEvent, ev.SessionId, ev), requestCts.Token);
+
+        faces.IngressAccepted();
         return Results.Ok(new { ok = true, sessionId = ev.SessionId, eventId = ev.EventId });
+    }
+    catch (OperationCanceledException) when (!context.RequestAborted.IsCancellationRequested)
+    {
+        faces.IngressTimedOut();
+        return Results.StatusCode(StatusCodes.Status504GatewayTimeout);
     }
     catch
     {
@@ -105,7 +137,7 @@ app.Map("/ws", async context =>
     }
 
     var ipc = context.RequestServices.GetRequiredService<GatewayIpcService>();
-    var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Cohort.Gateway.WS");
+    var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Cohort.Gateway.StreamerWs");
 
     using var ws = await context.WebSockets.AcceptWebSocketAsync();
 

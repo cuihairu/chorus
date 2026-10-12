@@ -27,6 +27,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cohort.Gateway", "src\Cohor
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cohort.Adapters.Platforms", "src\Cohort.Adapters.Platforms\Cohort.Adapters.Platforms.csproj", "{5D900F1D-F065-407E-89EB-852376EC31C1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Cohort.Gateway.Core", "src\Cohort.Gateway.Core\Cohort.Gateway.Core.csproj", "{482BC9EF-1C93-4264-9B21-D4E4D5BB52A1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -76,6 +78,10 @@ Global
 		{5D900F1D-F065-407E-89EB-852376EC31C1}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5D900F1D-F065-407E-89EB-852376EC31C1}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5D900F1D-F065-407E-89EB-852376EC31C1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{482BC9EF-1C93-4264-9B21-D4E4D5BB52A1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{482BC9EF-1C93-4264-9B21-D4E4D5BB52A1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{482BC9EF-1C93-4264-9B21-D4E4D5BB52A1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{482BC9EF-1C93-4264-9B21-D4E4D5BB52A1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{FC01ADF7-DBA9-4094-8D4E-39FED081EE37} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
@@ -88,5 +94,6 @@ Global
 		{597F688A-7CEB-4634-8CED-20E712D1B2FB} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
 		{C1C80A46-5E48-486A-A496-3E376183D2A2} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
 		{5D900F1D-F065-407E-89EB-852376EC31C1} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
+		{482BC9EF-1C93-4264-9B21-D4E4D5BB52A1} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
 	EndGlobalSection
 EndGlobal

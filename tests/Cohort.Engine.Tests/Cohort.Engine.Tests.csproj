@@ -13,6 +13,7 @@
     <ProjectReference Include="..\..\src\Cohort.Adapters.Platforms\Cohort.Adapters.Platforms.csproj" />
     <ProjectReference Include="..\..\src\Cohort.Engine\Cohort.Engine.csproj" />
     <ProjectReference Include="..\..\src\Cohort.Gateway\Cohort.Gateway.csproj" />
+    <ProjectReference Include="..\..\src\Cohort.Gateway.Core\Cohort.Gateway.Core.csproj" />
     <ProjectReference Include="..\..\src\Cohort.Protocol\Cohort.Protocol.csproj" />
     <ProjectReference Include="..\..\src\Cohort.SampleGame\Cohort.SampleGame.csproj" />
     <ProjectReference Include="..\..\src\Cohort.Server\Cohort.Server.csproj" />

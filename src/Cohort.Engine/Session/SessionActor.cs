@@ -95,7 +95,6 @@ public sealed class SessionActor : IAsyncDisposable
         }
 
         _runCts.Cancel();
-        _timer?.Dispose();
 
         try
         {
@@ -106,6 +105,9 @@ public sealed class SessionActor : IAsyncDisposable
         }
         finally
         {
+            // Dispose the timer only after the loop has stopped waiting on it;
+            // disposing a PeriodicTimer with a pending waiter faults the loop.
+            _timer?.Dispose();
             _runTask = null;
             _runCts.Dispose();
             _runCts = null;
@@ -133,7 +135,16 @@ public sealed class SessionActor : IAsyncDisposable
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            var tickTask = _timer.WaitForNextTickAsync(cancellationToken).AsTask();
+            Task<bool> tickTask;
+            try
+            {
+                tickTask = _timer.WaitForNextTickAsync(cancellationToken).AsTask();
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or InvalidOperationException)
+            {
+                break;
+            }
+
             var readTask = _mailbox.Reader.WaitToReadAsync(cancellationToken).AsTask();
             var completed = await Task.WhenAny(tickTask, readTask).ConfigureAwait(false);
 
@@ -147,7 +158,17 @@ public sealed class SessionActor : IAsyncDisposable
                 continue;
             }
 
-            if (!await tickTask.ConfigureAwait(false))
+            bool ticked;
+            try
+            {
+                ticked = await tickTask.ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or InvalidOperationException)
+            {
+                break;
+            }
+
+            if (!ticked)
             {
                 break;
             }

@@ -9,6 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Cohort.Adapters.Abstractions\Cohort.Adapters.Abstractions.csproj" />
     <ProjectReference Include="..\Cohort.Adapters.Platforms\Cohort.Adapters.Platforms.csproj" />
+    <ProjectReference Include="..\Cohort.Gateway.Core\Cohort.Gateway.Core.csproj" />
     <ProjectReference Include="..\Cohort.Messaging\Cohort.Messaging.csproj" />
     <ProjectReference Include="..\Cohort.Protocol\Cohort.Protocol.csproj" />
   </ItemGroup>

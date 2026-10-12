@@ -25,7 +25,7 @@ public sealed class PlatformEventVerifierRouterTests
     [Fact]
     public void Verify_NamedPlatform_DispatchesToPlatformVerifier()
     {
-        var douyin = new RejectAllVerifier(PlatformNames.Douyin, Result: true);
+        var douyin = new RejectAllVerifier(PlatformNames.Douyin, result: true);
         var router = new PlatformEventVerifierRouter(new IPlatformNamedEventVerifier[] { douyin });
 
         Assert.True(router.Verify(PlatformNames.Douyin, "{}", Headers));
@@ -34,7 +34,7 @@ public sealed class PlatformEventVerifierRouterTests
     [Fact]
     public void Verify_PlatformVerifierRejects_Fails()
     {
-        var douyin = new RejectAllVerifier(PlatformNames.Douyin, Result: false);
+        var douyin = new RejectAllVerifier(PlatformNames.Douyin, result: false);
         var router = new PlatformEventVerifierRouter(
             new IPlatformNamedEventVerifier[] { douyin },
             fallback: new AllowAllPlatformEventVerifier());
@@ -46,7 +46,7 @@ public sealed class PlatformEventVerifierRouterTests
     public void Verify_UnknownPlatform_UsesFallback()
     {
         var router = new PlatformEventVerifierRouter(
-            new IPlatformNamedEventVerifier[] { new RejectAllVerifier(PlatformNames.Douyin, Result: true) },
+            new IPlatformNamedEventVerifier[] { new RejectAllVerifier(PlatformNames.Douyin, result: true) },
             fallback: new AllowAllPlatformEventVerifier());
 
         Assert.True(router.Verify(PlatformNames.Test, "{}", Headers));
@@ -56,7 +56,7 @@ public sealed class PlatformEventVerifierRouterTests
     public void Verify_UnknownPlatform_NoFallback_FailClosed()
     {
         var router = new PlatformEventVerifierRouter(
-            new IPlatformNamedEventVerifier[] { new RejectAllVerifier(PlatformNames.Douyin, Result: true) });
+            new IPlatformNamedEventVerifier[] { new RejectAllVerifier(PlatformNames.Douyin, result: true) });
 
         Assert.False(router.Verify(PlatformNames.Test, "{}", Headers));
     }
@@ -65,7 +65,7 @@ public sealed class PlatformEventVerifierRouterTests
     public void Verify_EmptyPlatform_NoFallback_FailClosed()
     {
         var router = new PlatformEventVerifierRouter(
-            new IPlatformNamedEventVerifier[] { new RejectAllVerifier(PlatformNames.Douyin, Result: true) });
+            new IPlatformNamedEventVerifier[] { new RejectAllVerifier(PlatformNames.Douyin, result: true) });
 
         Assert.False(router.Verify("", "{}", Headers));
     }

@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Cohort.Engine\Cohort.Engine.csproj" />
+    <ProjectReference Include="..\Cohort.Gateway.Core\Cohort.Gateway.Core.csproj" />
     <ProjectReference Include="..\Cohort.Protocol\Cohort.Protocol.csproj" />
     <ProjectReference Include="..\Cohort.SampleGame\Cohort.SampleGame.csproj" />
     <ProjectReference Include="..\Cohort.Adapters.Abstractions\Cohort.Adapters.Abstractions.csproj" />

@@ -31,3 +31,5 @@ footer: Apache-2.0 License
 - 调整线上参数：看 [参数调优](./reference/tuning.md)
 - 线上排障定位：看 [故障排查](./reference/troubleshooting.md)
 - 对照消息字段实现：看 [协议参考](./reference/protocol.md)
+- 接入直播平台：看 [平台对接参考：抖音](./reference/platform-douyin.md)
+- 复核代理决策：看 [决策记录](./decisions.md)

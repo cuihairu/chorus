@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Cohort.Adapters.Platforms;
 using Cohort.Server;
 using Microsoft.AspNetCore.Hosting;
