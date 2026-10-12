@@ -225,4 +225,104 @@ public sealed class SplitModeEndToEndTests
             try { Directory.Delete(socketDir, recursive: true); } catch { }
         }
     }
+
+    /// <summary>
+    /// Broadcast dedup acceptance (shared-memory-transport.md alt 1): with the
+    /// engine publishing one snapshot per session per tick instead of one per
+    /// client, every connected client of that session must still receive it —
+    /// the gateway fans the null-target snapshot out to all session clients.
+    /// </summary>
+    [Fact]
+    public async Task TwoClientsSameSession_BothReceiveSnapshots()
+    {
+        var socketDir = $"/tmp/chorus-test-e2e-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(socketDir);
+        var engineConfig = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Ipc:Transport"] = "UnixDomainSocket",
+                ["Ipc:UnixSocketDir"] = socketDir,
+                ["Ipc:HeartbeatIntervalMs"] = "100",
+            })
+            .Build();
+        var engine = new EngineIpcService(
+            NullLogger<EngineIpcService>.Instance,
+            new CountingModuleFactory(),
+            new SessionConfig { TickDurationMs = 10, SnapshotEveryTicks = 1 },
+            engineConfig);
+
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await engine.StartAsync(cts.Token);
+        try
+        {
+            using var factory = new E2EGatewayFactory(socketDir);
+            var readyDeadline = DateTime.UtcNow.AddSeconds(10);
+            while (true)
+            {
+                var probe = await factory.CreateClient().GetAsync("/ready", cts.Token);
+                if (probe.StatusCode == HttpStatusCode.OK)
+                {
+                    break;
+                }
+
+                Assert.True(DateTime.UtcNow < readyDeadline, "gateway never reported the engine ready");
+                await Task.Delay(20, cts.Token);
+            }
+
+            var wsClient = factory.Server.CreateWebSocketClient();
+            var sockets = new List<WebSocket>();
+            for (var i = 1; i <= 2; i++)
+            {
+                WebSocket? ws = null;
+                // The gateway's 2s welcome budget can race host load; retry
+                // the whole handshake like a real client (same as the
+                // single-client test above).
+                for (var attempt = 1; attempt <= 5 && ws == null; attempt++)
+                {
+                    try
+                    {
+                        ws = await wsClient.ConnectAsync(new Uri(factory.Server.BaseAddress, "ws"), cts.Token);
+                        var hello = Encoding.UTF8.GetBytes(
+                            "{\"type\":\"hello\",\"sessionId\":\"s-e2e-duo\",\"clientId\":\"c-duo-" + i + "\",\"protocolVersion\":1}");
+                        await ws.SendAsync(hello, WebSocketMessageType.Text, true, cts.Token);
+                        await ReceiveUntilAsync(ws, d => d.TryGetProperty("type", out var t) && t.GetString() == "welcome", cts.Token);
+                    }
+                    catch (Exception)
+                    {
+                        if (attempt == 5)
+                        {
+                            throw;
+                        }
+
+                        ws?.Dispose();
+                        ws = null;
+                        await Task.Delay(50, cts.Token);
+                    }
+                }
+
+                sockets.Add(ws!);
+            }
+
+            // Both clients of the session must see the (single) broadcast.
+            var tasks = sockets
+                .Select(ws => ReceiveUntilAsync(ws, d => d.TryGetProperty("type", out var t) && t.GetString() == "snapshot", cts.Token))
+                .ToList();
+            await Task.WhenAll(tasks);
+            foreach (var task in tasks)
+            {
+                Assert.Equal("s-e2e-duo", task.Result.GetProperty("sessionId").GetString());
+            }
+
+            foreach (var ws in sockets)
+            {
+                ws.Dispose();
+            }
+        }
+        finally
+        {
+            cts.Cancel();
+            await engine.StopAsync(CancellationToken.None);
+            try { Directory.Delete(socketDir, recursive: true); } catch { }
+        }
+    }
 }

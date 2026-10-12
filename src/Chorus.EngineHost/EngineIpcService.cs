@@ -16,6 +16,7 @@ public sealed class EngineIpcService : BackgroundService
 
     private readonly SessionRegistry _registry;
     private readonly Dictionary<(string SessionId, string ClientId), EngineBusSessionClient> _clients = new();
+    private readonly BroadcastOwnerRegistry _broadcastOwners = new();
     private long _lastSweepMs;
 
     private IMessageBus? _incoming;
@@ -157,7 +158,10 @@ public sealed class EngineIpcService : BackgroundService
                 {
                     var cmd = EnvelopeFactory.DeserializeBody<GatewayConnectCmd>(env);
                     var session = GetOrCreateSession(cmd.SessionId);
-                    var client = new EngineBusSessionClient(_outgoing, cmd.SessionId, cmd.ClientId);
+                    _broadcastOwners.OnConnect(cmd.SessionId, cmd.ClientId);
+                    var client = new EngineBusSessionClient(
+                        _outgoing, cmd.SessionId, cmd.ClientId,
+                        () => _broadcastOwners.IsOwner(cmd.SessionId, cmd.ClientId));
                     _clients[(cmd.SessionId, cmd.ClientId)] = client;
                     await session.AddClientAsync(client);
 
@@ -185,6 +189,10 @@ public sealed class EngineIpcService : BackgroundService
                         await session!.RemoveClientAsync(cmd.ClientId);
                     }
                     _clients.Remove((cmd.SessionId, cmd.ClientId));
+                    _broadcastOwners.OnDisconnect(
+                        cmd.SessionId,
+                        cmd.ClientId,
+                        _clients.Keys.Where(k => k.SessionId == cmd.SessionId).Select(k => k.ClientId));
                 }
                 break;
 
