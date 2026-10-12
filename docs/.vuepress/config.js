@@ -21,7 +21,8 @@ module.exports = {
         "/design/ipc.md",
         "/design/spec.md",
         "/design/legacy-real-server-analysis.md",
-        "/design/review-2026-10-12-chatgpt.md"
+        "/design/review-2026-10-12-chatgpt.md",
+        "/design/process-topology.md"
       ],
       "/reference/": [
         "/reference/protocol.md",

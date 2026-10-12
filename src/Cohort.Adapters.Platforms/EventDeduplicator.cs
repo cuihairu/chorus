@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Caching.Memory;
 
-namespace Cohort.Server.Ingress;
+namespace Cohort.Adapters.Platforms;
 
 public sealed class EventDeduplicator
 {
@@ -30,4 +30,3 @@ public sealed class EventDeduplicator
         return true;
     }
 }
-

@@ -8,7 +8,7 @@ using Cohort.Protocol.Models;
 using Cohort.Server;
 using Cohort.SampleGame;
 using Cohort.Adapters.Abstractions;
-using Cohort.Server.Ingress;
+using Cohort.Adapters.Platforms;
 using Microsoft.Extensions.Caching.Memory;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -18,8 +18,18 @@ builder.Services.AddSingleton(new SessionConfig());
 builder.Services.AddSingleton<SessionManager>();
 builder.Services.AddSingleton<MatchRegistry>();
 builder.Services.AddMemoryCache();
-builder.Services.AddSingleton<IPlatformEventVerifier, AllowAllPlatformEventVerifier>();
+builder.Services.AddSingleton<AllowAllPlatformEventVerifier>();
+builder.Services.AddSingleton(sp =>
+    new DouyinPlatformEventVerifier(
+        secret: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:AppSecret"],
+        signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:SignatureHeader"]));
+builder.Services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredService<DouyinPlatformEventVerifier>());
+builder.Services.AddSingleton<PlatformEventVerifierRouter>(sp => new PlatformEventVerifierRouter(
+    sp.GetServices<IPlatformNamedEventVerifier>(),
+    fallback: sp.GetService<AllowAllPlatformEventVerifier>()));
+builder.Services.AddSingleton<IPlatformEventVerifier>(sp => sp.GetRequiredService<PlatformEventVerifierRouter>());
 builder.Services.AddSingleton<IPlatformEventMapper, TestPlatformEventMapper>();
+builder.Services.AddSingleton<IPlatformEventMapper, DouyinPlatformEventMapper>();
 builder.Services.AddSingleton<IAudienceFactionRule>(_ =>
     new KeywordGiftAudienceFactionRule(
         commentKeywords: BuildFactionMap(builder.Configuration.GetSection("Ingress:FactionRules:CommentKeywords")),
@@ -176,6 +186,9 @@ app.Map("/ws", async context =>
 });
 
 app.Run();
+
+// Exposes the entry point for WebApplicationFactory-based integration tests.
+public partial class Program { }
 
 static IReadOnlyDictionary<string, string> BuildFactionMap(IConfigurationSection section)
 {

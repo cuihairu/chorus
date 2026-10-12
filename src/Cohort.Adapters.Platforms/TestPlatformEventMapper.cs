@@ -2,13 +2,13 @@ using System.Text.Json;
 using Cohort.Adapters.Abstractions;
 using Cohort.Protocol.Models;
 
-namespace Cohort.Gateway.Ingress;
+namespace Cohort.Adapters.Platforms;
 
 public sealed class TestPlatformEventMapper : IPlatformEventMapper
 {
     public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs)
     {
-        if (!string.Equals(platform, "test", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(platform, PlatformNames.Test, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
@@ -50,6 +50,7 @@ public sealed class TestPlatformEventMapper : IPlatformEventMapper
         string? giftId = root.TryGetProperty("giftId", out var giftIdEl) ? giftIdEl.GetString() : null;
         int? giftCount = root.TryGetProperty("giftCount", out var giftCountEl) && giftCountEl.TryGetInt32(out var gc) ? gc : null;
         int? giftValue = root.TryGetProperty("giftValue", out var giftValueEl) && giftValueEl.TryGetInt32(out var gv) ? gv : null;
+
         var matchId = root.TryGetProperty("matchId", out var matchIdEl) ? matchIdEl.GetString() : null;
         if (string.IsNullOrWhiteSpace(matchId))
         {
@@ -64,7 +65,7 @@ public sealed class TestPlatformEventMapper : IPlatformEventMapper
 
         return new AudienceEvent(
             EventId: eventId,
-            Platform: "test",
+            Platform: PlatformNames.Test,
             SessionId: sessionId,
             UserId: userId,
             Kind: kind,

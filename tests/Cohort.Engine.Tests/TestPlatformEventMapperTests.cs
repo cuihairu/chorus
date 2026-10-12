@@ -1,3 +1,4 @@
+using Cohort.Adapters.Platforms;
 using Cohort.Protocol.Models;
 
 namespace Cohort.Engine.Tests;
@@ -5,9 +6,9 @@ namespace Cohort.Engine.Tests;
 public sealed class TestPlatformEventMapperTests
 {
     [Fact]
-    public void ServerMapper_MapsMatchAndFactionIds()
+    public void Mapper_MapsGiftWithMatchAndFactionIds()
     {
-        var mapper = new Cohort.Server.Ingress.TestPlatformEventMapper();
+        var mapper = new TestPlatformEventMapper();
         const string raw = """
             {
               "sessionId": "s1",
@@ -19,18 +20,19 @@ public sealed class TestPlatformEventMapperTests
             }
             """;
 
-        var ev = mapper.TryMap("test", raw, ingestTimeMs: 1234);
+        var ev = mapper.TryMap(PlatformNames.Test, raw, ingestTimeMs: 1234);
 
         Assert.NotNull(ev);
         Assert.Equal("m1", ev!.MatchId);
         Assert.Equal("blue", ev.FactionId);
         Assert.Equal(AudienceEventKind.Gift, ev.Kind);
+        Assert.Equal(PlatformNames.Test, ev.Platform);
     }
 
     [Fact]
-    public void GatewayMapper_MapsMatchAndFactionIds()
+    public void Mapper_MapsComment()
     {
-        var mapper = new Cohort.Gateway.Ingress.TestPlatformEventMapper();
+        var mapper = new TestPlatformEventMapper();
         const string raw = """
             {
               "sessionId": "s1",
@@ -42,11 +44,19 @@ public sealed class TestPlatformEventMapperTests
             }
             """;
 
-        var ev = mapper.TryMap("test", raw, ingestTimeMs: 1234);
+        var ev = mapper.TryMap(PlatformNames.Test, raw, ingestTimeMs: 1234);
 
         Assert.NotNull(ev);
         Assert.Equal("m1", ev!.MatchId);
         Assert.Equal("blue", ev.FactionId);
         Assert.Equal(AudienceEventKind.Comment, ev.Kind);
+    }
+
+    [Fact]
+    public void Mapper_IgnoresOtherPlatforms()
+    {
+        var mapper = new TestPlatformEventMapper();
+
+        Assert.Null(mapper.TryMap(PlatformNames.Douyin, """{"sessionId":"s1"}""", ingestTimeMs: 1));
     }
 }

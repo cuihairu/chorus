@@ -1,19 +1,29 @@
 using System.Net.WebSockets;
 using System.Text.Json;
 using Cohort.Adapters.Abstractions;
+using Cohort.Adapters.Platforms;
 using Cohort.Gateway;
 using Cohort.Messaging.Ipc;
 using Cohort.Protocol;
 using Cohort.Protocol.Messages;
 using Cohort.Protocol.Models;
-using Cohort.Gateway.Ingress;
 using Microsoft.Extensions.Caching.Memory;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMemoryCache();
-builder.Services.AddSingleton<IPlatformEventVerifier, AllowAllPlatformEventVerifier>();
+builder.Services.AddSingleton<AllowAllPlatformEventVerifier>();
+builder.Services.AddSingleton(sp =>
+    new DouyinPlatformEventVerifier(
+        secret: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:AppSecret"],
+        signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:SignatureHeader"]));
+builder.Services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredService<DouyinPlatformEventVerifier>());
+builder.Services.AddSingleton<PlatformEventVerifierRouter>(sp => new PlatformEventVerifierRouter(
+    sp.GetServices<IPlatformNamedEventVerifier>(),
+    fallback: sp.GetService<AllowAllPlatformEventVerifier>()));
+builder.Services.AddSingleton<IPlatformEventVerifier>(sp => sp.GetRequiredService<PlatformEventVerifierRouter>());
 builder.Services.AddSingleton<IPlatformEventMapper, TestPlatformEventMapper>();
+builder.Services.AddSingleton<IPlatformEventMapper, DouyinPlatformEventMapper>();
 builder.Services.AddSingleton<IAudienceFactionRule>(_ =>
     new KeywordGiftAudienceFactionRule(
         commentKeywords: BuildFactionMap(builder.Configuration.GetSection("Ingress:FactionRules:CommentKeywords")),

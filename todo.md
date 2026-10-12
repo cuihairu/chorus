@@ -139,6 +139,7 @@
 
 ### 阶段四：发布与生态
 - [ ] **Cohort → Chorus 命名收尾**（仓库已改名）：`Chorus.sln`、各 `Chorus.*` 工程与命名空间、项目引用、CI 工作流、文档站标题、启动命令、README 徽章；不得纯文本替换，改完全量构建+测试
+- [ ] 进程拓扑：按 [process-topology.md](./docs/design/process-topology.md) 的阶段表推进（先代码分层 → 四角色三进程 → 触发条件满足再拆 room-manager）
 - [ ] 最小游戏模块示例、平台适配器模板与接入契约
 - [ ] 部署/安全/故障排查文档与版本策略
 

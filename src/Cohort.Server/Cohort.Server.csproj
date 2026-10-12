@@ -11,6 +11,7 @@
     <ProjectReference Include="..\Cohort.Protocol\Cohort.Protocol.csproj" />
     <ProjectReference Include="..\Cohort.SampleGame\Cohort.SampleGame.csproj" />
     <ProjectReference Include="..\Cohort.Adapters.Abstractions\Cohort.Adapters.Abstractions.csproj" />
+    <ProjectReference Include="..\Cohort.Adapters.Platforms\Cohort.Adapters.Platforms.csproj" />
   </ItemGroup>
 
 </Project>
