@@ -94,6 +94,42 @@ title: 规格草案
   - 合并：同一用户的同类事件合并（点赞合并、礼物叠加）
   - 分层：核心事件优先，聊天类可转为“展示用通道”
 
+### 3.6 事件生命周期与投递四态
+
+事件从进入系统到生效，经过六个阶段：
+
+```
+Received → Validated → Accepted → Scheduled → Applied → Published
+ (入口)     (验签)      (映射+去重)  (调度到tick)  (引擎结算)  (快照下发)
+```
+
+| 阶段 | 落点 | 失败语义 |
+| --- | --- | --- |
+| Received | ingress 收到原始请求 | 请求体/限流异常 → 拒绝（HTTP 4xx/413/429） |
+| Validated | `IPlatformEventVerifier` 验签 | 未通过 → 401，fail-closed（生产默认拒绝） |
+| Accepted | mapper 映射 + faction 规则 + 去重占位 | 映射失败 → 400；重复 → `duplicated=true` 幂等返回 |
+| Scheduled | SessionActor 调度到 `tickId + inputDelayTicks` | 内存内排队，超限走 3.5 背压策略 |
+| Applied | tick 结算，reducer 归并后进入 GameModule | 归并不丢计数（分组键守恒），超预算可丢表现型事件 |
+| Published | 快照下发给客户端 | 发布失败按四态 `Failed` 处理 |
+
+**投递四态**（描述一次投递的结局，是观测/排障用语，不是存储字段）：
+
+- `Received`：已收到，尚未验签。
+- `Accepted`：验签+映射+去重通过，已进入调度（ingress 返回 200 的含义）。
+- `Applied`：已在某个 `tickId` 结算进权威状态（之后客户端可通过 ACK 确认）。
+- `Failed`：验签失败 / 映射失败 / IPC 发布失败。**关键约束：`Failed` 绝不能被记成"已见"**——去重采用 reserve/commit/rollback 协议，发布失败即 `Rollback`，平台重试按新投递受理，而不是被判重复丢弃。
+
+**去重 reserve/commit/rollback**（review P0-7）：`EventDeduplicator.TryReserve` 原子占位（并发同 id 恰有一个赢家）→ 发布成功 `Commit`（Reserved→Delivered，TTL 内抑制重复）→ 发布失败 `Rollback`（释放占位，Failed 可重试）。TTL 默认 600s（`Ingress:DedupTtlSeconds`），容量安全阀保证内存有界。
+
+**事件四分类**（决定超限时的取舍策略，见 3.5）：
+
+| 分类 | 例子 | 超限策略 |
+| --- | --- | --- |
+| 可累计 | 点赞、礼物 | 归并保计数（分组键 `(S,M,F,U[,GiftId])`），永不因归并丢数 |
+| 不可丢 | 关键礼物触发、口令指令 | 优先保留，禁止静默丢弃 |
+| 表现型 | 普通弹幕、进场特效 | 可丢弃/转展示通道，丢弃计入指标 |
+| 控制 | 管理/开关指令 | 独立通道，不与观众事件竞争预算 |
+
 ## 4. 客户端协议（v1）
 
 见：`/reference/protocol.html`

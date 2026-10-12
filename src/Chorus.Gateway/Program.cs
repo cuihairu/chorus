@@ -50,7 +50,7 @@ builder.Services.AddSingleton<IAudienceFactionRule>(_ =>
 builder.Services.AddSingleton(sp =>
 {
     var ttlSeconds = sp.GetRequiredService<IConfiguration>().GetValue("Ingress:DedupTtlSeconds", 600);
-    return new EventDeduplicator(sp.GetRequiredService<IMemoryCache>(), TimeSpan.FromSeconds(ttlSeconds));
+    return new EventDeduplicator(TimeSpan.FromSeconds(ttlSeconds));
 });
 
 builder.Services.AddSingleton<GatewayIpcService>();
@@ -140,14 +140,25 @@ app.MapPost("/ingress/{platform}", async (
 
         ev = factionRule.Apply(ev);
 
-        if (!dedup.TryMark(ev.Platform, ev.EventId))
+        if (!dedup.TryReserve(ev.Platform, ev.EventId, out var lease))
         {
             faces.IngressDuplicates();
             return Results.Ok(new { ok = true, duplicated = true, sessionId = ev.SessionId, eventId = ev.EventId });
         }
 
-        await ipc.PublishAudienceEventAsync(EnvelopeFactory.Create(IpcMessageTypes.GatewayAudienceEvent, ev.SessionId, ev), requestCts.Token);
+        try
+        {
+            await ipc.PublishAudienceEventAsync(EnvelopeFactory.Create(IpcMessageTypes.GatewayAudienceEvent, ev.SessionId, ev), requestCts.Token);
+        }
+        catch
+        {
+            // Delivery failed: release the claim so a platform retry is treated
+            // as a fresh delivery (Failed), never misremembered as a duplicate.
+            dedup.Rollback(lease);
+            throw;
+        }
 
+        dedup.Commit(lease);
         faces.IngressAccepted();
         return Results.Ok(new { ok = true, sessionId = ev.SessionId, eventId = ev.EventId });
     }
