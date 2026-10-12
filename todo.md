@@ -73,3 +73,41 @@
 - [x] CI：build + test（`ci.yml`）
 - [x] 覆盖率上传（Codecov）
 - [x] Tag 自动 Release（`release.yml`）
+
+
+---
+
+## 8. 实现分析与改进建议（2026-10-12 clone 分析，按优先级）
+
+**现状快照（读码核实，非推测）**
+- 11 个 csproj、`src+tests` 约 4100 行 C#；只有 1 个测试工程 `tests/Cohort.Engine.Tests`（9 个文件：reducer / faction rule / MatchRegistry / mapper / SampleGame + InProc/NamedPipe/TCP/HTTP/UDS 五种 transport）。
+- 拆分模式已跑通：Gateway（`/ws`、`/ingress/{platform}`）+ EngineHost（权威 tick）+ `Cohort.Messaging` 四种 IPC transport，`/health` 三处都有，**`/metrics` 一处没有**。
+- `Ingress/EventDeduplicator.cs`、`Ingress/TestPlatformEventMapper.cs`、`WebSocketHelpers.cs` 在 `Cohort.Server` 与 `Cohort.Gateway` 各存一份（diff 除命名空间外一致）。
+
+### P0 — 平台对接与安全（先做）
+
+- [ ] **抖音平台对接**：`Cohort.Adapters.Abstractions` 已有 `IPlatformEventMapper` / `IPlatformEventVerifier` / `IAudienceFactionRule`，但仓库里只有 `TestPlatformEventMapper`（拼装测试数据）与 `AllowAllPlatformEventVerifier`（无条件放行）。新增 `DouyinPlatformEventMapper` + `DouyinPlatformEventVerifier`：抖音开放平台直播事件回调接入（弹幕/礼物/点赞→`AudienceEvent`），回调验签与事件类型映射按官方文档实现；`/ingress/douyin` 路由挂上，去重继续走 `EventDeduplicator`（platformEventId+TTL）。
+- [ ] **快手平台对接**：同上，`KuaishouPlatformEventMapper` + `KuaishouPlatformEventVerifier`，`/ingress/kuaishou`；两家的鉴权材料（app secret / 回调加密）走配置，不硬编码。
+- [ ] **两个平台的联调用例**：官方样例 payload 进仓做金测（签名正确通过、篡改拒绝、重复 event id 去重、未知事件类型不崩）。
+- [ ] **WebSocket 接入鉴权**：`hello` 目前无凭据，任何人可连 `/ws` 并收快照（`docs/design/spec.md:31` 把鉴权列为会话管理项但未实现）。加 token（服务端校验 + 过期），失败直接关连接。
+- [ ] **Ingress 真验签**：替换 `AllowAllPlatformEventVerifier` 为按平台的 HMAC 校验（stub 保留为显式的 `allowAll=true` 配置，且默认关闭）。
+
+### P1 — 正确性与容量
+
+- [ ] **`SessionActor` 反压**：`SessionActor.cs:19` 是 `Channel.CreateUnbounded`（无界邮箱）——慢消费/事件洪峰时内存无上界，与 §1 勾选的「backpressure」不符。改有界邮箱 + 溢出策略（按 `maxEventsPerTick` 已有的合并/丢弃口径），并把 `SessionDiagnostics` 的 dropped 计数接出去。
+- [ ] **会话空闲回收**：`SessionManager` 只有 `DisposeAsync`，没有空闲超时/驱逐；长跑会话与僵尸 session 会一直占 tick。加 idle timeout + 主动驱逐（并同步给 Gateway 注销）。
+- [ ] **合并重复代码**：把 `Ingress/*` 与 `WebSocketHelpers.cs` 从 Server/Gateway 抽到共享工程（`Cohort.Gateway.Core` 或并入 `Cohort.Protocol`），两处 `#if`/拷贝改为一次引用；补单测只写一份。
+- [ ] **`MessageBus/ActorRef/Router` 抽象**（§3.5 唯一未勾项）与进程内路由表：现在 Server 单进程直连 actor，拆分模式各写一套。
+
+### P2 — 可观测性（§4 全空）
+
+- [ ] `/metrics`（Prometheus 文本格式）：tick 耗时直方图、事件 ingested/applied/merged/dropped、ack 延迟、落后 tick 客户数、快照与重同步数——`SessionDiagnostics` 已经在收集这些字段，只差导出。
+- [ ] 结构化日志：sessionId / tickId / clientId 三件套进日志（现在是裸 `Console`/`ILogger` 文案）。
+- [ ] 本地压测脚本：N 个观众事件 + 2 个主播客户端，输出 tick 抖动与丢弃率（放 `scripts/`）。
+
+### P3 — 性能 / 测试 / 运维
+
+- [ ] 快照序列化：现为 JSON 全量快照（§1），每 tick 对多客户端重复序列化。改为按 tick 序列化一次复用 + `ArrayPool` 租借；评估 MessagePack/FlatBuffers（`docs/design/frame-sync.md` 已提）。
+- [ ] 测试缺口：Gateway/EngineHost 的 WS→IPC→Engine 端到端、Ingress HTTP 面、IPC 断连重连与降级（UDS→NamedPipe/TCP 回退）目前**零测试**；这三条是拆分模式的主干路径。
+- [ ] 协议版本化：`hello/welcome` 无版本字段，后续加字段会破坏旧客户端。在 `Cohort.Protocol` 加 `protocolVersion`，welcome 回显，不匹配明确拒绝。
+- [ ] 运维：split 模式下 Gateway 应有对 EngineHost 的 readiness（现在只有各自 `/health` 常返 200）；补 compose 健康检查与优雅停机（先把在跑的 session 快照落盘）。
