@@ -26,6 +26,16 @@ public sealed class WsSessionClient : ISessionClient
 
     public async ValueTask SendSnapshotAsync(SessionSnapshot snapshot, CancellationToken cancellationToken)
     {
+        await SendSnapshotAsync(Chorus.Engine.Session.WireSnapshot.Encode(snapshot), cancellationToken);
+    }
+
+    /// <summary>
+    /// Fast path: the actor encoded the wire snapshot once for the whole
+    /// broadcast; this transport just writes the bytes (no per-client JSON).
+    /// </summary>
+    public async ValueTask SendSnapshotAsync(Chorus.Engine.Session.WireSnapshot wire, CancellationToken cancellationToken)
+    {
+        var snapshot = wire.Snapshot;
         if (_ws.State != WebSocketState.Open)
         {
             return;
@@ -38,24 +48,10 @@ public sealed class WsSessionClient : ISessionClient
 
         try
         {
-            using var doc = JsonSerializer.SerializeToDocument(snapshot.State, ProtocolJson.SerializerOptions);
-            var payload = new ServerSnapshot(
-                Type: ProtocolTypes.Snapshot,
-                SessionId: snapshot.SessionId,
-                TickId: snapshot.TickId,
-                ServerTimeMs: snapshot.ServerTimeMs,
-                State: doc.RootElement.Clone(),
-                Forced: snapshot.Forced,
-                Reason: snapshot.Reason,
-                TargetClientId: snapshot.TargetClientId,
-                ClientLagTicks: snapshot.ClientLagTicks,
-                ClientLastAckTickId: snapshot.ClientLastAckTickId
-            );
-
             await _sendLock.WaitAsync(cancellationToken);
             try
             {
-                await WebSocketHelpers.SendJsonAsync(_ws, payload, cancellationToken);
+                await _ws.SendAsync(wire.EncodedJson, WebSocketMessageType.Text, true, cancellationToken);
             }
             finally
             {

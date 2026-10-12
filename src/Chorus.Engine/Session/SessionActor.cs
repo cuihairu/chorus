@@ -466,6 +466,29 @@ public sealed class SessionActor : IAsyncDisposable
 
             if (needsPeriodic)
             {
+                if (forceClients.Count == 0)
+                {
+                    // Broadcast fast path (todo §8 P3 snapshot serialization):
+                    // every client gets the identical snapshot, so encode the
+                    // wire bytes once per tick and let each transport reuse them.
+                    // Forced stays explicitly false - the wire omits nulls, so a
+                    // null here would change the payload shape clients parse.
+                    var snapshot = new SessionSnapshot(
+                        SessionId: SessionId,
+                        TickId: TickId,
+                        ServerTimeMs: now,
+                        State: state,
+                        Forced: false);
+                    var wire = WireSnapshot.Encode(snapshot);
+                    foreach (var (client, _) in _clients.Values)
+                    {
+                        await client.SendSnapshotAsync(wire, cancellationToken).ConfigureAwait(false);
+                        Interlocked.Increment(ref _totalSnapshotsSent);
+                    }
+
+                    return;
+                }
+
                 foreach (var (client, stateInfo) in _clients.Values)
                 {
                     var force = forceClients.TryGetValue(stateInfo.ClientId, out var forceInfo);
@@ -480,7 +503,7 @@ public sealed class SessionActor : IAsyncDisposable
                         ClientLagTicks: force ? forceInfo!.LagTicks : null,
                         ClientLastAckTickId: force ? forceInfo!.LastAckTickId : null
                     );
-                    await client.SendSnapshotAsync(snapshot, cancellationToken).ConfigureAwait(false);
+                    await client.SendSnapshotAsync(WireSnapshot.Encode(snapshot), cancellationToken).ConfigureAwait(false);
                     Interlocked.Increment(ref _totalSnapshotsSent);
                     if (force)
                     {
@@ -509,7 +532,7 @@ public sealed class SessionActor : IAsyncDisposable
                         ClientLagTicks: forceInfo.LagTicks,
                         ClientLastAckTickId: forceInfo.LastAckTickId
                     );
-                    await client.SendSnapshotAsync(snapshot, cancellationToken).ConfigureAwait(false);
+                    await client.SendSnapshotAsync(WireSnapshot.Encode(snapshot), cancellationToken).ConfigureAwait(false);
                     Interlocked.Increment(ref _totalSnapshotsSent);
                     stateInfo.LastResyncTimeMs = now;
                     stateInfo.ResyncCount++;

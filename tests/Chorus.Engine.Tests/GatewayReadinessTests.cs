@@ -34,6 +34,18 @@ public sealed class GatewayReadinessTests
         }
     }
 
+    public sealed class WideWindowGatewayFactory : WebApplicationFactory<Chorus.Gateway.Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            // The 50ms window races the HTTP round-trip under parallel test
+            // load (observed 1/10 as a spurious 503); the fresh case only
+            // needs a window no sane scheduler can exceed.
+            builder.UseSetting("Ipc:ReadinessMaxSilenceMs", "60000");
+            builder.UseSetting("Ipc:Transport", "Auto");
+        }
+    }
+
     // ---------------------------------------------------------------- /ready e2e
 
     [Fact]
@@ -53,7 +65,7 @@ public sealed class GatewayReadinessTests
     [Fact]
     public async Task Ready_WithFreshEngineMessage_Returns200()
     {
-        using var factory = new GatewayFactory();
+        using var factory = new WideWindowGatewayFactory();
         var ipc = factory.Services.GetRequiredService<GatewayIpcService>();
 
         ipc.RecordEngineMessage(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
@@ -62,7 +74,7 @@ public sealed class GatewayReadinessTests
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(body.GetProperty("ready").GetBoolean());
-        Assert.True(body.GetProperty("engineSilenceMs").GetInt64() <= 50);
+        Assert.True(body.GetProperty("engineSilenceMs").GetInt64() <= 60_000);
     }
 
     [Fact]

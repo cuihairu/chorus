@@ -13,7 +13,7 @@ namespace Chorus.Engine.Session;
 public sealed class OutboundClientQueue : IAsyncDisposable
 {
     private readonly ISessionClient _inner;
-    private readonly Channel<SessionSnapshot> _slot = Channel.CreateBounded<SessionSnapshot>(
+    private readonly Channel<WireSnapshot> _slot = Channel.CreateBounded<WireSnapshot>(
         new BoundedChannelOptions(capacity: 1)
         {
             SingleReader = true,
@@ -40,9 +40,9 @@ public sealed class OutboundClientQueue : IAsyncDisposable
     public long Sent => Interlocked.Read(ref _sent);
 
     /// <summary>Enqueue-only: completes synchronously, never awaits the transport.</summary>
-    public ValueTask SendSnapshotAsync(SessionSnapshot snapshot, CancellationToken cancellationToken)
+    public ValueTask SendSnapshotAsync(WireSnapshot wire, CancellationToken cancellationToken)
     {
-        if (!_slot.Writer.TryWrite(snapshot))
+        if (!_slot.Writer.TryWrite(wire))
         {
             Interlocked.Increment(ref _dropped);
         }
@@ -54,9 +54,9 @@ public sealed class OutboundClientQueue : IAsyncDisposable
     {
         try
         {
-            await foreach (var snapshot in _slot.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
+            await foreach (var wire in _slot.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
             {
-                await _inner.SendSnapshotAsync(snapshot, _cts.Token).ConfigureAwait(false);
+                await _inner.SendSnapshotAsync(wire, _cts.Token).ConfigureAwait(false);
                 Interlocked.Increment(ref _sent);
             }
         }
