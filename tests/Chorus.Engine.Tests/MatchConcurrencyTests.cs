@@ -60,8 +60,23 @@ public sealed class MatchConcurrencyTests
         Assert.Equal(new[] { "s-match-1" }, red.SessionIds);
         Assert.Equal(new[] { "s-match-2" }, blue.SessionIds);
 
-        var sessions = await client.GetFromJsonAsync<List<SessionDiagnostics>>("/sessions");
-        var ingested = sessions.Where(s => s.SessionId.StartsWith("s-match-")).Sum(s => s.TotalIngestedEvents);
+        // TotalIngestedEvents advances when the actor drains its event lane,
+        // not when the POST returns - poll for the eventual total instead of
+        // reading it synchronously (raced the actor loop under full-suite load).
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        var ingested = 0L;
+        while (DateTime.UtcNow < deadline)
+        {
+            var sessions = await client.GetFromJsonAsync<List<SessionDiagnostics>>("/sessions");
+            ingested = sessions.Where(s => s.SessionId.StartsWith("s-match-")).Sum(s => s.TotalIngestedEvents);
+            if (ingested >= 2 * eventsPerSession)
+            {
+                break;
+            }
+
+            await Task.Delay(20);
+        }
+
         Assert.Equal(2 * eventsPerSession, ingested);
     }
 

@@ -39,13 +39,29 @@ public sealed class SessionActorOutboundTests
         release.SetResult();
 
         await WaitForConditionAsync(() => actor.Diagnostics.TotalSnapshotsSent >= r + 3, timeoutMs: 5000);
-        await WaitForDrainAsync(actor);
 
-        var fromBlockedWindow = snapshots.Count(s => s.TickId <= r);
-        Assert.True(fromBlockedWindow <= 2,
-            $"blocked window (ticks <= {r}) delivered {fromBlockedWindow} of {r} enqueued");
-        Assert.True(snapshots[^1].TickId >= actor.Diagnostics.TickId - 2,
-            $"last delivered tick {snapshots[^1].TickId} vs server {actor.Diagnostics.TickId}");
+        // Delivery must catch up past the blocked window. Compare against the
+        // release point R, not the live server clock: ticks keep advancing
+        // while the test thread schedules, so a clock comparison fails a
+        // healthy system on a short stall.
+        await WaitForConditionAsync(
+            () =>
+            {
+                lock (snapshots)
+                {
+                    // First evaluation can race the pump's first post-release
+                    // append - empty list just means not caught up yet.
+                    return snapshots.Count > 0 && snapshots[^1].TickId >= r + 3;
+                }
+            },
+            timeoutMs: 5000);
+
+        lock (snapshots)
+        {
+            var fromBlockedWindow = snapshots.Count(s => s.TickId <= r);
+            Assert.True(fromBlockedWindow <= 2,
+                $"blocked window (ticks <= {r}) delivered {fromBlockedWindow} of {r} enqueued");
+        }
     }
 
     private static async Task WaitForTickAsync(SessionActor actor, long minTick, int timeoutMs = 5000)
@@ -74,12 +90,6 @@ public sealed class SessionActorOutboundTests
 
             await Task.Delay(10);
         }
-    }
-
-    private static async Task WaitForDrainAsync(SessionActor actor, int timeoutMs = 5000)
-    {
-        // Let the pump finish its post-release sends before asserting.
-        await Task.Delay(50);
     }
 
     private sealed class BlockingClient : ISessionClient

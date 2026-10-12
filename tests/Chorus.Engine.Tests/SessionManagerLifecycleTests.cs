@@ -44,7 +44,9 @@ public sealed class SessionManagerLifecycleTests
     [Fact]
     public async Task SweepIdle_RemovesOnlyClientlessIdleSessions()
     {
-        await using var manager = CreateManager(maxSessions: 100, idleEvictAfterMs: 100);
+        // 600s window keeps the constructor-started background sweeper at its
+        // 60s clamp so it can never fire mid-test and steal the eviction.
+        await using var manager = CreateManager(maxSessions: 100, idleEvictAfterMs: 600_000);
 
         var idle = manager.GetOrCreate("idle");
         var active = manager.GetOrCreate("active");
@@ -57,7 +59,7 @@ public sealed class SessionManagerLifecycleTests
             await Task.Delay(10);
         }
 
-        var swept = await manager.SweepIdleAsync(nowMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 10_000);
+        var swept = await manager.SweepIdleAsync(nowMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 700_000);
 
         Assert.Equal(1, swept);
         Assert.Equal(1, manager.Count);

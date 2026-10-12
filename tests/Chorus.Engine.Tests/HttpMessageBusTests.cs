@@ -29,7 +29,9 @@ public sealed class HttpMessageBusTests
             Body: body
         );
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        // Safety net only - the read task returns on the first message; a
+        // 5s budget raced HttpListener startup under full-suite load.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var readTask = Task.Run(async () =>
         {
             await foreach (var item in server.SubscribeAsync(cts.Token))
