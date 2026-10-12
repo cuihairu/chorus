@@ -36,7 +36,7 @@
 
 ## 3.5 通信与部署模式
 
-- [ ] 抽象 `MessageBus/ActorRef/Router`（支持 Monolith 与拆分）（进行中：会话生命周期 a6eae7f（共享 `SessionRegistry`）；streamer-ws 门面已合一为 `Faces/StreamerWsFace`，两宿主只在 `IStreamerSessionRouter`/`IStreamerSessionBinding` 缝上分叉（Monolith 直连 actor，Gateway 走 Engine IPC + 2s welcome 预算），两处 `/ws` 各剩一行调用，Gateway 侧 parity 守卫 `StreamerWsGatewayParityTests`（e0501bc）；剩余：ActorRef/Tell 语义与路由表抽象本身）
+- [x] 抽象 `MessageBus/ActorRef/Router`（支持 Monolith 与拆分）（分片交付：InProc/NamedPipe/UDS/TCP 四 bus；共享会话生命周期 `SessionRegistry`（a6eae7f）；streamer-ws 门面 `Faces/StreamerWsFace` + `IStreamerSessionRouter`/`IStreamerSessionBinding` 缝（e0501bc/3a10f9d），两处 `/ws` 各剩一行调用，Gateway parity 守卫 `StreamerWsGatewayParityTests`；platform-ingress 门面 `Faces/PlatformIngressFace` + `ISessionActorRef.TellAsync`（Accepted/Rejected/Unavailable 三态）/`ISessionActorRouter.Resolve` 路由表缝（0eac8ac）——Monolith `InProcSessionActorRouter` 复用共享 `SessionRegistry`（表=GetOrCreate），Gateway `IpcSessionActorRouter` 按 sessionId 发布 Engine IPC，未送达一律回滚 dedup 认领 + 503；守卫 `PlatformIngressFaceTests`/`SessionActorRefTests`/`GatewayIngressTellTests`）
 - [x] 提供 InProc bus（进程内）
 - [x] 提供 NamedPipe bus（本机 IPC 示例）
 - [x] 提供 Unix Domain Socket bus（本机 IPC 示例）
@@ -97,7 +97,7 @@
 - [x] **`SessionActor` 反压**：`SessionActor.cs:19` 是 `Channel.CreateUnbounded`（无界邮箱）——慢消费/事件洪峰时内存无上界，与 §1 勾选的「backpressure」不符。改有界邮箱 + 溢出策略（按 `maxEventsPerTick` 已有的合并/丢弃口径），并把 `SessionDiagnostics` 的 dropped 计数接出去。（5592d62：事件道有界 `Wait` + 礼物单次有限等待，溢出分 overflow/gift 计数入 `SessionDiagnostics`；控制命令道保持无界不丢；`SessionActorBackpressureTests`）
 - [x] **会话空闲回收**：`SessionManager` 只有 `DisposeAsync`，没有空闲超时/驱逐；长跑会话与僵尸 session 会一直占 tick。加 idle timeout + 主动驱逐（并同步给 Gateway 注销）。（362b435：`SessionConfig.IdleEvictAfterMs`（600s 默认）+ `SweepIdleAsync` 定期清扫 + 容量满时 idlest-first 驱逐（Server 端）；拆分模式同款在 `EngineIpcService.MaybeEnforceSessionLifecycle`，只驱逐无客户端会话故无需 Gateway 注销；`SessionManagerLifecycleTests`）
 - [x] **合并重复代码**：把 `Ingress/*` 与 `WebSocketHelpers.cs` 从 Server/Gateway 抽到共享工程（`Cohort.Gateway.Core` 或并入 `Cohort.Protocol`），两处 `#if`/拷贝改为一次引用；补单测只写一份。（`WebSocketHelpers.cs`、`Faces/IngressFaceGuard.cs`/`IngressRateLimiter.cs`/`IngressFaceOptions.cs` 均只在 `Chorus.Gateway.Core` 一份，Server/Gateway 皆工程引用（e2304b2 起），无 `#if`/拷贝；单测 `IngressFaceGuardTests` 单份）
-- [ ] **`MessageBus/ActorRef/Router` 抽象**（§3.5 唯一未勾项）与进程内路由表：现在 Server 单进程直连 actor，拆分模式各写一套。（进行中 a6eae7f：会话生命周期（容量上限 + idlest 驱逐 + 空闲清扫 + lastSeen）已抽为共享 `SessionRegistry`，Monolith 与 EngineHost 两套合一，`SessionRegistryTests` 直测；streamer-ws 门面（鉴权/协议版本/体积上限/ACK 限流/断连清理）抽为共享 `Faces/StreamerWsFace` + `IStreamerSessionRouter`/`IStreamerSessionBinding` 缝，Monolith `MonolithSessionRouter`、Gateway `IpcSessionRouter` 各实现一份，两端点剩一行调用；剩余：ActorRef/Tell 语义与路由表抽象本身）
+- [x] **`MessageBus/ActorRef/Router` 抽象**（§3.5）与进程内路由表：拆分模式不再各写一套。（此前 a6eae7f 会话生命周期合一、e0501bc/3a10f9d streamer-ws 门面合一；本轮（0eac8ac）：`Faces/PlatformIngressFace` 单点实现两个 `/ingress` 端点（限流/体积上限/超时/验签/映射/去重后恰好一次 Tell），投递语义 `ISessionActorRef.TellAsync` 三态——Accepted / Rejected=有界邮箱满（仅 Monolith）/ Unavailable=IPC 传输断（仅 Gateway）——`ISessionActorRouter.Resolve(sessionId)` 进程内路由表：Monolith `InProcSessionActorRouter` 直接复用共享 `SessionRegistry.GetOrCreate`（容量上限/idlest 驱逐/空闲清扫内建），Gateway `IpcSessionActorRouter` 发布 Engine IPC、真表在引擎侧；未送达回滚 dedup 认领 + 503 保证平台重试是全新投递，响应 tick 字段仅 Monolith ref 暴露；`MatchRegistry` 随门面迁入 `Chorus.Gateway.Core.Faces`，拆分模式传 null（房间统计归引擎）；守卫 `PlatformIngressFaceTests`（8 用例）/`SessionActorRefTests`（4 用例）/`GatewayIngressTellTests`（引擎下线 503×2））
 
 ### P2 — 可观测性（§4 全空）
 

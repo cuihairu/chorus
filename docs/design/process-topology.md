@@ -41,7 +41,14 @@
 - Monolith → `MonolithSessionRouter`：同进程 `SessionActor`，welcome 由 `SessionConfig` 生成；
 - Gateway → `IpcSessionRouter`：经 Engine IPC 注册客户端，welcome 由引擎回传（2s 预算，超时 fail-closed）。
 
-hello 鉴权（fail-closed）、协议版本门禁、消息体积上限、ACK 速率限制、断连清理全部单点实现，两处 `/ws` 端点各只剩一行门面调用。回归守卫：`StreamerWsAuthEndpointTests` / `ProtocolVersionEndpointTests`（Server）与 `StreamerWsGatewayParityTests`（Gateway 侧同口径 close status、错误载荷与 `streamerWs` 计数器，e0501bc）。路由表与 ActorRef/Tell 语义仍在 §3.5 未勾。
+hello 鉴权（fail-closed）、协议版本门禁、消息体积上限、ACK 速率限制、断连清理全部单点实现，两处 `/ws` 端点各只剩一行门面调用。回归守卫：`StreamerWsAuthEndpointTests` / `ProtocolVersionEndpointTests`（Server）与 `StreamerWsGatewayParityTests`（Gateway 侧同口径 close status、错误载荷与 `streamerWs` 计数器，e0501bc）。
+
+**platform-ingress 门面与 Tell 缝已合一（§3.5 ActorRef/Tell 语义与进程内路由表）**：两个 listener 的 `/ingress` 端点（限流/体积上限/超时/验签/映射/去重/投递）抽为 `Chorus.Gateway.Core/Faces/PlatformIngressFace` 一份，投递语义落在共享的 `ISessionActorRef.TellAsync`（三态 `SessionTellOutcome`：Accepted / Rejected = 有界邮箱满 / Unavailable = 传输断）与 `ISessionActorRouter.Resolve(sessionId)` 路由表上：
+
+- Monolith → `InProcSessionActorRouter`：`SessionRegistry.GetOrCreate` 即路由表（容量上限 + idlest 驱逐 + 空闲清扫都在共享生命周期里），Rejected 即邮箱满；
+- Gateway → `IpcSessionActorRouter`：把事件按 sessionId 为序键发布到 Engine IPC，真正的表在引擎侧，transport 故障映射为 Unavailable。
+
+两种未送达走同一重试口径：回滚 dedup 认领 + 503，平台重试即全新投递。响应体按拓扑保真：tick 字段只有 Monolith ref 暴露（引擎 tick 只随 welcome/snapshot 走）；`MatchRegistry` 随门面迁入 `Chorus.Gateway.Core.Faces`，拆分模式传 null（房间统计归引擎）。回归守卫：`PlatformIngressFaceTests`（门面 8 用例：Accepted 的 tick 字段 / Rejected 与 Unavailable 回滚 503 / 去重短路先行于 Tell / 未映射 400 / 未验签 401）、`SessionActorRefTests`（进程内 ref 直测：入箱 / 同会话同 actor / 邮箱满 Rejected / TickId 暴露）、`GatewayIngressTellTests`（引擎下线时 Gateway 连续 503 可重试）。
 
 ## 5. 拆分前必须先解决的两个前置问题
 
