@@ -357,7 +357,7 @@ app.Map("/ws", async context =>
     }
     catch (Exception ex)
     {
-        logger.LogWarning(ex, "WebSocket loop error");
+        logger.LogWarning(ex, "WebSocket loop error session={SessionId} clientId={ClientId}", sessionId, clientId);
     }
     finally
     {

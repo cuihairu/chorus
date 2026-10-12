@@ -126,5 +126,8 @@ scrape_configs:
 | --- | --- | --- |
 | `eventId` / `SourceEventId` | ingress、engine 事件道 | 平台事件关联 |
 | `messageId` | IPC 发布失败、engine 收包 | 投递关联 |
-| `sessionId` / `clientId` | 全链路 | 会话与客户端 |
-| `tickId` | tick 过载、快照 | 权威 tick 水位 |
+| `sessionId` / `clientId` | 全链路（WS 拒绝、回路错误、快照发送失败均携带） | 会话与客户端 |
+| `tickId` | tick 过载、快照发送失败、dispatch 失败路径 | 权威 tick 水位 |
+
+WS 回路与快照发送的失败日志（`WebSocket loop error`、`Failed to send snapshot`）均带
+`session=` / `clientId=` / `tick=` 结构化字段，可与 `/sessions` 诊断的 lag/ack 字段对齐排查。

@@ -63,7 +63,8 @@ public sealed class WsSessionClient : ISessionClient
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Failed to send snapshot");
+            _logger.LogDebug(ex, "Failed to send snapshot session={SessionId} clientId={ClientId} tick={TickId}",
+                snapshot.SessionId, ClientId, snapshot.TickId);
         }
     }
 }
