@@ -8,6 +8,7 @@ public sealed class NamedPipeMessageBus : IMessageBus
 {
     private readonly string _pipeName;
     private readonly CancellationTokenSource _cts = new();
+    private int _disposed;
     private readonly ConcurrentBag<Task> _acceptTasks = new();
     private readonly Channel<Envelope> _inbox = Channel.CreateUnbounded<Envelope>(new UnboundedChannelOptions
     {
@@ -110,6 +111,10 @@ public sealed class NamedPipeMessageBus : IMessageBus
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
         _cts.Cancel();
         _inbox.Writer.TryComplete();
 

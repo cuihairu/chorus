@@ -17,8 +17,8 @@ public sealed class CorrelationTests
     public async Task SourceEventId_RoundTripsThroughBus()
     {
         var socketPath = $"/tmp/chorus-test-{Guid.NewGuid():N}.sock";
-        var server = new UnixDomainSocketMessageBus(socketPath);
-        var client = new UnixDomainSocketMessageBus(socketPath);
+        await using var server = new UnixDomainSocketMessageBus(socketPath);
+        await using var client = new UnixDomainSocketMessageBus(socketPath);
         server.StartServer();
 
         var body = JsonSerializer.SerializeToElement(new { v = 42 });
@@ -47,8 +47,6 @@ public sealed class CorrelationTests
         Assert.Equal("m_corr", got.MessageId);
 
         cts.Cancel();
-        client.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        server.DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     [Fact]

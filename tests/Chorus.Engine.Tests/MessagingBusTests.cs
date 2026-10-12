@@ -38,5 +38,12 @@ public sealed class MessagingBusTests
         Assert.Equal(env.SessionId, got.SessionId);
         Assert.Equal(1, got.Body.GetProperty("x").GetInt32());
     }
-}
+    [Fact]
+    public async Task NamedPipeBus_DoubleDisposeIsNoOp()
+    {
+        var bus = new NamedPipeMessageBus("chorus-test-double-dispose");
+        await bus.DisposeAsync();
 
+        await bus.DisposeAsync();
+    }
+}

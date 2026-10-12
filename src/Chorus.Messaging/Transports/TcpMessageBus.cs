@@ -10,6 +10,7 @@ public sealed class TcpMessageBus : IMessageBus
     private readonly string _host;
     private readonly int _port;
     private readonly CancellationTokenSource _cts = new();
+    private int _disposed;
     private readonly ConcurrentBag<Task> _acceptTasks = new();
     private readonly Channel<Envelope> _inbox = Channel.CreateUnbounded<Envelope>(new UnboundedChannelOptions
     {
@@ -140,6 +141,10 @@ public sealed class TcpMessageBus : IMessageBus
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
         _cts.Cancel();
         _inbox.Writer.TryComplete();
 

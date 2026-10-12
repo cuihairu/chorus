@@ -134,7 +134,7 @@
 - [x] `chorus_*` 指标（28 项：tick_duration/lag、ingress/applied/merged/dropped/duplicates、mailbox_depth、ack_lag、snapshot_send/resync/oversize、ws、ipc_publish_failures）+ 事件关联 ID（2026-10-12，commit b86f5a8 三端 `/metrics`；commit 68f29a9 `Envelope.SourceEventId` 贯穿 ingress→Engine（不一致打 `Correlation mismatch` warning）+ `docs/reference/observability.md` 指标清单/关联链/抓取示例；验收 `CorrelationTests` 3 例）
 - [ ] 快照版本与大小上限、应用失败路径、客户端重同步闭环
 - [x] IPC 断连/重启/回退（UDS↔NamedPipe 协商）验证（2026-10-12，commit d5d2d64：服务器重启后客户端惰性重连下次 publish 即恢复；publish 期间服务器宕机必须显式失败（上行即 `chorus_ipc_publish_failures_total`，绝不静默丢弃）；Auto 在 Linux 选 UDS，UDS 无法 bind 时回退 NamedPipe；验收 `IpcResilienceTests` 3 例）
-- [ ] 独立压测工具（多 Session × 观众事件 × 变速客户端 × 随机断连）
+- [x] 独立压测工具（多 Session × 观众事件 × 变速客户端 × 随机断连）（2026-10-12，commit 578415b：`src/Chorus.LoadTool` 控制台工具，`--sessions/--rate/--clients/--ack-mix(fast|normal|slow)/--disconnect-every/--dup-rate/--gift-rate/--match`，双平台 payload（`test` 未签名演示链路 / `douyin` 映射器形状），结束时抓 `--engine-metrics`；验收 `LoadToolTests` 6 例 + 对真实 Server 冒烟（475 发/472 受理/241 判重/808 快照/89 ACK/9 重连，引擎侧 applied=235、snapshots=1201）；文档 `docs/guide/load-testing.md`）
 
 ### 阶段四：发布与生态
 - [x] **Cohort → Chorus 命名收尾**（仓库已改名）：`Chorus.sln`、各 `Chorus.*` 工程与命名空间、项目引用、CI 工作流、文档站标题、启动命令、README 徽章；不得纯文本替换，改完全量构建+测试（2026-10-12 完成，提前于原「最后一批」计划按用户指令执行：sln/csproj/目录/命名空间/项目引用/CI（sln 引用 + VUEPRESS_BASE /chorus/）/文档站与参考文档内标识/README（标题、徽章指向 cuihairu/chorus、新 logo 64x64、鉴权默认拒绝说明）/IPC 默认值 /tmp/chorus、pipe 前缀 chorus；未做盲替换——评审归档保持原文，替换点=标识符 `Cohort.` 与显式列出的配置值；全量构建 0 error + 110/110 测试通过。注：todo 前文与历史小节的 `Cohort.*` 字样为历史记录不改）

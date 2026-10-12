@@ -47,5 +47,19 @@ public sealed class UnixDomainSocketMessageBusTests
         Assert.Equal("m1", got.MessageId);
         Assert.True(got.Body.GetProperty("ok").GetBoolean());
     }
-}
+    [Fact]
+    public async Task UnixDomainSocketBus_DoubleDisposeIsNoOp()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return;
+        }
 
+        var socketPath = Path.Combine(Path.GetTempPath(), $"chorus_{Guid.NewGuid():N}.sock");
+        var bus = new UnixDomainSocketMessageBus(socketPath);
+        bus.StartServer();
+        await bus.DisposeAsync();
+
+        await bus.DisposeAsync();
+    }
+}

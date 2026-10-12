@@ -58,4 +58,12 @@ public sealed class HttpMessageBusTests
             listener.Stop();
         }
     }
+    [Fact]
+    public async Task HttpBus_DoubleDisposeIsNoOp()
+    {
+        var bus = new HttpMessageBus("http://127.0.0.1:1/unused");
+        await bus.DisposeAsync();
+
+        await bus.DisposeAsync();
+    }
 }

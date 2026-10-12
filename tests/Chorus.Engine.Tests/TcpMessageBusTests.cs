@@ -39,5 +39,12 @@ public sealed class TcpMessageBusTests
         Assert.Equal("m1", got.MessageId);
         Assert.True(got.Body.GetProperty("ok").GetBoolean());
     }
-}
+    [Fact]
+    public async Task TcpBus_DoubleDisposeIsNoOp()
+    {
+        var bus = new TcpMessageBus("127.0.0.1", 0);
+        await bus.DisposeAsync();
 
+        await bus.DisposeAsync();
+    }
+}
