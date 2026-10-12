@@ -1,14 +1,9 @@
-using System.Net.WebSockets;
-using System.Text.Json;
 using Chorus.Adapters.Abstractions;
 using Chorus.Adapters.Platforms;
 using Chorus.Gateway;
-using Chorus.Gateway.Core;
 using Chorus.Gateway.Core.Faces;
 using Chorus.Gateway.Core.Metrics;
 using Chorus.Messaging.Ipc;
-using Chorus.Protocol;
-using Chorus.Protocol.Messages;
 using Chorus.Protocol.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
@@ -20,6 +15,12 @@ builder.Services.AddSingleton(IngressFaceOptions.FromConfiguration(builder.Confi
 builder.Services.AddSingleton<IngressFaceGuard>();
 builder.Services.AddSingleton<FaceCounters>();
 builder.Services.AddSingleton(StreamerWsFaceOptions.FromConfiguration(builder.Configuration));
+builder.Services.AddSingleton(sp => new IpcSessionRouter(sp.GetRequiredService<GatewayIpcService>()));
+builder.Services.AddSingleton(sp => new StreamerWsFace(
+    sp.GetRequiredService<StreamerWsFaceOptions>(),
+    sp.GetRequiredService<IpcSessionRouter>(),
+    sp.GetRequiredService<FaceCounters>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger("Chorus.Gateway.StreamerWs")));
 // Ingress:AllowAll (default false) keeps the unsigned dev verifier registered;
 // without it the router fails closed for platforms without a real verifier.
 if (builder.Configuration.GetValue("Ingress:AllowAll", false))
@@ -190,181 +191,11 @@ app.MapPost("/ingress/{platform}", async (
 });
 
 // streamer-ws listener face: hello token auth (fail-closed), message body
-// cap, ACK rate limit (docs/design/process-topology.md §4).
+// cap, ACK rate limit (docs/design/process-topology.md §4). Shared with the
+// monolith via StreamerWsFace; this host routes clients over the engine IPC.
 app.Map("/ws", async context =>
 {
-    if (!context.WebSockets.IsWebSocketRequest)
-    {
-        context.Response.StatusCode = 400;
-        await context.Response.WriteAsync("Expected WebSocket request.");
-        return;
-    }
-
-    var ipc = context.RequestServices.GetRequiredService<GatewayIpcService>();
-    var faceOptions = context.RequestServices.GetRequiredService<StreamerWsFaceOptions>();
-    var faces = context.RequestServices.GetRequiredService<FaceCounters>();
-    var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Chorus.Gateway.StreamerWs");
-
-    using var ws = await context.WebSockets.AcceptWebSocketAsync();
-    faces.WsConnection();
-
-    string helloText;
-    try
-    {
-        helloText = await WebSocketHelpers.ReceiveTextAsync(ws, context.RequestAborted, faceOptions.MaxMessageBytes);
-    }
-    catch (WsMessageTooLargeException)
-    {
-        faces.WsMessageTooLarge();
-        logger.LogWarning("WS hello exceeded {MaxBytes} bytes; closing connection", faceOptions.MaxMessageBytes);
-        await RejectConnectionAsync(ws, WebSocketCloseStatus.MessageTooBig, "hello too large", error: null, context.RequestAborted);
-        return;
-    }
-    catch (Exception ex)
-    {
-        logger.LogWarning(ex, "Failed to receive hello");
-        await RejectConnectionAsync(ws, WebSocketCloseStatus.NormalClosure, "invalid hello",
-            new ServerError(ProtocolTypes.Error, "Invalid hello"), context.RequestAborted);
-        return;
-    }
-
-    ClientHello? hello;
-    try
-    {
-        hello = JsonSerializer.Deserialize<ClientHello>(helloText, ProtocolJson.SerializerOptions);
-    }
-    catch (JsonException)
-    {
-        hello = null;
-    }
-
-    if (hello == null || !string.Equals(hello.Type, ProtocolTypes.Hello, StringComparison.Ordinal))
-    {
-        await RejectConnectionAsync(ws, WebSocketCloseStatus.NormalClosure, "first message must be hello",
-            new ServerError(ProtocolTypes.Error, "First message must be hello"), context.RequestAborted);
-        return;
-    }
-
-    var versionReason = ProtocolVersionPolicy.CheckRejectionReason(hello.ProtocolVersion);
-    if (versionReason != null)
-    {
-        faces.WsProtocolMismatch();
-        logger.LogWarning("WS connection rejected ({Reason}) session={SessionId}", versionReason, hello.SessionId);
-        await RejectConnectionAsync(ws, WebSocketCloseStatus.PolicyViolation, versionReason,
-            new ServerError(ProtocolTypes.Error, versionReason), context.RequestAborted);
-        return;
-    }
-
-    var auth = faceOptions.Authenticate(hello.Token, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-    if (!auth.Ok)
-    {
-        faces.WsUnauthorized();
-        logger.LogWarning("WS connection rejected ({Reason}) for session {SessionId}", auth.Reason, hello.SessionId);
-        await RejectConnectionAsync(ws, WebSocketCloseStatus.PolicyViolation, auth.Reason,
-            new ServerError(ProtocolTypes.Error, $"unauthorized: {auth.Reason}"), context.RequestAborted);
-        return;
-    }
-
-    var sessionId = string.IsNullOrWhiteSpace(hello.SessionId) ? $"s_{Guid.NewGuid():N}" : hello.SessionId!;
-    var clientId = string.IsNullOrWhiteSpace(hello.ClientId) ? $"c_{Guid.NewGuid():N}" : hello.ClientId!;
-
-    var conn = new GatewayClientConnection(sessionId, clientId, ws);
-    try
-    {
-        var welcomeTask = ipc.CreateWelcomeWaiter(sessionId, clientId, context.RequestAborted);
-        try
-        {
-            await ipc.RegisterClientAsync(conn, context.RequestAborted);
-        }
-        catch
-        {
-            await WebSocketHelpers.SendJsonAsync(ws, new ServerError(ProtocolTypes.Error, "Engine unavailable"), context.RequestAborted);
-            return;
-        }
-
-        ServerWelcome welcome;
-        try
-        {
-            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, timeoutCts.Token);
-            welcome = await welcomeTask.WaitAsync(linkedCts.Token);
-        }
-        catch
-        {
-            await WebSocketHelpers.SendJsonAsync(ws, new ServerError(ProtocolTypes.Error, "Engine welcome timeout"), context.RequestAborted);
-            return;
-        }
-
-        await WebSocketHelpers.SendJsonAsync(ws, welcome, context.RequestAborted);
-
-        var ackWindowStartMs = 0L;
-        var ackCount = 0;
-
-        while (ws.State == WebSocketState.Open && !context.RequestAborted.IsCancellationRequested)
-        {
-            string text;
-            try
-            {
-                text = await WebSocketHelpers.ReceiveTextAsync(ws, context.RequestAborted, faceOptions.MaxMessageBytes);
-            }
-            catch (WsMessageTooLargeException)
-            {
-                faces.WsMessageTooLarge();
-                logger.LogWarning("WS message exceeded {MaxBytes} bytes; closing connection", faceOptions.MaxMessageBytes);
-                await RejectConnectionAsync(ws, WebSocketCloseStatus.MessageTooBig, "message too large", error: null, context.RequestAborted);
-                return;
-            }
-
-            using var doc = JsonDocument.Parse(text);
-            var type = doc.RootElement.TryGetProperty("type", out var t) ? t.GetString() : null;
-
-            if (string.Equals(type, ProtocolTypes.Ack, StringComparison.Ordinal))
-            {
-                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                if (ackWindowStartMs == 0 || nowMs - ackWindowStartMs >= 60_000)
-                {
-                    ackWindowStartMs = nowMs;
-                    ackCount = 1;
-                }
-                else if (ackCount >= faceOptions.AckPerMinute)
-                {
-                    faces.WsAckDropped();
-                    continue;
-                }
-                else
-                {
-                    ackCount++;
-                }
-
-                faces.WsAckAccepted();
-                var ack = doc.RootElement.Deserialize<ClientAck>(ProtocolJson.SerializerOptions);
-                if (ack != null)
-                {
-                    await ipc.PublishAckAsync(sessionId, clientId, ack.LastAppliedTickId, ack.ClientTimeMs ?? 0, context.RequestAborted);
-                }
-            }
-            else if (string.Equals(type, ProtocolTypes.Ping, StringComparison.Ordinal))
-            {
-                await WebSocketHelpers.SendJsonAsync(ws, new ServerPong(ProtocolTypes.Pong, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), context.RequestAborted);
-            }
-        }
-    }
-    catch (OperationCanceledException)
-    {
-    }
-    catch (WebSocketException)
-    {
-    }
-    catch (Exception ex)
-    {
-        logger.LogWarning(ex, "WebSocket loop error session={SessionId} clientId={ClientId}", sessionId, clientId);
-    }
-    finally
-    {
-        await ipc.UnregisterClientAsync(sessionId, clientId, CancellationToken.None);
-        try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None); } catch { }
-        await conn.DisposeAsync();
-    }
+    await context.RequestServices.GetRequiredService<StreamerWsFace>().HandleAsync(context);
 });
 
 app.Run();
@@ -376,24 +207,3 @@ static IReadOnlyDictionary<string, string> BuildFactionMap(IConfigurationSection
         .ToDictionary(x => x.Key, x => x.Value!, StringComparer.OrdinalIgnoreCase);
 }
 
-static async Task RejectConnectionAsync(
-    WebSocket ws,
-    WebSocketCloseStatus closeStatus,
-    string reason,
-    object? error,
-    CancellationToken cancellationToken)
-{
-    try
-    {
-        if (error != null)
-        {
-            await WebSocketHelpers.SendJsonAsync(ws, error, cancellationToken);
-        }
-
-        await ws.CloseAsync(closeStatus, reason, cancellationToken);
-    }
-    catch
-    {
-        // Client already gone; nothing to reject.
-    }
-}

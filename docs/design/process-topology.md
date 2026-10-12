@@ -35,6 +35,14 @@
 | 下一步 | **四角色、三进程**：platform-gw、streamer-gw、room-worker（承载多房间）；`RoomManager` 作为逻辑组件寄宿 worker 侧，由 `MatchRegistry` 升级为房间注册 + 路由表 | todo.md 阶段一正确性五项完成 |
 | 再往后 | room-worker 独立多进程/多机，room-manager 才单独成进程（房间粘性 + 快照恢复） | 单 worker 高峰 CPU > 60%，或单机房间数达数百量级 |
 
+
+**streamer-ws 门面已合一（§3.5 路由抽象的第一片）**：两个 listener 的 `streamer-ws` 门禁此前是 Server/Gateway 两份漂移拷贝，现已抽为 `Chorus.Gateway.Core/Faces/StreamerWsFace` 一份，两宿主只在 `IStreamerSessionRouter` / `IStreamerSessionBinding` 缝上分叉：
+
+- Monolith → `MonolithSessionRouter`：同进程 `SessionActor`，welcome 由 `SessionConfig` 生成；
+- Gateway → `IpcSessionRouter`：经 Engine IPC 注册客户端，welcome 由引擎回传（2s 预算，超时 fail-closed）。
+
+hello 鉴权（fail-closed）、协议版本门禁、消息体积上限、ACK 速率限制、断连清理全部单点实现，两处 `/ws` 端点各只剩一行门面调用。回归守卫：`StreamerWsAuthEndpointTests` / `ProtocolVersionEndpointTests`（Server）与 `StreamerWsGatewayParityTests`（Gateway 侧同口径 close status、错误载荷与 `streamerWs` 计数器，e0501bc）。路由表与 ActorRef/Tell 语义仍在 §3.5 未勾。
+
 ## 5. 拆分前必须先解决的两个前置问题
 
 1. **房间事件的单点排序**：同一房间全部输入必须在唯一 actor 内排序（现单消费者邮箱即此职责）。拆进程靠**房间粘性**保证，不允许两处同时写同一房间。

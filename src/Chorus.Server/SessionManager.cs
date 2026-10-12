@@ -37,8 +37,6 @@ public sealed class SessionManager : IAsyncDisposable
         return actor;
     }
 
-    public string CreateSessionId() => $"s_{Guid.NewGuid():N}";
-
     /// <summary>Live session count (test/observability helper).</summary>
     public int Count => _registry.Count;
 
