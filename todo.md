@@ -42,7 +42,7 @@
 - [x] 提供 Unix Domain Socket bus（本机 IPC 示例）
 - [x] 提供 TCP transport（localhost / 容器）
 - [x] 提供 HTTP transport（远程 / 网关层）
-- [ ] 评估并规划共享内存 transport（MemoryMappedFile + FlatBuffers）
+- [x] 评估并规划共享内存 transport（MemoryMappedFile + FlatBuffers）（docs/design/shared-memory-transport.md：现状成本、方案轮廓、更便宜替代（eng→gw 按 tick 去重发布）、风险表、触发条件与 A/B/C 阶段；结论暂不实现）
 
 ## 3.6 拆分模式（Gateway + EngineHost）
 
