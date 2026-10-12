@@ -11,6 +11,10 @@ public sealed record SessionDiagnostics(
     long TotalDroppedEvents,
     long TotalSnapshotsSent,
     long TotalResyncSnapshotsSent,
+    long TotalAcksAccepted,
+    long TotalAcksDuplicate,
+    long TotalAcksStale,
+    long TotalAcksInvalid,
     long LastTickProcessMs,
     IReadOnlyList<SessionClientDiagnostics> Clients
 );

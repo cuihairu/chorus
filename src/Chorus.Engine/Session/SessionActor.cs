@@ -33,6 +33,10 @@ public sealed class SessionActor : IAsyncDisposable
     private long _totalDroppedEvents;
     private long _totalSnapshotsSent;
     private long _totalResyncSnapshotsSent;
+    private long _totalAcksAccepted;
+    private long _totalAcksDuplicate;
+    private long _totalAcksStale;
+    private long _totalAcksInvalid;
 
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _runCts;
@@ -68,6 +72,10 @@ public sealed class SessionActor : IAsyncDisposable
             TotalDroppedEvents: 0,
             TotalSnapshotsSent: 0,
             TotalResyncSnapshotsSent: 0,
+            TotalAcksAccepted: 0,
+            TotalAcksDuplicate: 0,
+            TotalAcksStale: 0,
+            TotalAcksInvalid: 0,
             LastTickProcessMs: 0,
             Clients: Array.Empty<SessionClientDiagnostics>()
         );
@@ -133,16 +141,23 @@ public sealed class SessionActor : IAsyncDisposable
             throw new InvalidOperationException("Start() must be called before running.");
         }
 
+        // PeriodicTimer allows only one pending WaitForNextTickAsync at a time.
+        // Keep the pending tick task across mailbox drains; re-calling the wait
+        // while one is pending throws InvalidOperationException and would kill
+        // the loop silently after the first command-driven batch.
+        Task<bool>? tickTask = null;
         while (!cancellationToken.IsCancellationRequested)
         {
-            Task<bool> tickTask;
-            try
+            if (tickTask == null)
             {
-                tickTask = _timer.WaitForNextTickAsync(cancellationToken).AsTask();
-            }
-            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or InvalidOperationException)
-            {
-                break;
+                try
+                {
+                    tickTask = _timer.WaitForNextTickAsync(cancellationToken).AsTask();
+                }
+                catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or InvalidOperationException)
+                {
+                    break;
+                }
             }
 
             var readTask = _mailbox.Reader.WaitToReadAsync(cancellationToken).AsTask();
@@ -167,6 +182,8 @@ public sealed class SessionActor : IAsyncDisposable
             {
                 break;
             }
+
+            tickTask = null;
 
             if (!ticked)
             {
@@ -204,11 +221,7 @@ public sealed class SessionActor : IAsyncDisposable
                 _clients.Remove(c.ClientId);
                 break;
             case AckCmd c:
-                if (_clients.TryGetValue(c.ClientId, out var item))
-                {
-                    item.State.LastAckTickId = c.LastAppliedTickId;
-                    item.State.LastAckTimeMs = NowMs();
-                }
+                HandleAck(c);
                 break;
             case IngestAudienceEventCmd c:
                 ScheduleAudienceEvent(c.Event);
@@ -218,6 +231,45 @@ public sealed class SessionActor : IAsyncDisposable
         }
 
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// ACK validation (review P0-5): an ACK must be bound to a known client,
+    /// never negative, never beyond the server's current TickId, and never a
+    /// regression of recorded progress. Classes: invalid (negative / future /
+    /// unknown client), duplicate (same tick re-acked), stale (regression),
+    /// accepted (real progress) - all counted in diagnostics.
+    /// </summary>
+    private void HandleAck(AckCmd c)
+    {
+        if (c.LastAppliedTickId < 0)
+        {
+            Interlocked.Increment(ref _totalAcksInvalid);
+            return;
+        }
+
+        if (!_clients.TryGetValue(c.ClientId, out var item) || c.LastAppliedTickId > TickId)
+        {
+            Interlocked.Increment(ref _totalAcksInvalid);
+            return;
+        }
+
+        var last = item.State.LastAckTickId;
+        if (c.LastAppliedTickId == last)
+        {
+            Interlocked.Increment(ref _totalAcksDuplicate);
+            return;
+        }
+
+        if (c.LastAppliedTickId < last)
+        {
+            Interlocked.Increment(ref _totalAcksStale);
+            return;
+        }
+
+        item.State.LastAckTickId = c.LastAppliedTickId;
+        item.State.LastAckTimeMs = NowMs();
+        Interlocked.Increment(ref _totalAcksAccepted);
     }
 
     private void ScheduleAudienceEvent(AudienceEvent e)
@@ -392,6 +444,10 @@ public sealed class SessionActor : IAsyncDisposable
             TotalDroppedEvents: Interlocked.Read(ref _totalDroppedEvents),
             TotalSnapshotsSent: Interlocked.Read(ref _totalSnapshotsSent),
             TotalResyncSnapshotsSent: Interlocked.Read(ref _totalResyncSnapshotsSent),
+            TotalAcksAccepted: Interlocked.Read(ref _totalAcksAccepted),
+            TotalAcksDuplicate: Interlocked.Read(ref _totalAcksDuplicate),
+            TotalAcksStale: Interlocked.Read(ref _totalAcksStale),
+            TotalAcksInvalid: Interlocked.Read(ref _totalAcksInvalid),
             LastTickProcessMs: lastTickProcessMs,
             Clients: clients
         );
