@@ -223,6 +223,15 @@ public sealed class EngineIpcService : BackgroundService
         }
     }
 
+    /// <summary>Session diagnostics for the /metrics surface.</summary>
+    public IReadOnlyList<SessionDiagnostics> GetDiagnostics()
+    {
+        lock (_sessions)
+        {
+            return _sessions.Values.Select(s => s.Diagnostics).ToArray();
+        }
+    }
+
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         foreach (var s in _sessions.Values)

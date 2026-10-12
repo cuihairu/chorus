@@ -16,6 +16,10 @@ public sealed class GatewayIpcService : BackgroundService
     private IMessageBus? _incoming;
     private IMessageBus? _outgoing;
     private IpcSettings _ipcSettings;
+    private long _publishFailures;
+
+    /// <summary>Failed outgoing IPC publishes (chorus_ipc_publish_failures_total).</summary>
+    public long PublishFailures => Interlocked.Read(ref _publishFailures);
 
     public GatewayIpcService(ILogger<GatewayIpcService> logger, IConfiguration config)
     {
@@ -106,7 +110,8 @@ public sealed class GatewayIpcService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "IPC publish failed type={Type} session={SessionId}", env.Type, env.SessionId);
+            Interlocked.Increment(ref _publishFailures);
+            _logger.LogWarning(ex, "IPC publish failed type={Type} session={SessionId} message={MessageId}", env.Type, env.SessionId, env.MessageId);
             throw;
         }
     }

@@ -5,6 +5,7 @@ using Chorus.Adapters.Platforms;
 using Chorus.Gateway;
 using Chorus.Gateway.Core;
 using Chorus.Gateway.Core.Faces;
+using Chorus.Gateway.Core.Metrics;
 using Chorus.Messaging.Ipc;
 using Chorus.Protocol;
 using Chorus.Protocol.Messages;
@@ -82,6 +83,9 @@ if (streamerWsFaces.Tokens.Count == 0 && !streamerWsFaces.AllowAnonymous)
 app.MapGet("/", () => new { name = "Chorus.Gateway", ok = true });
 app.MapGet("/health", () => Results.Ok());
 app.MapGet("/faces", (FaceCounters faces) => faces);
+app.MapGet("/metrics", (FaceCounters faces, GatewayIpcService ipc) => Results.Text(
+    ChorusMetricsText.RenderGateway(faces, ipc.PublishFailures),
+    ChorusMetricsText.ContentTypeValue));
 
 // platform-ingress listener face: rate limit, body cap, timeout, per-platform
 // verification and dedup (docs/design/process-topology.md §4).

@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using System.Text.Json;
 using Chorus.Engine.Abstractions;
 using Chorus.Engine.Session;
+using Chorus.Gateway.Core.Metrics;
 using Chorus.Protocol;
 using Chorus.Protocol.Messages;
 using Chorus.Protocol.Models;
@@ -87,6 +88,11 @@ app.MapGet("/health", () => Results.Ok());
 app.MapGet("/sessions", (SessionManager sessions) => sessions.GetDiagnostics());
 app.MapGet("/matches", (MatchRegistry matches) => matches.GetDiagnostics());
 app.MapGet("/faces", (FaceCounters faces) => faces);
+// Single-process topology has no IPC hop; publish failures stay 0 here and
+// are real counters on the Gateway/EngineHost surfaces.
+app.MapGet("/metrics", (SessionManager sessions, FaceCounters faces) => Results.Text(
+    ChorusMetricsText.RenderServer(sessions.GetDiagnostics(), faces, ipcPublishFailures: 0),
+    ChorusMetricsText.ContentTypeValue));
 
 // platform-ingress listener face: rate limit, body cap, timeout, per-platform
 // verification and dedup (docs/design/process-topology.md §4).

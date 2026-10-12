@@ -1,6 +1,7 @@
 using Chorus.Engine.Abstractions;
 using Chorus.Engine.Session;
 using Chorus.EngineHost;
+using Chorus.Gateway.Core.Metrics;
 using Chorus.SampleGame;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -29,5 +30,8 @@ var app = builder.Build();
 
 app.MapGet("/", () => new { name = "Chorus.EngineHost", ok = true });
 app.MapGet("/health", () => Results.Ok());
+app.MapGet("/metrics", (EngineIpcService engine) => Results.Text(
+    ChorusMetricsText.RenderEngine(engine.GetDiagnostics()),
+    ChorusMetricsText.ContentTypeValue));
 
 app.Run();

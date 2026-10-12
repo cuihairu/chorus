@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Chorus.Protocol\Chorus.Protocol.csproj" />
+    <ProjectReference Include="..\Chorus.Engine\Chorus.Engine.csproj" />
   </ItemGroup>
 
 </Project>
