@@ -139,8 +139,8 @@
 ### 阶段四：发布与生态
 - [x] **Cohort → Chorus 命名收尾**（仓库已改名）：`Chorus.sln`、各 `Chorus.*` 工程与命名空间、项目引用、CI 工作流、文档站标题、启动命令、README 徽章；不得纯文本替换，改完全量构建+测试（2026-10-12 完成，提前于原「最后一批」计划按用户指令执行：sln/csproj/目录/命名空间/项目引用/CI（sln 引用 + VUEPRESS_BASE /chorus/）/文档站与参考文档内标识/README（标题、徽章指向 cuihairu/chorus、新 logo 64x64、鉴权默认拒绝说明）/IPC 默认值 /tmp/chorus、pipe 前缀 chorus；未做盲替换——评审归档保持原文，替换点=标识符 `Cohort.` 与显式列出的配置值；全量构建 0 error + 110/110 测试通过。注：todo 前文与历史小节的 `Cohort.*` 字样为历史记录不改）
 - [ ] 进程拓扑：按 [process-topology.md](./docs/design/process-topology.md) 的阶段表推进（先代码分层 → 四角色三进程 → 触发条件满足再拆 room-manager）
-- [ ] 最小游戏模块示例、平台适配器模板与接入契约
-- [ ] 部署/安全/故障排查文档与版本策略
+- [x] 最小游戏模块示例、平台适配器模板与接入契约（2026-10-12，commit 8a49c1b：`docs/guide/game-module.md`（`IGameModule` 契约 + `BattleGameModule` 最小示例 + 仓内参考实现 `src/Chorus.SampleGame` 的共享 `MatchStateStore` 与有界 top-N 快照 + 调用模型红线 + 反模式表）；`docs/reference/adapter-contract.md`（四抽象 + `/ingress/{platform}` 8 步处理顺序与 429/413/504/401/400/200-duplicated/503 语义 + `AudienceEvent` 完整 positional record + `TryParse` 防御式 mapper 模板 + `FixedTimeEquals` fail-closed 验签器模板 + 真实 DI 注册写法 + 7 项验收测试 + 「待联调」标记约定））
+- [x] 部署/安全/故障排查文档与版本策略（2026-10-12，commit 8a49c1b：`docs/reference/deployment.md`（单进程 vs 拆分形态 + 构建运行 + 端点端口表 + 12 项安全配置默认值与 fail-closed 矩阵 + WS token 格式 + 反向代理 + 资源生命周期 + 内存态重启语义 + 拆分容器化）+ `docs/reference/versioning.md`（SemVer 0.x 策略 + 「正式发布只由维护者显式给定版本号触发」+ 五个兼容性面 + 兼容性判定表 + 无持久化=无迁移 + 升级回滚顺序；诚实标注两个缺口：`hello` 无 `protocolVersion`、快照 `V` 未上线）；`docs/reference/config.md` 补 `maxSnapshotBytes = 1048576` 默认值与说明；`docs/.vuepress/config.js` 侧边栏登记 4 个新页面））
 
 ### 十一类故障验证测试清单
 - [x] 归并（混合阵营/Match/超限计数）✅ `DefaultAudienceEventReducerTests`（9ad322d）· 去重并发 ✅ `EventDeduplicatorTests` 32 并发恰一赢家（78f2597）· 投递失败重试 ✅ `Rollback_PublishFailure_AllowsPlatformRetry`（78f2597）· Tick 过载 ✅ `SessionActorBackpressureTests.Flood_*`+`SlowTick_OverrunCounted`（5592d62/362b435）· 慢客户端 ✅ `SessionActorOutboundTests`（df71d26）· ACK 安全 ✅ `SessionActorAckTests`（499f01c）· 生命周期 ✅ `SessionManagerLifecycleTests`（362b435）· 安全（未验证事件/超大请求体/非法 WS）✅ Kuaishou/Douyin/IngressAllowAll/StreamerWsAuth e2e（e2304b2/8f18bde/def21d2）
