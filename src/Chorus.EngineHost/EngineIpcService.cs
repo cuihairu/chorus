@@ -209,6 +209,13 @@ public sealed class EngineIpcService : BackgroundService
             case IpcMessageTypes.GatewayAudienceEvent:
                 {
                     var audienceEvent = EnvelopeFactory.DeserializeBody<AudienceEvent>(env);
+                    if (!string.IsNullOrEmpty(env.SourceEventId)
+                        && !string.Equals(env.SourceEventId, audienceEvent.EventId, StringComparison.Ordinal))
+                    {
+                        _logger.LogWarning(
+                            "Correlation mismatch: envelope source={SourceEventId} event={EventId} session={SessionId} message={MessageId}",
+                            env.SourceEventId, audienceEvent.EventId, audienceEvent.SessionId, env.MessageId);
+                    }
                     var session = GetOrCreateSession(audienceEvent.SessionId);
                     if (!await session.TryIngestAudienceEventAsync(audienceEvent))
                     {

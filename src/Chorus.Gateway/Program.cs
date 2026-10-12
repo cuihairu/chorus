@@ -152,7 +152,7 @@ app.MapPost("/ingress/{platform}", async (
 
         try
         {
-            await ipc.PublishAudienceEventAsync(EnvelopeFactory.Create(IpcMessageTypes.GatewayAudienceEvent, ev.SessionId, ev), requestCts.Token);
+            await ipc.PublishAudienceEventAsync(EnvelopeFactory.Create(IpcMessageTypes.GatewayAudienceEvent, ev.SessionId, ev, sourceEventId: ev.EventId), requestCts.Token);
         }
         catch
         {

@@ -5,7 +5,7 @@ namespace Chorus.Messaging.Ipc;
 
 public static class EnvelopeFactory
 {
-    public static Envelope Create<T>(string type, string sessionId, T body)
+    public static Envelope Create<T>(string type, string sessionId, T body, string? sourceEventId = null)
     {
         if (string.IsNullOrWhiteSpace(sessionId))
         {
@@ -18,7 +18,8 @@ public static class EnvelopeFactory
             MessageId: $"m_{Guid.NewGuid():N}",
             SessionId: sessionId,
             CreatedTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            Body: elem
+            Body: elem,
+            SourceEventId: sourceEventId
         );
     }
 

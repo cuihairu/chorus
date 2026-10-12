@@ -28,6 +28,9 @@ module.exports = {
         "/reference/protocol.md",
         "/reference/config.md",
         "/reference/operations.md",
+        "/reference/observability.md",
+        "/reference/platform-douyin.md",
+        "/reference/platform-kuaishou.md",
         "/reference/tuning.md",
         "/reference/troubleshooting.md"
       ]

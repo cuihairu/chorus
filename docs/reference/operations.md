@@ -6,6 +6,7 @@ title: 运维与观测
 
 相关文档：
 
+- [可观测性](./observability.md)
 - [参数调优](./tuning.md)
 - [故障排查](./troubleshooting.md)
 - [帧同步最佳实践](../design/frame-sync-best-practices.md)

@@ -1,0 +1,128 @@
+---
+title: 可观测性
+---
+
+# 可观测性
+
+Chorus 的可观测面由三部分组成：**Prometheus 文本指标**（`chorus_*`）、**JSON 诊断端点**（`/sessions`、`/matches`）、**结构化日志**（含关联 ID）。
+
+相关文档：
+
+- [运维与观测](./operations.md)
+- [配置参考](./config.md)
+- [故障排查](./troubleshooting.md)
+
+## 指标端点
+
+三个进程都暴露 `GET /metrics`，返回 Prometheus 文本格式（`text/plain; version=0.0.4; charset=utf-8`），可直接被 Prometheus 抓取：
+
+```yaml
+# prometheus.yml 示例
+scrape_configs:
+  - job_name: chorus-server
+    static_configs:
+      - targets: ["localhost:5100"]        # Chorus.Server（单进程模式）
+  - job_name: chorus-engine
+    static_configs:
+      - targets: ["localhost:5200"]        # Chorus.EngineHost
+  - job_name: chorus-gateway
+    static_configs:
+      - targets: ["localhost:5300"]        # Chorus.Gateway
+```
+
+单进程模式（Chorus.Server）没有 IPC 跳，`chorus_ipc_publish_failures_total` 恒为 0；拆分模式下 Gateway 与 EngineHost 各自统计自己这一跳的发布失败。
+
+## 指标清单
+
+### 会话与事件（Engine 侧聚合）
+
+| 指标 | 类型 | 含义 |
+| --- | --- | --- |
+| `chorus_sessions` | gauge | 当前存活 Session 数 |
+| `chorus_events_ingested_total` | counter | 进入 Session 事件道的事件数（去重后、调度前） |
+| `chorus_events_applied_total` | counter | 在 tick 中结算进权威状态的事件数 |
+| `chorus_events_merged_total` | counter | 被归并合并的事件数（归并不丢计数，见 [帧同步设计](../design/frame-sync.md)） |
+| `chorus_events_dropped_total` | counter | 因背压丢弃的事件总数 |
+| `chorus_events_dropped_overflow_total` | counter | 事件道溢出丢弃（非礼物） |
+| `chorus_events_dropped_gifts_total` | counter | 礼物事件等待入队超时丢弃（可重试语义，见 [规格 §3.6](../design/spec.md)） |
+| `chorus_tick_overruns_total` | counter | tick 处理超时（超过 `TickTimeoutMs`）次数，只检测不取消 |
+| `chorus_tick_errors_total` | counter | GameModule 抛异常的 tick 数（actor 存活，诊断照常推进） |
+| `chorus_tick_duration_ms` | gauge | 最近 tick 处理耗时（取所有 Session 最大值） |
+| `chorus_mailbox_depth` | gauge | 邮箱深度（控制道 + 事件道，取最大值） |
+| `chorus_ack_lag_ticks` | gauge | 客户端 ACK 滞后 tick 数（取所有客户端最大值） |
+
+### 快照
+
+| 指标 | 类型 | 含义 |
+| --- | --- | --- |
+| `chorus_snapshots_sent_total` | counter | 下发快照数 |
+| `chorus_snapshots_resync_total` | counter | 强制 resync 快照数（客户端 lag 超 `MaxLagTicks`） |
+| `chorus_snapshots_oversize_total` | counter | 序列化后超过 `MaxSnapshotBytes` 被跳过的快照数 |
+
+### ACK（Engine 侧分类计数）
+
+| 指标 | 类型 | 含义 |
+| --- | --- | --- |
+| `chorus_acks_accepted_total` | counter | 被接受（推进水位）的 ACK 数 |
+| `chorus_acks_duplicate_total` | counter | 重复 ACK 数 |
+| `chorus_acks_stale_total` | counter | 落后于当前水位的 ACK 数 |
+| `chorus_acks_invalid_total` | counter | 非法 ACK（客户端绑定校验失败等） |
+
+### Ingress（平台入口面，Server 与 Gateway 都有）
+
+| 指标 | 类型 | 含义 |
+| --- | --- | --- |
+| `chorus_ingress_accepted_total` | counter | 验签+映射+去重通过、进入调度的事件数 |
+| `chorus_ingress_duplicates_total` | counter | 去重命中的重复事件数（幂等返回 `duplicated=true`） |
+| `chorus_ingress_unverified_total` | counter | 验签未通过被拒的事件数（生产默认 fail-closed） |
+| `chorus_ingress_unmapped_total` | counter | 无法映射到 Session 的事件数 |
+| `chorus_ingress_rate_limited_total` | counter | 触发限流的事件数 |
+| `chorus_ingress_too_large_total` | counter | 请求体超限被拒的事件数 |
+| `chorus_ingress_timed_out_total` | counter | 事件道满且回滚去重的次数（503） |
+
+### WebSocket（Gateway 主播/观众连接面）
+
+| 指标 | 类型 | 含义 |
+| --- | --- | --- |
+| `chorus_ws_connections_total` | counter | WS 连接建立数 |
+| `chorus_ws_unauthorized_total` | counter | hello 鉴权失败被关闭的连接数 |
+| `chorus_ws_message_too_large_total` | counter | 消息体超限被拒的次数 |
+| `chorus_ws_acks_accepted_total` | counter | 被接受（未触发限流）的 WS ACK 数 |
+| `chorus_ws_acks_dropped_total` | counter | 触发限流被丢弃的 WS ACK 数 |
+
+### IPC
+
+| 指标 | 类型 | 含义 |
+| --- | --- | --- |
+| `chorus_ipc_publish_failures_total` | counter | IPC 发布失败次数（Gateway→Engine 事件、Engine→Gateway 快照/欢迎） |
+
+## 关联 ID（correlation）
+
+一次平台事件在系统内的追踪链：
+
+```
+平台 EventId ──ingress──> Envelope.SourceEventId ──IPC──> Engine 结算 ──tick──> 快照(sessionId+tickId) ──WS──> 客户端
+```
+
+- **`AudienceEvent.EventId`**：平台事件 id（去重键的一部分），ingress 响应与 `duplicated=true` 都带它。
+- **`Envelope.SourceEventId`**：IPC 信封上可选的源事件 id。Gateway 的 `/ingress/{platform}` 发布观众事件时写入 `ev.EventId`；Engine 收到后校验一致性，不一致打 warning 日志（`Correlation mismatch`）。
+- **`Envelope.MessageId`**：一次投递的唯一 id（`m_<guid>`），用于定位「这一跳」的发布失败（`chorus_ipc_publish_failures_total` 的日志都带 `message=`）。
+- **快照关联**：快照带 `sessionId` + `tickId` + `serverTimeMs`；客户端 ACK 回带 `lastAppliedTickId`，即完成「哪个事件 → 哪个 tick → 哪个客户端确认」的闭环。
+- **ACK 关联**：WS ACK 按 `sessionId|clientId` 绑定连接，`GatewayAckCmd` 携带 `lastAppliedTickId` 与 `ClientTimeMs`（客户端测漂移）。
+
+排障时：先在 ingress 面按 `eventId` 找到是否被接受/判重/拒绝；再用 `SourceEventId` 追 IPC 是否发布失败；最后在 Engine 侧看 `applied/merged/dropped` 与 `tickId` 水位。
+
+## JSON 诊断端点
+
+- `GET /sessions`：`SessionDiagnostics` 列表（tick、事件计数、lag、ack 分类计数、邮箱深度、快照计数等）。
+- `GET /matches`：match 级聚合视图（session 列表、阵营、累计事件数、最后事件时间）。
+- `GET /health`：存活探针（三进程都有）。
+
+## 日志关键字段
+
+| 字段 | 出现位置 | 含义 |
+| --- | --- | --- |
+| `eventId` / `SourceEventId` | ingress、engine 事件道 | 平台事件关联 |
+| `messageId` | IPC 发布失败、engine 收包 | 投递关联 |
+| `sessionId` / `clientId` | 全链路 | 会话与客户端 |
+| `tickId` | tick 过载、快照 | 权威 tick 水位 |
