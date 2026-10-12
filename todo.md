@@ -102,7 +102,7 @@
 ### P2 — 可观测性（§4 全空）
 
 - [x] `/metrics`（Prometheus 文本格式）：tick 耗时直方图、事件 ingested/applied/merged/dropped、ack 延迟、落后 tick 客户数、快照与重同步数——`SessionDiagnostics` 已经在收集这些字段，只差导出。（b86f5a8：Server/Gateway `/metrics`，29 项含 face 计数器与 ack 延迟/落后 tick 分布；`MetricsEndpointTests`）
-- [ ] 结构化日志：sessionId / tickId / clientId 三件套进日志（现在是裸 `Console`/`ILogger` 文案）。（部分：拒绝/版本/ready 路径已带 sessionId 结构化字段，tickId/clientId 多数日志仍缺）
+- [x] 结构化日志：sessionId / tickId / clientId 三件套进日志（现在是裸 `Console`/`ILogger` 文案）。（7209d91：拒绝/回路/快照发送失败路径全带 sessionId 结构化字段，tickId 在快照发送失败与 tick 过载路径；见 docs/reference/observability.md 日志关键字段；同 §4 该条）
 - [x] 本地压测脚本：N 个观众事件 + 2 个主播客户端，输出 tick 抖动与丢弃率（放 `scripts/`）。（578415b 独立 `Chorus.LoadTool` 工程，同 §4 压测条目；tick 抖动经 tick_overruns/errors 采样观测）
 
 ### P3 — 性能 / 测试 / 运维
