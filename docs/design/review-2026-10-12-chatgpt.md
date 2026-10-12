@@ -548,7 +548,7 @@ If you want, I can:
 
 ## 落地跟踪（本仓执行记录，随做随勾）
 
-- [x] **阶段一（正确性与安全边界）**：① 归并跨阵营串数据（✅ 2026-10-12，组合键 (S,M,F,U)/(S,M,F,U,GiftId)，验收测试 `DefaultAudienceEventReducerTests.Reduce_MixedFactions_ConservesPerFactionCounts`，commit 9ad322d） ② ACK 单调性与 Tick 上界（✅ 2026-10-12，invalid/duplicate/stale/accepted 四类计数 + 客户端绑定，验收测试 `SessionActorAckTests` 6 例；顺带修复 run loop 命令驱动后静默死亡的调度 bug，commit 499f01c） ③ 生产默认拒绝未验证 Ingress（✅ 2026-10-12，`Ingress:AllowAll` 默认 false + fail-closed 路由，验收测试 `IngressAllowAllEndpointTests`，commit def21d2） ④ 去重原子化与投递失败语义 ⑤ Match 权威语义定性
+- [x] **阶段一（正确性与安全边界）**：① 归并跨阵营串数据（✅ 2026-10-12，组合键 (S,M,F,U)/(S,M,F,U,GiftId)，验收测试 `DefaultAudienceEventReducerTests.Reduce_MixedFactions_ConservesPerFactionCounts`，commit 9ad322d） ② ACK 单调性与 Tick 上界（✅ 2026-10-12，invalid/duplicate/stale/accepted 四类计数 + 客户端绑定，验收测试 `SessionActorAckTests` 6 例；顺带修复 run loop 命令驱动后静默死亡的调度 bug，commit 499f01c） ③ 生产默认拒绝未验证 Ingress（✅ 2026-10-12，`Ingress:AllowAll` 默认 false + fail-closed 路由，验收测试 `IngressAllowAllEndpointTests`，commit def21d2） ④ 去重原子化与投递失败语义（✅ 2026-10-12，reserve/commit/rollback 原子协议，发布失败 Rollback 可重试，验收 `EventDeduplicatorTests` 并发恰一赢家，commit 78f2597；事件生命周期与四态落 spec.md §3.6） ⑤ Match 权威语义定性（✅ 2026-10-12，spec.md §2.3：展示聚合非权威，权威化条件=单 Match 定序点，结论先行不实现 MatchActor）
 - [ ] **阶段二（稳定性与过载保护）**：有界邮箱与事件缓冲、权威 Tick 去阻塞发送、Tick 超时策略、Session 生命周期回收、故障注入测试
 - [ ] **阶段三（可观测性与恢复）**：tick/队列/事件/快照指标（`chorus_*` 命名）、快照版本与大小上限、IPC 断连回退验证、可重复压测
 - [ ] **阶段四（发布与生态）**：Cohort → Chorus 内部命名收尾（sln/程序集/命名空间/CI/文档/启动命令）、最小游戏模块示例、平台适配器模板、部署与故障排查文档
