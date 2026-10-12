@@ -118,8 +118,8 @@
 > 来源与全文：[docs/design/review-2026-10-12-chatgpt.md](./docs/design/review-2026-10-12-chatgpt.md)。按用户指令：先更新文档，再按阶段执行。**每项落地必须同步该文末尾的「落地跟踪」与本表**。
 
 ### 阶段一：正确性与安全边界（最高优先）
-- [ ] 归并跨阵营串数据：`DefaultAudienceEventReducer` 分组键补 `SessionId/MatchId/FactionId`（点赞 `(S,M,F,U)`、礼物 `(S,M,F,U,GiftId)`），混合阵营计数守恒用例
-- [ ] ACK 单调性与 Tick 上界：拒绝负数/未来 Tick/倒退，绑定 Client 身份，分类计数
+- [x] 归并跨阵营串数据：`DefaultAudienceEventReducer` 分组键补 `SessionId/MatchId/FactionId`（点赞 `(S,M,F,U)`、礼物 `(S,M,F,U,GiftId)`），混合阵营计数守恒用例（2026-10-12，commit 9ad322d，验收 `Reduce_MixedFactions_ConservesPerFactionCounts`）
+- [x] ACK 单调性与 Tick 上界：拒绝负数/未来 Tick/倒退，绑定 Client 身份，分类计数（2026-10-12，commit 499f01c，验收 `SessionActorAckTests` 6 例；顺带修复 run loop 在命令驱动 drain 后因 PeriodicTimer 并发等待异常而静默死亡的 bug）
 - [ ] 生产默认拒绝未验证 Ingress：`AllowAllPlatformEventVerifier` 退为显式 dev 开关，缺验证器即拒
 - [ ] 去重原子化：`EventDeduplicator.TryMark` 改原子占位；IPC 发布失败不得被记成重复（投递状态 Received/Accepted/Applied/Failed）
 - [ ] Match 权威语义定性：展示聚合 vs 权威对抗状态（结论写进 `docs/design/spec.md`，不先上 MatchActor）
