@@ -25,14 +25,28 @@ public sealed class SessionActorSnapshotTests
         actor.Start();
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (received.Count == 0 && sw.ElapsedMilliseconds < 5000)
+        while (sw.ElapsedMilliseconds < 5000)
         {
+            lock (received)
+            {
+                if (received.Count > 0)
+                {
+                    break;
+                }
+            }
+
             await Task.Delay(10);
         }
 
-        Assert.NotEmpty(received);
-        Assert.Equal(1, received[0].V);
-        Assert.Equal("s-ver", received[0].SessionId);
+        SessionSnapshot first;
+        lock (received)
+        {
+            // The actor thread adds under this lock; read under it too.
+            Assert.NotEmpty(received);
+            first = received[0];
+        }
+        Assert.Equal(1, first.V);
+        Assert.Equal("s-ver", first.SessionId);
     }
 
     [Fact]
@@ -61,7 +75,10 @@ public sealed class SessionActorSnapshotTests
 
         Assert.True(actor.Diagnostics.TotalSnapshotsOversize >= 1);
         Assert.Equal(0, actor.Diagnostics.TotalSnapshotsSent);
-        Assert.Empty(received);
+        lock (received)
+        {
+            Assert.Empty(received);
+        }
         // The actor survives and keeps ticking.
         Assert.True(actor.Diagnostics.TickId >= 2);
     }
@@ -81,12 +98,24 @@ public sealed class SessionActorSnapshotTests
         actor.Start();
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (received.Count == 0 && sw.ElapsedMilliseconds < 5000)
+        while (sw.ElapsedMilliseconds < 5000)
         {
+            lock (received)
+            {
+                if (received.Count > 0)
+                {
+                    break;
+                }
+            }
+
             await Task.Delay(10);
         }
 
-        Assert.NotEmpty(received);
+        lock (received)
+        {
+            // The actor thread adds under this lock; read under it too.
+            Assert.NotEmpty(received);
+        }
         Assert.Equal(0, actor.Diagnostics.TotalSnapshotsOversize);
     }
 

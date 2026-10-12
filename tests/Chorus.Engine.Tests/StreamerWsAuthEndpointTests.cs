@@ -103,13 +103,25 @@ public sealed class StreamerWsAuthEndpointTests
 
         var buffer = new byte[8192];
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var result = await ws.ReceiveAsync(buffer, cts.Token);
-        if (result.MessageType == WebSocketMessageType.Close)
+        while (true)
         {
-            return (ws, null, result.CloseStatus);
-        }
+            var result = await ws.ReceiveAsync(buffer, cts.Token);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                return (ws, null, result.CloseStatus);
+            }
 
-        return (ws, Encoding.UTF8.GetString(buffer, 0, result.Count), null);
+            var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
+            // A hot session's snapshot broadcast can hit the wire before the
+            // welcome does; keep scanning for the handshake frame (welcome or
+            // error) instead of failing on the interleave.
+            if (text.Contains("\"type\":\"snapshot\""))
+            {
+                continue;
+            }
+
+            return (ws, text, null);
+        }
     }
 
     private static async Task<WebSocketCloseStatus?> ReadCloseAsync(WebSocket ws)
