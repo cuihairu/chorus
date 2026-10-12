@@ -109,7 +109,7 @@
 
 - [ ] 快照序列化：现为 JSON 全量快照（§1），每 tick 对多客户端重复序列化。改为按 tick 序列化一次复用 + `ArrayPool` 租借；评估 MessagePack/FlatBuffers（`docs/design/frame-sync.md` 已提）。
 - [ ] 测试缺口：Gateway/EngineHost 的 WS→IPC→Engine 端到端、Ingress HTTP 面、IPC 断连重连与降级（UDS→NamedPipe/TCP 回退）目前**零测试**；这三条是拆分模式的主干路径。
-- [ ] 协议版本化：`hello/welcome` 无版本字段，后续加字段会破坏旧客户端。在 `Cohort.Protocol` 加 `protocolVersion`，welcome 回显，不匹配明确拒绝。
+- [x] 协议版本化：`hello/welcome` 无版本字段，后续加字段会破坏旧客户端。在 `Cohort.Protocol` 加 `protocolVersion`，welcome 回显，不匹配明确拒绝。（2026-10-12，commit a5f23b8：`ProtocolVersionPolicy.Current`=1 + `ClientHello.ProtocolVersion?` 可选 + `ServerWelcome.ProtocolVersion` 回显（三端构造点同步）；缺省=旧客户端放行，不匹配 `protocol_mismatch` 拒绝且**先于鉴权**；计数 `streamerWs.protocolMismatch` + `chorus_ws_protocol_mismatch_total`（指标 28→29）；验收 `ProtocolVersionEndpointTests` 4 例；顺带修复 3 个既有 flaky 测试（AckFlood 未跳过交织快照、Resync 无锁枚举 List、Oversize 轮询提前退出）——修后全量 166/166 连续 10 轮全绿；docs：protocol.md 新增版本语义、versioning.md 缺口更新为「单值检查非区间协商」、observability.md 补指标行）
 - [ ] 运维：split 模式下 Gateway 应有对 EngineHost 的 readiness（现在只有各自 `/health` 常返 200）；补 compose 健康检查与优雅停机（先把在跑的 session 快照落盘）。
 
 
