@@ -133,7 +133,7 @@
 ### 阶段三：可观测性与恢复
 - [ ] `chorus_*` 指标 12 项（tick_duration/lag、ingress/applied/merged/dropped/duplicates、mailbox_depth、ack_lag、snapshot_send/resync、ipc_publish_failures）+ 事件关联 ID
 - [ ] 快照版本与大小上限、应用失败路径、客户端重同步闭环
-- [ ] IPC 断连/重启/回退（UDS↔NamedPipe 协商）验证
+- [x] IPC 断连/重启/回退（UDS↔NamedPipe 协商）验证（2026-10-12，commit d5d2d64：服务器重启后客户端惰性重连下次 publish 即恢复；publish 期间服务器宕机必须显式失败（上行即 `chorus_ipc_publish_failures_total`，绝不静默丢弃）；Auto 在 Linux 选 UDS，UDS 无法 bind 时回退 NamedPipe；验收 `IpcResilienceTests` 3 例）
 - [ ] 独立压测工具（多 Session × 观众事件 × 变速客户端 × 随机断连）
 
 ### 阶段四：发布与生态
@@ -144,7 +144,7 @@
 
 ### 十一类故障验证测试清单
 - [x] 归并（混合阵营/Match/超限计数）✅ `DefaultAudienceEventReducerTests`（9ad322d）· 去重并发 ✅ `EventDeduplicatorTests` 32 并发恰一赢家（78f2597）· 投递失败重试 ✅ `Rollback_PublishFailure_AllowsPlatformRetry`（78f2597）· Tick 过载 ✅ `SessionActorBackpressureTests.Flood_*`+`SlowTick_OverrunCounted`（5592d62/362b435）· 慢客户端 ✅ `SessionActorOutboundTests`（df71d26）· ACK 安全 ✅ `SessionActorAckTests`（499f01c）· 生命周期 ✅ `SessionManagerLifecycleTests`（362b435）· 安全（未验证事件/超大请求体/非法 WS）✅ Kuaishou/Douyin/IngressAllowAll/StreamerWsAuth e2e（e2304b2/8f18bde/def21d2）
-- [ ] Match 并发 · 快照恢复 · IPC 故障（随阶段三可观测性与独立压测工具补齐）
+- [ ] Match 并发 · 快照恢复（随阶段三可观测性与独立压测工具补齐）
 
 ### 明确不做（边界）
 - 不引入分布式 Match 集群、Kafka/RabbitMQ、增量快照/回滚同步/确定性重放；不把平台私有适配放进核心；不发展成账号/运营/支付/编辑器综合平台；单体保持默认部署形态。
