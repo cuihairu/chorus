@@ -120,7 +120,7 @@
 ### 阶段一：正确性与安全边界（最高优先）
 - [x] 归并跨阵营串数据：`DefaultAudienceEventReducer` 分组键补 `SessionId/MatchId/FactionId`（点赞 `(S,M,F,U)`、礼物 `(S,M,F,U,GiftId)`），混合阵营计数守恒用例（2026-10-12，commit 9ad322d，验收 `Reduce_MixedFactions_ConservesPerFactionCounts`）
 - [x] ACK 单调性与 Tick 上界：拒绝负数/未来 Tick/倒退，绑定 Client 身份，分类计数（2026-10-12，commit 499f01c，验收 `SessionActorAckTests` 6 例；顺带修复 run loop 在命令驱动 drain 后因 PeriodicTimer 并发等待异常而静默死亡的 bug）
-- [ ] 生产默认拒绝未验证 Ingress：`AllowAllPlatformEventVerifier` 退为显式 dev 开关，缺验证器即拒
+- [x] 生产默认拒绝未验证 Ingress：`AllowAllPlatformEventVerifier` 退为显式 dev 开关，缺验证器即拒（2026-10-12，commit def21d2：`Ingress:AllowAll` 默认 false + 响亮告警 + demo 配置显式开启并注明、生产配置保持关闭；验收 `IngressAllowAllEndpointTests`）
 - [x] 去重原子化：`EventDeduplicator.TryMark` 改原子占位；IPC 发布失败不得被记成重复（投递状态 Received/Accepted/Applied/Failed）（2026-10-12，commit 78f2597：reserve/commit/rollback 原子协议 + token 守卫 + TTL 清扫 + 容量安全阀，两端 ingress 发布失败即 Rollback；验收 `EventDeduplicatorTests` 13 例含 32 并发同 id 恰一赢家；生命周期与四态落 `docs/design/spec.md` §3.6）
 - [x] Match 权威语义定性：展示聚合 vs 权威对抗状态（结论写进 `docs/design/spec.md`，不先上 MatchActor）（2026-10-12，commit 0409cf2：spec.md §2.3——MatchStateStore 定性为展示级共享聚合，权威裁决需单 Match 定序点（MatchActor 或收敛到单 SessionActor），触发条件=公平对抗/结算需求出现）
 
@@ -132,7 +132,7 @@
 
 ### 阶段三：可观测性与恢复
 - [x] `chorus_*` 指标（28 项：tick_duration/lag、ingress/applied/merged/dropped/duplicates、mailbox_depth、ack_lag、snapshot_send/resync/oversize、ws、ipc_publish_failures）+ 事件关联 ID（2026-10-12，commit b86f5a8 三端 `/metrics`；commit 68f29a9 `Envelope.SourceEventId` 贯穿 ingress→Engine（不一致打 `Correlation mismatch` warning）+ `docs/reference/observability.md` 指标清单/关联链/抓取示例；验收 `CorrelationTests` 3 例）
-- [ ] 快照版本与大小上限、应用失败路径、客户端重同步闭环
+- [x] 快照版本与大小上限、应用失败路径、客户端重同步闭环（2026-10-12，commit 768e668：`V=1` schema 版本 + `MaxSnapshotBytes` 跳过发送并计数，超限即走 resync 兜底；commit 8226727：`SessionActorResyncTests.NoAck_TriggersForcedResync_ThenAckClearsLag` 验证停发 ACK→强制 resync→补发 ACK 回到非强制的完整闭环）
 - [x] IPC 断连/重启/回退（UDS↔NamedPipe 协商）验证（2026-10-12，commit d5d2d64：服务器重启后客户端惰性重连下次 publish 即恢复；publish 期间服务器宕机必须显式失败（上行即 `chorus_ipc_publish_failures_total`，绝不静默丢弃）；Auto 在 Linux 选 UDS，UDS 无法 bind 时回退 NamedPipe；验收 `IpcResilienceTests` 3 例）
 - [x] 独立压测工具（多 Session × 观众事件 × 变速客户端 × 随机断连）（2026-10-12，commit 578415b：`src/Chorus.LoadTool` 控制台工具，`--sessions/--rate/--clients/--ack-mix(fast|normal|slow)/--disconnect-every/--dup-rate/--gift-rate/--match`，双平台 payload（`test` 未签名演示链路 / `douyin` 映射器形状），结束时抓 `--engine-metrics`；验收 `LoadToolTests` 6 例 + 对真实 Server 冒烟（475 发/472 受理/241 判重/808 快照/89 ACK/9 重连，引擎侧 applied=235、snapshots=1201）；文档 `docs/guide/load-testing.md`）
 
@@ -144,7 +144,7 @@
 
 ### 十一类故障验证测试清单
 - [x] 归并（混合阵营/Match/超限计数）✅ `DefaultAudienceEventReducerTests`（9ad322d）· 去重并发 ✅ `EventDeduplicatorTests` 32 并发恰一赢家（78f2597）· 投递失败重试 ✅ `Rollback_PublishFailure_AllowsPlatformRetry`（78f2597）· Tick 过载 ✅ `SessionActorBackpressureTests.Flood_*`+`SlowTick_OverrunCounted`（5592d62/362b435）· 慢客户端 ✅ `SessionActorOutboundTests`（df71d26）· ACK 安全 ✅ `SessionActorAckTests`（499f01c）· 生命周期 ✅ `SessionManagerLifecycleTests`（362b435）· 安全（未验证事件/超大请求体/非法 WS）✅ Kuaishou/Douyin/IngressAllowAll/StreamerWsAuth e2e（e2304b2/8f18bde/def21d2）
-- [ ] Match 并发 · 快照恢复（随阶段三可观测性与独立压测工具补齐）
+- [x] Match 并发 · 快照恢复 ✅ `MatchConcurrencyTests.ConcurrentEvents_ConserveTotalsAcrossSessions`（两 Session 同 match 400 并发投递无丢失、faction→session 归属正确，commit 8226727）· `SessionActorResyncTests.NoAck_TriggersForcedResync_ThenAckClearsLag`（停发 ACK 触发强制 resync、补发 ACK 后快照回到非强制，8226727）
 
 ### 明确不做（边界）
 - 不引入分布式 Match 集群、Kafka/RabbitMQ、增量快照/回滚同步/确定性重放；不把平台私有适配放进核心；不发展成账号/运营/支付/编辑器综合平台；单体保持默认部署形态。
