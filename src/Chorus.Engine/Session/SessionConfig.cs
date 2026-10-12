@@ -16,5 +16,7 @@ public sealed record SessionConfig(
     /// <summary>Max live sessions per process; 0 disables the cap (review stage-2).</summary>
     int MaxSessions = 200,
     /// <summary>Client-less sessions idle longer than this are evicted (review stage-2).</summary>
-    int IdleEvictAfterMs = 600_000
+    int IdleEvictAfterMs = 600_000,
+    /// <summary>Serialized state payload cap per snapshot; larger states skip the send and count as oversize. 0 disables (stage-3).</summary>
+    int MaxSnapshotBytes = 1_048_576
 );

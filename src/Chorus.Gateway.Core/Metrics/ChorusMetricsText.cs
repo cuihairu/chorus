@@ -49,7 +49,7 @@ public static class ChorusMetricsText
     private static void AppendSessionMetrics(StringBuilder sb, IReadOnlyList<SessionDiagnostics> sessions)
     {
         long ingested = 0, applied = 0, merged = 0, dropped = 0, overflow = 0, gifts = 0;
-        long snapshots = 0, resyncs = 0, overruns = 0, errors = 0;
+        long snapshots = 0, resyncs = 0, overruns = 0, errors = 0, oversize = 0;
         long ackAccepted = 0, ackDuplicate = 0, ackStale = 0, ackInvalid = 0;
         var tickMsMax = 0L;
         var mailboxMax = 0;
@@ -67,6 +67,7 @@ public static class ChorusMetricsText
             resyncs += s.TotalResyncSnapshotsSent;
             overruns += s.TotalTickOverruns;
             errors += s.TotalTickErrors;
+            oversize += s.TotalSnapshotsOversize;
             ackAccepted += s.TotalAcksAccepted;
             ackDuplicate += s.TotalAcksDuplicate;
             ackStale += s.TotalAcksStale;
@@ -92,6 +93,7 @@ public static class ChorusMetricsText
         AppendCounter(sb, "chorus_tick_errors_total", errors);
         AppendCounter(sb, "chorus_snapshots_sent_total", snapshots);
         AppendCounter(sb, "chorus_snapshots_resync_total", resyncs);
+        AppendCounter(sb, "chorus_snapshots_oversize_total", oversize);
         AppendCounter(sb, "chorus_acks_accepted_total", ackAccepted);
         AppendCounter(sb, "chorus_acks_duplicate_total", ackDuplicate);
         AppendCounter(sb, "chorus_acks_stale_total", ackStale);

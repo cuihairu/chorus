@@ -21,7 +21,8 @@ builder.Services.AddSingleton(sp =>
         EventEnqueueMaxWaitMs: cfg.GetValue("Session:EventEnqueueMaxWaitMs", 50),
         TickTimeoutMs: cfg.GetValue("Session:TickTimeoutMs", 250),
         MaxSessions: cfg.GetValue("Session:MaxSessions", 200),
-        IdleEvictAfterMs: cfg.GetValue("Session:IdleEvictAfterMs", 600_000)
+        IdleEvictAfterMs: cfg.GetValue("Session:IdleEvictAfterMs", 600_000),
+        MaxSnapshotBytes: cfg.GetValue("Session:MaxSnapshotBytes", 1_048_576)
     );
 });
 builder.Services.AddHostedService<EngineIpcService>();

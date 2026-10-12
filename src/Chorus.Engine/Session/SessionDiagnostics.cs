@@ -26,7 +26,9 @@ public sealed record SessionDiagnostics(
     /// <summary>Ticks that failed (e.g. GameModule threw); the actor survives and keeps ticking.</summary>
     long TotalTickErrors = 0,
     /// <summary>Current pending depth of the control and event lanes combined.</summary>
-    int MailboxDepth = 0
+    int MailboxDepth = 0,
+    /// <summary>Snapshots skipped because the serialized state exceeded MaxSnapshotBytes (stage-3).</summary>
+    long TotalSnapshotsOversize = 0
 );
 
 public sealed record SessionClientDiagnostics(

@@ -9,5 +9,7 @@ public sealed record SessionSnapshot(
     string? Reason = null,
     string? TargetClientId = null,
     long? ClientLagTicks = null,
-    long? ClientLastAckTickId = null
+    long? ClientLastAckTickId = null,
+    /// <summary>Snapshot schema version (stage-3); clients reject unknown versions and resync.</summary>
+    int V = 1
 );

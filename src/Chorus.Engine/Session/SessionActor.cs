@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Threading.Channels;
 using Chorus.Engine.Abstractions;
 using Chorus.Protocol.Models;
@@ -41,6 +42,7 @@ public sealed class SessionActor : IAsyncDisposable
     private long _totalDroppedGifts;
     private long _totalTickOverruns;
     private long _totalTickErrors;
+    private long _totalSnapshotsOversize;
 
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _runCts;
@@ -447,6 +449,21 @@ public sealed class SessionActor : IAsyncDisposable
         if (needsPeriodic || forceClients.Count > 0)
         {
             var state = _game.GetStateSnapshot();
+
+            // Snapshot size cap (review stage-3): the serialized state payload
+            // dominates wire size. An oversize state skips the send entirely -
+            // clients fall back to their resync loop (no ACK -> forced resync
+            // once the state shrinks back under the cap).
+            if (_config.MaxSnapshotBytes > 0)
+            {
+                var stateBytes = JsonSerializer.SerializeToUtf8Bytes(state);
+                if (stateBytes.Length > _config.MaxSnapshotBytes)
+                {
+                    Interlocked.Increment(ref _totalSnapshotsOversize);
+                    return;
+                }
+            }
+
             if (needsPeriodic)
             {
                 foreach (var (client, stateInfo) in _clients.Values)
@@ -571,7 +588,8 @@ public sealed class SessionActor : IAsyncDisposable
             TotalDroppedGifts: Interlocked.Read(ref _totalDroppedGifts),
             TotalTickOverruns: Interlocked.Read(ref _totalTickOverruns),
             TotalTickErrors: Interlocked.Read(ref _totalTickErrors),
-            MailboxDepth: (_control.Reader.CanCount ? _control.Reader.Count : 0) + (_events.Reader.CanCount ? _events.Reader.Count : 0)
+            MailboxDepth: (_control.Reader.CanCount ? _control.Reader.Count : 0) + (_events.Reader.CanCount ? _events.Reader.Count : 0),
+            TotalSnapshotsOversize: Interlocked.Read(ref _totalSnapshotsOversize)
         );
     }
 
