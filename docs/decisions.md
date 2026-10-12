@@ -47,7 +47,21 @@
 - **决策**：新增共享工程 `Cohort.Gateway.Core` 承载两 face 策略组件：
   - `platform-ingress` 面：限流（每来源固定窗口）、请求体上限（413）、请求超时（504）、按平台验签、去重，
     落在两个 host 的 `POST /ingress/{platform}` 处理器 + `/faces` 计数端点；
-  - `streamer-ws` 面：鉴权（阶段批次 3）、ACK 限频、消息体上限，落在 `/ws` 处理器；
+  - `streamer-ws` 面：鉴权、ACK 限频、消息体上限，落在 `/ws` 处理器（2026-10-12 已落地，见 D6）；
   - 两面配置分道（`Faces:PlatformIngress:*` / `Faces:StreamerWs:*`），日志分类按面
     （`Cohort.Ingress` / `Cohort.StreamerWs`），计数器经 `GET /faces` 分面暴露。
 - **影响**：单体仍是默认部署形态；物理拆分等触发条件（worker CPU>60% 或单机数百房间），见拓扑文档 §4。
+
+### D6 主播 WS 鉴权 fail-closed + Ingress:AllowAll 默认关（demo 靠 Development 配置显式打开）
+
+- **背景**：评审 P0-4（生产默认拒绝未验证 Ingress）与 P1-10（客户端消息边界/授权流程）；
+  `/ws` 此前无凭据任何人都可连，`AllowAllPlatformEventVerifier` 无条件注册等于永远放行。
+- **决策**：
+  - `/ws` hello 携带 `token`，服务端校验（`Faces:StreamerWs:AuthTokens`，支持 `token@unixMs过期`）；
+    缺失/未知/过期 → 回 error 后以 `PolicyViolation` 关连接；**未配置 token 且未开匿名 → 全部拒绝（fail-closed）**；
+  - `Ingress:AllowAll`（默认 `false`）才注册未签名验签兜底；无真实验证器的平台在生产配置下直接 401；
+  - 消息体上限（默认 64KiB，超限 `MessageTooBig` 关连接）与 ACK 限频（默认 600/连接/分钟，超限丢弃并计数）；
+  - **本地 demo 影响已消化**：appsettings.Development.json（Server/Gateway）显式 `Ingress:AllowAll=true` +
+    `Faces:StreamerWs:AllowAnonymous=true` 并注明仅开发用；生产配置不带这两项，启动日志对两者打醒目告警。
+- **影响**：直接 `dotnet run`（Development）demo 行为不变；生产/测试环境默认全拒绝，需配 token 或回调验签密钥。
+  回滚面：恢复无条件注册 AllowAll + 去掉 hello 校验即可。

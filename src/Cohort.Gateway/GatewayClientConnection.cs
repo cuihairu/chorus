@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using Cohort.Gateway.Core;
 using Cohort.Protocol.Messages;
 
 namespace Cohort.Gateway;

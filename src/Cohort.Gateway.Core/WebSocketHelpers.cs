@@ -3,11 +3,17 @@ using System.Text;
 using System.Text.Json;
 using Cohort.Protocol;
 
-namespace Cohort.Server;
+namespace Cohort.Gateway.Core;
 
 public static class WebSocketHelpers
 {
-    public static async Task<string> ReceiveTextAsync(WebSocket ws, CancellationToken cancellationToken)
+    /// <summary>
+    /// Receives one full text message with a hard size cap: a message larger
+    /// than <paramref name="maxBytes"/> throws <see cref="WsMessageTooLargeException"/>
+    /// (callers close the connection). Guards the streamer-ws listener face
+    /// against oversized client messages.
+    /// </summary>
+    public static async Task<string> ReceiveTextAsync(WebSocket ws, CancellationToken cancellationToken, int maxBytes)
     {
         var buffer = new byte[16 * 1024];
         using var ms = new MemoryStream();
@@ -21,6 +27,11 @@ public static class WebSocketHelpers
 
             if (result.Count > 0)
             {
+                if (ms.Length + result.Count > maxBytes)
+                {
+                    throw new WsMessageTooLargeException(maxBytes);
+                }
+
                 ms.Write(buffer, 0, result.Count);
             }
 
@@ -41,3 +52,14 @@ public static class WebSocketHelpers
     }
 }
 
+/// <summary>Thrown when a WS text message exceeds the configured size cap.</summary>
+public sealed class WsMessageTooLargeException : Exception
+{
+    public WsMessageTooLargeException(int maxBytes)
+        : base($"WebSocket message exceeds the {maxBytes} byte limit")
+    {
+        MaxBytes = maxBytes;
+    }
+
+    public int MaxBytes { get; }
+}

@@ -88,9 +88,9 @@
 
 - [x] **抖音平台对接**：`Cohort.Adapters.Abstractions` 已有 `IPlatformEventMapper` / `IPlatformEventVerifier` / `IAudienceFactionRule`，但仓库里只有 `TestPlatformEventMapper`（拼装测试数据）与 `AllowAllPlatformEventVerifier`（无条件放行）。新增 `DouyinPlatformEventMapper` + `DouyinPlatformEventVerifier`：抖音开放平台直播事件回调接入（弹幕/礼物/点赞→`AudienceEvent`），回调验签与事件类型映射按官方文档实现；`/ingress/douyin` 路由挂上，去重继续走 `EventDeduplicator`（platformEventId+TTL）。（2026-10-12 完成：官方口径未能在线核实，验签/字段为明示的联调占位契约，见 `docs/reference/platform-douyin.md`；验签 fail-closed，配置注入密钥；顺带落地 platform-ingress face 限流/请求体上限/超时）
 - [x] **快手平台对接**：同上，`KuaishouPlatformEventMapper` + `KuaishouPlatformEventVerifier`，`/ingress/kuaishou`；两家的鉴权材料（app secret / 回调加密）走配置，不硬编码。（2026-10-12 完成：验签与 AES 信封为**官方口径**（sha1Hex(body+Token) / kwaisign，AES-256-CBC IV=Key[0..16]，见 `docs/reference/platform-kuaishou.md` §1）；直播事件内层 JSON 官方文档未给，按明示占位契约，待联调替换；验签 fail-closed，Token/KEY 配置注入；msgId 作去重 EventId）
-- [ ] **两个平台的联调用例**：官方样例 payload 进仓做金测（签名正确通过、篡改拒绝、重复 event id 去重、未知事件类型不崩）。
-- [ ] **WebSocket 接入鉴权**：`hello` 目前无凭据，任何人可连 `/ws` 并收快照（`docs/design/spec.md:31` 把鉴权列为会话管理项但未实现）。加 token（服务端校验 + 过期），失败直接关连接。
-- [ ] **Ingress 真验签**：替换 `AllowAllPlatformEventVerifier` 为按平台的 HMAC 校验（stub 保留为显式的 `allowAll=true` 配置，且默认关闭）。
+- [x] **两个平台的联调用例**：官方样例 payload 进仓做金测（签名正确通过、篡改拒绝、重复 event id 去重、未知事件类型不崩）。（2026-10-12 完成：`DouyinIngressEndpointTests`（占位契约口径）与 `KuaishouIngressEndpointTests`（官方 kwaisign+AES 信封口径，测试内构造密文）；四类金测齐全，TestHost HTTP 端到端）
+- [x] **WebSocket 接入鉴权**：`hello` 目前无凭据，任何人可连 `/ws` 并收快照（`docs/design/spec.md:31` 把鉴权列为会话管理项但未实现）。加 token（服务端校验 + 过期），失败直接关连接。（2026-10-12 完成：`Faces:StreamerWs:AuthTokens`（`token@unixMs过期`，`;` 分隔）+ 缺失/未知/过期以 PolicyViolation 关连接；未配置且未开匿名 → fail-closed 全拒；demo 在 appsettings.Development.json 显式开 AllowAnonymous 并注明；测试 `StreamerWsAuthEndpointTests`）
+- [x] **Ingress 真验签**：替换 `AllowAllPlatformEventVerifier` 为按平台的 HMAC 校验（stub 保留为显式的 `allowAll=true` 配置，且默认关闭）。（2026-10-12 完成：抖音/快手 named verifier 按 `Ingress:AllowAll`（默认 false）才注册兜底；缺验证器/密钥 → 401（fail-closed），评审 P0-4 验收测试 `IngressAllowAllEndpointTests`）
 
 ### P1 — 正确性与容量
 

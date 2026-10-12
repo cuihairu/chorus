@@ -9,8 +9,10 @@ using Cohort.Server;
 using Cohort.SampleGame;
 using Cohort.Adapters.Abstractions;
 using Cohort.Adapters.Platforms;
+using Cohort.Gateway.Core;
 using Cohort.Gateway.Core.Faces;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,7 +24,13 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton(IngressFaceOptions.FromConfiguration(builder.Configuration));
 builder.Services.AddSingleton<IngressFaceGuard>();
 builder.Services.AddSingleton<FaceCounters>();
-builder.Services.AddSingleton<AllowAllPlatformEventVerifier>();
+builder.Services.AddSingleton(StreamerWsFaceOptions.FromConfiguration(builder.Configuration));
+// Ingress:AllowAll (default false) keeps the unsigned dev verifier registered;
+// without it the router fails closed for platforms without a real verifier.
+if (builder.Configuration.GetValue("Ingress:AllowAll", false))
+{
+    builder.Services.AddSingleton<AllowAllPlatformEventVerifier>();
+}
 builder.Services.AddSingleton(sp =>
     new DouyinPlatformEventVerifier(
         secret: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:AppSecret"],
@@ -53,6 +61,26 @@ builder.Services.AddSingleton(sp =>
 
 var app = builder.Build();
 app.UseWebSockets();
+
+// Loud startup warnings for the two dev-only switches (docs/reference/config.md).
+if (builder.Configuration.GetValue("Ingress:AllowAll", false))
+{
+    app.Logger.LogError(
+        "Ingress:AllowAll is ENABLED: platform callbacks are accepted WITHOUT signature verification. Dev/demo only - never enable in production.");
+}
+
+var streamerWsFaces = app.Services.GetRequiredService<StreamerWsFaceOptions>();
+if (streamerWsFaces.AllowAnonymous)
+{
+    app.Logger.LogWarning(
+        "Faces:StreamerWs:AllowAnonymous is ENABLED: streamer WS connections are accepted without a token. Dev/demo only.");
+}
+
+if (streamerWsFaces.Tokens.Count == 0 && !streamerWsFaces.AllowAnonymous)
+{
+    app.Logger.LogError(
+        "No streamer WS tokens configured (Faces:StreamerWs:AuthTokens) and anonymous access is off: all WS connections will be rejected. Configure tokens or enable AllowAnonymous for local dev.");
+}
 
 app.MapGet("/", () => new { name = "Cohort", ok = true });
 app.MapGet("/health", () => Results.Ok());
@@ -138,6 +166,8 @@ app.MapPost("/ingress/{platform}", async (
     }
 });
 
+// streamer-ws listener face: hello token auth (fail-closed), message body
+// cap, ACK rate limit (docs/design/process-topology.md §4).
 app.Map("/ws", async context =>
 {
     if (!context.WebSockets.IsWebSocketRequest)
@@ -148,26 +178,57 @@ app.Map("/ws", async context =>
     }
 
     var sessions = context.RequestServices.GetRequiredService<SessionManager>();
+    var faceOptions = context.RequestServices.GetRequiredService<StreamerWsFaceOptions>();
+    var faces = context.RequestServices.GetRequiredService<FaceCounters>();
     var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Cohort.StreamerWs");
 
     using var ws = await context.WebSockets.AcceptWebSocketAsync();
+    faces.WsConnection();
+
+    string helloText;
+    try
+    {
+        helloText = await WebSocketHelpers.ReceiveTextAsync(ws, context.RequestAborted, faceOptions.MaxMessageBytes);
+    }
+    catch (WsMessageTooLargeException)
+    {
+        faces.WsMessageTooLarge();
+        logger.LogWarning("WS hello exceeded {MaxBytes} bytes; closing connection", faceOptions.MaxMessageBytes);
+        await RejectConnectionAsync(ws, WebSocketCloseStatus.MessageTooBig, "hello too large", error: null, context.RequestAborted);
+        return;
+    }
+    catch (Exception ex)
+    {
+        logger.LogWarning(ex, "Failed to receive hello");
+        await RejectConnectionAsync(ws, WebSocketCloseStatus.NormalClosure, "invalid hello",
+            new ServerError(ProtocolTypes.Error, "Invalid hello"), context.RequestAborted);
+        return;
+    }
 
     ClientHello? hello;
     try
     {
-        var helloText = await WebSocketHelpers.ReceiveTextAsync(ws, context.RequestAborted);
         hello = JsonSerializer.Deserialize<ClientHello>(helloText, ProtocolJson.SerializerOptions);
     }
-    catch (Exception ex)
+    catch (JsonException)
     {
-        logger.LogWarning(ex, "Failed to parse hello");
-        await WebSocketHelpers.SendJsonAsync(ws, new ServerError(ProtocolTypes.Error, "Invalid hello"), context.RequestAborted);
-        return;
+        hello = null;
     }
 
     if (hello == null || !string.Equals(hello.Type, ProtocolTypes.Hello, StringComparison.Ordinal))
     {
-        await WebSocketHelpers.SendJsonAsync(ws, new ServerError(ProtocolTypes.Error, "First message must be hello"), context.RequestAborted);
+        await RejectConnectionAsync(ws, WebSocketCloseStatus.NormalClosure, "first message must be hello",
+            new ServerError(ProtocolTypes.Error, "First message must be hello"), context.RequestAborted);
+        return;
+    }
+
+    var auth = faceOptions.Authenticate(hello.Token, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    if (!auth.Ok)
+    {
+        faces.WsUnauthorized();
+        logger.LogWarning("WS connection rejected ({Reason}) for session {SessionId}", auth.Reason, hello.SessionId);
+        await RejectConnectionAsync(ws, WebSocketCloseStatus.PolicyViolation, auth.Reason,
+            new ServerError(ProtocolTypes.Error, $"unauthorized: {auth.Reason}"), context.RequestAborted);
         return;
     }
 
@@ -188,16 +249,47 @@ app.Map("/ws", async context =>
         ServerTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
     ), context.RequestAborted);
 
+    var ackWindowStartMs = 0L;
+    var ackCount = 0;
     try
     {
         while (ws.State == WebSocketState.Open && !context.RequestAborted.IsCancellationRequested)
         {
-            var text = await WebSocketHelpers.ReceiveTextAsync(ws, context.RequestAborted);
+            string text;
+            try
+            {
+                text = await WebSocketHelpers.ReceiveTextAsync(ws, context.RequestAborted, faceOptions.MaxMessageBytes);
+            }
+            catch (WsMessageTooLargeException)
+            {
+                faces.WsMessageTooLarge();
+                logger.LogWarning("WS message exceeded {MaxBytes} bytes; closing connection", faceOptions.MaxMessageBytes);
+                await RejectConnectionAsync(ws, WebSocketCloseStatus.MessageTooBig, "message too large", error: null, context.RequestAborted);
+                return;
+            }
+
             using var doc = JsonDocument.Parse(text);
             var type = doc.RootElement.TryGetProperty("type", out var t) ? t.GetString() : null;
 
             if (string.Equals(type, ProtocolTypes.Ack, StringComparison.Ordinal))
             {
+                var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (ackWindowStartMs == 0 || nowMs - ackWindowStartMs >= 60_000)
+                {
+                    ackWindowStartMs = nowMs;
+                    ackCount = 1;
+                }
+                else if (ackCount >= faceOptions.AckPerMinute)
+                {
+                    faces.WsAckDropped();
+                    continue;
+                }
+                else
+                {
+                    ackCount++;
+                }
+
+                faces.WsAckAccepted();
                 var ack = doc.RootElement.Deserialize<ClientAck>(ProtocolJson.SerializerOptions);
                 if (ack != null)
                 {
@@ -234,6 +326,28 @@ static IReadOnlyDictionary<string, string> BuildFactionMap(IConfigurationSection
     return section.GetChildren()
         .Where(x => !string.IsNullOrWhiteSpace(x.Key) && !string.IsNullOrWhiteSpace(x.Value))
         .ToDictionary(x => x.Key, x => x.Value!, StringComparer.OrdinalIgnoreCase);
+}
+
+static async Task RejectConnectionAsync(
+    WebSocket ws,
+    WebSocketCloseStatus closeStatus,
+    string reason,
+    object? error,
+    CancellationToken cancellationToken)
+{
+    try
+    {
+        if (error != null)
+        {
+            await WebSocketHelpers.SendJsonAsync(ws, error, cancellationToken);
+        }
+
+        await ws.CloseAsync(closeStatus, reason, cancellationToken);
+    }
+    catch
+    {
+        // Client already gone; nothing to reject.
+    }
 }
 
 // Exposes the entry point for WebApplicationFactory-based integration tests.

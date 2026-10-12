@@ -7,13 +7,28 @@ title: 协议参考
 ## hello（client -> server）
 
 ```json
-{"type":"hello","sessionId":"optional","clientId":"optional"}
+{"type":"hello","sessionId":"optional","clientId":"optional","token":"optional"}
 ```
 
 字段说明：
 
 - `sessionId`：客户端希望加入的会话，可选
 - `clientId`：客户端标识，可选；未提供时可由服务端分配
+- `token`：接入凭据，可选；服务端校验（见下）
+
+### hello 鉴权（2026-10-12 起，fail-closed）
+
+服务端在收到 hello 后校验 `token`（配置 `Faces:StreamerWs:AuthTokens`，支持 `token@unixMs过期时间`，
+分号分隔多个）：
+
+- token 缺失/未知/已过期 → 服务端先回 `error`（`unauthorized: missing_token | invalid_token | token_expired`），
+  随后以 `PolicyViolation` 关闭连接；
+- 未配置任何 token 且未开 `Faces:StreamerWs:AllowAnonymous` → 所有连接一律拒绝（fail-closed）；
+- `AllowAnonymous` 仅建议在开发配置（appsettings.Development.json）里显式打开。
+
+hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（默认 64KiB）→ 以
+`MessageTooBig` 关闭连接。ACK 超过 `Faces:StreamerWs:AckPerMinute`（默认 600/连接/分钟）→
+静默丢弃并计入 `/faces` 的 `streamerWs.ackDropped`。
 
 ## welcome（server -> client）
 

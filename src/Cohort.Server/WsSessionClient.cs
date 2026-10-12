@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text.Json;
 using Cohort.Engine.Session;
+using Cohort.Gateway.Core;
 using Cohort.Protocol;
 using Cohort.Protocol.Messages;
 

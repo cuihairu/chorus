@@ -141,6 +141,7 @@ resyncCooldownMs = 2000
 
 | 键 | 默认 | 说明 |
 |---|---|---|
+| `Ingress:AllowAll` | `false` | **开发开关**：`true` 时注册未签名验签兜底（无真实验证器的平台回调被放行）。开启时启动日志打 ERROR 告警；仅建议在 appsettings.Development.json 显式打开，生产配置不带 |
 | `Ingress:DedupTtlSeconds` | `600` | 事件去重 TTL（platformEventId） |
 | `Ingress:FactionRules:CommentKeywords` | 空 | 弹幕口令 → 阵营映射 |
 | `Ingress:FactionRules:GiftIds` | 空 | 礼物 ID → 阵营映射 |
@@ -152,6 +153,10 @@ resyncCooldownMs = 2000
 | `Faces:PlatformIngress:MaxBodyBytes` | `65536` | platform-ingress 面请求体上限，超限 413 |
 | `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | platform-ingress 面每来源每分钟上限，超限 429 |
 | `Faces:PlatformIngress:TimeoutMs` | `5000` | platform-ingress 面单请求预算，超时 504 |
+| `Faces:StreamerWs:AuthTokens` | 无 | 主播 WS 接入 token 列表，`;` 分隔，每项 `token` 或 `token@unixMs过期时间`。**未配置且未开 AllowAnonymous → 所有 WS 连接拒绝（fail-closed）** |
+| `Faces:StreamerWs:AllowAnonymous` | `false` | 开发开关：允许无 token 连接。开启时启动日志打 WARN；仅建议在 appsettings.Development.json 显式打开 |
+| `Faces:StreamerWs:MaxMessageBytes` | `65536` | 单条 WS 消息上限，超限以 `MessageTooBig` 关闭连接 |
+| `Faces:StreamerWs:AckPerMinute` | `600` | 每连接每分钟 ACK 上限，超限静默丢弃（计数 `/faces` → `streamerWs.ackDropped`） |
 
 ## 推荐阅读
 
