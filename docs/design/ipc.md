@@ -28,7 +28,7 @@ title: 通信抽象（进程内/进程间）
 2. **本机 IPC（Unix Domain Socket / NamedPipe）**：跨进程但仍是本机，运维简单
 3. **localhost TCP**：跨进程/跨容器更通用（拆分到容器/多主机前的过渡方案）
 4. **远程 TCP/消息队列**：多机部署
-5. **共享内存（MemoryMappedFile + RingBuffer + FlatBuffers）**：吞吐最高，但实现与调试成本最大（建议在有明确性能瓶颈后再上）
+5. **共享内存（MemoryMappedFile + RingBuffer + FlatBuffers）**：吞吐最高，但实现与调试成本最大（建议在有明确性能瓶颈后再上；详细评估与触发条件见 [共享内存 IPC 传输评估](./shared-memory-transport.md)）
 
 ## 当前仓库状态
 

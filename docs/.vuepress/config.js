@@ -24,6 +24,7 @@ module.exports = {
         "/design/frame-sync-best-practices.md",
         "/design/client-resync-state-machine.md",
         "/design/ipc.md",
+        "/design/shared-memory-transport.md",
         "/design/spec.md",
         "/design/legacy-real-server-analysis.md",
         "/design/review-2026-10-12-chatgpt.md",
