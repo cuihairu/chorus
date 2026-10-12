@@ -36,7 +36,7 @@
 
 ## 3.5 通信与部署模式
 
-- [ ] 抽象 `MessageBus/ActorRef/Router`（支持 Monolith 与拆分）
+- [ ] 抽象 `MessageBus/ActorRef/Router`（支持 Monolith 与拆分）（进行中 a6eae7f：会话生命周期已共享 `SessionRegistry`；Router/Tell 抽象未动）
 - [x] 提供 InProc bus（进程内）
 - [x] 提供 NamedPipe bus（本机 IPC 示例）
 - [x] 提供 Unix Domain Socket bus（本机 IPC 示例）
@@ -97,7 +97,7 @@
 - [x] **`SessionActor` 反压**：`SessionActor.cs:19` 是 `Channel.CreateUnbounded`（无界邮箱）——慢消费/事件洪峰时内存无上界，与 §1 勾选的「backpressure」不符。改有界邮箱 + 溢出策略（按 `maxEventsPerTick` 已有的合并/丢弃口径），并把 `SessionDiagnostics` 的 dropped 计数接出去。（5592d62：事件道有界 `Wait` + 礼物单次有限等待，溢出分 overflow/gift 计数入 `SessionDiagnostics`；控制命令道保持无界不丢；`SessionActorBackpressureTests`）
 - [x] **会话空闲回收**：`SessionManager` 只有 `DisposeAsync`，没有空闲超时/驱逐；长跑会话与僵尸 session 会一直占 tick。加 idle timeout + 主动驱逐（并同步给 Gateway 注销）。（362b435：`SessionConfig.IdleEvictAfterMs`（600s 默认）+ `SweepIdleAsync` 定期清扫 + 容量满时 idlest-first 驱逐（Server 端）；拆分模式同款在 `EngineIpcService.MaybeEnforceSessionLifecycle`，只驱逐无客户端会话故无需 Gateway 注销；`SessionManagerLifecycleTests`）
 - [x] **合并重复代码**：把 `Ingress/*` 与 `WebSocketHelpers.cs` 从 Server/Gateway 抽到共享工程（`Cohort.Gateway.Core` 或并入 `Cohort.Protocol`），两处 `#if`/拷贝改为一次引用；补单测只写一份。（`WebSocketHelpers.cs`、`Faces/IngressFaceGuard.cs`/`IngressRateLimiter.cs`/`IngressFaceOptions.cs` 均只在 `Chorus.Gateway.Core` 一份，Server/Gateway 皆工程引用（e2304b2 起），无 `#if`/拷贝；单测 `IngressFaceGuardTests` 单份）
-- [ ] **`MessageBus/ActorRef/Router` 抽象**（§3.5 唯一未勾项）与进程内路由表：现在 Server 单进程直连 actor，拆分模式各写一套。
+- [ ] **`MessageBus/ActorRef/Router` 抽象**（§3.5 唯一未勾项）与进程内路由表：现在 Server 单进程直连 actor，拆分模式各写一套。（进行中 a6eae7f：会话生命周期（容量上限 + idlest 驱逐 + 空闲清扫 + lastSeen）已抽为共享 `SessionRegistry`，Monolith 与 EngineHost 两套合一，`SessionRegistryTests` 直测；剩余：ActorRef/Tell 语义与路由表抽象本身）
 
 ### P2 — 可观测性（§4 全空）
 
