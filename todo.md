@@ -53,7 +53,7 @@
 ## 4. 可观测性与压测
 
 - [x] 指标：tick 耗时、事件数、丢弃/合并数、ack 延迟、落后 tick（b86f5a8 `/metrics` Prometheus 文本 + `SessionDiagnostics` 导出；后续 a5f23b8/be9f264 补 protocol_mismatch 与 engine_silence）
-- [ ] 日志结构化（最少：sessionId、tickId、clientId）（部分：拒绝路径带 sessionId（a5f23b8/be9f264），tickId/clientId 多数日志仍缺）
+- [x] 日志结构化（最少：sessionId、tickId、clientId）（拒绝/回路/发送失败路径全带 sessionId 结构化字段；tickId 在快照发送失败与 tick 过载路径；见 docs/reference/observability.md 日志关键字段）
 - [x] 提供一个本地压测脚本（模拟 N 个观众事件 + 2 个客户端）（578415b 独立 `Chorus.LoadTool`：IngressDriver 观众事件 + ClientSimulation 双客户端，采样 `/metrics` 输出 tick_overruns/errors/mailbox_depth；`LoadToolTests`）
 
 ## 5. 文档定稿
