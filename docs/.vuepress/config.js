@@ -1,10 +1,10 @@
 module.exports = {
-  title: "Cohort",
-  description: "直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）",
+  title: "Chorus",
+  description: "Chorus：直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）",
   base: process.env.VUEPRESS_BASE || "/",
   themeConfig: {
     logo: "/logo.svg",
-    repo: "cuihairu/Cohort",
+    repo: "cuihairu/chorus",
     docsDir: "docs",
     nav: [
       { text: "指南", link: "/guide/getting-started.html" },
@@ -20,7 +20,8 @@ module.exports = {
         "/design/client-resync-state-machine.md",
         "/design/ipc.md",
         "/design/spec.md",
-        "/design/legacy-real-server-analysis.md"
+        "/design/legacy-real-server-analysis.md",
+        "/design/review-2026-10-12-chatgpt.md"
       ],
       "/reference/": [
         "/reference/protocol.md",

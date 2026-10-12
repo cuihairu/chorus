@@ -111,3 +111,39 @@
 - [ ] 测试缺口：Gateway/EngineHost 的 WS→IPC→Engine 端到端、Ingress HTTP 面、IPC 断连重连与降级（UDS→NamedPipe/TCP 回退）目前**零测试**；这三条是拆分模式的主干路径。
 - [ ] 协议版本化：`hello/welcome` 无版本字段，后续加字段会破坏旧客户端。在 `Cohort.Protocol` 加 `protocolVersion`，welcome 回显，不匹配明确拒绝。
 - [ ] 运维：split 模式下 Gateway 应有对 EngineHost 的 readiness（现在只有各自 `/health` 常返 200）；补 compose 健康检查与优雅停机（先把在跑的 session 快照落盘）。
+
+
+## 9. 外部评审采纳（Chorus，2026-10-12）
+
+> 来源与全文：[docs/design/review-2026-10-12-chatgpt.md](./docs/design/review-2026-10-12-chatgpt.md)。按用户指令：先更新文档，再按阶段执行。**每项落地必须同步该文末尾的「落地跟踪」与本表**。
+
+### 阶段一：正确性与安全边界（最高优先）
+- [ ] 归并跨阵营串数据：`DefaultAudienceEventReducer` 分组键补 `SessionId/MatchId/FactionId`（点赞 `(S,M,F,U)`、礼物 `(S,M,F,U,GiftId)`），混合阵营计数守恒用例
+- [ ] ACK 单调性与 Tick 上界：拒绝负数/未来 Tick/倒退，绑定 Client 身份，分类计数
+- [ ] 生产默认拒绝未验证 Ingress：`AllowAllPlatformEventVerifier` 退为显式 dev 开关，缺验证器即拒
+- [ ] 去重原子化：`EventDeduplicator.TryMark` 改原子占位；IPC 发布失败不得被记成重复（投递状态 Received/Accepted/Applied/Failed）
+- [ ] Match 权威语义定性：展示聚合 vs 权威对抗状态（结论写进 `docs/design/spec.md`，不先上 MatchActor）
+
+### 阶段二：稳定性与过载保护
+- [ ] 有界邮箱 + 事件缓冲（Session 总量/每 Tick/最长等待），控制命令与观众事件分道，礼物类不可静默丢弃
+- [ ] 权威 Tick 去阻塞发送：每客户端有界出站队列/最新快照覆盖，慢客户端不拖累 Tick（含 Gateway `DispatchSnapshotAsync`）
+- [ ] Tick 调度：单调时钟截止 + 超时策略，统一 `TickDurationMs` 默认值与文档建议
+- [ ] Session 生命周期：空闲回收、上限、异常隔离（GameModule 抛异常不得静默退出 Actor）
+- [ ] 故障注入测试：慢客户端 / 事件洪峰 / 混合阵营
+
+### 阶段三：可观测性与恢复
+- [ ] `chorus_*` 指标 12 项（tick_duration/lag、ingress/applied/merged/dropped/duplicates、mailbox_depth、ack_lag、snapshot_send/resync、ipc_publish_failures）+ 事件关联 ID
+- [ ] 快照版本与大小上限、应用失败路径、客户端重同步闭环
+- [ ] IPC 断连/重启/回退（UDS↔NamedPipe 协商）验证
+- [ ] 独立压测工具（多 Session × 观众事件 × 变速客户端 × 随机断连）
+
+### 阶段四：发布与生态
+- [ ] **Cohort → Chorus 命名收尾**（仓库已改名）：`Chorus.sln`、各 `Chorus.*` 工程与命名空间、项目引用、CI 工作流、文档站标题、启动命令、README 徽章；不得纯文本替换，改完全量构建+测试
+- [ ] 最小游戏模块示例、平台适配器模板与接入契约
+- [ ] 部署/安全/故障排查文档与版本策略
+
+### 十一类故障验证测试清单
+- [ ] 归并（混合阵营/Match/超限计数）· 去重并发 · 投递失败重试 · Tick 过载 · 慢客户端 · ACK 安全 · Match 并发 · 生命周期 · 快照恢复 · 安全（未验证事件/超大请求体/非法 WS）· IPC 故障
+
+### 明确不做（边界）
+- 不引入分布式 Match 集群、Kafka/RabbitMQ、增量快照/回滚同步/确定性重放；不把平台私有适配放进核心；不发展成账号/运营/支付/编辑器综合平台；单体保持默认部署形态。
