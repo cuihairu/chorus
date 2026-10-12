@@ -52,15 +52,15 @@
 
 ## 4. 可观测性与压测
 
-- [ ] 指标：tick 耗时、事件数、丢弃/合并数、ack 延迟、落后 tick
-- [ ] 日志结构化（最少：sessionId、tickId、clientId）
-- [ ] 提供一个本地压测脚本（模拟 N 个观众事件 + 2 个客户端）
+- [x] 指标：tick 耗时、事件数、丢弃/合并数、ack 延迟、落后 tick（b86f5a8 `/metrics` Prometheus 文本 + `SessionDiagnostics` 导出；后续 a5f23b8/be9f264 补 protocol_mismatch 与 engine_silence）
+- [ ] 日志结构化（最少：sessionId、tickId、clientId）（部分：拒绝路径带 sessionId（a5f23b8/be9f264），tickId/clientId 多数日志仍缺）
+- [x] 提供一个本地压测脚本（模拟 N 个观众事件 + 2 个客户端）（578415b 独立 `Chorus.LoadTool`：IngressDriver 观众事件 + ClientSimulation 双客户端，采样 `/metrics` 输出 tick_overruns/errors/mailbox_depth；`LoadToolTests`）
 
 ## 5. 文档定稿
 
-- [ ] 把 `docs/spec.md` 定稿为“第一版可实现规格”（根据你确认的取舍：权威状态同步 vs 输入帧广播）
-- [ ] 增加 `docs/protocol.md`（协议字段与示例）
-- [ ] 增加 `docs/ops.md`（部署与参数调优：tick/inputDelay/maxEvents 等）
+- [x] 把 `docs/spec.md` 定稿为“第一版可实现规格”（根据你确认的取舍：权威状态同步 vs 输入帧广播）（落在 `docs/design/spec.md`，0409cf2 定案权威状态同步 + 事件生命周期，a35417c 补 lifecycle）
+- [x] 增加 `docs/protocol.md`（协议字段与示例）（落在 `docs/reference/protocol.md`，8a49c1b；7a1b64f 补版本语义）
+- [x] 增加 `docs/ops.md`（部署与参数调优：tick/inputDelay/maxEvents 等）（落在 `docs/reference/operations.md` + `deployment.md` + `config.md` + `tuning.md`，8a49c1b）
 
 ## 6. 文档站（VuePress）
 
@@ -94,16 +94,16 @@
 
 ### P1 — 正确性与容量
 
-- [ ] **`SessionActor` 反压**：`SessionActor.cs:19` 是 `Channel.CreateUnbounded`（无界邮箱）——慢消费/事件洪峰时内存无上界，与 §1 勾选的「backpressure」不符。改有界邮箱 + 溢出策略（按 `maxEventsPerTick` 已有的合并/丢弃口径），并把 `SessionDiagnostics` 的 dropped 计数接出去。
-- [ ] **会话空闲回收**：`SessionManager` 只有 `DisposeAsync`，没有空闲超时/驱逐；长跑会话与僵尸 session 会一直占 tick。加 idle timeout + 主动驱逐（并同步给 Gateway 注销）。
-- [ ] **合并重复代码**：把 `Ingress/*` 与 `WebSocketHelpers.cs` 从 Server/Gateway 抽到共享工程（`Cohort.Gateway.Core` 或并入 `Cohort.Protocol`），两处 `#if`/拷贝改为一次引用；补单测只写一份。
+- [x] **`SessionActor` 反压**：`SessionActor.cs:19` 是 `Channel.CreateUnbounded`（无界邮箱）——慢消费/事件洪峰时内存无上界，与 §1 勾选的「backpressure」不符。改有界邮箱 + 溢出策略（按 `maxEventsPerTick` 已有的合并/丢弃口径），并把 `SessionDiagnostics` 的 dropped 计数接出去。（5592d62：事件道有界 `Wait` + 礼物单次有限等待，溢出分 overflow/gift 计数入 `SessionDiagnostics`；控制命令道保持无界不丢；`SessionActorBackpressureTests`）
+- [x] **会话空闲回收**：`SessionManager` 只有 `DisposeAsync`，没有空闲超时/驱逐；长跑会话与僵尸 session 会一直占 tick。加 idle timeout + 主动驱逐（并同步给 Gateway 注销）。（362b435：`SessionConfig.IdleEvictAfterMs`（600s 默认）+ `SweepIdleAsync` 定期清扫 + 容量满时 idlest-first 驱逐（Server 端）；拆分模式同款在 `EngineIpcService.MaybeEnforceSessionLifecycle`，只驱逐无客户端会话故无需 Gateway 注销；`SessionManagerLifecycleTests`）
+- [x] **合并重复代码**：把 `Ingress/*` 与 `WebSocketHelpers.cs` 从 Server/Gateway 抽到共享工程（`Cohort.Gateway.Core` 或并入 `Cohort.Protocol`），两处 `#if`/拷贝改为一次引用；补单测只写一份。（`WebSocketHelpers.cs`、`Faces/IngressFaceGuard.cs`/`IngressRateLimiter.cs`/`IngressFaceOptions.cs` 均只在 `Chorus.Gateway.Core` 一份，Server/Gateway 皆工程引用（e2304b2 起），无 `#if`/拷贝；单测 `IngressFaceGuardTests` 单份）
 - [ ] **`MessageBus/ActorRef/Router` 抽象**（§3.5 唯一未勾项）与进程内路由表：现在 Server 单进程直连 actor，拆分模式各写一套。
 
 ### P2 — 可观测性（§4 全空）
 
-- [ ] `/metrics`（Prometheus 文本格式）：tick 耗时直方图、事件 ingested/applied/merged/dropped、ack 延迟、落后 tick 客户数、快照与重同步数——`SessionDiagnostics` 已经在收集这些字段，只差导出。
-- [ ] 结构化日志：sessionId / tickId / clientId 三件套进日志（现在是裸 `Console`/`ILogger` 文案）。
-- [ ] 本地压测脚本：N 个观众事件 + 2 个主播客户端，输出 tick 抖动与丢弃率（放 `scripts/`）。
+- [x] `/metrics`（Prometheus 文本格式）：tick 耗时直方图、事件 ingested/applied/merged/dropped、ack 延迟、落后 tick 客户数、快照与重同步数——`SessionDiagnostics` 已经在收集这些字段，只差导出。（b86f5a8：Server/Gateway `/metrics`，29 项含 face 计数器与 ack 延迟/落后 tick 分布；`MetricsEndpointTests`）
+- [ ] 结构化日志：sessionId / tickId / clientId 三件套进日志（现在是裸 `Console`/`ILogger` 文案）。（部分：拒绝/版本/ready 路径已带 sessionId 结构化字段，tickId/clientId 多数日志仍缺）
+- [x] 本地压测脚本：N 个观众事件 + 2 个主播客户端，输出 tick 抖动与丢弃率（放 `scripts/`）。（578415b 独立 `Chorus.LoadTool` 工程，同 §4 压测条目；tick 抖动经 tick_overruns/errors 采样观测）
 
 ### P3 — 性能 / 测试 / 运维
 
