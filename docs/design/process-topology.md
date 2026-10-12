@@ -29,11 +29,11 @@
 
 ## 4. 阶段与触发条件
 
-| 阶段 | 形态 | 触发条件 |
-|---|---|---|
-| 现在 | 单体内**代码分层**：`platform-ingress` 与 `streamer-ws` 两个 listener，两套验证/限流/超时，同进程部署（单体仍是默认部署形态） | 进行中（平台接入批次） |
-| 下一步 | **四角色、三进程**：platform-gw、streamer-gw、room-worker（承载多房间）；`RoomManager` 作为逻辑组件寄宿 worker 侧，由 `MatchRegistry` 升级为房间注册 + 路由表 | todo.md 阶段一正确性五项完成 |
-| 再往后 | room-worker 独立多进程/多机，room-manager 才单独成进程（房间粘性 + 快照恢复） | 单 worker 高峰 CPU > 60%，或单机房间数达数百量级 |
+| 阶段 | 形态 | 触发条件 | 状态（2026-10-13 逐条核对） |
+|---|---|---|---|
+| 一 | 单体内**代码分层**：`platform-ingress` 与 `streamer-ws` 两个 listener 共用一套门面实现（`PlatformIngressFace` / `StreamerWsFace`，验证/限流/超时/去重/门禁单点），同进程部署（单体仍是默认部署形态） | 平台接入批次 | **已完成**：todo §2 平台接入三项、§3 Match/阵营三项全勾；两个 listener 的门禁与投递均已合一（下两节） |
+| 二 | **四角色、三进程**：platform-gw、streamer-gw、room-worker（承载多房间）；`RoomManager` 作为逻辑组件寄宿 worker 侧，由 `MatchRegistry` 升级为房间注册 + 路由表 | todo.md 阶段一正确性五项完成 | **已触发（5/5：9ad322d、499f01c、def21d2、78f2597、0409cf2），进行中**：进程可拆已交付（`Gateway:Roles`，15a6dad）——一个 Gateway 进程可只承载 `platform` 或 `streamer` 角色，platform-gw / streamer-gw / room-worker（EngineHost）三进程成为配置选项，门面零复制；房间侧尚未升级（见下「RoomManager 何时上」） |
+| 三 | room-worker 独立多进程/多机，room-manager 才单独成进程（房间粘性 + 快照恢复） | 单 worker 高峰 CPU > 60%，或单机房间数达数百量级 | **未满足，差 2 条**：①单 worker 高峰 CPU 无数据（`Chorus.LoadTool` 冒烟是功能验证，量级数百事件，不是峰值测量）；②单机房间数无数百量级部署数据。两条都是运行期指标，仓内无法自证，留待生产/长期压测峰值数据 |
 
 
 **streamer-ws 门面已合一（§3.5 路由抽象的第一片）**：两个 listener 的 `streamer-ws` 门禁此前是 Server/Gateway 两份漂移拷贝，现已抽为 `Chorus.Gateway.Core/Faces/StreamerWsFace` 一份，两宿主只在 `IStreamerSessionRouter` / `IStreamerSessionBinding` 缝上分叉：
@@ -49,6 +49,8 @@ hello 鉴权（fail-closed）、协议版本门禁、消息体积上限、ACK �
 - Gateway → `IpcSessionActorRouter`：把事件按 sessionId 为序键发布到 Engine IPC，真正的表在引擎侧，transport 故障映射为 Unavailable。
 
 两种未送达走同一重试口径：回滚 dedup 认领 + 503，平台重试即全新投递。响应体按拓扑保真：tick 字段只有 Monolith ref 暴露（引擎 tick 只随 welcome/snapshot 走）；`MatchRegistry` 随门面迁入 `Chorus.Gateway.Core.Faces`，拆分模式传 null（房间统计归引擎）。回归守卫：`PlatformIngressFaceTests`（门面 8 用例：Accepted 的 tick 字段 / Rejected 与 Unavailable 回滚 503 / 去重短路先行于 Tell / 未映射 400 / 未验签 401）、`SessionActorRefTests`（进程内 ref 直测：入箱 / 同会话同 actor / 邮箱满 Rejected / TickId 暴露）、`GatewayIngressTellTests`（引擎下线时 Gateway 连续 503 可重试）。
+
+**RoomManager 何时上（阶段二的房间侧，当前刻意不做）**：设计原定的「`RoomManager` 寄宿 worker 侧 + `MatchRegistry` 升级为房间注册 + 路由表」今天有两个空实现风险——单 worker 下「房间 → worker」映射恒为 1:1，而路由表已由 worker 侧共享的 `SessionRegistry` 承担（容量上限 / idlest 驱逐 / 空闲清扫，`SessionRegistryTests`）；`MatchRegistry` 也仍是展示级聚合（spec.md §2.3 定性）。因此阶段二先只做「进程可拆」这一半（`Gateway:Roles`），房间注册 / 健康 / 路由下推等阶段三（多 worker）触发时再建，避免投机组件。
 
 ## 5. 拆分前必须先解决的两个前置问题
 

@@ -18,7 +18,8 @@ Chorus 有两种部署形态，共用同一套配置模型与安全语义。
 | 形态 | 进程 | 适用 |
 | --- | --- | --- |
 | 单进程 | `Chorus.Server` | 默认、调试、小规模；ingress/WS/引擎同一进程 |
-| 拆分 | `Chorus.Gateway` + `Chorus.EngineHost` | 网关与权威逻辑分机/分容器；走 IPC |
+| 拆分（单网关进程） | `Chorus.Gateway` + `Chorus.EngineHost` | 网关与权威逻辑分机/分容器；走 IPC |
+| 三进程 | `Chorus.Gateway`（`Gateway:Roles=platform`）+ `Chorus.Gateway`（`Gateway:Roles=streamer`）+ `Chorus.EngineHost` | platform-gw / streamer-gw 两个网关角色分机部署，room-worker 承载多房间；门面共用无复制，见 [进程拓扑](../design/process-topology.md) §4 |
 
 两种形态的 `/ingress`、`/ws`、`/faces`、`/metrics` 完全一致；`/sessions`、`/matches` 只在单进程形态暴露。
 
@@ -141,6 +142,7 @@ Gateway 的 `GET /ready`：
 
 ## 拆分模式容器化
 
+- 三进程形态：再复制一个 Gateway 容器，两个 Gateway 各配 `Gateway:Roles=platform` / `Gateway:Roles=streamer`（未选中角色的 listener 端点不注册，返回 404）；EngineHost 侧配置不变，两个 Gateway 各走自己的 IPC 通道（不同 socket 目录或端口）。
 - 两台容器：Gateway 与 EngineHost；`Ipc:Transport=Tcp`，映射 `27500/27501`（HTTP 则 `27600/27601`）。
 - 健康检查分别探 `/health`（存活）；**Gateway 就绪探 `/ready`**（200 = EngineHost 心跳在窗口内），
   EngineHost 侧用 `/metrics` 的 `chorus_snapshots_sent_total` 判断引擎是否在出快照。

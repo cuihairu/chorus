@@ -187,6 +187,12 @@ maxSnapshotBytes = 1048576
 | `Faces:StreamerWs:MaxMessageBytes` | `65536` | 单条 WS 消息上限，超限以 `MessageTooBig` 关闭连接 |
 | `Faces:StreamerWs:AckPerMinute` | `600` | 每连接每分钟 ACK 上限，超限静默丢弃（计数 `/faces` → `streamerWs.ackDropped`） |
 
+## Gateway 角色打包（拆分模式，三进程形态）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `Gateway:Roles`（Gateway） | `all` | 该 Gateway 进程承载的 listener 角色：`all`（一个进程两个 listener，默认）、`platform`（只映射 `/ingress`，即 platform-gw）、`streamer`（只映射 `/ws`，即 streamer-gw）。未选中角色的端点不注册（404），两个 listener 的门面实现共用一份（`PlatformIngressFace` / `StreamerWsFace`），无代码分叉；`/health`、`/faces`、`/metrics`、`/ready` 不受角色影响。非法值启动即抛（fail-fast）。单体形态不受此键影响。见 [进程拓扑](../design/process-topology.md) §4 |
+
 ## IPC 与就绪（拆分模式）
 
 `Ipc` 段映射到 `Chorus.Messaging.Ipc.IpcSettings`（端口/传输），就绪判定另有两个键：
