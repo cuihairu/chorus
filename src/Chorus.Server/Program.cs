@@ -156,7 +156,14 @@ app.MapPost("/ingress/{platform}", async (
         try
         {
             matches.Track(ev);
-            await session.IngestAudienceEventAsync(ev);
+            if (!await session.TryIngestAudienceEventAsync(ev))
+            {
+                // Bounded event lane rejected the event (Failed): release the
+                // dedup claim so the platform retry is accepted as a fresh delivery.
+                dedup.Rollback(lease);
+                faces.IngressTimedOut();
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
         }
         catch
         {

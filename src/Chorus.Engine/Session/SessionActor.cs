@@ -13,11 +13,11 @@ public sealed class SessionActor : IAsyncDisposable
     private sealed record AckCmd(string ClientId, long LastAppliedTickId, long ClientTimeMs) : ICommand;
     private sealed record IngestAudienceEventCmd(AudienceEvent Event) : ICommand;
 
-    private readonly Channel<ICommand> _mailbox = Channel.CreateUnbounded<ICommand>(new UnboundedChannelOptions
-    {
-        SingleReader = true,
-        SingleWriter = false,
-    });
+    // Two lanes (review stage-2): control commands are unbounded and never
+    // dropped; audience events go through a bounded lane so a flood back-pressures
+    // the ingress instead of growing memory without limit.
+    private readonly Channel<ICommand> _control;
+    private readonly Channel<IngestAudienceEventCmd> _events;
 
     private readonly Dictionary<string, (ISessionClient Client, SessionClientState State)> _clients = new(StringComparer.Ordinal);
     private readonly Dictionary<long, List<AudienceEvent>> _scheduledByTick = new();
@@ -37,6 +37,10 @@ public sealed class SessionActor : IAsyncDisposable
     private long _totalAcksDuplicate;
     private long _totalAcksStale;
     private long _totalAcksInvalid;
+    private long _totalDroppedOverflow;
+    private long _totalDroppedGifts;
+    private long _totalTickOverruns;
+    private long _totalTickErrors;
 
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _runCts;
@@ -60,6 +64,18 @@ public sealed class SessionActor : IAsyncDisposable
         _config = config;
         _game = game;
         _reducer = reducer ?? new DefaultAudienceEventReducer();
+
+        _control = Channel.CreateUnbounded<ICommand>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+        });
+        _events = Channel.CreateBounded<IngestAudienceEventCmd>(new BoundedChannelOptions(Math.Max(1, config.MaxPendingEvents))
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.Wait,
+        });
 
         _diagnostics = new SessionDiagnostics(
             SessionId: SessionId,
@@ -123,16 +139,60 @@ public sealed class SessionActor : IAsyncDisposable
     }
 
     public ValueTask AddClientAsync(ISessionClient client)
-        => _mailbox.Writer.WriteAsync(new AddClientCmd(client));
+        => _control.Writer.WriteAsync(new AddClientCmd(client));
 
     public ValueTask RemoveClientAsync(string clientId)
-        => _mailbox.Writer.WriteAsync(new RemoveClientCmd(clientId));
+        => _control.Writer.WriteAsync(new RemoveClientCmd(clientId));
 
     public ValueTask AckAsync(string clientId, long lastAppliedTickId, long clientTimeMs)
-        => _mailbox.Writer.WriteAsync(new AckCmd(clientId, lastAppliedTickId, clientTimeMs));
+        => _control.Writer.WriteAsync(new AckCmd(clientId, lastAppliedTickId, clientTimeMs));
 
-    public ValueTask IngestAudienceEventAsync(AudienceEvent e)
-        => _mailbox.Writer.WriteAsync(new IngestAudienceEventCmd(e));
+    /// <summary>
+    /// Backpressured ingest (review stage-2): returns false when the bounded
+    /// event lane is full. Mergeable/cosmetic events drop immediately (counted
+    /// as overflow); gifts - the must-not-lose class - get one bounded wait
+    /// (<see cref="SessionConfig.EventEnqueueMaxWaitMs"/>) before being
+    /// rejected as Failed so the caller (ingress) can signal a retry.
+    /// </summary>
+    public async ValueTask<bool> TryIngestAudienceEventAsync(AudienceEvent e)
+    {
+        var cmd = new IngestAudienceEventCmd(e);
+        if (_events.Writer.TryWrite(cmd))
+        {
+            return true;
+        }
+
+        var isGift = e.Kind == AudienceEventKind.Gift;
+        if (isGift && _config.EventEnqueueMaxWaitMs > 0)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(_config.EventEnqueueMaxWaitMs);
+                if (await _events.Writer.WaitToWriteAsync(cts.Token).ConfigureAwait(false) && _events.Writer.TryWrite(cmd))
+                {
+                    return true;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        if (isGift)
+        {
+            Interlocked.Increment(ref _totalDroppedGifts);
+        }
+        else
+        {
+            Interlocked.Increment(ref _totalDroppedOverflow);
+        }
+
+        return false;
+    }
+
+    /// <summary>Compatibility wrapper: fire-and-forget ingest, result ignored.</summary>
+    public async ValueTask IngestAudienceEventAsync(AudienceEvent e)
+        => await TryIngestAudienceEventAsync(e).ConfigureAwait(false);
 
     private async Task RunLoopAsync(CancellationToken cancellationToken)
     {
@@ -142,7 +202,7 @@ public sealed class SessionActor : IAsyncDisposable
         }
 
         // PeriodicTimer allows only one pending WaitForNextTickAsync at a time.
-        // Keep the pending tick task across mailbox drains; re-calling the wait
+        // Keep the pending tick task across lane drains; re-calling the wait
         // while one is pending throws InvalidOperationException and would kill
         // the loop silently after the first command-driven batch.
         Task<bool>? tickTask = null;
@@ -160,14 +220,25 @@ public sealed class SessionActor : IAsyncDisposable
                 }
             }
 
-            var readTask = _mailbox.Reader.WaitToReadAsync(cancellationToken).AsTask();
-            var completed = await Task.WhenAny(tickTask, readTask).ConfigureAwait(false);
+            var controlTask = _control.Reader.WaitToReadAsync(cancellationToken).AsTask();
+            var eventTask = _events.Reader.WaitToReadAsync(cancellationToken).AsTask();
+            var completed = await Task.WhenAny(tickTask, controlTask, eventTask).ConfigureAwait(false);
 
-            if (completed == readTask)
+            if (completed == controlTask)
             {
-                while (_mailbox.Reader.TryRead(out var cmd))
+                while (_control.Reader.TryRead(out var cmd))
                 {
                     await HandleCommandAsync(cmd, cancellationToken).ConfigureAwait(false);
+                }
+
+                continue;
+            }
+
+            if (completed == eventTask)
+            {
+                while (_events.Reader.TryRead(out var cmd))
+                {
+                    ScheduleAudienceEvent(cmd.Event);
                 }
 
                 continue;
@@ -190,12 +261,26 @@ public sealed class SessionActor : IAsyncDisposable
                 break;
             }
 
-            while (_mailbox.Reader.TryRead(out var cmd))
+            while (_control.Reader.TryRead(out var cmd))
             {
                 await HandleCommandAsync(cmd, cancellationToken).ConfigureAwait(false);
             }
 
-            await OnTickAsync(cancellationToken).ConfigureAwait(false);
+            while (_events.Reader.TryRead(out var eventCmd))
+            {
+                ScheduleAudienceEvent(eventCmd.Event);
+            }
+
+            try
+            {
+                await OnTickAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Review stage-2: a throwing GameModule/reducer must not
+                // silently kill the actor - the tick is lost, the loop lives.
+                Interlocked.Increment(ref _totalTickErrors);
+            }
         }
     }
 
@@ -222,9 +307,6 @@ public sealed class SessionActor : IAsyncDisposable
                 break;
             case AckCmd c:
                 HandleAck(c);
-                break;
-            case IngestAudienceEventCmd c:
-                ScheduleAudienceEvent(c.Event);
                 break;
             default:
                 throw new InvalidOperationException($"Unknown command: {cmd.GetType().Name}");
@@ -289,6 +371,26 @@ public sealed class SessionActor : IAsyncDisposable
         var sw = System.Diagnostics.Stopwatch.StartNew();
         TickId++;
 
+        try
+        {
+            await TickBodyAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Diagnostics must advance even for failed ticks, otherwise an
+            // exception anywhere above freezes the externally visible TickId.
+            sw.Stop();
+            if (_config.TickTimeoutMs > 0 && sw.ElapsedMilliseconds > _config.TickTimeoutMs)
+            {
+                Interlocked.Increment(ref _totalTickOverruns);
+            }
+
+            UpdateDiagnostics(sw.ElapsedMilliseconds);
+        }
+    }
+
+    private async Task TickBodyAsync(CancellationToken cancellationToken)
+    {
         if (_scheduledByTick.TryGetValue(TickId, out var events))
         {
             _scheduledByTick.Remove(TickId);
@@ -382,8 +484,6 @@ public sealed class SessionActor : IAsyncDisposable
             }
         }
 
-        sw.Stop();
-        UpdateDiagnostics(sw.ElapsedMilliseconds);
     }
 
     private sealed record ForceInfo(long LagTicks, long LastAckTickId);
@@ -449,7 +549,12 @@ public sealed class SessionActor : IAsyncDisposable
             TotalAcksStale: Interlocked.Read(ref _totalAcksStale),
             TotalAcksInvalid: Interlocked.Read(ref _totalAcksInvalid),
             LastTickProcessMs: lastTickProcessMs,
-            Clients: clients
+            Clients: clients,
+            TotalDroppedOverflow: Interlocked.Read(ref _totalDroppedOverflow),
+            TotalDroppedGifts: Interlocked.Read(ref _totalDroppedGifts),
+            TotalTickOverruns: Interlocked.Read(ref _totalTickOverruns),
+            TotalTickErrors: Interlocked.Read(ref _totalTickErrors),
+            MailboxDepth: (_control.Reader.CanCount ? _control.Reader.Count : 0) + (_events.Reader.CanCount ? _events.Reader.Count : 0)
         );
     }
 

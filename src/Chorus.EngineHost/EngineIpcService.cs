@@ -136,7 +136,14 @@ public sealed class EngineIpcService : BackgroundService
                 {
                     var audienceEvent = EnvelopeFactory.DeserializeBody<AudienceEvent>(env);
                     var session = GetOrCreateSession(audienceEvent.SessionId);
-                    await session.IngestAudienceEventAsync(audienceEvent);
+                    if (!await session.TryIngestAudienceEventAsync(audienceEvent))
+                    {
+                        // Delivery Failed at the engine boundary; the gateway
+                        // already acked the platform, so only observe here.
+                        _logger.LogWarning(
+                            "Event lane full, event dropped type={Type} session={SessionId} event={EventId}",
+                            env.Type, audienceEvent.SessionId, audienceEvent.EventId);
+                    }
                 }
                 break;
         }
