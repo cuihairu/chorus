@@ -24,7 +24,8 @@ public sealed record WireSnapshot(SessionSnapshot Snapshot, byte[] EncodedJson)
             Reason: snapshot.Reason,
             TargetClientId: snapshot.TargetClientId,
             ClientLagTicks: snapshot.ClientLagTicks,
-            ClientLastAckTickId: snapshot.ClientLastAckTickId);
+            ClientLastAckTickId: snapshot.ClientLastAckTickId,
+            V: snapshot.V);
 
         return new WireSnapshot(
             snapshot,

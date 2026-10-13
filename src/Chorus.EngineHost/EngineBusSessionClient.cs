@@ -51,7 +51,8 @@ public sealed class EngineBusSessionClient : ISessionClient
             Reason: snapshot.Reason,
             TargetClientId: snapshot.TargetClientId,
             ClientLagTicks: snapshot.ClientLagTicks,
-            ClientLastAckTickId: snapshot.ClientLastAckTickId
+            ClientLastAckTickId: snapshot.ClientLastAckTickId,
+            V: snapshot.V
         );
 
         var env = EnvelopeFactory.Create(IpcMessageTypes.EngineSnapshot, _sessionId, msg);

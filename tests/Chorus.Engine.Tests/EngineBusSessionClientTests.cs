@@ -96,4 +96,20 @@ public sealed class EngineBusSessionClientTests
 
         Assert.Empty(bus.Published);
     }
+
+    [Fact]
+    public async Task Snapshot_CarriesSchemaVersion_OverIpc()
+    {
+        // versioning.md §2: the snapshot schema version (`v`) rides the
+        // eng→gw IPC payload too, so the gateway relays it to WS clients
+        // unchanged. Assert pass-through with a non-default version so a
+        // hardcoded 1 cannot satisfy the test.
+        var bus = new RecordingBus();
+        var client = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => true);
+
+        await client.SendSnapshotAsync(BroadcastSnapshot() with { V = 2 }, CancellationToken.None);
+
+        var body = EnvelopeFactory.DeserializeBody<ServerSnapshot>(Assert.Single(bus.Published));
+        Assert.Equal(2, body.V);
+    }
 }

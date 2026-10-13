@@ -141,6 +141,26 @@ public sealed class WireSnapshotTests
     }
 
     [Fact]
+    public void Encode_CarriesSchemaVersion_V()
+    {
+        // versioning.md §2: the snapshot schema version rides the wire
+        // protocol as `v`, passed through from the engine snapshot — the
+        // encode step must not hardcode it.
+        var snapshot = new SessionSnapshot(
+            SessionId: "s-v",
+            TickId: 1,
+            ServerTimeMs: 0,
+            State: new { counter = 1 });
+
+        var json = JsonSerializer.Deserialize<JsonElement>(WireSnapshot.Encode(snapshot).EncodedJson);
+        Assert.Equal(1, json.GetProperty("v").GetInt32());
+
+        var promoted = snapshot with { V = 2 };
+        var promotedJson = JsonSerializer.Deserialize<JsonElement>(WireSnapshot.Encode(promoted).EncodedJson);
+        Assert.Equal(2, promotedJson.GetProperty("v").GetInt32());
+    }
+
+    [Fact]
     public async Task RealWsClient_ReceivesParseableSnapshotFromBytePath()
     {
         using var factory = new WebApplicationFactory<Program>();
