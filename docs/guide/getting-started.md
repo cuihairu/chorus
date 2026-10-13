@@ -7,7 +7,7 @@ title: 快速开始
 ## 环境
 
 - .NET SDK：`10.0.x`（见 `global.json`）
-- Node.js：建议 `>= 20`（用于构建 VuePress 文档站）
+- Node.js：任意受支持的 LTS（用于构建 VuePress 文档站；本仓未设 `engines` 下限）
 
 ## 运行服务器（本地）
 
@@ -19,6 +19,9 @@ dotnet run --project src/Chorus.Server
 
 - `GET /health`：健康检查
 - `GET /sessions`：会话/客户端指标
+- `GET /metrics`：Prometheus 文本指标（Server 与 Gateway 均提供）
+- `GET /faces`：listener face 计数器
+- `GET /matches`：房间统计（仅单进程形态）
 - `POST /ingress/{platform}`：注入测试事件（模拟平台事件，`test` 为示例）
 - `WS /ws`：主播客户端连接入口
 

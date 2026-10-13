@@ -7,7 +7,7 @@ title: 拆分模式（Gateway + EngineHost）
 本模式用于验证“单进程/拆分兼容”的架构：
 
 - `Chorus.Gateway`：对外提供 WebSocket `/ws` 与平台入口 `/ingress/{platform}`
-- `Chorus.EngineHost`：仅运行权威 tick + 状态快照（SessionActor + GameModule）
+- `Chorus.EngineHost`：运行权威 tick + 状态快照（SessionActor + GameModule），并提供 `GET /health` 与 `GET /metrics`（本机 `http://localhost:5067`）
 - 两者通过本机 IPC 通信（默认：优先 UDS，失败时降级 NamedPipe；可选：TCP）
 
 ## 1) 启动 EngineHost
@@ -58,6 +58,10 @@ curl -X POST http://localhost:5168/ingress/test \
 - `Ipc:TcpEngineToGatewayPort`: 默认 `27501`
 - `Ipc:HttpGatewayToEngineUrl`: 默认 `http://127.0.0.1:27600/gw-to-eng/`
 - `Ipc:HttpEngineToGatewayUrl`: 默认 `http://127.0.0.1:27601/eng-to-gw/`
+- `Ipc:GatewayIds`: 默认 `gateway`（引擎侧；多网关时逗号分隔，见 [进程拓扑](../design/process-topology.md) §4）
+- `Ipc:GatewayId`: 默认 `gateway`（Gateway 侧；多网关时区分身份）
+- `Ipc:HeartbeatIntervalMs`: 默认 `5000`（引擎→网关心跳；`0` 关闭）
+- `Ipc:ReadinessMaxSilenceMs`: 默认 `15000`（Gateway `/ready` 判定窗口；见 [部署](../reference/deployment.md)）
 
 如果要把 Gateway/EngineHost 拆到两个容器里，通常会把 `Ipc:Transport` 设为 `Tcp`，并为上述两个端口做容器端口映射。
 

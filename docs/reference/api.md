@@ -98,7 +98,7 @@ curl http://localhost:5083/matches
 | `eventId` | string | 是 | 平台事件 id，去重键（TTL 见 `Ingress:DedupTtlSeconds`） |
 | `platform` | string | 映射器注入 | 来源平台标识 |
 | `sessionId` | string | 是 | 会话/房间 id |
-| `userId` | string | 是 | 观众 id |
+| `userId` | string | 否 | 观众 id（映射器缺省填 `anonymous`） |
 | `kind` | enum | 是 | `comment` / `like` / `gift` |
 | `ingestTimeMs` | long | 映射器注入 | 接入时间（unix ms） |
 | `text` / `giftId` / `giftCount` / `giftValue` | 可选 | 否 | 按 kind 取用 |
@@ -160,7 +160,7 @@ JSON 文本帧。消息定义在 `src/Chorus.Protocol/Messages/`：
 | gw→eng | `gw.ack` | `GatewayAckCmd`（`lastAppliedTickId`、`clientTimeMs`） | `GatewayIpcService.cs:117` |
 | gw→eng | `gw.audienceEvent` | `AudienceEvent`（带 `SourceEventId` 关联） | `EngineHost/EngineIpcService.cs:236` |
 | eng→gw | `eng.welcome` | `ServerWelcome` | `EngineIpcService.cs:205` |
-| eng→gw | `eng.snapshot` | `ServerSnapshot`（含 `v`） | `EngineIpcService.cs`（WireSnapshot 编码 `Engine/Session/WireSnapshot.cs`） |
+| eng→gw | `eng.snapshot` | `ServerSnapshot`（含 `v`） | `EngineHost/EngineBusSessionClient.cs:49-59`（直接构造 `ServerSnapshot` 并发布；`WireSnapshot` 仅用于引擎内广播 WS 路径） |
 | eng→gw | `eng.heartbeat` | `EngineHeartbeatCmd`（哨兵 sessionId `__heartbeat`） | `EngineIpcService.cs:130` |
 
 通道命名与多网关扇出：`Ipc:GatewayIds` + `Gateway:Id`（见 [通信抽象](../design/ipc.md) 通道命名一节）。

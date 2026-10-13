@@ -77,9 +77,10 @@ title: B 站弹幕源适配器（调研 + 接入方案）
 
 ### 2.1 架构位置（以码为准）
 
-chorus 已有的平台接入缝：**每个平台 = 一对 `IPlatformEventMapper` + `IPlatformEventVerifier`**，经 `POST /ingress/{platform}` 进入 `PlatformIngressFace`（限流/体积上限/超时/验签/映射/去重 → 恰好一次 Tell），再进 `ISessionActorRouter` → `SessionActor`（tick 调度 → 快照）。证据：
+chorus 已有的平台接入缝：**每个平台 = 一对 `IPlatformEventMapper` + 验签实现**。验签侧经 `IPlatformNamedEventVerifier` + `PlatformEventVerifierRouter` 按平台名分发（无匹配验证器则 fail-closed），经 `POST /ingress/{platform}` 进入 `PlatformIngressFace`（限流/体积上限/超时/验签/映射/去重 → 恰好一次 Tell），再进 `ISessionActorRouter` → `SessionActor`（tick 调度 → 快照）。证据：
 
-- 接口：`src/Chorus.Adapters.Abstractions/`（`IPlatformEventMapper` / `IPlatformEventVerifier` / `IAudienceFactionRule`）
+- 接口：`src/Chorus.Adapters.Abstractions/`（`IPlatformEventMapper` / `IPlatformEventVerifier` / `IPlatformNamedEventVerifier` / `IAudienceFactionRule`）
+- 验签分发：`src/Chorus.Adapters.Platforms/PlatformEventVerifierRouter.cs`（具名验证器 + AllowAll 兜底，默认不注册）
 - 门面：`src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs`（含 `ISessionActorRef.TellAsync` 三态）
 - 路由：`src/Chorus.Server/Program.cs:22-23`（Monolith `InProcSessionActorRouter`）
 - 现有平台：`DouyinPlatformEventMapper` + `DouyinPlatformEventVerifier`、`KuaishouPlatformEventMapper` + `KuaishouPlatformEventVerifier`（`Program.cs:51-68`）
@@ -114,7 +115,7 @@ SessionActor（tick 调度 → 快照 → 客户端）            ← 已有
 | `DANMU_MSG` | `kind=comment`、`userId`、`text`、`platformEventId` | P1 |
 | `SEND_GIFT` | `kind=gift`、`userId`、`giftId`、`count` | P2 |
 | `SEND_GIFT_V2`（protobuf 灰度） | 同 `SEND_GIFT`，容忍新格式 | P2 |
-| `INTERACT_WORD_V2` / `LIVE_ROOM_ENTER` | `kind=enter`、`userId` | P2 |
+| `INTERACT_WORD_V2` / `LIVE_ROOM_ENTER` | `kind=enter`、`userId`（注：当前 `AudienceEventKind` 仅 `Unknown/Comment/Like/Gift`，需先扩 `Enter` 成员——`src/Chorus.Protocol/Models/AudienceEvent.cs:3-9`） | P2 |
 | `LIVE_START` / `LIVE_END` | 房间生命周期（开启/结束会话） | P2 |
 | `SUPER_CHAT_MESSAGE` / `GUARD_BUY` / `USER_TOAST_MSG_V2` | 待定（金测驱动） | P2 |
 | 未知事件类型 | **不崩**，丢弃 + 计数（平台协议仍在演进） | P1 |

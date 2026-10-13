@@ -14,7 +14,7 @@
 - `IGameModule`（`src/Chorus.Engine/Abstractions/IGameModule.cs`）四成员：
   `Name` / `ApplyEvents(tickId, events)` / `GetStateSnapshot()` / `Dispose`。
 - 模块出生点有两处，均随 `SessionActor` 构造：
-  单体 `src/Chorus.Server/SessionManager.cs:34`、拆分 `src/Chorus.EngineHost/EngineIpcService.cs:125`，
+  单体 `src/Chorus.Server/SessionManager.cs:34`、拆分 `src/Chorus.EngineHost/EngineIpcService.cs:152`，
   都经 `IGameModuleFactory.Create(sessionId)`。
 - `GetStateSnapshot()` 返回的 `object` 经 `ProtocolJson` 序列化为线协议 `state`
   （`JsonElement`）；快照已带 schema 版本 `v = 1`（线协议 `ServerSnapshot.v`，2d157fa）。

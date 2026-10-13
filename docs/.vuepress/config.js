@@ -31,7 +31,8 @@ module.exports = {
         "/design/review-2026-10-12-chatgpt.md",
         "/design/process-topology.md",
         "/design/snapshot-restore.md",
-        "/design/bilibili-danmaku-adapter.md"
+        "/design/bilibili-danmaku-adapter.md",
+        "/审计-文档一致性.md"
       ],
       "/reference/": [
         "/reference/protocol.md",

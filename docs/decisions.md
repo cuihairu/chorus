@@ -8,7 +8,7 @@
 
 - **背景**：`Ingress/*` 三件套（`AllowAllPlatformEventVerifier` / `EventDeduplicator` / `TestPlatformEventMapper`）
   在 `Chorus.Server` 与 `Chorus.Gateway` 各存一份（todo §8 P1 已列「合并重复代码」）。
-- **决策**：新增 `src/Chorus.Adapters.Platforms`（仅引用 Protocol），平台适配器与 ingress 共用件单份实现，
+- **决策**：新增 `src/Chorus.Adapters.Platforms`（引用 `Chorus.Protocol` 与 `Chorus.Adapters.Abstractions`，均不含 Engine/Server/Gateway），平台适配器与 ingress 共用件单份实现，
   Server / Gateway 改为引用；同时删除两处重复副本。
 - **影响**：旧命名空间 `Chorus.Server.Ingress` / `Chorus.Gateway.Ingress` 移除，测试同步更新。
   平台私有逻辑不进核心（外部评审 §10 口径）。回滚面：恢复两目录副本即可。
@@ -49,7 +49,7 @@
     落在两个 host 的 `POST /ingress/{platform}` 处理器 + `/faces` 计数端点；
   - `streamer-ws` 面：鉴权、ACK 限频、消息体上限，落在 `/ws` 处理器（2026-10-12 已落地，见 D6）；
   - 两面配置分道（`Faces:PlatformIngress:*` / `Faces:StreamerWs:*`），日志分类按面
-    （`Chorus.Ingress` / `Chorus.StreamerWs`），计数器经 `GET /faces` 分面暴露。
+    （`Chorus.StreamerWs`；Ingress 面暂无独立日志类别），计数器经 `GET /faces` 分面暴露。
 - **影响**：单体仍是默认部署形态；物理拆分等触发条件（worker CPU>60% 或单机数百房间），见拓扑文档 §4。
 
 ### D6 主播 WS 鉴权 fail-closed + Ingress:AllowAll 默认关（demo 靠 Development 配置显式打开）

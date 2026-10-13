@@ -97,13 +97,14 @@ flowchart TB
 ## 技术栈与支持
 
 - 语言：C#（随 .NET 10 默认 C# 版本）
-- .NET：`net10.0`（见 `global.json`）
+- .NET：`net10.0`（TargetFramework 见 `src/*/*.csproj`；`global.json` 锁定 SDK 到 `10.0.401`）
 - 平台：Windows / Linux / macOS（服务器端），客户端以 WebSocket 协议接入
 
 ## 发布与 Tag
 
-推荐使用语义化版本号打 tag：`v0.1.0`、`v0.1.1`。版本号由维护者手动给出并触发，
-不跑自动发版（每日构建/nightly 二进制除外，须通过验收测试）。
+推荐使用语义化版本号打 tag：`v0.1.0`、`v0.1.1`。版本号由维护者手动给出并触发。
+没有定时/自动触发的发版：`release.yml` **仅**在维护者推 `v*` tag 时运行（tag 即版本号），据此建 GitHub Release。
+每日构建/nightly 二进制另算（上传 artifact、不打 tag），须通过验收测试。
 
 ```bash
 git tag v0.1.0

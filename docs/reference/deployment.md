@@ -44,7 +44,7 @@ DOTNET_ENVIRONMENT=Production dotnet ./publish/Chorus.Server.dll
 | 端点 | 用途 | 单进程 | 拆分 |
 | --- | --- | --- | --- |
 | `GET /health` | 存活探针 | ✅ | ✅（Gateway / EngineHost 各自） |
-| `GET /ready` | **就绪探针（仅拆分 Gateway）**：EngineHost 心跳在 `Ipc:ReadinessMaxSilenceMs` 内收到 → 200，否则 503 | ❌ | ✅（Gateway） |
+| `GET /ready` | **就绪探针（仅拆分 Gateway）**：任意引擎消息（心跳/欢迎/快照）在 `Ipc:ReadinessMaxSilenceMs` 内收到 → 200，否则 503 | ❌ | ✅（Gateway） |
 | `GET /sessions` | 会话/客户端指标 JSON | ✅ | ❌ 仅 EngineHost 侧有权威数据，但**未暴露**；用 `/metrics` |
 | `GET /matches` | match 级聚合视图 JSON | ✅ | ❌ 同上 |
 | `GET /faces` | listener face 计数器 JSON | ✅ | ✅（Gateway） |
@@ -144,6 +144,6 @@ Gateway 的 `GET /ready`：
 
 - 三进程形态：两个 Gateway 容器各配 `Gateway:Roles=platform` / `Gateway:Roles=streamer`（未选中角色的 listener 端点不注册，返回 404）。两个网关可共享同一 EngineHost 与同一 socket 目录：各 Gateway 配不同 `Gateway:Id`（如 `platform-gw` / `streamer-gw`），EngineHost 配 `Ipc:GatewayIds=platform-gw,streamer-gw`，引擎对两条 eng→gw 通道扇出发布（`FanOutMessageBus`，5c5d25c；守卫 `ThreeProcessEndToEndTests`）。UDS/NamedPipe 通道名按 id 后缀区分；TCP/HTTP 的端口/URL 不按 id 区分，同机多网关用 UDS/NamedPipe。
 - 两台容器：Gateway 与 EngineHost；`Ipc:Transport=Tcp`，映射 `27500/27501`（HTTP 则 `27600/27601`）。
-- 健康检查分别探 `/health`（存活）；**Gateway 就绪探 `/ready`**（200 = EngineHost 心跳在窗口内），
+- 健康检查分别探 `/health`（存活）；**Gateway 就绪探 `/ready`**（200 = 任意引擎消息在窗口内到达），
   EngineHost 侧用 `/metrics` 的 `chorus_snapshots_sent_total` 判断引擎是否在出快照。
 - 顺序无强制：Gateway 启动时 EngineHost 未就绪，事件发布会失败并计入 `chorus_ipc_publish_failures_total`（客户端侧幂等重试），EngineHost 就绪后自动恢复。

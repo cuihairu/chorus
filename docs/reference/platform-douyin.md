@@ -80,7 +80,7 @@ title: 平台对接参考：抖音
 
 - 复用 `EventDeduplicator`（键 `douyin:<event_id>`，TTL `Ingress:DedupTtlSeconds`，默认 600s）。
 - 重复事件返回 `200 {"ok":true,"duplicated":true}`。
-- 已知限制（评审 P0-8）：当前 `TryMark` 非原子、发布失败会被记为重复；在阶段一④统一原子化与四态投递。
+- 去重原子化（评审 P0-8，已修复 78f2597）：`EventDeduplicator.TryReserve` 用 `ConcurrentDictionary.TryAdd` 原子占位（`src/Chorus.Adapters.Platforms/EventDeduplicator.cs:63-95`），投递失败走 `Rollback` 释放占位（`src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs:114`），平台重试是全新投递而非误判重复。
 
 ## 3. 待联调清单（全部明示，不做猜测实现）
 

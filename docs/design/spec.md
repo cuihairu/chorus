@@ -71,7 +71,7 @@ title: 规格草案
 
 - 固定 tick：`tickDurationMs`（默认 66ms，与推荐区间 50~66 统一，最终值以压测为准）。
 - 服务器为每个 Session 维护单调递增 `tickId`（从 0 开始），由 `PeriodicTimer`（单调时钟）驱动。
-- 所有下发数据都带 `tickId` 与 `serverTimeMs`（用于客户端测漂移）。
+- 所有下发数据都带 `serverTimeMs`（用于客户端测漂移）；`tickId` 随 `snapshot` 下发（`welcome` / `pong` 不含）。
 - 超时策略（阶段二）：tick 处理耗时超过 `tickTimeoutMs`（默认 250ms）计入 `TotalTickOverruns` 观测指标——只检测不取消；GameModule 抛异常计入 `TotalTickErrors`，tick 丢失但 actor 存活，诊断照常推进。
 
 ### 3.2 输入缓冲（处理平台抖动/乱序）

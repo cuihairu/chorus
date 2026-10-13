@@ -20,9 +20,7 @@ todo §3.5 要求评估并规划共享内存 transport（MemoryMappedFile + Flat
 4. 接收端读帧 → JSON 反序列化 → 入 `_inbox` Channel
 
 可量化的成本主要是 **JSON 编解码 + 内核态拷贝 + 每连接 pump 线程调度**。
-心跳（默认 5s 一条）可以忽略；大头是快照：每个客户端每 tick 一条
-`eng.snapshot`（`EngineBusSessionClient` 按 (session, client) 逐条发布），
-默认 66ms tick、10 个客户端 ≈ 每秒 ~150 条 JSON 往返。
+心跳（默认 5s 一条）可以忽略；大头是快照。**优化前**每个客户端每 tick 一条 `eng.snapshot`（按 (session, client) 逐条发布），默认 66ms tick、10 个客户端 ≈ 每秒 ~150 条 JSON 往返。**优化后（50f0045）**广播快照仅由 `BroadcastOwnerRegistry` 选举的 owner 每 session 每 tick 发布一条（`EngineBusSessionClient` 发布过滤），10 客户端 ≈ 每秒 ~15 条。
 
 # 更便宜的替代（先做，零新依赖）
 
@@ -94,7 +92,7 @@ todo §3.5 要求评估并规划共享内存 transport（MemoryMappedFile + Flat
 
 阶段划分（届时执行）：
 
-1. **阶段 A**：eng→gw 快照按 tick 去重（替代项 1，独立收益，随时可做）；
+1. **阶段 A**：eng→gw 快照按 tick 去重（替代项 1，独立收益）——**✅ 已交付（50f0045）**：广播快照仅由 owner 每 session 每 tick 发布一条，Gateway 零改动，eng→gw 消息量降为「tick 频率」；守卫 `EngineBroadcastOwnerTests` 5 例 + `EngineBusSessionClientTests` 3 例 + `TwoClientsSameSession_BothReceiveSnapshots`。阶段 B/C 仍按触发条件等待真实瓶颈；
 2. **阶段 B**：`Ipc:Transport=SharedMemory` 原型，仅快照通道（可丢语义），
    事件/控制通道仍走 UDS；与 UDS 做 A/B 基准；
 3. **阶段 C**：基准胜出且崩溃恢复验证通过后，才考虑默认切换与 FlatBuffers。

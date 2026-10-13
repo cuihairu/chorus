@@ -99,13 +99,15 @@ Chorus stays a lightweight framework and does not grow into an account/ops/payme
 ## Tech Stack
 
 - Language: C# (the default C# version for .NET 10)
-- .NET: `net10.0` (see `global.json`)
+- .NET: `net10.0` (TargetFramework in `src/*/*.csproj`; `global.json` pins the SDK to `10.0.401`)
 - Platforms: Windows / Linux / macOS (server side); clients connect over the WebSocket protocol
 
 ## Releases and Tags
 
 Use semantic version tags: `v0.1.0`, `v0.1.1`. Version numbers are given and triggered manually by the
-maintainer; there is no automated release (daily/nightly binaries excepted, and those must pass acceptance testing).
+maintainer. There is no scheduled or auto-triggered release: `release.yml` runs **only** when a `v*` tag is pushed
+(the tag supplies the version), and creates the GitHub Release from there. Daily/nightly binaries are separate
+(uploaded as artifacts, no tag), and must pass acceptance testing.
 
 ```bash
 git tag v0.1.0

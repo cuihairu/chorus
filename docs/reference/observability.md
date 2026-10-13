@@ -30,7 +30,7 @@ scrape_configs:
       - targets: ["localhost:5300"]        # Chorus.Gateway
 ```
 
-单进程模式（Chorus.Server）没有 IPC 跳，`chorus_ipc_publish_failures_total` 恒为 0；拆分模式下 Gateway 与 EngineHost 各自统计自己这一跳的发布失败。
+单进程模式（Chorus.Server）没有 IPC 跳，`chorus_ipc_publish_failures_total` 恒为 0；拆分模式下仅 Gateway 面输出该计数（`src/Chorus.Gateway.Core/Metrics/ChorusMetricsText.cs:54-55`）。EngineHost 的 `EngineBusSessionClient.SafePublishAsync` 捕获发布失败但**不计数、不暴露**（`src/Chorus.EngineHost/EngineBusSessionClient.cs:64-70`），`RenderEngine` 亦无该指标。
 
 ## 指标清单
 
@@ -79,7 +79,7 @@ scrape_configs:
 | `chorus_ingress_unmapped_total` | counter | 无法映射到 Session 的事件数 |
 | `chorus_ingress_rate_limited_total` | counter | 触发限流的事件数 |
 | `chorus_ingress_too_large_total` | counter | 请求体超限被拒的事件数 |
-| `chorus_ingress_timed_out_total` | counter | 事件道满且回滚去重的次数（503） |
+| `chorus_ingress_timed_out_total` | counter | 事件道满回滚去重的次数（503）与单请求超时（504） |
 
 ### WebSocket（Gateway 主播/观众连接面）
 

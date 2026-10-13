@@ -185,8 +185,8 @@ title: 帧同步最佳实践
 
 - `tickDurationMs`: `50` 或 `66`
 - `inputDelayTicks`: `2~4`
-- `snapshotEveryTicks`: `2~5`
-- `maxLagTicks`: `6~10`
+- `snapshotEveryTicks`: `2~5`（注：本仓代码默认 `1`，即每 tick 都发——`src/Chorus.Engine/Session/SessionConfig.cs:6`）
+- `maxLagTicks`: `6~10`（注：本仓代码默认 `50`——`src/Chorus.Engine/Session/SessionConfig.cs:8`，远高于本推荐区间；调优时以观测为准）
 - `resyncCooldownMs`: `1000~3000`
 - `maxEventsPerTick`: 必须按压测结果配置
 
@@ -241,7 +241,7 @@ title: 帧同步最佳实践
 - 每 tick 事件数
 - 每 tick 丢弃/合并事件数
 - 强制快照次数
-- 单客户端出站队列积压
+- 单客户端出站队列积压（注：当前 `OutboundClientQueue.Dropped` 未进 `SessionDiagnostics` 与指标，见 `src/Chorus.Engine/Session/OutboundClientQueue.cs`——待导出）
 
 重点看三个危险信号：
 

@@ -91,7 +91,7 @@ title: 帧同步（权威 Tick + 快照）
 | --- | --- | --- | --- |
 | G1 | 客户端拿不到「每条事件属于哪一帧」 | 快照只带 `tickId`（`ServerSnapshot.cs:8`），不带 per-event 帧归属；事件按 tick 排空后即删（`SessionActor.cs:413-415`） | 计划中（P2） |
 | G2 | 没有帧历史缓冲 | 引擎只保留当前 tick 的事件，无 ring buffer | 计划中（P2） |
-| G3 | 没有客户端「拉取某帧」的消息 | 线协议只有 server→client 的 `snapshot`；`ClientAck` 只有 `lastAppliedTickId`（`docs/reference/protocol.md:107-116`） | 计划中（P2） |
+| G3 | 没有客户端「拉取某帧」的消息 | 线协议只有 server→client 的 `snapshot`；`ClientAck` 只带 `lastAppliedTickId` 作为进度字段（另有 `sessionId`/`clientId`/`clientTimeMs`，`src/Chorus.Protocol/Messages/ClientAck.cs:3-9`） | 计划中（P2） |
 | G4 | 没有回放/录播对齐 | 无持久化（`versioning.md:72-74`），快照不落盘 | **明确不做**（除非先落 snapshot-restore 契约） |
 | G5 | 没有客户端 SDK | 仓内 src 全是 server 侧，无 client 库 | 计划中（P3） |
 | G6 | 客户端节拍/插值未实测 | 无客户端实现可跑 | **未实测** |
@@ -199,7 +199,7 @@ title: 帧同步（权威 Tick + 快照）
 
 | 期次 | 内容 | 验收口径 |
 | --- | --- | --- |
-| **P1** | 帧号语义文档化 + `state.frameEvents` 约定 + 客户端按帧号渲染 | 文档落地；`state.frameEvents` 约定被示例/测试引用；客户端按帧号渲染的示例可跑（见 [快速接入](guides/quickstart-frame-sync.md)） |
+| **P1** | 帧号语义文档化 + `state.frameEvents` 约定 + 客户端按帧号渲染 | 文档落地；`state.frameEvents` 约定被示例/测试引用；客户端按帧号渲染的示例可跑（见 [快速接入](../guide/quickstart-frame-sync.md)） |
 | **P2** | 帧历史 ring buffer + `resync` 拉取消息 + 快照 `frameEvents` 信封字段 | 单测：ring buffer 补帧窗口 + `resync` 消息 + wire 兼容（旧客户端忽略新字段）；e2e：丢帧后补帧对齐 |
 | **P3** | 客户端 SDK（入口 + 一个回调） | 新项目 N 行代码内接入；回调收 state；构建/测试绿 |
 
@@ -210,5 +210,5 @@ title: 帧同步（权威 Tick + 快照）
 - [协议参考](../reference/protocol.md) — `snapshot` / `ack` / `hello` / `welcome` 消息
 - [版本策略](../reference/versioning.md) — `state` schema 版本 `v`、兼容性判定规则
 - [配置参考](../reference/config.md) — `Session:*` 参数（`tickDurationMs` / `maxLagTicks` 等）
-- [快速接入帧同步](guides/quickstart-frame-sync.md) — N 行代码接入
+- [快速接入帧同步](../guide/quickstart-frame-sync.md) — N 行代码接入
 - [接口参考](../reference/api.md) — 后台/管理端接口

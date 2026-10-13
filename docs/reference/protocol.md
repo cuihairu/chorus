@@ -51,8 +51,8 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
   "sessionId":"session-1",
   "clientId":"client-1",
   "tickDurationMs":66,
-  "inputDelayTicks":3,
-  "snapshotEveryTicks":2,
+  "inputDelayTicks":2,
+  "snapshotEveryTicks":1,
   "serverTimeMs":1710000000000,
   "protocolVersion":1
 }

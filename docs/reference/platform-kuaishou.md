@@ -46,7 +46,7 @@ sha1Hex(rawBody + 消息验证Token) == 请求头 kwaisign
 
 1. **直播事件是否走此信封未确认**：官方文档描述的是开放平台「消息推送」的通用加解密壳；
    直播（弹幕/礼物/点赞）事件是否复用该信封、内层 JSON 结构是什么，文档未给出。
-   当前内层按占位契约（同抖音字段），联调时只替换 `KuaishouPlatformEventMapper.MapInner` 一处。
+   当前内层按占位契约（同抖音字段），联调时只替换 `KuaishouPlatformEventMapper.TryMap` 一处。
 2. **应答体格式未严格核实**：官方建议收到消息后应答成功（本文按 `200` 处理即视为成功）；
    是否必须返回特定 JSON（如 `{"result":1,"message_id":...}`）待联调确认。
 3. **直播事件推送通道形态**（HTTP 回调 vs 平台侧 WS 推送）未确认，与抖音同风险：
@@ -109,7 +109,7 @@ sha1Hex(rawBody + 消息验证Token) == 请求头 kwaisign
 - 复用 `EventDeduplicator`（键 `kuaishou:<msgId>`，TTL `Ingress:DedupTtlSeconds`，默认 600s）。
 - 重复事件返回 `200 {"ok":true,"duplicated":true}`。
 - 官方重试 3 次 → TTL 需覆盖重试窗口（600s 足够，联调时按实际间隔核对）。
-- 已知限制（评审 P0-8）：当前 `TryMark` 非原子、发布失败会被记为重复；在阶段一④统一原子化与四态投递。
+- 去重原子化（评审 P0-8，已修复 78f2597）：`EventDeduplicator.TryReserve` 用 `ConcurrentDictionary.TryAdd` 原子占位（`src/Chorus.Adapters.Platforms/EventDeduplicator.cs:63-95`），投递失败走 `Rollback` 释放占位（`src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs:114`），平台重试是全新投递而非误判重复。
 
 ## 3. 待联调清单（全部明示，不做猜测实现）
 

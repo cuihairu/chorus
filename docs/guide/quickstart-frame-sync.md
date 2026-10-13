@@ -90,6 +90,7 @@ static async Task Send(ClientWebSocket ws, object payload)
 
 - **帧号 = `tickId`**：单调递增，随快照下发（`ServerSnapshot.cs:8`）。客户端按帧号排序与渲染。
 - **ACK 语义**：`lastAppliedTickId` = 已**真正应用完成**的帧号，不是「已收到」（`protocol.md:121-130`）。
+- **ACK 频控**：`Faces:StreamerWs:AckPerMinute` 默认 **600/连接/分钟**（`src/Chorus.Gateway.Core/Faces/StreamerWsFaceOptions.cs:21`），超限静默丢弃（`/faces` 的 `streamerWs.ackDropped` 计数）。按默认 `tickDurationMs=66`（≈15.2 快照/分钟）每帧回一个 ACK 约 909/分钟，**会撞上上限**——骨架应抽样发 ACK 或调高该值。
 - **强制快照**：`forced=true && reason="lag"` → 立即对齐，不补历史（`protocol.md:104-105`）。
 - **幂等**：帧号 ≤ 已应用的快照直接丢弃。
 - **鉴权**：`/ws` 默认**fail-closed**——需 `Faces:StreamerWs:AuthTokens` 或显式开 `AllowAnonymous`（[配置参考](../reference/config.md)）。

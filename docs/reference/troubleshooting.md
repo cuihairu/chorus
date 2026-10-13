@@ -83,7 +83,7 @@ title: 故障排查
 
 优先检查：
 
-1. 单 tick 事件数
+1. 单 tick 事件数（相邻两次 `/sessions` 的 `totalAppliedEvents` 差值）
 2. `maxEventsPerTick` 是否生效
 3. 事件合并/降采样是否足够
 4. 快照体积是否过大
@@ -204,12 +204,12 @@ title: 故障排查
 
 至少需要拿到：
 
-- `serverTick`
+- `tickId`（会话当前权威 tick）
 - 每客户端 `lastAckTickId`
 - 每客户端 `lagTicks`
 - 每客户端 `lastAckAgeMs`
 - `lastTickProcessMs`
-- 每 tick 事件数
+- 每 tick 事件数（相邻两次 `/sessions` 的 `totalAppliedEvents` 差值）
 - 丢弃/合并事件数
 - 每客户端 `resyncCount`
 

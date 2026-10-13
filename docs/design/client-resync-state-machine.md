@@ -169,6 +169,8 @@ title: 客户端追同步状态机
 
 这不是固定标准，但适合作为初始值。
 
+> 注意：本仓代码 `maxLagTicks` 默认 **50**（`src/Chorus.Engine/Session/SessionConfig.cs:8`），远高于本推荐区间；本节阈值用于状态机行为设计，实际强制 resync 触发点以 `maxLagTicks` 为准。
+
 ## 建议事件
 
 状态机通常需要响应这些事件：
@@ -330,6 +332,8 @@ onUpdate():
 - 能通过 `resyncCooldownMs` 避免短时间反复打快照
 
 当前项目里的 `SessionActor` 已具备这条主链路，因此客户端实现应围绕该行为收敛，而不是自行定义另一套恢复模型。
+
+服务端已按客户端维度暴露状态机可直接消费的诊断字段（`/sessions` 的 `clients[]`）：`lagTicks`、`lastAckAgeMs`、`resyncCount`、`lastResyncAgeMs`、`connectedTickId`、`lastAckTickId`（`src/Chorus.Engine/Session/SessionDiagnostics.cs` 的 `SessionClientDiagnostics`）。
 
 ## 观测建议
 

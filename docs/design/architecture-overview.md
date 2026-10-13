@@ -40,9 +40,9 @@ flowchart TB
   GWIPC <-->|"gw→eng 命令通道（所有网关共享）"| ENGIPC
   ENGIPC <-->|"eng→gw 快照 / 欢迎 / 心跳（按 Gateway:Id 后缀，引擎扇出）"| GWIPC
   ENGIPC --> REG --> SA --> GM
-  SA -.->|"权威快照 V=1 上线路由"| GM
+  GM -.->|"每 tick 读状态打包快照 V=1（SessionActor.cs:451 → WireSnapshot）"| SA
   RT -.->|"等阶段三触发条件"| REG
-  SA --> CPU
+  ENGIPC -.->|"进程级水位，仅 /metrics 采样"| CPU
   LOADTOOL -.->|"HTTP 采样"| OPS
 ```
 

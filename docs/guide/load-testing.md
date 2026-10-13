@@ -44,7 +44,7 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 | `--dup-rate` | 0.02 | 重复事件 id 占比（触发去重） |
 | `--match` | 空 | 共享 match id（多 Session 同场） |
 | `--token` | 空 | WS 鉴权 token（或环境变量 `CHORUS_WS_TOKEN`） |
-| `--engine-metrics` | 空 | 结束时抓取的 Engine `/metrics` URL |
+| `--engine-metrics` | 空 | Engine `/metrics` URL；运行期每 `--report-every` 采样并取峰值 |
 | `--report-every` | 5 | 进度报告间隔（秒） |
 
 也可以用环境变量：`CHORUS_LOAD_URL`、`CHORUS_LOAD_PLATFORM`、`CHORUS_WS_TOKEN`、`CHORUS_LOAD_ENGINE_METRICS`。
@@ -59,7 +59,7 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 
 - `ingress.ok` / `dup` / `429` / `503` / `err`：入口受理、判重、限流、事件道满、其他错误——对应 `chorus_ingress_*`。
 - `ws.snaps` / `acks` / `maxLag` / `reconnects`：客户端收到快照、发出 ACK、最大滞后 tick、断连次数。
-- 结束时汇总并（若给了 `--engine-metrics`）抓取引擎侧 `chorus_sessions`、`chorus_events_applied_total`、`chorus_snapshots_sent_total`、`chorus_tick_overruns_total`、`chorus_tick_errors_total`、`chorus_mailbox_depth`。
+- 结束时汇总；若给了 `--engine-metrics`，另打印引擎侧三个峰值（`engine peaks: sessions=… tickMs=… cpuPercent=…`，对应阶段三触发条件「单 worker 峰值 CPU > 60%」「单机房间数达数百量级」），并可（`PrintEngineMetricsAsync`）打印一次 `/metrics` 原文。
 
 典型用法：先低速率跑通（`--rate 10 --duration 30`），再逐步加到目标速率；观察 `503`（事件道满，说明速率超过引擎消费能力）、`429`（ingress 限流）与 `maxLag`（慢客户端是否靠 resync 追回）。
 

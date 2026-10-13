@@ -56,7 +56,7 @@ builder.Services.AddSingleton<IGameModuleFactory, SampleGameModuleFactory>();
 
 - `ApplyEvents` 只从该 Session 的 Actor 单线程调用，**不要加锁、不要 async、不要 I/O、不要 await**。
 - 一次 `ApplyEvents` 收到的就是本 tick 结算的、去重后的观众事件；直接进 reducer/计数即可。
-- 抛异常会被引擎捕获并计入 `chorus_tick_errors_total`，Actor 存活，但**本 tick 的状态不会推进**——所以模块内部要自己兜住异常（至少 `try/catch` + 日志），不要让单条脏事件打挂整 tick。
+- 抛异常会被引擎捕获并计入 `chorus_tick_errors_total`，Actor 存活，但**本 tick 不会下发快照**（`TickId` 已推进，异常发生在快照发送之前）——所以模块内部要自己兜住异常（至少 `try/catch` + 日志），不要让单条脏事件打挂整 tick。
 - `GetStateSnapshot` 返回的 `object` 会被 JSON 序列化。**返回匿名对象或 DTO 都行**，但要控制大小：超过 `Session:MaxSnapshotBytes`（默认 1MB）的快照会被跳过并计入 `chorus_snapshots_oversize_total`，客户端只能靠 resync 兜底。
 - 状态必须有界：观众维度要做淘汰（LRU/窗口），不要 `Dictionary<userId, ...>` 无界增长。
 
