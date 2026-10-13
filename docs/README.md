@@ -24,6 +24,7 @@ footer: Apache-2.0 License
 ## 文档入口
 
 - 新接入项目：从 [快速开始](./guide/getting-started.md) 开始
+- 理解当前架构（进程拓扑 + 组件索引）：看 [当前架构总览](./design/architecture-overview.md)
 - 理解整体设计：看 [整体架构](./design/architecture.md) 和 [规格草案](./design/spec.md)
 - 关注帧同步：看 [帧同步设计](./design/frame-sync.md)
 - 处理“追同步两边都追不上”：看 [帧同步最佳实践](./design/frame-sync-best-practices.md)

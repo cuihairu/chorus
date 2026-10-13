@@ -59,10 +59,14 @@ dotnet run --project src/Chorus.Gateway
 ## 架构概览
 
 ```mermaid
-flowchart LR
-  Platform["平台事件(弹幕/礼物)"] --> Ingress["Ingress"] --> Actor["SessionActor"]
-  Client["主播客户端"] <-->|hello/ack/snapshot| GW["WebSocket Gateway"] --> Actor --> Game["GameModule(权威逻辑)"]
+flowchart TB
+  P["抖音 / 快手平台"] -->|"HTTPS 回调"| PGW["platform-gw<br/>/ingress/{platform}"]
+  C["主播客户端"] <-->|"hello / welcome / ack / snapshot"| SGW["streamer-gw<br/>/ws"]
+  PGW <-->|"gw→eng 命令 + eng→gw 心跳"| W["Chorus.EngineHost<br/>SessionActor × N · IGameModule"]
+  SGW <-->|"gw→eng 命令（ACK/上下线）+ eng→gw 快照/欢迎/心跳（引擎扇出）"| W
 ```
+
+单进程形态（`Chorus.Server`）把两侧装进同一进程，无 IPC 跳。完整进程拓扑与组件 file:line 索引见 [当前架构总览](docs/design/architecture-overview.md)。
 
 ## 产品边界
 
