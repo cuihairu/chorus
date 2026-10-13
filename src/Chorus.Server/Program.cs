@@ -1,4 +1,5 @@
 using Chorus.Engine.Abstractions;
+using Chorus.Engine.Routing;
 using Chorus.Engine.Session;
 using Chorus.Gateway.Core.Metrics;
 using Chorus.Server;
@@ -69,6 +70,22 @@ builder.Services.AddSingleton<PlatformEventVerifierRouter>(sp => new PlatformEve
     fallback: sp.GetService<AllowAllPlatformEventVerifier>()));
 builder.Services.AddSingleton<IPlatformEventVerifier>(sp => sp.GetRequiredService<PlatformEventVerifierRouter>());
 builder.Services.AddSingleton<IPlatformEventMapper, TestPlatformEventMapper>();
+builder.Services.AddSingleton<PlatformCapabilityRegistry>(_ =>
+{
+    var registry = new PlatformCapabilityRegistry();
+    registry.Register(PlatformNames.Bilibili, PlatformCapabilities.Bilibili);
+    registry.Register(PlatformNames.Douyin, PlatformCapabilities.Douyin);
+    registry.Register(PlatformNames.Kuaishou, PlatformCapabilities.Kuaishou);
+    return registry;
+});
+builder.Services.AddSingleton<PlatformCapabilityRegistry>(_ =>
+{
+    var registry = new PlatformCapabilityRegistry();
+    registry.Register(PlatformNames.Bilibili, PlatformCapabilities.Bilibili);
+    registry.Register(PlatformNames.Douyin, PlatformCapabilities.Douyin);
+    registry.Register(PlatformNames.Kuaishou, PlatformCapabilities.Kuaishou);
+    return registry;
+});
 builder.Services.AddSingleton<IPlatformEventMapper, DouyinPlatformEventMapper>();
 builder.Services.AddSingleton<IPlatformEventMapper>(sp => new KuaishouPlatformEventMapper(
     messageEncryptKey: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:MsgEncryptKey"]));
