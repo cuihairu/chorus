@@ -104,7 +104,8 @@ public sealed record LoadToolOptions(
               --dup-rate <0..1>            Fraction of duplicate event ids (default 0.02)
               --match <id>                 Optional match id shared by all sessions
               --token <tok>                WS auth token (or CHORUS_WS_TOKEN)
-              --engine-metrics <url>       Optional engine /metrics URL scraped at the end
+              --engine-metrics <url>       Engine /metrics URL: scraped at the end, and
+                                           every --report-every interval to report run peaks
               --report-every <sec>         Progress report interval (default 5)
             """);
     }

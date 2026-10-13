@@ -28,11 +28,21 @@ public static class ChorusMetricsText
         return sb.ToString();
     }
 
-    /// <summary>EngineHost surface: session aggregates only.</summary>
-    public static string RenderEngine(IReadOnlyList<SessionDiagnostics> sessions)
+    /// <summary>EngineHost surface: session aggregates + worker process CPU when a sample exists.</summary>
+    public static string RenderEngine(IReadOnlyList<SessionDiagnostics> sessions, double? processCpuPercent = null)
     {
         var sb = new StringBuilder();
         AppendSessionMetrics(sb, sessions);
+
+        // Null = no previous scrape yet: omit the line rather than publish a
+        // fake zero (todo §4 peak-measurement item).
+        if (processCpuPercent is { } cpu)
+        {
+            sb.AppendLine("# TYPE chorus_process_cpu_percent gauge");
+            sb.Append("chorus_process_cpu_percent ")
+              .AppendLine(cpu.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+        }
+
         return sb.ToString();
     }
 

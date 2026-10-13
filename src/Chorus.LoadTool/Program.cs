@@ -45,7 +45,8 @@ for (var s = 1; s <= Math.Max(1, options.Sessions); s++)
 }
 
 var ingressTask = ingress.RunAsync(cts.Token);
-var reportTask = ReportLoopAsync(simulations, ingress, options, cts.Token);
+var peaks = new MetricsPeaks();
+var reportTask = ReportLoopAsync(simulations, ingress, options, peaks, cts.Token);
 
 try
 {
@@ -64,6 +65,7 @@ await AwaitQuietly(ingressTask);
 await AwaitQuietly(reportTask);
 
 PrintSummary(simulations, ingress, options);
+PrintPeaks(peaks);
 await PrintEngineMetricsAsync(httpClient, options);
 
 static async Task AwaitQuietly(Task task)
@@ -77,13 +79,30 @@ static async Task AwaitQuietly(Task task)
     }
 }
 
-async Task ReportLoopAsync(IReadOnlyList<ClientSimulation> sims, IngressDriver ing, LoadToolOptions opts, CancellationToken ct)
+async Task ReportLoopAsync(IReadOnlyList<ClientSimulation> sims, IngressDriver ing, LoadToolOptions opts, MetricsPeaks peaks, CancellationToken ct)
 {
     var tick = 0;
     while (!ct.IsCancellationRequested)
     {
         await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, opts.ReportEverySeconds)), ct);
         tick++;
+
+        // Run-time sampling so the summary reports peaks, not just the final
+        // scrape (todo §4 peak-measurement item). Best-effort: a failed scrape
+        // never aborts the load run.
+        if (!string.IsNullOrWhiteSpace(opts.EngineMetricsUrl))
+        {
+            try
+            {
+                peaks.Observe(await httpClient.GetStringAsync(opts.EngineMetricsUrl, ct));
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+            }
+            catch (Exception)
+            {
+            }
+        }
         var snaps = sims.Sum(s => s.SnapshotsReceived);
         var acks = sims.Sum(s => s.AcksSent);
         var maxLag = sims.Count == 0 ? 0 : sims.Max(s => s.LastLagTicks);
@@ -105,6 +124,21 @@ void PrintSummary(IReadOnlyList<ClientSimulation> sims, IngressDriver ing, LoadT
     Console.WriteLine("[loadtool] ws: " +
         $"snapshots={sims.Sum(s => s.SnapshotsReceived)} acks={sims.Sum(s => s.AcksSent)} " +
         $"maxLagTicks={maxLag} reconnects={reconnects}");
+}
+
+void PrintPeaks(MetricsPeaks peaks)
+{
+    if (peaks.MaxSessions is null && peaks.MaxTickDurationMs is null && peaks.MaxCpuPercent is null)
+    {
+        return;
+    }
+
+    // Stage-3 trigger reads these peaks: "worker peak CPU > 60%" and
+    // "room count in the hundreds" are countable from a sustained run now.
+    Console.WriteLine("[loadtool] engine peaks: " +
+        $"sessions={peaks.MaxSessions?.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) ?? "-"} " +
+        $"tickMs={peaks.MaxTickDurationMs?.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) ?? "-"} " +
+        $"cpuPercent={peaks.MaxCpuPercent?.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) ?? "-"}");
 }
 
 static async Task PrintEngineMetricsAsync(HttpClient http, LoadToolOptions opts)
