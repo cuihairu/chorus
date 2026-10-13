@@ -58,14 +58,92 @@ public sealed class BilibiliPlatformMapperTests
     public void UnknownCmd_MapsToUnknownKind_DoesNotCrash()
     {
         var mapper = new BilibiliPlatformEventMapper(sessionId: "s-bili");
-        // SEND_GIFT 属 P2；灰度期未知类型（如 SEND_GIFT_V2）也不崩。
-        const string json = """{"cmd":"SEND_GIFT_V2","msg_id":"m-3","data":{}}""";
+        // 平台协议仍在演进：真正未登记的 cmd（如未来新增类型）不崩、确认后丢弃。
+        const string json = """{"cmd":"SOME_FUTURE_EVENT","msg_id":"m-3","data":{}}""";
 
         var ev = mapper.TryMap(PlatformNames.Bilibili, json, 0);
 
         Assert.NotNull(ev);
         Assert.Equal(AudienceEventKind.Unknown, ev.Kind);
         Assert.Equal("m-3", ev.EventId);
+    }
+
+    [Fact]
+    public void SendGift_MapsToGift()
+    {
+        var mapper = new BilibiliPlatformEventMapper(sessionId: "s-bili");
+        const string json =
+            """{"cmd":"SEND_GIFT","msg_id":"g-1","data":{"open_id":"ou-7","gift_id":31036,"gift_num":2,"price":1000,"gift_name":"小花花"}}""";
+
+        var ev = mapper.TryMap(PlatformNames.Bilibili, json, 0);
+
+        Assert.NotNull(ev);
+        Assert.Equal(AudienceEventKind.Gift, ev.Kind);
+        Assert.Equal("31036", ev.GiftId);
+        Assert.Equal(2, ev.GiftCount);
+        Assert.Equal(1000, ev.GiftValue);
+        Assert.Equal("ou-7", ev.UserId);
+    }
+
+    [Fact]
+    public void SendGiftV2_GrayFormat_Tolerated_NotLostNotCrashing()
+    {
+        var mapper = new BilibiliPlatformEventMapper(sessionId: "s-bili");
+        // 灰度 V2：字段布局未定/部分缺失 → 仍是 Gift，不崩、不丢（去重靠 msg_id）。
+        const string json = """{"cmd":"SEND_GIFT_V2","msg_id":"g-v2","data":{"open_id":"ou-8"}}""";
+
+        var ev = mapper.TryMap(PlatformNames.Bilibili, json, 0);
+
+        Assert.NotNull(ev);
+        Assert.Equal(AudienceEventKind.Gift, ev.Kind);
+        Assert.Equal("g-v2", ev.EventId);
+        Assert.Null(ev.GiftId);
+        Assert.Null(ev.GiftCount);
+    }
+
+    [Fact]
+    public void InteractWordV2_And_LiveRoomEnter_MapToEnter()
+    {
+        var mapper = new BilibiliPlatformEventMapper(sessionId: "s-bili");
+
+        var interact = mapper.TryMap(PlatformNames.Bilibili,
+            """{"cmd":"INTERACT_WORD_V2","msg_id":"e-1","data":{"open_id":"ou-9"}}""", 0);
+        var enter = mapper.TryMap(PlatformNames.Bilibili,
+            """{"cmd":"LIVE_ROOM_ENTER","msg_id":"e-2","data":{"open_id":"ou-10"}}""", 0);
+
+        Assert.NotNull(interact);
+        Assert.Equal(AudienceEventKind.Enter, interact.Kind);
+        Assert.Equal("ou-9", interact.UserId);
+        Assert.NotNull(enter);
+        Assert.Equal(AudienceEventKind.Enter, enter.Kind);
+    }
+
+    [Fact]
+    public void LiveStart_And_LiveEnd_MapToRoomLifecycle()
+    {
+        var mapper = new BilibiliPlatformEventMapper(sessionId: "s-bili");
+
+        var start = mapper.TryMap(PlatformNames.Bilibili, """{"cmd":"LIVE_START","msg_id":"l-1","data":{}}""", 0);
+        var end = mapper.TryMap(PlatformNames.Bilibili, """{"cmd":"LIVE_END","msg_id":"l-2","data":{}}""", 0);
+
+        Assert.NotNull(start);
+        Assert.Equal(AudienceEventKind.RoomLifecycle, start.Kind);
+        Assert.Equal("live_start", start.Text);
+        Assert.NotNull(end);
+        Assert.Equal(AudienceEventKind.RoomLifecycle, end.Kind);
+        Assert.Equal("live_end", end.Text);
+    }
+
+    [Fact]
+    public void SuperChat_P2Pending_StaysUnknown()
+    {
+        var mapper = new BilibiliPlatformEventMapper(sessionId: "s-bili");
+        const string json = """{"cmd":"SUPER_CHAT_MESSAGE","msg_id":"sc-1","data":{"open_id":"ou-11"}}""";
+
+        var ev = mapper.TryMap(PlatformNames.Bilibili, json, 0);
+
+        Assert.NotNull(ev);
+        Assert.Equal(AudienceEventKind.Unknown, ev.Kind);
     }
 
     [Fact]

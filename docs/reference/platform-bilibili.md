@@ -37,9 +37,11 @@ title: 平台对接参考：B 站
   `8`=AUTH_REPLY（体 JSON `{"code":0}` 通过，非 0 拒绝）。
 - 业务帧一帧可含多包；包体 ver：`0`=明文 JSON、`2`=zlib deflate（开放平台在用）、`3`=brotli；
   压缩包体解压后**递归再分包**。
-- 事件信封 `{"cmd":...,"data":{...},"msg_id":...}`；P1 归一化 `DANMU_MSG`
-  （`data.open_id`/`data.uname`/`data.msg`/`msg_id`，均扁平键）。
-- 协议仍在演进（如 `SEND_GIFT_V2` 灰度）：未知 cmd 不崩，按 Unknown 丢弃。
+- 事件信封 `{"cmd":...,"data":{...},"msg_id":...}`；归一化（P1+P2）：`DANMU_MSG`→comment、
+  `SEND_GIFT`/`SEND_GIFT_V2`（灰度容忍）→gift、`INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter、
+  `LIVE_START`/`LIVE_END`→roomLifecycle（均 `data.open_id`/`msg_id` 扁平键）。
+- 协议仍在演进：未知 cmd 不崩，按 Unknown 丢弃（SUPER_CHAT_MESSAGE / GUARD_BUY / USER_TOAST_MSG_V2
+  归一化待定，金测驱动）。
 
 ## 2. chorus 实现（todo §12 P1，已落地）
 
@@ -48,7 +50,7 @@ B 站 open-live wss ──▶ BilibiliOpenLiveClient（app_start/认证/心跳/�
                           │  op-5 业务消息原样 + x-bili-* 签名
                           ▼
                    POST /ingress/bilibili（BilibiliPlatformEventVerifier 验签 fail-closed）
-                          │  BilibiliPlatformEventMapper：DANMU_MSG → AudienceEvent(kind=comment)
+                          │  BilibiliPlatformEventMapper：弹幕/礼物/进场/生命周期 → AudienceEvent
                           ▼
                    PlatformIngressFace（限流/去重/Tell）→ SessionActor → 快照
 ```
@@ -58,7 +60,7 @@ B 站 open-live wss ──▶ BilibiliOpenLiveClient（app_start/认证/心跳/�
 - `BilibiliOpenLiveClient.cs`：连接状态机。断线重连指数退避（默认 1s→2s→…→30s 封顶，
   认证通过过的会话断开从最小退避起重连），**重连时重取 wss_link**（app_start 可重入）；
   传输缝（`HttpMessageInvoker` / ws connect）可注入，仓内离线金测覆盖。
-- `BilibiliPlatformEventMapper.cs`：P1 弹幕归一化；会话绑定走配置（P1 单绑定，多房间属控制面 todo §14）。
+- `BilibiliPlatformEventMapper.cs`：事件归一化（弹幕/礼物/进场/生命周期，P1+P2）；会话绑定走配置（单绑定，多房间属控制面 todo §14）。
 - `BilibiliIngressBridgeHostedService.cs`：凭据齐全时随主机启动桥（Server/Gateway 均注册）。
 - 不硬编码绕过平台风控：不模拟 web 登录、不伪造设备指纹、不并发多连接压测。
 

@@ -6,6 +6,9 @@ public enum AudienceEventKind
     Comment = 1,
     Like = 2,
     Gift = 3,
+    // 码值稳定：追加成员不改既有编号（wire 上 FrameEvent.Kind 走字符串）。
+    Enter = 4,          // 观众进场（B 站 INTERACT_WORD_V2 / LIVE_ROOM_ENTER）
+    RoomLifecycle = 5, // 房间开播/下播（LIVE_START / LIVE_END）；控制面动作属 §14
 }
 
 public sealed record AudienceEvent(

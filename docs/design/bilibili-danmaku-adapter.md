@@ -135,7 +135,7 @@ SessionActor（tick 调度 → 快照 → 客户端）            ← 已有
 | 期次 | 内容 | 验收口径 |
 | --- | --- | --- |
 | **P1** | open-live 接入 + 弹幕归一化 + 断线重连 + `/ingress/bilibili` | **已完成（2026-10-14）**：金测（鉴权通过 / 篡改拒绝 / 重复 `msg_id` 去重 / 未知事件不崩，`BilibiliIngressEndpointTests` 7 例）+ e2e（弹幕 → `AudienceEvent` → 帧 → 客户端快照，`BilibiliEndToEndTests`）；实现见 [平台参考](../reference/platform-bilibili.md)，签名/帧协议按 blivedm 原文核实（六头 `\n` 拼接 HMAC、16 字节大包头 op 5/7/8、ver 2 deflate 递归分包） |
-| **P2** | 礼物 / 进场 / 房间生命周期归一化（含 `SEND_GIFT_V2` 灰度） | 金测覆盖各事件类型映射；`SEND_GIFT_V2` 新格式容忍；e2e：礼物 → 帧 |
+| **P2** | 礼物 / 进场 / 房间生命周期归一化（含 `SEND_GIFT_V2` 灰度） | **已完成（2026-10-14）**：`AudienceEventKind` 扩 `Enter`/`RoomLifecycle`（码值追加不改既有编号）；金测覆盖 `SEND_GIFT`（gift_id/gift_num/price）、`SEND_GIFT_V2` 灰度容忍（字段缺失不丢不崩）、`INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter、`LIVE_START`/`LIVE_END`→roomLifecycle、SUPER_CHAT 等 P2 待定项保持 Unknown；e2e 礼物 → 帧（`totals.gifts`）。SUPER_CHAT/GUARD_BUY/USER_TOAST_MSG_V2 归一化仍待定（金测驱动，P2 待定项顺延） |
 | **P3** | 反向写入 / 互动指令 | **需平台允许才做**——当前无官方通道，明确不做；平台开放后评估 |
 
 ---

@@ -53,15 +53,16 @@ public sealed class BilibiliEndToEndTests : IClassFixture<BilibiliEndToEndTests.
     [Fact]
     public async Task Danmaku_Ingress_ReachesClientSnapshot()
     {
-        using var factory = _factory;
-        var http = factory.CreateClient();
-        var wsClient = factory.Server.CreateWebSocketClient();
+        // 注意：IClassFixture 工厂由 xUnit 管理生命周期，测试内不要 using 它，
+        // 否则同一 fixture 的下一个测试会拿到已 dispose 的 TestServer。
+        var http = _factory.CreateClient();
+        var wsClient = _factory.Server.CreateWebSocketClient();
 
         var states = new List<JsonElement>();
         var gate = new SemaphoreSlim(1, 1);
         await using var client = await ChorusClient.ConnectAsync(
             ChorusClientOptions.Default(
-                new Uri(factory.Server.BaseAddress, "ws").ToString(), "s-bili-e2e", "c-bili"),
+                new Uri(_factory.Server.BaseAddress, "ws").ToString(), "s-bili-e2e", "c-bili"),
             state =>
             {
                 gate.Wait();
@@ -119,5 +120,75 @@ public sealed class BilibiliEndToEndTests : IClassFixture<BilibiliEndToEndTests.
         }
 
         Assert.True(sawComment, "danmaku never reached a client snapshot");
+    }
+
+    [Fact]
+    public async Task Gift_Ingress_ReachesClientSnapshot()
+    {
+        var http = _factory.CreateClient();
+        var wsClient = _factory.Server.CreateWebSocketClient();
+
+        var states = new List<JsonElement>();
+        var gate = new SemaphoreSlim(1, 1);
+        await using var client = await ChorusClient.ConnectAsync(
+            ChorusClientOptions.Default(
+                new Uri(_factory.Server.BaseAddress, "ws").ToString(), "s-bili-e2e", "c-bili-gift"),
+            state =>
+            {
+                gate.Wait();
+                try
+                {
+                    states.Add(state);
+                }
+                finally
+                {
+                    gate.Release();
+                }
+            },
+            connect: wsClient.ConnectAsync);
+
+        // 等会话在 /ws 侧就绪（先连客户端再发事件，避免 face 503 回滚）。
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 5000)
+        {
+            gate.Wait();
+            var count = states.Count;
+            gate.Release();
+            if (count >= 1)
+            {
+                break;
+            }
+
+            await Task.Delay(10);
+        }
+
+        const string gift =
+            """{"cmd":"SEND_GIFT","msg_id":"e2e-gift-1","data":{"open_id":"ou-e2e","uname":"donor","gift_id":31036,"gift_num":3,"price":1500}}""";
+        using var response = PostSigned(http, gift);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        // 礼物 → AudienceEvent → tick → SampleGameModule totals.gifts → 快照。
+        var sawGift = false;
+        var deadline = System.Diagnostics.Stopwatch.StartNew();
+        while (deadline.ElapsedMilliseconds < 8000 && !sawGift)
+        {
+            gate.Wait();
+            try
+            {
+                sawGift = states.Any(s =>
+                    s.ValueKind == JsonValueKind.Object
+                    && s.TryGetProperty("totals", out var totals)
+                    && totals.TryGetProperty("gifts", out var gifts)
+                    && gifts.GetInt64() >= 1);
+            }
+            finally
+            {
+                gate.Release();
+            }
+
+            await Task.Delay(20);
+        }
+
+        Assert.True(sawGift, "gift never reached a client snapshot");
     }
 }
