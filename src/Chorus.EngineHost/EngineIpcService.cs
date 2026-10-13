@@ -21,6 +21,7 @@ public sealed class EngineIpcService : BackgroundService
 
     private IMessageBus? _incoming;
     private IMessageBus? _outgoing;
+    private readonly string[] _gatewayIds;
 
     public EngineIpcService(
         ILogger<EngineIpcService> logger,
@@ -58,6 +59,28 @@ public sealed class EngineIpcService : BackgroundService
         // "split-mode readiness probe"): keeps the Gateway's /ready honest even
         // when no client is connected (no welcomes/snapshots flowing). 0 = off.
         _heartbeatIntervalMs = int.TryParse(config["Ipc:HeartbeatIntervalMs"], out var hb) ? Math.Max(0, hb) : 5000;
+
+        // Comma-separated gateway identities hosting the suffixed eng->gw
+        // endpoints this worker fans out to (e.g. "platform-gw,streamer-gw").
+        // Empty = legacy single-gateway channel.
+        _gatewayIds = (config["Ipc:GatewayIds"] ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToArray();
+    }
+
+    /// <summary>Per-gateway eng->gw clients wrapped in a fan-out; empty id
+    /// list keeps the legacy single-gateway client untouched.</summary>
+    private IMessageBus BuildOutgoing(IpcDuplexEndpoints endpoints)
+    {
+        if (_gatewayIds.Length == 0)
+        {
+            return IpcMessageBusFactory.CreateClient(_ipcSettings.Transport, endpoints.EngineToGateway);
+        }
+
+        return new FanOutMessageBus(_gatewayIds.Select(id =>
+            IpcMessageBusFactory.CreateClient(
+                _ipcSettings.Transport,
+                IpcEndpointBuilder.Build(_ipcSettings with { GatewayId = id }).EngineToGateway)));
     }
 
     private readonly int _heartbeatIntervalMs;
@@ -67,10 +90,14 @@ public sealed class EngineIpcService : BackgroundService
         var endpoints = IpcEndpointBuilder.Build(_ipcSettings);
 
         _incoming = IpcMessageBusFactory.CreateServer(_ipcSettings.Transport, endpoints.GatewayToEngine);
-        _outgoing = IpcMessageBusFactory.CreateClient(_ipcSettings.Transport, endpoints.EngineToGateway);
+        // One eng->gw channel per configured gateway (Ipc:GatewayIds, comma
+        // separated); each gateway hosts its own suffixed endpoint and the
+        // engine fans every message out to all of them (stage-2 transport
+        // half). Empty list = legacy single-gateway channel, byte-identical.
+        _outgoing = BuildOutgoing(endpoints);
 
-        _logger.LogInformation("EngineHost IPC started: transport={Transport} gw->eng={GwToEngUds} eng->gw={EngToGwUds} heartbeatMs={HeartbeatMs}",
-            _ipcSettings.Transport, endpoints.GatewayToEngine.UnixSocketPath, endpoints.EngineToGateway.UnixSocketPath, _heartbeatIntervalMs);
+        _logger.LogInformation("EngineHost IPC started: transport={Transport} gw->eng={GwToEngUds} eng->gw={EngToGwUds} gatewayIds={GatewayIds} heartbeatMs={HeartbeatMs}",
+            _ipcSettings.Transport, endpoints.GatewayToEngine.UnixSocketPath, endpoints.EngineToGateway.UnixSocketPath, string.Join(",", _gatewayIds), _heartbeatIntervalMs);
 
         var heartbeatLoop = _heartbeatIntervalMs > 0
             ? Task.Run(() => HeartbeatLoopAsync(stoppingToken), stoppingToken)

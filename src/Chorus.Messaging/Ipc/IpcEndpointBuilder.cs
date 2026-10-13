@@ -16,15 +16,42 @@ public static class IpcEndpointBuilder
             HttpUrl: NormalizeHttpUrl(settings.HttpGatewayToEngineUrl, "http://127.0.0.1:27600/gw-to-eng/")
         );
 
+        // The eng-to-gw channel is per gateway: each gateway hosts its own
+        // endpoint (suffixed by GatewayId) so the worker can fan out to all of
+        // them. Empty id keeps the legacy single-gateway names.
+        var id = ValidatedGatewayId(settings.GatewayId);
+        var socketSuffix = id.Length == 0 ? "" : $"_{id}";
+        var pipeSuffix = id.Length == 0 ? "" : $".{id}";
         var engToGw = new IpcEndpoint(
-            UnixSocketPath: Path.Combine(dir, $"{prefix}_eng_to_gw.sock"),
-            NamedPipeName: $"{prefix}.eng_to_gw",
+            UnixSocketPath: Path.Combine(dir, $"{prefix}_eng_to_gw{socketSuffix}.sock"),
+            NamedPipeName: $"{prefix}.eng_to_gw{pipeSuffix}",
             TcpHost: tcpHost,
             TcpPort: settings.TcpEngineToGatewayPort,
             HttpUrl: NormalizeHttpUrl(settings.HttpEngineToGatewayUrl, "http://127.0.0.1:27601/eng-to-gw/")
         );
 
         return new IpcDuplexEndpoints(gwToEng, engToGw);
+    }
+
+    private static string ValidatedGatewayId(string gatewayId)
+    {
+        if (string.IsNullOrWhiteSpace(gatewayId))
+        {
+            return "";
+        }
+
+        var id = gatewayId.Trim();
+        foreach (var ch in id)
+        {
+            if (!char.IsAsciiLetterOrDigit(ch) && ch != '-')
+            {
+                throw new ArgumentException(
+                    $"Ipc GatewayId must contain only ASCII letters, digits and dashes: '{gatewayId}'",
+                    nameof(IpcSettings.GatewayId));
+            }
+        }
+
+        return id;
     }
 
     private static string NormalizeHttpUrl(string? url, string fallback)

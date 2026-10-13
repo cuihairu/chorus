@@ -58,7 +58,10 @@ public sealed class GatewayIpcService : BackgroundService
             TcpGatewayToEnginePort: int.TryParse(_config["Ipc:TcpGatewayToEnginePort"], out var p1) ? p1 : 27500,
             TcpEngineToGatewayPort: int.TryParse(_config["Ipc:TcpEngineToGatewayPort"], out var p2) ? p2 : 27501,
             HttpGatewayToEngineUrl: _config["Ipc:HttpGatewayToEngineUrl"] ?? "http://127.0.0.1:27600/gw-to-eng/",
-            HttpEngineToGatewayUrl: _config["Ipc:HttpEngineToGatewayUrl"] ?? "http://127.0.0.1:27601/eng-to-gw/"
+            HttpEngineToGatewayUrl: _config["Ipc:HttpEngineToGatewayUrl"] ?? "http://127.0.0.1:27601/eng-to-gw/",
+            // This gateway's own identity: suffixes its eng->gw endpoint so
+            // several gateways can share one worker (stage-2 transport half).
+            GatewayId: _config["Gateway:Id"] ?? ""
         );
 
         // Recommend >= 3x the engine heartbeat (default 5000) - see deployment.md.
