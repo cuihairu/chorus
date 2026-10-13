@@ -50,6 +50,7 @@ scrape_configs:
 | `chorus_tick_duration_ms` | gauge | 最近 tick 处理耗时（取所有 Session 最大值） |
 | `chorus_mailbox_depth` | gauge | 邮箱深度（控制道 + 事件道，取最大值） |
 | `chorus_ack_lag_ticks` | gauge | 客户端 ACK 滞后 tick 数（取所有客户端最大值） |
+| `chorus_process_cpu_percent` | gauge | worker 进程 CPU 占机器总容量百分比（自上次抓取以来的均值，全核忙=100；仅 EngineHost /metrics 输出，首抓无前值时省略该行）。峰值测量仪器（todo §4）：配合 LoadTool `--engine-metrics` 周期采样，进程拓扑阶段三触发条件「单 worker 高峰 CPU > 60%」由此可数 |
 
 ### 快照
 
