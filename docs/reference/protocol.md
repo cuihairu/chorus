@@ -160,7 +160,11 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 - WS 面固定窗口：每连接每分钟 `Faces:StreamerWs:ResyncPerMinute`（默认 30），超限丢弃并计入 `/faces` 的 `streamerWs.resyncDropped`
 - 引擎 per-client 冷却：`Session:ResyncRequestCooldownMs`（默认 1000ms），冷却内重复请求计入 `TotalResyncThrottled` 后直接返回
 
-服务端不额外回执「resync 已受理」：客户端以收到的快照序列作为应答，超时未收到即应重试 `resync`。
+服务端不额外回执「resync 已受理」：客户端以收到的快照序列作为应答。重试规则：
+
+- 发 `resync` 后在约定预算内**一个快照都没收到** → 重试
+- 收到 `forced=true` 快照（`reason="resync-gap"` 或 `reason="lag"`）→ 已对齐，**不要重试**
+- 收到非 forced 快照且帧号仍跳过了帧 → 可再发一次 `resync`；回放帧会因帧号 ≤ 已应用帧被幂等丢弃，重复发送是安全的
 
 ## 推荐实现约束
 

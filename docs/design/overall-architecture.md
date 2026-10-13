@@ -1407,9 +1407,11 @@ Code Agent 必须从真实代码出发确认以下内容：
 
 ## 17.3 关键差距与下一步
 
+**已完成（2026-10-13 本轮）：**
+1. 帧同步 P2（帧历史 ring buffer + `resync` 拉取消息 + 快照 `frameEvents` 信封字段）——`758a6a5`，18 守卫
+2. 帧同步 P1（帧号语义 + 客户端按帧号回放状态机 `Chorus.LoadTool.FramePlayer`）——本轮回填测试
+
 **可立即推进的（有代码基础）：**
-1. 帧同步 P2（帧历史 ring buffer + resync 消息）——有 SessionActor 完整骨架
-2. 帧同步 P1（frameEvents 信封字段）——additive optional，零协议破坏
 3. 抖音/快手适配器联调（占位模式 → 真实字段映射）
 4. IGameModule 恢复契约拍板 → 状态恢复代码
 

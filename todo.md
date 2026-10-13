@@ -138,8 +138,8 @@
 
 方案见 docs/design/frame-sync.md，接入见 docs/guide/quickstart-frame-sync.md。
 
-- [ ] P1 帧号语义落地：帧号=tickId 文档化；state.frameEvents 约定被示例/测试引用；客户端按帧号渲染示例可跑
-- [x] P2 帧历史与补帧（`52d76b6`）：`FrameHistory` 按字节上限 ring buffer（`Session:FrameHistoryBytes`，默认 8 MiB/session，0 关闭）+ `resync` 拉取消息与完整 IPC 链（`gw.resync` → `GatewayResyncCmd` → `SessionActor.ResyncAsync`）+ 快照 `frameEvents` 信封字段（additive optional，不 bump v）；回放走直发通道绕过 latest-wins；两层限流（`Faces:StreamerWs:ResyncPerMinute` / `Session:ResyncRequestCooldownMs`）。验收：单测 18 个（`FrameHistoryTests` 7 + `SessionActorFrameHistoryTests` 6 + `WireSnapshotFrameEventsTests` 5，含真实 /ws resync e2e），全套 260 绿
+- [x] P1 帧号语义落地（`a7fe3c6`，7 测试）：帧号=tickId 文档化；客户端按帧号回放状态机 `Chorus.LoadTool.FramePlayer` 落地并接入压测工具（gap→resync）；`state.frameEvents` 约定废弃（被 P2 信封字段取代）
+- [x] P2 帧历史与补帧（`758a6a5`，18 测试）：帧历史 ring buffer + `resync` 拉取消息全链路 + 快照 `frameEvents` 信封字段（additive，不 bump v）
 - [ ] P3 客户端 SDK：新项目 N 行代码接入（SDK 入口 + 一个回调）；验收：回调收 state、按帧号渲染、构建/测试绿
 
 ## 12. B 站弹幕源适配器

@@ -110,17 +110,13 @@ title: 帧同步（权威 Tick + 快照）
 
 ### 4.2 帧号随消息怎么下发
 
-帧号**已经**随快照下发（`ServerSnapshot.cs:8`）。需要补的是 **per-event 帧归属**（G1），分两步：
+帧号**已经**随快照下发（`ServerSnapshot.cs:8`）。需要补的是 **per-event 帧归属**（G1）与**客户端按帧号回放**。
 
-**P1 — 不改线协议（state 内约定）**
+**P1 — 帧号语义 + 客户端按帧号回放（已实现）**
 
-- per-event 帧归属放进 `state`（game 模块决定的 JSON）。`versioning.md:29` 明确「`state` 内容由 `game` 模块决定」，所以这是**纯 state 内约定，零协议变更**，旧客户端无感。
-- 约定形状：`state.frameEvents = [{ "frameId": 123, "eventId": "ev-1", "kind": "comment", "userId": "u1", ... }]`。
-  - `frameId`：该事件被应用的那一帧（即 `ApplyEvents(TickId, ...)` 的 `TickId`，`SessionActor.cs:444`）。
-  - `eventId`：事件 id（去重用，`Program.cs:73-77`）。
-  - `kind`/`userId`：归一化后的游戏输入字段。
-- 优点：不动 wire、不动 `v`（`versioning.md:42` 的 v 是 schema 版本，state 内约定不触发）。
-- 缺点：帧归属与游戏状态耦合，客户端解析 state 时需知道这个约定。
+- 帧号 = `tickId`，随快照下发，客户端按帧号排序与渲染（§4.1）。
+- 客户端回放状态机 `src/Chorus.LoadTool/FramePlayer.cs`：帧号 ≤ 已应用帧 → 丢弃（幂等，回放的窗口不会重复渲染）；帧号 > 已应用帧 + 1 → 应用并报首个缺口帧号供 `resync` 拉取。单测 `FramePlayerTests`（7），`ClientSimulation` 已接线（`LoadTool` 输出 `resyncs=` 计数）。
+- `state.frameEvents` 约定**已废弃**：原计划把帧归属塞进 `state`（零协议变更），P2 的信封字段是更优解（一等协议字段，客户端不必了解 `state` 约定），G1 直接按 P2 收尾。
 
 **P2 — 协议扩展（additive optional，已实现）**
 
@@ -132,7 +128,7 @@ title: 帧同步（权威 Tick + 快照）
 
 ### 4.3 乱序 / 丢帧
 
-**客户端缺口检测**：跟踪 `lastAppliedFrameId`；收到快照的 `tickId` 与期望不符（`tickId > lastAppliedFrameId + 1`）→ 判定中间有丢帧。
+**客户端缺口检测**：跟踪 `lastAppliedFrameId`；收到快照的 `tickId` 与期望不符（`tickId > lastAppliedFrameId + 1`）→ 判定中间有丢帧。实现见 `Chorus.LoadTool.FramePlayer`（`FramePlayerTests` 覆盖：连续/重复/回放丢帧/缺口上报）。
 
 **补帧策略**：
 
@@ -206,7 +202,7 @@ title: 帧同步（权威 Tick + 快照）
 
 | 期次 | 内容 | 验收口径 |
 | --- | --- | --- |
-| **P1** | 帧号语义文档化 + `state.frameEvents` 约定 + 客户端按帧号渲染 | 文档落地；`state.frameEvents` 约定被示例/测试引用；客户端按帧号渲染的示例可跑（见 [快速接入](../guide/quickstart-frame-sync.md)） |
+| **P1** | 帧号语义文档化 + 客户端按帧号回放状态机 | **已完成**：帧号=tickId 文档化（§4.1）；客户端回放状态机 `FramePlayer` 落地并被 `LoadTool` 使用，`FramePlayerTests` 7 例（连续/重复/回放丢帧/缺口上报）；真实 /ws e2e 端到端冒烟通过。`state.frameEvents` 约定已废弃（被 P2 信封字段取代） |
 | **P2** | 帧历史 ring buffer + `resync` 拉取消息 + 快照 `frameEvents` 信封字段 | **已完成**：单测 `FrameHistoryTests`（7：补帧窗口 / 逐字节驱逐 / 超量帧保留 / 零容量关闭）+ `SessionActorFrameHistoryTests`（6：窗口命中回放 / 窗口 miss → `resync-gap` / 冷却节流 / 未知 client / `frameEvents` 带应用帧号 / 无事件省略）+ `WireSnapshotFrameEventsTests`（5：wire 省略 / camelCase / 旧 JSON 兼容 / `ClientResync` 反序列化 / 真实 /ws resync 补帧 e2e）；全套 260 绿 |
 | **P3** | 客户端 SDK（入口 + 一个回调） | 新项目 N 行代码内接入；回调收 state；构建/测试绿 |
 

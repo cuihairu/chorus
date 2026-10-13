@@ -123,7 +123,7 @@ void PrintSummary(IReadOnlyList<ClientSimulation> sims, IngressDriver ing, LoadT
         $"rateLimited={ing.RateLimited} laneFull={ing.LaneFull} other={ing.Other}");
     Console.WriteLine("[loadtool] ws: " +
         $"snapshots={sims.Sum(s => s.SnapshotsReceived)} acks={sims.Sum(s => s.AcksSent)} " +
-        $"maxLagTicks={maxLag} reconnects={reconnects}");
+        $"resyncs={sims.Sum(s => s.ResyncsSent)} maxLagTicks={maxLag} reconnects={reconnects}");
 }
 
 void PrintPeaks(MetricsPeaks peaks)
