@@ -42,7 +42,8 @@ module.exports = {
         "/reference/troubleshooting.md",
         "/reference/adapter-contract.md",
         "/reference/deployment.md",
-        "/reference/versioning.md"
+        "/reference/versioning.md",
+        "/reference/api.md"
       ]
     }
   },
