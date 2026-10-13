@@ -50,11 +50,22 @@ curl -X POST http://localhost:5168/ingress/test \
 
 两边都支持以下配置（见各自 `appsettings.json`）：
 
-- `Ipc:Transport`: `Auto|UnixDomainSocket|NamedPipe|Tcp`
+- `Ipc:Transport`: `Auto|UnixDomainSocket|NamedPipe|Tcp|Http`
 - `Ipc:UnixSocketDir`: 默认 `/tmp/chorus`
 - `Ipc:NamedPipePrefix`: 默认 `chorus`
 - `Ipc:TcpHost`: 默认 `127.0.0.1`
 - `Ipc:TcpGatewayToEnginePort`: 默认 `27500`
 - `Ipc:TcpEngineToGatewayPort`: 默认 `27501`
+- `Ipc:HttpGatewayToEngineUrl`: 默认 `http://127.0.0.1:27600/gw-to-eng/`
+- `Ipc:HttpEngineToGatewayUrl`: 默认 `http://127.0.0.1:27601/eng-to-gw/`
 
 如果要把 Gateway/EngineHost 拆到两个容器里，通常会把 `Ipc:Transport` 设为 `Tcp`，并为上述两个端口做容器端口映射。
+
+## 多网关（三进程形态）
+
+同一 EngineHost 可挂多个 Gateway 进程（platform-gw / streamer-gw，见 [进程拓扑](../design/process-topology.md) §4）：
+
+- 每个 Gateway 配 `Gateway:Id`（如 `platform-gw` / `streamer-gw`），自己的 eng→gw 通道名自动带 id 后缀
+- EngineHost 配 `Ipc:GatewayIds=platform-gw,streamer-gw`（逗号分隔），引擎对每条通道扇出发布
+- 两个网关可共用同一 `Ipc:UnixSocketDir`，通道名按 id 区分，互不覆盖
+- 不配 `Gateway:Id` / `Ipc:GatewayIds` 时行为与旧版一致（单网关通道名）

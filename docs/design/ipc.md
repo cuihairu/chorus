@@ -32,12 +32,23 @@ title: 通信抽象（进程内/进程间）
 
 ## 当前仓库状态
 
-- v1 目前的 Chorus 是 Monolith（同进程内存通信）
-- 同时开始引入 `Chorus.Messaging` 作为“channel 抽象”的起点：
+- 单体（`InProc`）仍是默认部署形态；拆分模式（Gateway + EngineHost）已实现可用（见 [拆分模式](../guide/split-mode.md)）
+- `Chorus.Messaging` 是 channel 抽象与 transport 层：
   - `InProcMessageBus`：进程内队列
   - `NamedPipeMessageBus`：本机进程间 IPC（Windows 友好）
-  - `UnixDomainSocketMessageBus`：本机进程间 IPC（Linux/macOS，Windows 在较新版本也支持 AF_UNIX；实际落地建议保留 fallback）
-  - `TcpMessageBus`：localhost TCP（更容易跨容器/跨网络命名空间）
+  - `UnixDomainSocketMessageBus`：本机进程间 IPC（Linux/macOS，Windows 较新版本支持 AF_UNIX）
+  - `TcpMessageBus`：localhost TCP（跨容器/跨网络命名空间）
+  - `HttpMessageBus`：HTTP 单向投递（远程网关层/反向代理后）
+  - `FanOutMessageBus`：发布侧扇出包装，对 N 个子 bus 逐条发布，单条失败不阻断其余，失败聚合抛出
+
+### 通道命名与多网关
+
+`IpcEndpointBuilder.Build` 生成一对通道：
+
+- gw→eng（命令）：`{prefix}_gw_to_eng.sock`（UDS）/ `{prefix}.gw_to_eng`（NamedPipe），不按网关区分，所有网关共享，引擎侧单 server 收口
+- eng→gw（快照/欢迎/心跳）：每个网关各一条。Gateway 配 `Gateway:Id` 后缀自己的通道（`{prefix}_eng_to_gw_{id}.sock` / `{prefix}.eng_to_gw.{id}`），id 为空则用旧名（`{prefix}_eng_to_gw.sock`）。EngineHost 配 `Ipc:GatewayIds` 列出全部网关 id，对每个 id 的通道各建一条客户端并扇出
+
+TCP/HTTP 传输的端口与 URL 不按 id 区分，同机多网关共享 worker 用 UDS/NamedPipe；跨机多网关的端口口径属阶段三（见 [进程拓扑](./process-topology.md) §4）。
 
 ## 关于 Windows “支持 Unix Socket”
 

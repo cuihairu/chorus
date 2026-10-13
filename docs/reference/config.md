@@ -192,15 +192,17 @@ maxSnapshotBytes = 1048576
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `Gateway:Roles`（Gateway） | `all` | 该 Gateway 进程承载的 listener 角色：`all`（一个进程两个 listener，默认）、`platform`（只映射 `/ingress`，即 platform-gw）、`streamer`（只映射 `/ws`，即 streamer-gw）。未选中角色的端点不注册（404），两个 listener 的门面实现共用一份（`PlatformIngressFace` / `StreamerWsFace`），无代码分叉；`/health`、`/faces`、`/metrics`、`/ready` 不受角色影响。非法值启动即抛（fail-fast）。单体形态不受此键影响。见 [进程拓扑](../design/process-topology.md) §4 |
+| `Gateway:Id`（Gateway） | 空 | 本网关标识（仅 ASCII 字母/数字/`-`）：后缀本进程的 eng→gw 通道名，使多个网关可共享同一 EngineHost 与同一 socket 目录。空 = 旧单网关通道名（向后兼容）。非法字符启动即抛。见 [拆分模式](../guide/split-mode.md) 多网关一节 |
 
 ## IPC 与就绪（拆分模式）
 
-`Ipc` 段映射到 `Chorus.Messaging.Ipc.IpcSettings`（端口/传输），就绪判定另有两个键：
+`Ipc` 段映射到 `Chorus.Messaging.Ipc.IpcSettings`（端口/传输），心跳/就绪/扇出另有三个键：
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `Ipc:HeartbeatIntervalMs`（EngineHost） | `5000` | 引擎在 eng→gw 通道发 `eng.heartbeat` 的间隔；`0` 关闭 |
 | `Ipc:ReadinessMaxSilenceMs`（Gateway） | `15000` | Gateway `GET /ready` 判 200 的最大静默窗口，超窗 503（fail-closed） |
+| `Ipc:GatewayIds`（EngineHost） | 空 | 逗号分隔的网关标识列表（如 `platform-gw,streamer-gw`）；引擎对每个 id 各建一条 eng→gw 客户端并逐条扇出发布。空 = 旧单网关通道 |
 
 详见 [部署与安全](./deployment.md) 的「拆分模式就绪探针」。
 

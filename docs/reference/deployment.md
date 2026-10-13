@@ -142,7 +142,7 @@ Gateway 的 `GET /ready`：
 
 ## 拆分模式容器化
 
-- 三进程形态：再复制一个 Gateway 容器，两个 Gateway 各配 `Gateway:Roles=platform` / `Gateway:Roles=streamer`（未选中角色的 listener 端点不注册，返回 404）；EngineHost 侧配置不变，两个 Gateway 各走自己的 IPC 通道（不同 socket 目录或端口）。
+- 三进程形态：两个 Gateway 容器各配 `Gateway:Roles=platform` / `Gateway:Roles=streamer`（未选中角色的 listener 端点不注册，返回 404）。两个网关可共享同一 EngineHost 与同一 socket 目录：各 Gateway 配不同 `Gateway:Id`（如 `platform-gw` / `streamer-gw`），EngineHost 配 `Ipc:GatewayIds=platform-gw,streamer-gw`，引擎对两条 eng→gw 通道扇出发布（`FanOutMessageBus`，5c5d25c；守卫 `ThreeProcessEndToEndTests`）。UDS/NamedPipe 通道名按 id 后缀区分；TCP/HTTP 的端口/URL 不按 id 区分，同机多网关用 UDS/NamedPipe。
 - 两台容器：Gateway 与 EngineHost；`Ipc:Transport=Tcp`，映射 `27500/27501`（HTTP 则 `27600/27601`）。
 - 健康检查分别探 `/health`（存活）；**Gateway 就绪探 `/ready`**（200 = EngineHost 心跳在窗口内），
   EngineHost 侧用 `/metrics` 的 `chorus_snapshots_sent_total` 判断引擎是否在出快照。
