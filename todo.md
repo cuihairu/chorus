@@ -166,7 +166,7 @@
 - [ ] 身份映射：platform identity → streamer/player 映射
 - [ ] Room 生命周期状态机：Created/Waiting/Active/Idle/Sleeping/Migrating/Recovering/Closing/Destroyed
 - [ ] Worker 注册与健康管理
-- [ ] 平台能力注册（平台支持的事件类型/版本/权限）
+- [x] 平台能力注册（平台支持的事件类型/版本/权限）（`89066ed`，12 测试）：`PlatformCapabilityRegistry`（事件类型集合 + Ingest/Writeback 方向标志，未注册平台 fail-closed）；默认值与已落地映射器对齐（B 站四类型只读、抖音/快手占位三类型），Server/Gateway Program.cs 播种；B 站 Writeback 恒 false（P3 决议）
 
 ## 15. 数据面（架构审计确认缺失）
 
