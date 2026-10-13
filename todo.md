@@ -147,5 +147,13 @@
 - [x] 归并（混合阵营/Match/超限计数）✅ `DefaultAudienceEventReducerTests`（9ad322d）· 去重并发 ✅ `EventDeduplicatorTests` 32 并发恰一赢家（78f2597）· 投递失败重试 ✅ `Rollback_PublishFailure_AllowsPlatformRetry`（78f2597）· Tick 过载 ✅ `SessionActorBackpressureTests.Flood_*`+`SlowTick_OverrunCounted`（5592d62/362b435）· 慢客户端 ✅ `SessionActorOutboundTests`（df71d26）· ACK 安全 ✅ `SessionActorAckTests`（499f01c）· 生命周期 ✅ `SessionManagerLifecycleTests`（362b435）· 安全（未验证事件/超大请求体/非法 WS）✅ Kuaishou/Douyin/IngressAllowAll/StreamerWsAuth e2e（e2304b2/8f18bde/def21d2）
 - [x] Match 并发 · 快照恢复 ✅ `MatchConcurrencyTests.ConcurrentEvents_ConserveTotalsAcrossSessions`（两 Session 同 match 400 并发投递无丢失、faction→session 归属正确，commit 8226727）· `SessionActorResyncTests.NoAck_TriggersForcedResync_ThenAckClearsLag`（停发 ACK 触发强制 resync、补发 ACK 后快照回到非强制，8226727）
 
+## 10. 帧同步方案（2026-10-13 方案单）
+
+方案与调研见 [docs/design/frame-sync.md](./design/frame-sync.md)，接入见 [docs/guide/quickstart-frame-sync.md](./guide/quickstart-frame-sync.md)。
+
+- [ ] P1 帧号语义落地：帧号=tickId（SessionActor.cs:52/391）语义文档化；state.frameEvents 约定被示例/测试引用；客户端按帧号渲染示例可跑（quickstart-frame-sync.md 骨架）
+- [ ] P2 帧历史与补帧：引擎 per-session 帧历史 ring buffer（按字节封顶）+ resync 拉取消息（client→server，带 fromFrameId）+ 快照 frameEvents 信封字段（additive optional，不 bump v）；验收：单测覆盖补帧窗口 + resync 消息 + wire 兼容（旧客户端忽略新字段）+ e2e 丢帧补帧对齐
+- [ ] P3 客户端 SDK：仓内无 client 库；目标新项目 N 行代码内接入（SDK 入口 + 一个回调）；验收：回调收 state、按帧号渲染、落后等 resync、构建/测试绿
+
 ### 明确不做（边界）
-- 不引入分布式 Match 集群、Kafka/RabbitMQ、增量快照/回滚同步/确定性重放；不把平台私有适配放进核心；不发展成账号/运营/支付/编辑器综合平台；单体保持默认部署形态。
+- 不引入分布式 Match 集群、Kafka/RabbitMQ、增量快照/回滚同步/确定性重放；不把平台私有适配放进核心；不发展成账号/运营/支付/编辑器综合平台；单体保持默认部署形态；帧同步不做回放/录播对齐（无持久化，versioning.md:72-74）。

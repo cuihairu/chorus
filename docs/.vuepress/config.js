@@ -16,7 +16,8 @@ module.exports = {
         "/guide/getting-started.md",
         "/guide/split-mode.md",
         "/guide/load-testing.md",
-        "/guide/game-module.md"
+        "/guide/game-module.md",
+        "/guide/quickstart-frame-sync.md"
       ],
       "/design/": [
         "/design/architecture.md",
