@@ -155,5 +155,13 @@
 - [ ] P2 帧历史与补帧：引擎 per-session 帧历史 ring buffer（按字节封顶）+ resync 拉取消息（client→server，带 fromFrameId）+ 快照 frameEvents 信封字段（additive optional，不 bump v）；验收：单测覆盖补帧窗口 + resync 消息 + wire 兼容（旧客户端忽略新字段）+ e2e 丢帧补帧对齐
 - [ ] P3 客户端 SDK：仓内无 client 库；目标新项目 N 行代码内接入（SDK 入口 + 一个回调）；验收：回调收 state、按帧号渲染、落后等 resync、构建/测试绿
 
+## 11. B 站弹幕源适配器（2026-10-13 调研+接入方案单）
+
+调研与方案见 [docs/design/bilibili-danmaku-adapter.md](./design/bilibili-danmaku-adapter.md)。结论：**部分支持**（输入侧 open-live 支持；输出侧无官方通道走 OBS；反向指令需平台允许）。
+
+- [ ] P1 open-live 接入 + 弹幕归一化 + 断线重连 + `/ingress/bilibili`：凭据四件套走配置不进仓；`app_start` 取 wss_link + 签名头鉴权 + 心跳（项目 20s/WS 30s）；指数退避重连（重取 wss_link）；`DANMU_MSG` → `AudienceEvent(kind=comment)`；验收：金测（鉴权通过/篡改拒绝/重复去重/未知事件不崩）+ e2e 弹幕 → 帧 → 客户端快照
+- [ ] P2 礼物/进场/房间生命周期归一化（含 `SEND_GIFT_V2` 灰度容忍）：`SEND_GIFT` → `kind=gift`、`INTERACT_WORD_V2`/`LIVE_ROOM_ENTER` → `kind=enter`、`LIVE_START`/`LIVE_END` → 房间生命周期；验收：金测覆盖各事件映射 + e2e 礼物 → 帧
+- [ ] P3 反向写入/互动指令：**需平台允许才做**——当前无官方通道，明确不做；平台开放后评估
+
 ### 明确不做（边界）
 - 不引入分布式 Match 集群、Kafka/RabbitMQ、增量快照/回滚同步/确定性重放；不把平台私有适配放进核心；不发展成账号/运营/支付/编辑器综合平台；单体保持默认部署形态；帧同步不做回放/录播对齐（无持久化，versioning.md:72-74）。

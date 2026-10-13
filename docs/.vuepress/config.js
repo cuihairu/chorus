@@ -30,7 +30,8 @@ module.exports = {
         "/design/legacy-real-server-analysis.md",
         "/design/review-2026-10-12-chatgpt.md",
         "/design/process-topology.md",
-        "/design/snapshot-restore.md"
+        "/design/snapshot-restore.md",
+        "/design/bilibili-danmaku-adapter.md"
       ],
       "/reference/": [
         "/reference/protocol.md",
