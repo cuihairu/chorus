@@ -163,7 +163,7 @@
 ## 14. 控制面（架构审计确认缺失）
 
 - [x] 平台账号唯一绑定：`(Platform, PlatformAccountId) → Room` 存储 + 唯一性约束 + 换绑流程（`244a16f`，15 测试）：`PlatformBindingRegistry` 内存实现（冲突 fail-visible 不隐式换绑、换绑/解绑 CAS 防并发双绑与迟到解绑、并发绑恰好一个赢）；持久化属 §15，生产接线随控制面路由落地
-- [ ] 身份映射：platform identity → streamer/player 映射
+- [x] 身份映射：platform identity → streamer/player 映射（`b5b5993`，15 测试）：`PlatformIdentityRegistry`（Streamer/Player 身份表，冲突 fail-visible 不隐式覆盖、换绑/解绑 CAS、同身份重映射幂等、并发绑恰好一个赢）；主播 WS 认证当前是共享 token，接线随控制面落地
 - [ ] Room 生命周期状态机：Created/Waiting/Active/Idle/Sleeping/Migrating/Recovering/Closing/Destroyed
 - [ ] Worker 注册与健康管理
 - [x] 平台能力注册（平台支持的事件类型/版本/权限）（`a322b91`，12 测试）：`PlatformCapabilityRegistry`（事件类型集合 + Ingest/Writeback 方向标志，未注册平台 fail-closed）；默认值与已落地映射器对齐（B 站四类型只读、抖音/快手占位三类型），Server/Gateway Program.cs 播种；B 站 Writeback 恒 false（P3 决议）
