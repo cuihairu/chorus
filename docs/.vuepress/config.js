@@ -32,6 +32,7 @@ module.exports = {
         "/design/process-topology.md",
         "/design/snapshot-restore.md",
         "/design/bilibili-danmaku-adapter.md",
+        "/design/overall-architecture.md",
         "/审计-文档一致性.md"
       ],
       "/reference/": [

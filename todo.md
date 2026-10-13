@@ -70,9 +70,8 @@
 
 ### P0 平台对接与安全
 
-- [x] 抖音平台对接（`e2304b2`，172 测试）
-- [x] 快手平台对接（`e2304b2`，172 测试）
-- [x] 两个平台联调用例（`e2304b2`，172 测试）
+- [x] 抖音平台对接（占位模式，`e2304b2`，172 测试）
+- [x] 快手平台对接（占位模式，`e2304b2`，172 测试）
 - [x] WebSocket 接入鉴权（`8f18bde`）
 - [x] Ingress 真验签 fail-closed（`def21d2`）
 
@@ -80,7 +79,6 @@
 
 - [x] SessionActor 反压（`5592d62`）
 - [x] 会话空闲回收（`362b435`）
-- [x] 合并重复代码（`e2304b2`）
 - [x] MessageBus/ActorRef/Router 抽象（`0eac8ac`）
 
 ### P2 可观测性
@@ -155,11 +153,45 @@
 ## 13. 文档一致性
 
 - [x] 文档-代码一致性审计（2026-10-13，41 条修复，见 docs/审计-文档一致性.md）
+- [x] 总体架构与 Code Agent 实施规范（2026-10-13，80 项审计，见 docs/design/overall-architecture.md）
 - [x] 架构图进文档（`89d2275`）
 - [x] API 参考文档（`67daedc`）
 - [x] README 双语互链（`f692034`）
 - [x] 每日构建 workflow（`56e5f29`）
 - [x] .NET 10 迁移（`d32e1bc`，242 测试）
+
+## 14. 控制面（架构审计确认缺失）
+
+- [ ] 平台账号唯一绑定：`(Platform, PlatformAccountId) → Room` 存储 + 唯一性约束 + 换绑流程
+- [ ] 身份映射：platform identity → streamer/player 映射
+- [ ] Room 生命周期状态机：Created/Waiting/Active/Idle/Sleeping/Migrating/Recovering/Closing/Destroyed
+- [ ] Worker 注册与健康管理
+- [ ] 平台能力注册（平台支持的事件类型/版本/权限）
+
+## 15. 数据面（架构审计确认缺失）
+
+- [ ] DataCommand 契约 + 幂等 + 可靠性分级
+- [ ] Data Player + 游戏记录 Repository
+- [ ] 排行榜子系统：RoomRank / MatchRank / PeriodRank / GlobalRank / PlatformRank
+- [ ] 持久化层：DB 选型 + 快照持久化 + 恢复
+- [ ] 统计与分析管道
+
+## 16. 匹配与机器人（架构审计确认缺失）
+
+- [ ] Matchmaker：匹配策略 + 参与者分配
+- [ ] Bot 工厂 + Bot Participant + 统一输入队列
+- [ ] 机器人策略配置与动作
+
+## 17. 小游戏平台适配（架构审计确认缺失）
+
+- [ ] 抖音小游戏 SDK + 登录/身份映射 + 实时通信 + 排行榜适配
+- [ ] 快手小游戏 SDK + 登录/身份映射 + 实时通信 + 排行榜适配
+
+## 18. 迁移与恢复（架构审计确认缺失）
+
+- [ ] 快照持久化 + 状态恢复 + 事件补齐
+- [ ] Epoch / 路由版本 + 旧写者隔离
+- [ ] Worker 故障接管测试
 
 ## 明确不做
 
