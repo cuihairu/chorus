@@ -32,9 +32,11 @@ flowchart TB
   end
 
   LOADTOOL["Chorus.LoadTool<br/>压测采样 /metrics"]
+  SDK["Chorus.Client<br/>ChorusClient + FramePlayer<br/>客户端 SDK（帧同步 P3）"]
 
   P -->|"HTTPS 平台回调"| INGRESS
-  C <-->|"hello / welcome / ack / snapshot"| WS
+  C <-->|"hello / welcome / ack / snapshot / resync"| WS
+  SDK <-->|"同一 /ws 协议"| WS
   INGRESS -->|"去重 + Tell 投递"| SA
   WS -->|"welcome / snapshot"| GWIPC
   GWIPC <-->|"gw→eng 命令通道（所有网关共享）"| ENGIPC

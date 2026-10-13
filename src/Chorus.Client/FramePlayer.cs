@@ -1,4 +1,4 @@
-namespace Chorus.LoadTool;
+namespace Chorus.Client;
 
 /// <summary>
 /// Client-side frame playback state machine (frame-sync P1 acceptance).

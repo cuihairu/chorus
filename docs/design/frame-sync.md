@@ -93,7 +93,7 @@ title: 帧同步（权威 Tick + 快照）
 | G2 | 没有帧历史缓冲 | 引擎只保留当前 tick 的事件，无 ring buffer | **已实现（P2）**：`FrameHistory` 按字节上限的 ring buffer（§4.3） |
 | G3 | 没有客户端「拉取某帧」的消息 | 线协议只有 server→client 的 `snapshot`；`ClientAck` 只带 `lastAppliedTickId` 作为进度字段（另有 `sessionId`/`clientId`/`clientTimeMs`，`src/Chorus.Protocol/Messages/ClientAck.cs:3-9`） | **已实现（P2）**：`resync` 消息 + 完整 IPC 链（§4.3） |
 | G4 | 没有回放/录播对齐 | 无持久化（`versioning.md:72-74`），快照不落盘 | **明确不做**（除非先落 snapshot-restore 契约） |
-| G5 | 没有客户端 SDK | 仓内 src 全是 server 侧，无 client 库 | 计划中（P3） |
+| G5 | 没有客户端 SDK | 仓内 src 全是 server 侧，无 client 库 | **已实现（P3）**：`Chorus.Client.ChorusClient`（最小入口：握手 + 回调 + ACK 抽样 + resync 冷却；无自动重连，见 [快速接入](../guide/quickstart-frame-sync.md)） |
 | G6 | 客户端节拍/插值未实测 | 无客户端实现可跑 | **未实测** |
 
 ---
@@ -204,7 +204,7 @@ title: 帧同步（权威 Tick + 快照）
 | --- | --- | --- |
 | **P1** | 帧号语义文档化 + 客户端按帧号回放状态机 | **已完成**：帧号=tickId 文档化（§4.1）；客户端回放状态机 `FramePlayer` 落地并被 `LoadTool` 使用，`FramePlayerTests` 7 例（连续/重复/回放丢帧/缺口上报）；真实 /ws e2e 端到端冒烟通过。`state.frameEvents` 约定已废弃（被 P2 信封字段取代） |
 | **P2** | 帧历史 ring buffer + `resync` 拉取消息 + 快照 `frameEvents` 信封字段 | **已完成**：单测 `FrameHistoryTests`（7：补帧窗口 / 逐字节驱逐 / 超量帧保留 / 零容量关闭）+ `SessionActorFrameHistoryTests`（6：窗口命中回放 / 窗口 miss → `resync-gap` / 冷却节流 / 未知 client / `frameEvents` 带应用帧号 / 无事件省略）+ `WireSnapshotFrameEventsTests`（5：wire 省略 / camelCase / 旧 JSON 兼容 / `ClientResync` 反序列化 / 真实 /ws resync 补帧 e2e）；全套 260 绿 |
-| **P3** | 客户端 SDK（入口 + 一个回调） | 新项目 N 行代码内接入；回调收 state；构建/测试绿 |
+| **P3** | 客户端 SDK（入口 + 一个回调） | **已完成**：`Chorus.Client` 三行接入（`ChorusClient.ConnectAsync` + 一个回调）；回调收按帧号严格递增的 state；`ChorusClientTests` 3 例（真实 /ws 渲染+ACK、回调阻塞下的幂等回放、握手失败抛错）+ `FramePlayerTests` 7 例；全套 270 绿 |
 
 ---
 

@@ -10,6 +10,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\..\src\Chorus.Adapters.Abstractions\Chorus.Adapters.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.Client\Chorus.Client.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Adapters.Platforms\Chorus.Adapters.Platforms.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Engine\Chorus.Engine.csproj" />
     <ProjectReference Include="..\..\src\Chorus.EngineHost\Chorus.EngineHost.csproj" />

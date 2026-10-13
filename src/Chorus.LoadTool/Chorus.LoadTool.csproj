@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Chorus.Client\Chorus.Client.csproj" />
     <ProjectReference Include="..\Chorus.Protocol\Chorus.Protocol.csproj" />
   </ItemGroup>
 

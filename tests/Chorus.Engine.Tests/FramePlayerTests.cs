@@ -1,4 +1,4 @@
-using Chorus.LoadTool;
+using Chorus.Client;
 
 namespace Chorus.Engine.Tests;
 

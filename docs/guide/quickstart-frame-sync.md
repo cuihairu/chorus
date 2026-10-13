@@ -6,11 +6,25 @@ title: 快速接入帧同步
 
 本文给新项目**最小可跑**的接入步骤：一个 WebSocket 客户端 + 一个回调，按帧号渲染权威状态。
 
-> **诚实声明**：仓内**没有客户端 SDK**（src 全是 server 侧）。下文示例是**直接对接 WS 协议**的最小骨架，**未实测**。但骨架的核心逻辑（按帧号回放 + 缺口检测）**已实现并被测试覆盖**：`src/Chorus.LoadTool/FramePlayer.cs`（`FramePlayerTests` 7 例），并由压测工具 `ClientSimulation` 实际调用。照抄骨架 = 照抄一份已测试的状态机。SDK 封装是 P3（计划中）。协议见 [协议参考](../reference/protocol.md) 与 [接口参考](../reference/api.md)；帧同步语义见 [帧同步方案](../design/frame-sync.md)。
+> **SDK 已上线（2026-10-14，帧同步 P3）**：`Chorus.Client.ChorusClient` 一次调用接入——hello/welcome 握手、按帧号渲染回调（`FramePlayer` 状态机，回放/旧帧幂等丢弃）、应用后 ACK、丢帧自动 `resync` 拉补。端到端测试 `ChorusClientTests`（3 例，含真实 /ws）。
+>
+> 诚实边界：SDK 是**最小入口**（单连接、单回调、无自动重连——重连/退避策略留给接入方，压测工具 `ClientSimulation` 演示了完整形态）。协议见 [协议参考](../reference/protocol.md)；帧同步语义见 [帧同步方案](../design/frame-sync.md)。
 
 ---
 
-## 接入步骤（8 步）
+## 三行接入（SDK）
+
+```csharp
+await using var client = await ChorusClient.ConnectAsync(
+    ChorusClientOptions.Default("ws://localhost:5083/ws", "s-1", "c-1"),
+    state => RenderYourGame(state));   // 回调只收已应用的最新帧，按帧号严格递增
+```
+
+回调运行在接收循环上，**不要阻塞**；`ChorusClientOptions` 可调 ACK 抽样（`AckEveryFrames`，默认 2）与 `resync` 冷却（默认 2s）。
+
+---
+
+## 协议步骤（SDK 替你做这些，裸协议接法参考）
 
 1. **连** `ws://<host>/ws`（端口见 [配置参考](../reference/config.md)，单进程默认 `http://localhost:5083`）。
 2. **发 `hello`**：带 `sessionId` / `clientId` / `protocolVersion`。
@@ -23,7 +37,7 @@ title: 快速接入帧同步
 
 ---
 
-## 最小可跑骨架（C#，未实测）
+## 裸协议骨架（C#，语义参考实现见 `Chorus.Client`）
 
 ```csharp
 // 依赖：System.Net.WebSockets（.NET 10 内置）
@@ -91,7 +105,7 @@ static async Task Send(ClientWebSocket ws, object payload)
 }
 ```
 
-> 上例约 45 行，**未实测**；其中按帧号回放与缺口检测的状态机**已测试**——`Chorus.LoadTool.FramePlayer`（`FramePlayerTests` 7 例）并已接入压测工具 `ClientSimulation`（gap → 自动发 `resync`，输出 `resyncs=` 计数）。`forced` 分支与「落后 > maxLagTicks 等 resync」的完整追帧策略见 [帧同步方案](../design/frame-sync.md) §4.5。
+> 上例约 45 行，**未实测**（裸协议参考写法）；同样语义的**已测试**实现是 `Chorus.Client`（`ChorusClient` = 握手 + 回放 + ACK 抽样 + resync 冷却；`FramePlayerTests` 7 例 + `ChorusClientTests` 3 例），压测工具 `ClientSimulation` 也用它。`forced` 分支与「落后 > maxLagTicks 等 resync」的完整追帧策略见 [帧同步方案](../design/frame-sync.md) §4.5。
 
 ---
 
@@ -110,6 +124,6 @@ static async Task Send(ClientWebSocket ws, object payload)
 ## 相关页面
 
 - [帧同步方案](../design/frame-sync.md) — 帧号语义 / 补帧 / 追帧策略
-- [协议参考](../reference/protocol.md) — `hello` / `welcome` / `snapshot` / `ack` 消息
+- [协议参考](../reference/protocol.md) — `hello` / `welcome` / `snapshot` / `ack` / `resync` 消息
 - [接口参考](../reference/api.md) — 后台/管理端接口
 - [版本策略](../reference/versioning.md) — 兼容性规则
