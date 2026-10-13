@@ -216,6 +216,11 @@ maxSnapshotBytes = 1048576
 | `Ingress:Kuaishou:VerifyToken` | 无 | 快手「消息验证Token」；缺失时 `/ingress/kuaishou` 全部拒绝（fail-closed） |
 | `Ingress:Kuaishou:MsgEncryptKey` | 无 | 快手「消息加密解密KEY」（base64，32 字节）；缺失时事件无法解密（400） |
 | `Ingress:Kuaishou:SignatureHeader` | `kwaisign` | 官方签名 header 名 |
+| `Ingress:Bilibili:AccessKeyId` / `AccessKeySecret` | 无 | B 站 open-live 签名凭据（主播本人授权，不进仓不进日志）；缺失时 `/ingress/bilibili` 全部拒绝（fail-closed） |
+| `Ingress:Bilibili:AppId` | 无 | open-live 项目 app_id；桥启动前置 |
+| `Ingress:Bilibili:RoomOwnerAuthCode` | 无 | 主播身份鉴别码（app_start 用）；桥启动前置 |
+| `Ingress:Bilibili:SessionId` | 无 | 房间 → chorus 会话绑定（P1 单绑定，多房间属控制面 todo §14）；缺失时事件映射失败（400） |
+| `Ingress:Bilibili:IngressUrl` | 无 | 桥转发目标（如 `http://127.0.0.1:5083/ingress/bilibili`）；四件套+此键齐全才启动桥（`BilibiliIngressBridgeHostedService`） |
 | `Faces:PlatformIngress:MaxBodyBytes` | `65536` | platform-ingress 面请求体上限，超限 413 |
 | `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | platform-ingress 面每来源每分钟上限，超限 429 |
 | `Faces:PlatformIngress:TimeoutMs` | `5000` | platform-ingress 面单请求预算，超时 504 |

@@ -146,7 +146,7 @@
 
 调研与方案见 docs/design/bilibili-danmaku-adapter.md。结论：部分支持。
 
-- [ ] P1 open-live 接入 + 弹幕归一化 + 断线重连 + /ingress/bilibili；验收：金测 + e2e
+- [x] P1 open-live 接入 + 弹幕归一化 + 断线重连 + /ingress/bilibili（`60be325`，34 测试）：金测（鉴权/篡改/去重/未知不崩）+ e2e（弹幕→帧→客户端快照）；签名/帧协议按 blivedm 原文核实
 - [ ] P2 礼物/进场/房间生命周期归一化（含 SEND_GIFT_V2 灰度）；验收：金测 + e2e
 - [ ] P3 反向写入/互动指令：需平台允许才做，当前无官方通道，明确不做
 

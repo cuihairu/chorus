@@ -51,8 +51,13 @@ builder.Services.AddSingleton(sp =>
     new KuaishouPlatformEventVerifier(
         verifyToken: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:VerifyToken"],
         signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:SignatureHeader"]));
+builder.Services.AddSingleton(sp =>
+    new BilibiliPlatformEventVerifier(
+        accessKeyId: sp.GetRequiredService<IConfiguration>()["Ingress:Bilibili:AccessKeyId"],
+        accessKeySecret: sp.GetRequiredService<IConfiguration>()["Ingress:Bilibili:AccessKeySecret"]));
 builder.Services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredService<DouyinPlatformEventVerifier>());
 builder.Services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredService<KuaishouPlatformEventVerifier>());
+builder.Services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredService<BilibiliPlatformEventVerifier>());
 builder.Services.AddSingleton<PlatformEventVerifierRouter>(sp => new PlatformEventVerifierRouter(
     sp.GetServices<IPlatformNamedEventVerifier>(),
     fallback: sp.GetService<AllowAllPlatformEventVerifier>()));
@@ -61,6 +66,8 @@ builder.Services.AddSingleton<IPlatformEventMapper, TestPlatformEventMapper>();
 builder.Services.AddSingleton<IPlatformEventMapper, DouyinPlatformEventMapper>();
 builder.Services.AddSingleton<IPlatformEventMapper>(sp => new KuaishouPlatformEventMapper(
     messageEncryptKey: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:MsgEncryptKey"]));
+builder.Services.AddSingleton<IPlatformEventMapper>(sp => new BilibiliPlatformEventMapper(
+    sessionId: sp.GetRequiredService<IConfiguration>()["Ingress:Bilibili:SessionId"]));
 builder.Services.AddSingleton<IAudienceFactionRule>(_ =>
     new KeywordGiftAudienceFactionRule(
         commentKeywords: BuildFactionMap(builder.Configuration.GetSection("Ingress:FactionRules:CommentKeywords")),
@@ -73,6 +80,13 @@ builder.Services.AddSingleton(sp =>
 
 builder.Services.AddSingleton<GatewayIpcService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<GatewayIpcService>());
+
+// B站 open-live 桥（todo §12 P1）：凭据/会话绑定/转发目标齐全才启动，
+// 把 open-live wss 事件签名转发进 /ingress/bilibili 的共享管线。
+if (BilibiliIngressBridgeHostedService.IsConfigured(builder.Configuration))
+{
+    builder.Services.AddHostedService(sp => BilibiliIngressBridgeHostedService.Create(sp));
+}
 
 var app = builder.Build();
 app.UseWebSockets();

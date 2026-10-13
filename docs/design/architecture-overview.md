@@ -11,7 +11,7 @@ title: 当前架构总览（进程拓扑与组件）
 ```mermaid
 flowchart TB
   subgraph EXT["外部"]
-    P["抖音 / 快手平台"]
+    P["抖音 / 快手 / B站 open-live"]
     C["主播 / 直播伴侣客户端"]
   end
 
@@ -62,6 +62,7 @@ flowchart TB
 | EngineHost 路由表（/health、/metrics） | `src/Chorus.EngineHost/Program.cs:34` |
 | Server 路由表（含 /sessions、/matches） | `src/Chorus.Server/Program.cs:102` |
 | `PlatformIngressFace`（限流/体积/超时/验签/去重/Tell） | `src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs` |
+| B 站 open-live 桥（wss → `/ingress/bilibili` 签名转发，凭据齐全才启动） | `src/Chorus.Adapters.Platforms/Bilibili/BilibiliOpenLiveClient.cs` |
 | `StreamerWsFace`（鉴权/版本门禁/ACK 限流） | `src/Chorus.Gateway.Core/Faces/StreamerWsFace.cs` |
 | `GatewayIpcService`（eng→gw server + gw→eng client） | `src/Chorus.Gateway/GatewayIpcService.cs:149` |
 | `EngineIpcService`（gw→eng server + 扇出 client） | `src/Chorus.EngineHost/EngineIpcService.cs:88` |

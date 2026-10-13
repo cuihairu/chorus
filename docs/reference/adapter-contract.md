@@ -10,6 +10,7 @@ title: 平台适配器契约
 
 - [抖音接入](../reference/platform-douyin.md)
 - [快手接入](../reference/platform-kuaishou.md)
+- [B 站接入](../reference/platform-bilibili.md)
 - [部署与安全配置](../reference/deployment.md)
 
 ## 契约
