@@ -398,6 +398,10 @@ flowchart TB
 
 平台事件找不到唯一 Room 时，不能猜测目标房间，也不能向所有可能的房间广播。
 
+当前实现：`src/Chorus.Engine/Routing/PlatformBindingRegistry.cs`（内存实现：绑定冲突 fail-visible 不隐式换绑，
+换绑/解绑按当前 Room 做 CAS，防并发双绑与迟到解绑；Resolve 未命中返回 null 由调用方拒绝）。
+持久化属 todo §15 持久化层，生产接线随控制面路由落地——在此之前它是单进程退化形态（同 `RoomRouteTable`）。
+
 ## 4.2 两条入口共享物理路由
 
 建议定义统一路由契约，具体类型以现有代码为准：
