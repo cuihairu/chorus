@@ -5,7 +5,11 @@
 <h1 align="center">Chorus</h1>
 
 <p align="center">
-  面向直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）
+  A live-stream chat/gift-driven interactive battle game framework (server-authoritative tick + state snapshots)
+</p>
+
+<p align="center">
+  English | <a href="README.zh.md">简体中文</a>
 </p>
 
 <p align="center">
@@ -16,89 +20,97 @@
   <img alt=".NET" src="https://img.shields.io/badge/.NET-9.0-512BD4" />
 </p>
 
-## 文档（VuePress）
+## Documentation (VuePress)
 
-- 站点（GitHub Pages）：`https://cuihairu.github.io/chorus/`
-- 源码：`docs/`
-- 本地预览：`npm install && npm run docs:dev`
-- 构建静态站：`npm run docs:build`（输出：`docs/.vuepress/dist`）
+- Site (GitHub Pages): `https://cuihairu.github.io/chorus/`
+- Source: `docs/`
+- Local preview: `npm install && npm run docs:dev`
+- Static build: `npm run docs:build` (output: `docs/.vuepress/dist`)
 
-## 快速开始
+Key pages: [current architecture overview](docs/design/architecture-overview.md) ·
+[API reference](docs/reference/api.md) ·
+[config reference](docs/reference/config.md) ·
+[protocol reference](docs/reference/protocol.md)
+
+## Quick Start
 
 ```bash
 dotnet run --project src/Chorus.Server
 ```
 
-- HTTP：端口见 `src/Chorus.Server/Properties/launchSettings.json`（默认类似 `http://localhost:5083`）
-- WS：`ws://localhost:<serverPort>/ws`
-- 指标：`GET /sessions`；listener face 计数：`GET /faces`
+- HTTP: port in `src/Chorus.Server/Properties/launchSettings.json` (default `http://localhost:5083`)
+- WS: `ws://localhost:<serverPort>/ws`
+- Metrics: `GET /sessions`; listener face counters: `GET /faces`
 
-### 鉴权与默认拒绝（重要）
+### Auth and deny-by-default (important)
 
-安全默认是**关**的，开发配置（`appsettings.Development.json`）已显式打开，方便本地直接跑：
+Secure defaults are **off**; the dev config (`appsettings.Development.json`) turns them on explicitly for local runs:
 
-- 平台回调：`Ingress:AllowAll=true`（未签名回调放行，启动日志打 ERROR 告警）。生产配置必须走
-  各平台真实验签（抖音 `Ingress:Douyin:AppSecret`、快手 `Ingress:Kuaishou:VerifyToken` 等），
-  缺密钥时 `/ingress/{platform}` 一律 401（fail-closed）。
-- 主播 WS：`Faces:StreamerWs:AllowAnonymous=true`（无 token 可连）。生产配置必须给
-  `Faces:StreamerWs:AuthTokens`（`token` 或 `token@unixMs过期时间`，`;` 分隔），
-  否则所有 WS 连接被拒绝（fail-closed）。
+- Platform callbacks: `Ingress:AllowAll=true` (unsigned callbacks accepted, ERROR log at startup). Production must use
+  real signature verification per platform (`Ingress:Douyin:AppSecret`, `Ingress:Kuaishou:VerifyToken`, ...);
+  with keys missing, `/ingress/{platform}` returns 401 for everything (fail-closed).
+- Streamer WS: `Faces:StreamerWs:AllowAnonymous=true` (no token required). Production must set
+  `Faces:StreamerWs:AuthTokens` (`token` or `token@unixMsExpiry`, `;`-separated);
+  otherwise every WS connection is rejected (fail-closed).
 
-详见 [配置参考](docs/reference/config.md) 与 [协议参考](docs/reference/protocol.md)。
+See the [config reference](docs/reference/config.md) and [protocol reference](docs/reference/protocol.md).
 
-## 拆分模式（Gateway + EngineHost）
+## Split Mode (Gateway + EngineHost)
 
 ```bash
 dotnet run --project src/Chorus.EngineHost
 dotnet run --project src/Chorus.Gateway
 ```
 
-- Gateway：对外提供 `/ws` 与 `/ingress/{platform}`
-- EngineHost：运行权威 tick + 快照，通过本机 IPC 与 Gateway 通信（优先 UDS，失败降级 NamedPipe）
+- Gateway: exposes `/ws` and `/ingress/{platform}`
+- EngineHost: runs the authoritative tick + snapshots, talking to the Gateway over local IPC
+  (UDS first, NamedPipe fallback)
 
-## 架构概览
+## Architecture Overview
 
 ```mermaid
 flowchart TB
-  P["抖音 / 快手平台"] -->|"HTTPS 回调"| PGW["platform-gw<br/>/ingress/{platform}"]
-  C["主播客户端"] <-->|"hello / welcome / ack / snapshot"| SGW["streamer-gw<br/>/ws"]
-  PGW <-->|"gw→eng 命令 + eng→gw 心跳"| W["Chorus.EngineHost<br/>SessionActor × N · IGameModule"]
-  SGW <-->|"gw→eng 命令（ACK/上下线）+ eng→gw 快照/欢迎/心跳（引擎扇出）"| W
+  P["Douyin / Kuaishou platforms"] -->|"HTTPS callback"| PGW["platform-gw<br/>/ingress/{platform}"]
+  C["Streamer clients"] <-->|"hello / welcome / ack / snapshot"| SGW["streamer-gw<br/>/ws"]
+  PGW <-->|"gw→eng commands + eng→gw heartbeats"| W["Chorus.EngineHost<br/>SessionActor × N · IGameModule"]
+  SGW <-->|"gw→eng commands (ack/connect) + eng→gw snapshots/welcomes/heartbeats (engine fan-out)"| W
 ```
 
-单进程形态（`Chorus.Server`）把两侧装进同一进程，无 IPC 跳。完整进程拓扑与组件 file:line 索引见 [当前架构总览](docs/design/architecture-overview.md)。
+The single-process shape (`Chorus.Server`) puts both sides in one process with no IPC hop.
+Full process topology and a component file:line index: [current architecture overview](docs/design/architecture-overview.md).
+Backend/admin-facing endpoints: [API reference](docs/reference/api.md).
 
-## 产品边界
+## Product Boundary
 
-| 应该属于 Chorus | 不应该成为 Chorus 的核心职责 |
+| Belongs in Chorus | Not Chorus's core job |
 |--------|--------|
-| 直播平台事件适配接口 | 完整直播平台业务后台 |
-| 事件归一化、去重与背压 | 礼物支付、分成、商业结算 |
-| Session 与 Match 的运行机制 | 具体游戏玩法和美术内容 |
-| 服务端权威 Tick 和状态快照 | 通用 MMO 世界服务器 |
-| 客户端连接、ACK、重同步 | 完整直播伴侣客户端 |
-| 游戏模块扩展接口 | 强制依赖某个游戏引擎 |
+| Live platform event adapter interfaces | A full live-platform business backend |
+| Event normalization, dedup and backpressure | Gift payments, revenue share, settlement |
+| Session and Match mechanics | Actual game design and art content |
+| Server-authoritative tick and state snapshots | A general-purpose MMO world server |
+| Client connections, ACK, resync | A full streamer companion app |
+| Game module extension interfaces | Forcing a dependency on a specific game engine |
 
-核心价值不是 WebSocket，也不是普通游戏循环，而是把突发、重复、延迟、乱序的外部直播事件
-转换成**有顺序、有边界、可观测、可恢复的游戏输入**。保持轻量框架定位，不扩展成账号、运营、
-支付、游戏编辑器与直播管理的综合平台。
+The core value is not WebSocket, and not an ordinary game loop; it is turning bursty, duplicated,
+delayed, out-of-order live-stream events into **ordered, bounded, observable, recoverable game input**.
+Chorus stays a lightweight framework and does not grow into an account/ops/payment/editor/livestream-management platform.
 
-## 技术栈与支持
+## Tech Stack
 
-- 语言：C#（随 .NET 9 默认 C# 版本）
-- .NET：`net9.0`（见 `global.json`）
-- 平台：Windows / Linux / macOS（服务器端），客户端以 WebSocket 协议接入
+- Language: C# (the default C# version for .NET 9)
+- .NET: `net9.0` (see `global.json`)
+- Platforms: Windows / Linux / macOS (server side); clients connect over the WebSocket protocol
 
-## 发布与 Tag
+## Releases and Tags
 
-推荐使用语义化版本号打 tag：`v0.1.0`、`v0.1.1`。版本号由维护者手动给出并触发，
-不跑自动发版（每日构建/nightly 二进制除外，须通过验收测试）。
+Use semantic version tags: `v0.1.0`, `v0.1.1`. Version numbers are given and triggered manually by the
+maintainer; there is no automated release (daily/nightly binaries excepted, and those must pass acceptance testing).
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-## 覆盖率
+## Coverage
 
-CI 会生成并上传覆盖率报告（见 Codecov badge / PR 检查）。
+CI generates and uploads coverage reports (see the Codecov badge / PR checks).
