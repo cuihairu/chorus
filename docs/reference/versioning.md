@@ -39,8 +39,8 @@ title: 版本策略与兼容性
 ### 2) 快照状态 Schema
 
 - 引擎侧快照带 `V = 1`（schema 版本）。
-- 该版本号**尚未**上到线协议 `ServerSnapshot` 消息；客户端遇到未知 `V` 应丢弃并保持 ACK，等待 resync 兜底（当前线协议无此字段，故暂无客户端可见影响）。
-- 1.0 计划：把 `V` 带到线协议，未知版本明确拒绝 + 强制 resync。
+- 版本号已上到线协议 `ServerSnapshot` 的 `v` 字段（2026-10-13，2d157fa）：引擎快照透传（广播路径 `WireSnapshot` 与 eng→gw IPC 路径 `EngineBusSessionClient` 均带上，网关原样转发），当前恒为 `1`；旧发送端缺省该字段时接收端按默认 `1` 读入，双向兼容。
+- 剩余半边（1.0）：未知 `v` 的明确拒绝 + 强制 resync 语义——需等首个 v2 schema 设计时定，当前只有一个版本、无从触发；过渡期客户端遇到不认识的 `v` 按丢弃 + 保持 ACK + 等 resync 兜底处理即可。
 
 ### 3) Ingress 接口（平台 ↔ Gateway）
 

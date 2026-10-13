@@ -81,7 +81,8 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
   "reason":"lag",
   "targetClientId":"client-1",
   "clientLagTicks":9,
-  "clientLastAckTickId":114
+  "clientLastAckTickId":114,
+  "v":1
 }
 ```
 
@@ -95,6 +96,7 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 - `targetClientId`：目标客户端；当服务端只想让特定慢端立即对齐时使用
 - `clientLagTicks`：服务端判定该客户端当前落后多少 tick
 - `clientLastAckTickId`：服务端看到的该客户端最近 ACK tick
+- `v`：快照 schema 版本（2026-10-13 起上线，见 [版本策略](./versioning.md)）；引擎快照透传，当前恒为 `1`；旧发送端缺省时接收端按 `1` 读入。未知版本的处理语义（拒绝 + 强制 resync）待首个 v2 schema 设计时定
 
 语义说明：
 
