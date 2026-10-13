@@ -56,6 +56,9 @@ public sealed class MonolithSessionRouter : IStreamerSessionRouter
         public ValueTask AckAsync(long lastAppliedTickId, long clientTimeMs, CancellationToken cancellationToken)
             => _session.AckAsync(_clientId, lastAppliedTickId, clientTimeMs);
 
+        public ValueTask ResyncAsync(long fromFrameId, CancellationToken cancellationToken)
+            => _session.ResyncAsync(_clientId, fromFrameId);
+
         public ValueTask DisconnectAsync(CancellationToken cancellationToken)
             => _session.RemoveClientAsync(_clientId);
 

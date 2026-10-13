@@ -25,7 +25,8 @@ public sealed record WireSnapshot(SessionSnapshot Snapshot, byte[] EncodedJson)
             TargetClientId: snapshot.TargetClientId,
             ClientLagTicks: snapshot.ClientLagTicks,
             ClientLastAckTickId: snapshot.ClientLastAckTickId,
-            V: snapshot.V);
+            V: snapshot.V,
+            FrameEvents: snapshot.FrameEvents is { Count: > 0 } ? new List<FrameEvent>(snapshot.FrameEvents) : null);
 
         return new WireSnapshot(
             snapshot,

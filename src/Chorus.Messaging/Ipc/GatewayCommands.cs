@@ -6,6 +6,10 @@ public sealed record GatewayDisconnectCmd(string SessionId, string ClientId);
 
 public sealed record GatewayAckCmd(string SessionId, string ClientId, long LastAppliedTickId, long ClientTimeMs);
 
+/// <summary>Client-initiated gap-fill request (frame-sync P2): the gateway relays
+/// the last frame the client applied; the engine answers from its frame history.</summary>
+public sealed record GatewayResyncCmd(string SessionId, string ClientId, long FromFrameId);
+
 
 /// <summary>
 /// Engine-side liveness ping on the eng→gw channel (todo §8 P3 运维):

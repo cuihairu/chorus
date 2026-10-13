@@ -119,6 +119,11 @@ public sealed class GatewayIpcService : BackgroundService
             EnvelopeFactory.Create(IpcMessageTypes.GatewayAck, sessionId, new GatewayAckCmd(sessionId, clientId, lastAppliedTickId, clientTimeMs)),
             cancellationToken);
 
+    public ValueTask PublishResyncAsync(string sessionId, string clientId, long fromFrameId, CancellationToken cancellationToken)
+        => PublishAsync(
+            EnvelopeFactory.Create(IpcMessageTypes.GatewayResync, sessionId, new GatewayResyncCmd(sessionId, clientId, fromFrameId)),
+            cancellationToken);
+
     public ValueTask PublishAudienceEventAsync(Envelope env, CancellationToken cancellationToken)
         => PublishAsync(env, cancellationToken);
 

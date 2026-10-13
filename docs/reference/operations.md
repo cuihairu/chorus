@@ -29,6 +29,11 @@ title: 运维与观测
 - `totalDroppedEvents`
 - `totalSnapshotsSent`
 - `totalResyncSnapshotsSent`
+- `totalResyncRequests`（2026-10-13 起，客户端主动 `resync` 拉取总数）
+- `totalResyncReplays`（补帧窗口命中、已回放）
+- `totalResyncWindowMisses`（窗口起点已被驱逐，回吐最新帧 + `resync-gap`）
+- `totalResyncThrottled`（冷却内被拒）
+- `frameHistoryBytes`（该 session 帧历史当前占用字节）
 - `lastTickProcessMs`
 - `clients[].clientId`
 - `clients[].connectedTickId`

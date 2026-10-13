@@ -8,4 +8,6 @@ public sealed class SessionClientState
     public long LastAckTimeMs { get; set; }
     public long LastResyncTimeMs { get; set; }
     public long ResyncCount { get; set; }
+    /// <summary>Last client-initiated resync request time (frame-sync P2 cooldown).</summary>
+    public long LastResyncRequestTimeMs { get; set; }
 }

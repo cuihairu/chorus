@@ -82,6 +82,7 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
   "targetClientId":"client-1",
   "clientLagTicks":9,
   "clientLastAckTickId":114,
+  "frameEvents":[{"frameId":123,"eventId":"ev-1","kind":"comment","userId":"u-1"}],
   "v":1
 }
 ```
@@ -92,16 +93,18 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 - `serverTimeMs`：快照生成时的服务端时间
 - `state`：权威状态快照，v1 为 JSON
 - `forced`：是否为强制重同步快照
-- `reason`：强制原因，当前常见值为 `lag`
+- `reason`：强制原因，当前常见值为 `lag`（服务端按 ACK 判定落后主动推送）与 `resync-gap`（客户端 `resync` 请求的补帧窗口已被驱逐，回吐最新帧）
 - `targetClientId`：目标客户端；当服务端只想让特定慢端立即对齐时使用
 - `clientLagTicks`：服务端判定该客户端当前落后多少 tick
 - `clientLastAckTickId`：服务端看到的该客户端最近 ACK tick
+- `frameEvents`：可选（2026-10-13 起，帧同步 P2）。自上一快照以来被应用的弹幕事件，每项 `frameId` 为该事件被应用的那一帧、`eventId` 为事件 id（去重键）、`kind` 为归一化事件类型（`comment` / `like` / `gift` / `share`）、`userId` 为平台用户 id。**无事件时整个字段被省略**（不是空数组）——additive optional 字段，不触发 `v` bump（见 [版本策略](./versioning.md)）。旧客户端可忽略
 - `v`：快照 schema 版本（2026-10-13 起上线，见 [版本策略](./versioning.md)）；引擎快照透传，当前恒为 `1`；旧发送端缺省时接收端按 `1` 读入。未知版本的处理语义（拒绝 + 强制 resync）待首个 v2 schema 设计时定
 
 语义说明：
 
 - 普通周期快照用于稳定跟随和重连恢复
 - 当 `forced=true && reason="lag"` 时，表示服务器判定客户端落后，需要立刻以该快照对齐
+- 当 `forced=true && reason="resync-gap"` 时，表示客户端 `resync` 请求的起始帧已不在引擎窗口内，该快照是当前最新帧，客户端应直接对齐、不要补历史
 - 客户端收到强制快照后，不应继续长时间补历史帧，而应优先切换到该快照状态
 
 ## ack（client -> server）
@@ -129,6 +132,36 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 
 如果客户端在快照还未应用完成前就发送 ACK，服务端会误判其已经跟上。
 
+## resync（client -> server）
+
+2026-10-13 起（帧同步 P2）。客户端发现丢帧或重连后，按帧号拉取补帧窗口：
+
+```json
+{
+  "type":"resync",
+  "sessionId":"session-1",
+  "clientId":"client-1",
+  "fromFrameId":123
+}
+```
+
+字段说明：
+
+- `fromFrameId`：客户端已应用到的最后帧号，服务端回吐 `[fromFrameId, 当前 tickId]` 窗口内的快照序列
+- `sessionId` / `clientId`：绑定字段，用于校验与定位目标客户端（未知 `clientId` 的请求被计数后忽略）
+
+服务端应答语义（两种，互斥）：
+
+1. **窗口命中** → 通过直发通道按帧号顺序回吐窗口内每一帧快照（不走 latest-wins 队列，因此不会被后续快照挤掉）。客户端按 `tickId` 幂等应用：帧号 ≤ 已应用帧的直接丢弃。回放与周期快照可在传输上交错，客户端必须以 `tickId` 排序而非到达顺序。
+2. **窗口未命中**（起始帧已被驱逐、或该 session 关闭帧历史）→ 回吐单个最新快照，`forced=true`、`reason="resync-gap"`，客户端对齐到最新帧、放弃补历史。
+
+限流（两层）：
+
+- WS 面固定窗口：每连接每分钟 `Faces:StreamerWs:ResyncPerMinute`（默认 30），超限丢弃并计入 `/faces` 的 `streamerWs.resyncDropped`
+- 引擎 per-client 冷却：`Session:ResyncRequestCooldownMs`（默认 1000ms），冷却内重复请求计入 `TotalResyncThrottled` 后直接返回
+
+服务端不额外回执「resync 已受理」：客户端以收到的快照序列作为应答，超时未收到即应重试 `resync`。
+
 ## 推荐实现约束
 
 - 客户端正常跟随时，应周期性发送 ACK
@@ -143,6 +176,7 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 - `welcome` 对应 `ServerWelcome`
 - `snapshot` 对应 `ServerSnapshot`
 - `ack` 对应 `ClientAck`
+- `resync` 对应 `ClientResync`（帧同步 P2）
 
 其中服务端强制重同步所携带的关键上下文字段包括：
 

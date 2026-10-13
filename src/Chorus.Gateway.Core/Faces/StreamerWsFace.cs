@@ -17,6 +17,10 @@ public interface IStreamerSessionBinding : IAsyncDisposable
 {
     ValueTask AckAsync(long lastAppliedTickId, long clientTimeMs, CancellationToken cancellationToken);
 
+    /// <summary>Client-initiated gap-fill request (frame-sync P2): the client reports
+    /// the last frame it applied; the engine replays the retained window.</summary>
+    ValueTask ResyncAsync(long fromFrameId, CancellationToken cancellationToken);
+
     ValueTask DisconnectAsync(CancellationToken cancellationToken);
 }
 
@@ -155,6 +159,8 @@ public sealed class StreamerWsFace
             var binding = connection.Binding;
             var ackWindowStartMs = 0L;
             var ackCount = 0;
+            var resyncWindowStartMs = 0L;
+            var resyncCount = 0;
             while (ws.State == WebSocketState.Open && !context.RequestAborted.IsCancellationRequested)
             {
                 string text;
@@ -196,6 +202,33 @@ public sealed class StreamerWsFace
                     if (ack != null)
                     {
                         await binding.AckAsync(ack.LastAppliedTickId, ack.ClientTimeMs ?? 0, context.RequestAborted);
+                    }
+                }
+                else if (string.Equals(type, ProtocolTypes.Resync, StringComparison.Ordinal))
+                {
+                    // Frame-sync P2: client-initiated gap-fill. Same fixed-window
+                    // shape as the ACK limiter - the engine applies its own
+                    // per-client cooldown, this only bounds the request rate.
+                    var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    if (resyncWindowStartMs == 0 || nowMs - resyncWindowStartMs >= 60_000)
+                    {
+                        resyncWindowStartMs = nowMs;
+                        resyncCount = 1;
+                    }
+                    else if (resyncCount >= _options.ResyncPerMinute)
+                    {
+                        _faces.WsResyncDropped();
+                        continue;
+                    }
+                    else
+                    {
+                        resyncCount++;
+                    }
+
+                    var resync = doc.RootElement.Deserialize<ClientResync>(ProtocolJson.SerializerOptions);
+                    if (resync != null)
+                    {
+                        await binding.ResyncAsync(resync.FromFrameId, context.RequestAborted);
                     }
                 }
                 else if (string.Equals(type, ProtocolTypes.Ping, StringComparison.Ordinal))

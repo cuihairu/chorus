@@ -9,6 +9,10 @@ namespace Chorus.Engine.Session;
 /// sending snapshot N to a lagging transport, newer snapshots replace the
 /// queued one. The client therefore always catches up to the newest state on
 /// the next successful send (plus a forced resync if it acks too late).
+///
+/// Frame-sync P2 adds a direct-send path for gap-fill replay: replayed
+/// frames must all arrive in order, so they bypass the latest-wins slot and
+/// go straight to the transport, serialized with the pump by a semaphore.
 /// </summary>
 public sealed class OutboundClientQueue : IAsyncDisposable
 {
@@ -20,10 +24,13 @@ public sealed class OutboundClientQueue : IAsyncDisposable
             SingleWriter = false,
             FullMode = BoundedChannelFullMode.DropOldest,
         });
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private readonly SemaphoreSlim _replayGate = new(1, 1);
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _pump;
     private long _dropped;
     private long _sent;
+    private long _replayed;
 
     public OutboundClientQueue(ISessionClient inner)
     {
@@ -39,6 +46,9 @@ public sealed class OutboundClientQueue : IAsyncDisposable
 
     public long Sent => Interlocked.Read(ref _sent);
 
+    /// <summary>Frames delivered through the direct replay path (frame-sync P2).</summary>
+    public long Replayed => Interlocked.Read(ref _replayed);
+
     /// <summary>Enqueue-only: completes synchronously, never awaits the transport.</summary>
     public ValueTask SendSnapshotAsync(WireSnapshot wire, CancellationToken cancellationToken)
     {
@@ -50,14 +60,86 @@ public sealed class OutboundClientQueue : IAsyncDisposable
         return ValueTask.CompletedTask;
     }
 
+    /// <summary>
+    /// Direct ordered delivery for gap-fill replay (frame-sync P2): bypasses
+    /// the latest-wins slot so every replayed frame reaches the client in
+    /// order. Serialized with the pump per frame, and whole bursts are
+    /// serialized against each other by <see cref="_replayGate"/> so two
+    /// overlapping resync answers cannot interleave frames on the transport.
+    /// Transport errors are swallowed - a broken client must not take the
+    /// session down; the client's next resync re-pulls the window.
+    /// </summary>
+    public async ValueTask SendReplayAsync(IReadOnlyList<WireSnapshot> frames, CancellationToken cancellationToken)
+    {
+        if (frames.Count == 0)
+        {
+            return;
+        }
+
+        await _replayGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (var wire in frames)
+            {
+                await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _inner.SendSnapshotAsync(wire, cancellationToken).ConfigureAwait(false);
+                    Interlocked.Increment(ref _replayed);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception)
+                {
+                    // Broken transport: stop the replay burst, the client resyncs.
+                    return;
+                }
+                finally
+                {
+                    _sendGate.Release();
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled between frames (or waiting for the send gate): the
+            // caller discarded this task, so nothing may escape.
+        }
+        catch (Exception)
+        {
+        }
+        finally
+        {
+            _replayGate.Release();
+        }
+    }
+
     private async Task PumpAsync()
     {
         try
         {
             await foreach (var wire in _slot.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
             {
-                await _inner.SendSnapshotAsync(wire, _cts.Token).ConfigureAwait(false);
-                Interlocked.Increment(ref _sent);
+                await _sendGate.WaitAsync(_cts.Token).ConfigureAwait(false);
+                try
+                {
+                    await _inner.SendSnapshotAsync(wire, _cts.Token).ConfigureAwait(false);
+                    Interlocked.Increment(ref _sent);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception)
+                {
+                    // A broken transport must not take the pump (or the session) down;
+                    // further writes collapse into the slot, memory stays bounded.
+                }
+                finally
+                {
+                    _sendGate.Release();
+                }
             }
         }
         catch (OperationCanceledException)
@@ -65,8 +147,6 @@ public sealed class OutboundClientQueue : IAsyncDisposable
         }
         catch (Exception)
         {
-            // A broken transport must not take the pump (or the session) down;
-            // further writes collapse into the slot, memory stays bounded.
         }
     }
 
@@ -82,6 +162,8 @@ public sealed class OutboundClientQueue : IAsyncDisposable
         {
         }
 
+        _sendGate.Dispose();
+        _replayGate.Dispose();
         _cts.Dispose();
     }
 }

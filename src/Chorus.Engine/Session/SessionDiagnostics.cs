@@ -28,7 +28,17 @@ public sealed record SessionDiagnostics(
     /// <summary>Current pending depth of the control and event lanes combined.</summary>
     int MailboxDepth = 0,
     /// <summary>Snapshots skipped because the serialized state exceeded MaxSnapshotBytes (stage-3).</summary>
-    long TotalSnapshotsOversize = 0
+    long TotalSnapshotsOversize = 0,
+    /// <summary>Client-initiated resync requests received (frame-sync P2, before cooldown filtering).</summary>
+    long TotalResyncRequests = 0,
+    /// <summary>Resync requests answered from the frame history window (frame-sync P2).</summary>
+    long TotalResyncReplays = 0,
+    /// <summary>Resync requests whose window start was missing - answered with latest + forced (frame-sync P2).</summary>
+    long TotalResyncWindowMisses = 0,
+    /// <summary>Resync requests rejected by the per-client cooldown (frame-sync P2).</summary>
+    long TotalResyncThrottled = 0,
+    /// <summary>Current frame-history footprint in encoded bytes (frame-sync P2).</summary>
+    long FrameHistoryBytes = 0
 );
 
 public sealed record SessionClientDiagnostics(

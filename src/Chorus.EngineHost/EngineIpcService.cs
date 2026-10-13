@@ -233,6 +233,16 @@ public sealed class EngineIpcService : BackgroundService
                 }
                 break;
 
+            case IpcMessageTypes.GatewayResync:
+                {
+                    var cmd = EnvelopeFactory.DeserializeBody<GatewayResyncCmd>(env);
+                    if (_registry.TryGet(cmd.SessionId, out var session))
+                    {
+                        await session!.ResyncAsync(cmd.ClientId, cmd.FromFrameId);
+                    }
+                }
+                break;
+
             case IpcMessageTypes.GatewayAudienceEvent:
                 {
                     var audienceEvent = EnvelopeFactory.DeserializeBody<AudienceEvent>(env);

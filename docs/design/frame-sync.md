@@ -89,9 +89,9 @@ title: 帧同步（权威 Tick + 快照）
 
 | # | 缺口 | 现状证据 | 状态 |
 | --- | --- | --- | --- |
-| G1 | 客户端拿不到「每条事件属于哪一帧」 | 快照只带 `tickId`（`ServerSnapshot.cs:8`），不带 per-event 帧归属；事件按 tick 排空后即删（`SessionActor.cs:413-415`） | 计划中（P2） |
-| G2 | 没有帧历史缓冲 | 引擎只保留当前 tick 的事件，无 ring buffer | 计划中（P2） |
-| G3 | 没有客户端「拉取某帧」的消息 | 线协议只有 server→client 的 `snapshot`；`ClientAck` 只带 `lastAppliedTickId` 作为进度字段（另有 `sessionId`/`clientId`/`clientTimeMs`，`src/Chorus.Protocol/Messages/ClientAck.cs:3-9`） | 计划中（P2） |
+| G1 | 客户端拿不到「每条事件属于哪一帧」 | 快照只带 `tickId`（`ServerSnapshot.cs:8`），不带 per-event 帧归属；事件按 tick 排空后即删（`SessionActor.cs:413-415`） | **已实现（P2）**：`frameEvents` 信封字段（§4.2） |
+| G2 | 没有帧历史缓冲 | 引擎只保留当前 tick 的事件，无 ring buffer | **已实现（P2）**：`FrameHistory` 按字节上限的 ring buffer（§4.3） |
+| G3 | 没有客户端「拉取某帧」的消息 | 线协议只有 server→client 的 `snapshot`；`ClientAck` 只带 `lastAppliedTickId` 作为进度字段（另有 `sessionId`/`clientId`/`clientTimeMs`，`src/Chorus.Protocol/Messages/ClientAck.cs:3-9`） | **已实现（P2）**：`resync` 消息 + 完整 IPC 链（§4.3） |
 | G4 | 没有回放/录播对齐 | 无持久化（`versioning.md:72-74`），快照不落盘 | **明确不做**（除非先落 snapshot-restore 契约） |
 | G5 | 没有客户端 SDK | 仓内 src 全是 server 侧，无 client 库 | 计划中（P3） |
 | G6 | 客户端节拍/插值未实测 | 无客户端实现可跑 | **未实测** |
@@ -122,12 +122,13 @@ title: 帧同步（权威 Tick + 快照）
 - 优点：不动 wire、不动 `v`（`versioning.md:42` 的 v 是 schema 版本，state 内约定不触发）。
 - 缺点：帧归属与游戏状态耦合，客户端解析 state 时需知道这个约定。
 
-**P2 — 协议扩展（additive optional）**
+**P2 — 协议扩展（additive optional，已实现）**
 
 - 在 `ServerSnapshot` 加**可选** `frameEvents` 信封字段（`List<FrameEvent>?`，缺省 null → wire 省略）。
 - 依据 `versioning.md:60-65`：线协议新增可选字段 = 允许（0.x 与 1.0+ 均允许）。
 - **不 bump `v`**：additive optional 不改字段语义；`v` 只在字段**语义变化**时才 bump（`versioning.md:42-43`：未知 v 的拒绝 + 强制 resync 待首个 v2 设计时定）。
 - 需按 `versioning.md:43` 复核：本字段属 additive，不触发「未知 v 拒绝」语义。
+- **实现**：`src/Chorus.Protocol/Messages/FrameEvent.cs`（`FrameId` / `EventId` / `Kind` / `UserId`）；`SessionSnapshot.FrameEvents`；`WireSnapshot.cs` 携带到 wire（null → 省略）。`SessionActor.DrainFrameEvents` 每快照拍清一次累积器（每 tick 累积、`MaxPendingFrameEvents = 4096` 封顶丢最旧拍）。单测：`WireSnapshotFrameEventsTests`（省略/ camelCase / 旧 JSON 兼容）。
 
 ### 4.3 乱序 / 丢帧
 
@@ -138,16 +139,20 @@ title: 帧同步（权威 Tick + 快照）
 | 期次 | 策略 | 说明 |
 | --- | --- | --- |
 | P1（无历史） | 等下一个周期快照 / 触发强制 resync | **无法补历史帧**——引擎没有历史（G2）。已有机制：周期快照（`SessionActor.cs:447`）+ 强制 resync（`:550-569`）。诚实标注：丢帧 = 跳帧，客户端直接对齐到最新帧。 |
-| P2（计划中） | 引擎帧历史 ring buffer + 客户端拉取 | 见下。**未实测**。 |
+| P2（已实现） | 引擎帧历史 ring buffer + 客户端拉取 | 见下。单测 + e2e 覆盖（`FrameHistoryTests` / `SessionActorFrameHistoryTests` / `WireSnapshotFrameEventsTests`）。 |
 
-**P2 补帧设计（计划中，未实测）**：
+**P2 补帧实现（已落地）**：
 
-- 引擎侧：per-session 帧历史 ring buffer（内存），保存最近 N 拍快照。
-- **按字节上限而非帧数上限**：N 拍 × 平均快照字节不可控，最坏 `MaxSnapshotBytes`（1 MiB，`SessionConfig.cs:21`）× N 会爆内存。建议**按字节封顶**（如 8 MiB/session），超顶 evict 最旧。
-  - 内存估算（未实测）：8 MiB/session × `MaxSessions`（200，`SessionConfig.cs:17`）= 最坏 1.6 GiB。**需实测快照平均字节数后定上限**。
-- 客户端侧：新增 `resync` 消息类型（client→server），带 `fromFrameId`；引擎回吐 `[fromFrameId, 当前 tickId]` 窗口内的快照序列。
+- 引擎侧：per-session 帧历史 ring buffer（内存），`src/Chorus.Engine/Session/FrameHistory.cs`。
+- **按字节上限而非帧数上限**：N 拍 × 平均快照字节不可控，最坏 `MaxSnapshotBytes`（1 MiB，`SessionConfig.cs:21`）× N 会爆内存，故按字节封顶——`Session:FrameHistoryBytes`（默认 8 MiB/session），超顶 evict 最旧，**但不 evict 刚加入的那帧**（`Add` 的驱逐条件排除最新项）；单帧超过整容量时保留为该 session 的唯一帧。
+  - 内存估算（未实测）：8 MiB/session × `MaxSessions`（200，`SessionConfig.cs:17`）= 最坏 1.6 GiB。**需实测快照平均字节数后定上限**；`FrameHistoryBytes = 0` 可整体关闭（窗口查询恒 miss）。
+- 客户端侧：新增 `resync` 消息类型（client→server），带 `fromFrameId`；`ProtocolTypes.Resync = "resync"`、`ClientResync` 模型。
   - 依据 `versioning.md:60-65`：线协议新增消息类型 = 允许。
-  - 窗口外的缺口（已 evict）→ 回吐最新快照 + `forced=true`，客户端对齐到最新。
+  - 引擎回吐 `[fromFrameId, 当前 tickId]` 窗口内的快照序列；窗口查询拒绝**部分回放**（`fromFrameId` 早于最旧帧 → miss，因为从保留尾部起回放会隐藏缺口）。
+  - 窗口外的缺口（已 evict / 历史关闭）→ 回吐最新快照 + `forced=true` + `reason="resync-gap"`，客户端对齐到最新。
+- **回放走直发通道**：`OutboundClientQueue.SendReplayAsync` 绕过容量 1 的 latest-wins slot（DropOldest 会把回放帧挤掉只剩最后一帧），与周期发送用 `_sendGate` 逐帧串行、整批用 `_replayGate` 互斥；回放 detach 执行，慢传输不拖 tick。周期快照仍可能被丢——**回放帧不会**。
+- 诊断计数：`TotalResyncRequests` / `TotalResyncReplays` / `TotalResyncWindowMisses` / `TotalResyncThrottled` / `TotalResyncSnapshotsSent`、`FrameHistoryBytes`。
+- **传输层全链路**：`StreamerWsFace`（`resync` 分支 + 固定窗口限流）→ `IStreamerSessionBinding.ResyncAsync` → 单体 `MonolithSessionRouter`（直调 `SessionActor`）/ 网关 `IpcSessionRouter`（`GatewayIpcService.PublishResyncAsync` → `gw.resync` → `GatewayResyncCmd` → `EngineIpcService` → `SessionActor.ResyncAsync`）。
 
 **幂等与去重**：
 
@@ -160,7 +165,9 @@ title: 帧同步（权威 Tick + 快照）
 - 有界事件通道：`MaxPendingEvents`（`SessionConfig.cs:11`，默认 8000）。
 - 有界等待：礼物等 must-not-lose 事件在通道满时额外等 `EventEnqueueMaxWaitMs`（`SessionConfig.cs:13`，默认 50ms），超时才丢。
 - 每 tick 事件上限：`MaxEventsPerTick`（`SessionConfig.cs:7`，默认 200）。
-- 补帧请求的背压（P2，计划中）：`resync` 请求限流，避免慢客户端拖垮引擎（可复用 `ResyncCooldownMs` 思路，`SessionConfig.cs:9`）。
+- 补帧请求的背压（P2，已实现，两层）：
+  - 传输层固定窗口：`Faces:StreamerWs:ResyncPerMinute`（默认 30/min），超限直接丢弃并计入 `WsResyncDropped`。
+  - 引擎层 per-client 冷却：`Session:ResyncRequestCooldownMs`（默认 1000ms），冷却内的重复请求计入 `TotalResyncThrottled` 后直接返回。**与服务端推送 lag resync 的 `ResyncCooldownMs`（2000ms）互不复用**——前者是客户端主动拉，后者是引擎按 ACK 判断推送。
 
 ### 4.4 重连 / 回放
 
@@ -168,7 +175,7 @@ title: 帧同步（权威 Tick + 快照）
 
 - 客户端重连 → 发 `hello` → 引擎以**当前 tickId** 为基线（`SessionActor.cs:314-315`：`ConnectedTickId = TickId`、`LastAckTickId = TickId`）。
 - **续传 = 从最新帧开始**，不补历史（无历史可补，G2）。这与 Twitch `reconnect_url` 的「旧订阅继续投递、新连接续传」语义一致（[Twitch docs](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/)），但 chorus 没有跨连接的订阅状态——重连就是新基线。
-- 若未来 P2 落了 ring buffer，重连可回吐窗口内历史（按 `fromFrameId` 拉取）。
+- **P2 已落地**：重连后客户端可直接发 `resync { fromFrameId }` 拉取窗口内历史帧；窗口外（已 evict）回吐最新快照 + `forced=true`/`reason="resync-gap"` 对齐到最新。重连仍以**当前 tickId** 为基线，resync 是可选补帧、不改变基线语义。
 
 **回放 / 录播对齐**：
 
@@ -200,7 +207,7 @@ title: 帧同步（权威 Tick + 快照）
 | 期次 | 内容 | 验收口径 |
 | --- | --- | --- |
 | **P1** | 帧号语义文档化 + `state.frameEvents` 约定 + 客户端按帧号渲染 | 文档落地；`state.frameEvents` 约定被示例/测试引用；客户端按帧号渲染的示例可跑（见 [快速接入](../guide/quickstart-frame-sync.md)） |
-| **P2** | 帧历史 ring buffer + `resync` 拉取消息 + 快照 `frameEvents` 信封字段 | 单测：ring buffer 补帧窗口 + `resync` 消息 + wire 兼容（旧客户端忽略新字段）；e2e：丢帧后补帧对齐 |
+| **P2** | 帧历史 ring buffer + `resync` 拉取消息 + 快照 `frameEvents` 信封字段 | **已完成**：单测 `FrameHistoryTests`（7：补帧窗口 / 逐字节驱逐 / 超量帧保留 / 零容量关闭）+ `SessionActorFrameHistoryTests`（6：窗口命中回放 / 窗口 miss → `resync-gap` / 冷却节流 / 未知 client / `frameEvents` 带应用帧号 / 无事件省略）+ `WireSnapshotFrameEventsTests`（5：wire 省略 / camelCase / 旧 JSON 兼容 / `ClientResync` 反序列化 / 真实 /ws resync 补帧 e2e）；全套 260 绿 |
 | **P3** | 客户端 SDK（入口 + 一个回调） | 新项目 N 行代码内接入；回调收 state；构建/测试绿 |
 
 ---

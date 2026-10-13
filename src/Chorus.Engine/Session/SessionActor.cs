@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Threading.Channels;
 using Chorus.Engine.Abstractions;
+using Chorus.Protocol.Messages;
 using Chorus.Protocol.Models;
 
 namespace Chorus.Engine.Session;
@@ -12,6 +13,7 @@ public sealed class SessionActor : IAsyncDisposable
     private sealed record AddClientCmd(ISessionClient Client) : ICommand;
     private sealed record RemoveClientCmd(string ClientId) : ICommand;
     private sealed record AckCmd(string ClientId, long LastAppliedTickId, long ClientTimeMs) : ICommand;
+    private sealed record ResyncCmd(string ClientId, long FromFrameId) : ICommand;
     private sealed record IngestAudienceEventCmd(AudienceEvent Event) : ICommand;
 
     // Two lanes (review stage-2): control commands are unbounded and never
@@ -22,6 +24,12 @@ public sealed class SessionActor : IAsyncDisposable
 
     private readonly Dictionary<string, (OutboundClientQueue Client, SessionClientState State)> _clients = new(StringComparer.Ordinal);
     private readonly Dictionary<long, List<AudienceEvent>> _scheduledByTick = new();
+
+    // Frame-sync P2: canonical snapshots retained for client gap-fill, and the
+    // per-tick event accumulator that feeds the snapshot's frameEvents envelope.
+    private readonly FrameHistory _frameHistory;
+    private readonly List<(long TickId, IReadOnlyList<AudienceEvent> Events)> _pendingFrameEvents = new();
+    private const int MaxPendingFrameEvents = 4096;
 
     private readonly SessionConfig _config;
     private readonly IGameModule _game;
@@ -43,6 +51,10 @@ public sealed class SessionActor : IAsyncDisposable
     private long _totalTickOverruns;
     private long _totalTickErrors;
     private long _totalSnapshotsOversize;
+    private long _totalResyncRequests;
+    private long _totalResyncReplays;
+    private long _totalResyncWindowMisses;
+    private long _totalResyncThrottled;
 
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _runCts;
@@ -78,6 +90,8 @@ public sealed class SessionActor : IAsyncDisposable
             SingleWriter = false,
             FullMode = BoundedChannelFullMode.Wait,
         });
+
+        _frameHistory = new FrameHistory(config.FrameHistoryBytes);
 
         _diagnostics = new SessionDiagnostics(
             SessionId: SessionId,
@@ -155,6 +169,15 @@ public sealed class SessionActor : IAsyncDisposable
 
     public ValueTask AckAsync(string clientId, long lastAppliedTickId, long clientTimeMs)
         => _control.Writer.WriteAsync(new AckCmd(clientId, lastAppliedTickId, clientTimeMs));
+
+    /// <summary>
+    /// Client-initiated gap-fill request (frame-sync P2): the client reports the
+    /// last frame it applied; the actor replays the retained window from its
+    /// frame history, or answers with the latest state (forced) when the window
+    /// start is no longer retained. Per-client cooldown throttles repeats.
+    /// </summary>
+    public ValueTask ResyncAsync(string clientId, long fromFrameId)
+        => _control.Writer.WriteAsync(new ResyncCmd(clientId, fromFrameId));
 
     /// <summary>
     /// Backpressured ingest (review stage-2): returns false when the bounded
@@ -329,6 +352,9 @@ public sealed class SessionActor : IAsyncDisposable
             case AckCmd c:
                 HandleAck(c);
                 break;
+            case ResyncCmd c:
+                HandleResync(c);
+                break;
             default:
                 throw new InvalidOperationException($"Unknown command: {cmd.GetType().Name}");
         }
@@ -371,6 +397,84 @@ public sealed class SessionActor : IAsyncDisposable
         item.State.LastAckTickId = c.LastAppliedTickId;
         item.State.LastAckTimeMs = NowMs();
         Interlocked.Increment(ref _totalAcksAccepted);
+    }
+
+    /// <summary>
+    /// Client-initiated gap-fill (frame-sync P2, docs/design/frame-sync.md §4.3):
+    /// a client that detected a gap sends the last frame it applied. When the
+    /// frame-history window still starts at or before that frame, every retained
+    /// frame is replayed in order over a direct-send path (bypassing the
+    /// latest-wins queue); otherwise the client has missed more than the buffer
+    /// holds and gets the latest state with forced=true. Requests repeat inside
+    /// the per-client cooldown are throttled. The replay runs detached so a slow
+    /// transport cannot stall the tick loop; ordering against later broadcasts
+    /// is preserved by the outbound queue's send gate.
+    /// </summary>
+    private void HandleResync(ResyncCmd c)
+    {
+        Interlocked.Increment(ref _totalResyncRequests);
+
+        if (!_clients.TryGetValue(c.ClientId, out var item))
+        {
+            return;
+        }
+
+        var now = NowMs();
+        var state = item.State;
+        if (_config.ResyncRequestCooldownMs > 0
+            && state.LastResyncRequestTimeMs > 0
+            && now - state.LastResyncRequestTimeMs < _config.ResyncRequestCooldownMs)
+        {
+            Interlocked.Increment(ref _totalResyncThrottled);
+            return;
+        }
+
+        state.LastResyncRequestTimeMs = now;
+
+        if (_frameHistory.TryGetWindow(c.FromFrameId, out var frames))
+        {
+            Interlocked.Increment(ref _totalResyncReplays);
+            _ = item.Client.SendReplayAsync(frames, CancellationToken.None);
+            return;
+        }
+
+        Interlocked.Increment(ref _totalResyncWindowMisses);
+        var latest = new SessionSnapshot(
+            SessionId: SessionId,
+            TickId: TickId,
+            ServerTimeMs: now,
+            State: _game.GetStateSnapshot(),
+            Forced: true,
+            Reason: "resync-gap",
+            TargetClientId: c.ClientId,
+            FrameEvents: DrainFrameEvents());
+        _ = item.Client.SendSnapshotAsync(WireSnapshot.Encode(latest), CancellationToken.None);
+        Interlocked.Increment(ref _totalResyncSnapshotsSent);
+    }
+
+    /// <summary>
+    /// Builds the frameEvents envelope (events applied since the previous
+    /// snapshot, each stamped with its applied tickId) and clears the
+    /// accumulator. Empty history yields null so the wire omits the field.
+    /// </summary>
+    private List<FrameEvent>? DrainFrameEvents()
+    {
+        if (_pendingFrameEvents.Count == 0)
+        {
+            return null;
+        }
+
+        var events = new List<FrameEvent>();
+        foreach (var (tickId, batch) in _pendingFrameEvents)
+        {
+            foreach (var e in batch)
+            {
+                events.Add(new FrameEvent(tickId, e.EventId, e.Kind.ToString().ToLowerInvariant(), e.UserId));
+            }
+        }
+
+        _pendingFrameEvents.Clear();
+        return events;
     }
 
     private void ScheduleAudienceEvent(AudienceEvent e)
@@ -443,6 +547,24 @@ public sealed class SessionActor : IAsyncDisposable
 
         _game.ApplyEvents(TickId, tickEvents);
 
+        // Frame-sync P2: accumulate per-tick events for the frameEvents envelope.
+        // Bounded: when the accumulator exceeds MaxPendingFrameEvents the oldest
+        // ticks drop (their state effect is still inside the snapshot).
+        if (tickEvents.Count > 0)
+        {
+            _pendingFrameEvents.Add((TickId, tickEvents));
+            var total = 0;
+            for (var i = _pendingFrameEvents.Count - 1; i >= 0; i--)
+            {
+                total += _pendingFrameEvents[i].Events.Count;
+                if (total > MaxPendingFrameEvents)
+                {
+                    _pendingFrameEvents.RemoveRange(0, i + 1);
+                    break;
+                }
+            }
+        }
+
         var now = NowMs();
         var needsPeriodic = _config.SnapshotEveryTicks > 0 && (TickId % _config.SnapshotEveryTicks) == 0;
         var forceClients = GetClientsNeedingResync(now);
@@ -464,6 +586,12 @@ public sealed class SessionActor : IAsyncDisposable
                 }
             }
 
+            // Frame-sync P2: build the frameEvents envelope once per snapshot
+            // tick and clear the accumulator (events not yet delivered in any
+            // snapshot stay accumulated; the oversize early-return above keeps
+            // them pending for the next snapshot).
+            var frameEvents = DrainFrameEvents();
+
             if (needsPeriodic)
             {
                 if (forceClients.Count == 0)
@@ -478,8 +606,10 @@ public sealed class SessionActor : IAsyncDisposable
                         TickId: TickId,
                         ServerTimeMs: now,
                         State: state,
-                        Forced: false);
+                        Forced: false,
+                        FrameEvents: frameEvents);
                     var wire = WireSnapshot.Encode(snapshot);
+                    _frameHistory.Add(wire);
                     foreach (var (client, _) in _clients.Values)
                     {
                         await client.SendSnapshotAsync(wire, cancellationToken).ConfigureAwait(false);
@@ -487,6 +617,17 @@ public sealed class SessionActor : IAsyncDisposable
                     }
 
                     return;
+                }
+
+                if (_config.FrameHistoryBytes > 0)
+                {
+                    _frameHistory.Add(WireSnapshot.Encode(new SessionSnapshot(
+                        SessionId: SessionId,
+                        TickId: TickId,
+                        ServerTimeMs: now,
+                        State: state,
+                        Forced: false,
+                        FrameEvents: frameEvents)));
                 }
 
                 foreach (var (client, stateInfo) in _clients.Values)
@@ -501,7 +642,8 @@ public sealed class SessionActor : IAsyncDisposable
                         Reason: force ? "lag" : null,
                         TargetClientId: force ? stateInfo.ClientId : null,
                         ClientLagTicks: force ? forceInfo!.LagTicks : null,
-                        ClientLastAckTickId: force ? forceInfo!.LastAckTickId : null
+                        ClientLastAckTickId: force ? forceInfo!.LastAckTickId : null,
+                        FrameEvents: frameEvents
                     );
                     await client.SendSnapshotAsync(WireSnapshot.Encode(snapshot), cancellationToken).ConfigureAwait(false);
                     Interlocked.Increment(ref _totalSnapshotsSent);
@@ -530,7 +672,8 @@ public sealed class SessionActor : IAsyncDisposable
                         Reason: "lag",
                         TargetClientId: stateInfo.ClientId,
                         ClientLagTicks: forceInfo.LagTicks,
-                        ClientLastAckTickId: forceInfo.LastAckTickId
+                        ClientLastAckTickId: forceInfo.LastAckTickId,
+                        FrameEvents: frameEvents
                     );
                     await client.SendSnapshotAsync(WireSnapshot.Encode(snapshot), cancellationToken).ConfigureAwait(false);
                     Interlocked.Increment(ref _totalSnapshotsSent);
@@ -612,7 +755,12 @@ public sealed class SessionActor : IAsyncDisposable
             TotalTickOverruns: Interlocked.Read(ref _totalTickOverruns),
             TotalTickErrors: Interlocked.Read(ref _totalTickErrors),
             MailboxDepth: (_control.Reader.CanCount ? _control.Reader.Count : 0) + (_events.Reader.CanCount ? _events.Reader.Count : 0),
-            TotalSnapshotsOversize: Interlocked.Read(ref _totalSnapshotsOversize)
+            TotalSnapshotsOversize: Interlocked.Read(ref _totalSnapshotsOversize),
+            TotalResyncRequests: Interlocked.Read(ref _totalResyncRequests),
+            TotalResyncReplays: Interlocked.Read(ref _totalResyncReplays),
+            TotalResyncWindowMisses: Interlocked.Read(ref _totalResyncWindowMisses),
+            TotalResyncThrottled: Interlocked.Read(ref _totalResyncThrottled),
+            FrameHistoryBytes: _frameHistory.Bytes
         );
     }
 

@@ -22,7 +22,9 @@ builder.Services.AddSingleton(sp =>
         TickTimeoutMs: cfg.GetValue("Session:TickTimeoutMs", 250),
         MaxSessions: cfg.GetValue("Session:MaxSessions", 200),
         IdleEvictAfterMs: cfg.GetValue("Session:IdleEvictAfterMs", 600_000),
-        MaxSnapshotBytes: cfg.GetValue("Session:MaxSnapshotBytes", 1_048_576)
+        MaxSnapshotBytes: cfg.GetValue("Session:MaxSnapshotBytes", 1_048_576),
+        FrameHistoryBytes: cfg.GetValue("Session:FrameHistoryBytes", 8_388_608),
+        ResyncRequestCooldownMs: cfg.GetValue("Session:ResyncRequestCooldownMs", 1000)
     );
 });
 builder.Services.AddHostedService<EngineIpcService>();

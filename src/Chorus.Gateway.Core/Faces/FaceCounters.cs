@@ -25,6 +25,7 @@ public sealed class FaceCounters
     private long _wsMessageTooLarge;
     private long _wsAckAccepted;
     private long _wsAckDropped;
+    private long _wsResyncDropped;
 
     [JsonPropertyName("ingress")]
     public IngressFaceSnapshot Ingress => new(
@@ -43,7 +44,8 @@ public sealed class FaceCounters
         Interlocked.Read(ref _wsProtocolMismatch),
         Interlocked.Read(ref _wsMessageTooLarge),
         Interlocked.Read(ref _wsAckAccepted),
-        Interlocked.Read(ref _wsAckDropped));
+        Interlocked.Read(ref _wsAckDropped),
+        Interlocked.Read(ref _wsResyncDropped));
 
     public void IngressAccepted() => Interlocked.Increment(ref _ingressAccepted);
     public void IngressRateLimited() => Interlocked.Increment(ref _ingressRateLimited);
@@ -59,6 +61,7 @@ public sealed class FaceCounters
     public void WsMessageTooLarge() => Interlocked.Increment(ref _wsMessageTooLarge);
     public void WsAckAccepted() => Interlocked.Increment(ref _wsAckAccepted);
     public void WsAckDropped() => Interlocked.Increment(ref _wsAckDropped);
+    public void WsResyncDropped() => Interlocked.Increment(ref _wsResyncDropped);
 }
 
 public sealed record IngressFaceSnapshot(
@@ -76,4 +79,5 @@ public sealed record StreamerWsFaceSnapshot(
     long ProtocolMismatch,
     long MessageTooLarge,
     long AckAccepted,
-    long AckDropped);
+    long AckDropped,
+    long ResyncDropped = 0);

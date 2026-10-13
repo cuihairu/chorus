@@ -132,7 +132,7 @@ maxSnapshotBytes = 1048576
 
 含义：
 
-- 同一客户端两次强制快照之间的最小间隔
+- 同一客户端两次**服务端推送**强制快照之间的最小间隔（引擎按 ACK 水位判定客户端落后后主动推送）
 
 默认值：
 
@@ -143,6 +143,43 @@ maxSnapshotBytes = 1048576
 - 防止短时间内反复 resync
 - 值太小会导致抖动式恢复
 - 值太大又会让问题客户端长时间无法重新对齐
+- **与 `resyncRequestCooldownMs`（客户端主动拉）互不复用**，见下
+
+### `frameHistoryBytes`
+
+2026-10-13 起（帧同步 P2）。
+
+含义：
+
+- per-session 帧历史 ring buffer 的字节上限，保存最近的 wire 快照供客户端 `resync` 按帧号补帧
+
+默认值：
+
+- `8388608`（8 MiB/session）
+
+影响：
+
+- 按字节封顶、驱逐最旧帧；刚加入的帧不会被驱逐（单帧超整容量时保留为唯一帧）
+- 补帧窗口起点早于最旧保留帧 → 视为未命中（回吐最新快照 + `forced=true`/`reason="resync-gap"`），不做部分回放
+- 内存上界 = 该值 × `maxSessions`（200）≈ 最坏 1.6 GiB，生产压测后按实测快照字节调整
+- `0` 关闭帧历史：所有 `resync` 请求走 `resync-gap` 对齐路径
+
+### `resyncRequestCooldownMs`
+
+2026-10-13 起（帧同步 P2）。
+
+含义：
+
+- 同一客户端两次**主动拉取**（`resync` 消息）之间的最小间隔，引擎层 per-client 冷却
+
+默认值：
+
+- `1000`
+
+影响：
+
+- 冷却内重复请求计入 `TotalResyncThrottled` 后直接返回
+- 另有传输层固定窗口 `Faces:StreamerWs:ResyncPerMinute`，两层独立生效
 
 ### `maxSnapshotBytes`
 
@@ -186,6 +223,7 @@ maxSnapshotBytes = 1048576
 | `Faces:StreamerWs:AllowAnonymous` | `false` | 开发开关：允许无 token 连接。开启时启动日志打 WARN；仅建议在 appsettings.Development.json 显式打开 |
 | `Faces:StreamerWs:MaxMessageBytes` | `65536` | 单条 WS 消息上限，超限以 `MessageTooBig` 关闭连接 |
 | `Faces:StreamerWs:AckPerMinute` | `600` | 每连接每分钟 ACK 上限，超限静默丢弃（计数 `/faces` → `streamerWs.ackDropped`） |
+| `Faces:StreamerWs:ResyncPerMinute` | `30` | 每连接每分钟 `resync` 补帧请求上限，超限丢弃（计数 `/faces` → `streamerWs.resyncDropped`；2026-10-13 帧同步 P2） |
 
 ## Gateway 角色打包（拆分模式，三进程形态）
 

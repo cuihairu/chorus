@@ -20,6 +20,9 @@ public sealed class StreamerWsFaceOptions
     /// <summary>Max ACK messages per connection per one-minute fixed window. Excess ACKs are dropped.</summary>
     public int AckPerMinute { get; init; } = 600;
 
+    /// <summary>Max resync requests per connection per one-minute fixed window (frame-sync P2). Excess requests are dropped.</summary>
+    public int ResyncPerMinute { get; init; } = 30;
+
     /// <summary>Accept connections whose hello carries no token (dev/demo only; warns loudly when on).</summary>
     public bool AllowAnonymous { get; init; }
 
@@ -32,6 +35,7 @@ public sealed class StreamerWsFaceOptions
         {
             MaxMessageBytes = configuration.GetValue("Faces:StreamerWs:MaxMessageBytes", 64 * 1024),
             AckPerMinute = Math.Max(1, configuration.GetValue("Faces:StreamerWs:AckPerMinute", 600)),
+            ResyncPerMinute = Math.Max(1, configuration.GetValue("Faces:StreamerWs:ResyncPerMinute", 30)),
             AllowAnonymous = configuration.GetValue("Faces:StreamerWs:AllowAnonymous", false),
             Tokens = ParseTokens(configuration["Faces:StreamerWs:AuthTokens"]),
         };
