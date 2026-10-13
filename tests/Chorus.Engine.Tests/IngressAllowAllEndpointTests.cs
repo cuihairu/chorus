@@ -15,7 +15,7 @@ namespace Chorus.Engine.Tests;
 /// </summary>
 public sealed class IngressAllowAllEndpointTests
 {
-    public sealed class LockedFactory : WebApplicationFactory<Program>
+    public sealed class LockedFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -23,7 +23,7 @@ public sealed class IngressAllowAllEndpointTests
         }
     }
 
-    public sealed class AllowAllFactory : WebApplicationFactory<Program>
+    public sealed class AllowAllFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -31,7 +31,7 @@ public sealed class IngressAllowAllEndpointTests
         }
     }
 
-    private static HttpResponseMessage PostTestEvent(WebApplicationFactory<Program> factory)
+    private static HttpResponseMessage PostTestEvent(WebApplicationFactory<Chorus.Server.Program> factory)
     {
         var client = factory.CreateClient();
         using var request = new HttpRequestMessage(HttpMethod.Post, "/ingress/test")

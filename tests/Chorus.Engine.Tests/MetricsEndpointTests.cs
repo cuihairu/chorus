@@ -13,7 +13,7 @@ namespace Chorus.Engine.Tests;
 /// </summary>
 public sealed class MetricsEndpointTests
 {
-    public sealed class ServerFactory : WebApplicationFactory<Program>
+    public sealed class ServerFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {

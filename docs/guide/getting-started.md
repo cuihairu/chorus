@@ -6,7 +6,7 @@ title: 快速开始
 
 ## 环境
 
-- .NET SDK：`9.0.x`（见 `global.json`）
+- .NET SDK：`10.0.x`（见 `global.json`）
 - Node.js：建议 `>= 20`（用于构建 VuePress 文档站）
 
 ## 运行服务器（本地）

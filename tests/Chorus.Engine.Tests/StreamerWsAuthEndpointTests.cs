@@ -21,7 +21,7 @@ public sealed class StreamerWsAuthEndpointTests
 
     // ---------------------------------------------------------------- factories
 
-    public sealed class TokenFactory : WebApplicationFactory<Program>
+    public sealed class TokenFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -30,7 +30,7 @@ public sealed class StreamerWsAuthEndpointTests
         }
     }
 
-    public sealed class ExpiryFactory : WebApplicationFactory<Program>
+    public sealed class ExpiryFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -41,7 +41,7 @@ public sealed class StreamerWsAuthEndpointTests
         }
     }
 
-    public sealed class AnonymousFactory : WebApplicationFactory<Program>
+    public sealed class AnonymousFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -50,7 +50,7 @@ public sealed class StreamerWsAuthEndpointTests
         }
     }
 
-    public sealed class LockedFactory : WebApplicationFactory<Program>
+    public sealed class LockedFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -59,7 +59,7 @@ public sealed class StreamerWsAuthEndpointTests
         }
     }
 
-    public sealed class BodyCapFactory : WebApplicationFactory<Program>
+    public sealed class BodyCapFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -69,7 +69,7 @@ public sealed class StreamerWsAuthEndpointTests
         }
     }
 
-    public sealed class AckLimitFactory : WebApplicationFactory<Program>
+    public sealed class AckLimitFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -82,7 +82,7 @@ public sealed class StreamerWsAuthEndpointTests
     // ---------------------------------------------------------------- helpers
 
     private static async Task<(WebSocket Ws, string? Text, WebSocketCloseStatus? CloseStatus)> ConnectAndHelloAsync(
-        WebApplicationFactory<Program> factory,
+        WebApplicationFactory<Chorus.Server.Program> factory,
         string? token,
         string sessionId = "s-ws",
         string? clientVersion = null)
@@ -132,7 +132,7 @@ public sealed class StreamerWsAuthEndpointTests
         return result.MessageType == WebSocketMessageType.Close ? result.CloseStatus : null;
     }
 
-    private static async Task<JsonElement> GetFacesAsync(WebApplicationFactory<Program> factory)
+    private static async Task<JsonElement> GetFacesAsync(WebApplicationFactory<Chorus.Server.Program> factory)
     {
         var client = factory.CreateClient();
         var response = await client.GetFromJsonAsync<JsonElement>("/faces");

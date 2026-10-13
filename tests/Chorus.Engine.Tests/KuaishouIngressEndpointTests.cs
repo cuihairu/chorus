@@ -19,7 +19,7 @@ namespace Chorus.Engine.Tests;
 /// </summary>
 public sealed class KuaishouIngressEndpointTests : IClassFixture<KuaishouIngressEndpointTests.Factory>
 {
-    public sealed class Factory : WebApplicationFactory<Program>
+    public sealed class Factory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {

@@ -163,7 +163,7 @@ public sealed class WireSnapshotTests
     [Fact]
     public async Task RealWsClient_ReceivesParseableSnapshotFromBytePath()
     {
-        using var factory = new WebApplicationFactory<Program>();
+        using var factory = new WebApplicationFactory<Chorus.Server.Program>();
         var wsClient = factory.Server.CreateWebSocketClient();
         using var ws = await wsClient.ConnectAsync(new Uri(factory.Server.BaseAddress, "ws"), CancellationToken.None);
 

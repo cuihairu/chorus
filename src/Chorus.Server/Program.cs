@@ -130,6 +130,3 @@ static IReadOnlyDictionary<string, string> BuildFactionMap(IConfigurationSection
         .Where(x => !string.IsNullOrWhiteSpace(x.Key) && !string.IsNullOrWhiteSpace(x.Value))
         .ToDictionary(x => x.Key, x => x.Value!, StringComparer.OrdinalIgnoreCase);
 }
-
-// Exposes the entry point for WebApplicationFactory-based integration tests.
-public partial class Program { }

@@ -18,7 +18,7 @@ namespace Chorus.Engine.Tests;
 /// </summary>
 public sealed class MatchConcurrencyTests
 {
-    public sealed class AllowAllFactory : WebApplicationFactory<Program>
+    public sealed class AllowAllFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {

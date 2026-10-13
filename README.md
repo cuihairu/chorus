@@ -18,7 +18,7 @@
   <a href="https://codecov.io/gh/cuihairu/chorus"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/chorus/branch/main/graph/badge.svg" /></a>
   <a href="https://github.com/cuihairu/chorus/releases"><img alt="Release" src="https://img.shields.io/github/v/release/cuihairu/chorus?sort=semver" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
-  <img alt=".NET" src="https://img.shields.io/badge/.NET-9.0-512BD4" />
+  <img alt=".NET" src="https://img.shields.io/badge/.NET-10.0-512BD4" />
 </p>
 
 ## Documentation (VuePress)
@@ -98,8 +98,8 @@ Chorus stays a lightweight framework and does not grow into an account/ops/payme
 
 ## Tech Stack
 
-- Language: C# (the default C# version for .NET 9)
-- .NET: `net9.0` (see `global.json`)
+- Language: C# (the default C# version for .NET 10)
+- .NET: `net10.0` (see `global.json`)
 - Platforms: Windows / Linux / macOS (server side); clients connect over the WebSocket protocol
 
 ## Releases and Tags

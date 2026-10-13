@@ -21,7 +21,7 @@ public sealed class ProtocolVersionEndpointTests
 {
     private const string BaseUri = "ws";
 
-    public sealed class TokenFactory : WebApplicationFactory<Program>
+    public sealed class TokenFactory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -31,7 +31,7 @@ public sealed class ProtocolVersionEndpointTests
     }
 
     private static async Task<(WebSocket Ws, string? Text, WebSocketCloseStatus? CloseStatus)> ConnectAndHelloAsync(
-        WebApplicationFactory<Program> factory,
+        WebApplicationFactory<Chorus.Server.Program> factory,
         string? token,
         int? protocolVersion,
         string sessionId = "s-pv")
@@ -69,7 +69,7 @@ public sealed class ProtocolVersionEndpointTests
         return result.MessageType == WebSocketMessageType.Close ? result.CloseStatus : null;
     }
 
-    private static async Task<JsonElement> GetWsFacesAsync(WebApplicationFactory<Program> factory)
+    private static async Task<JsonElement> GetWsFacesAsync(WebApplicationFactory<Chorus.Server.Program> factory)
     {
         var client = factory.CreateClient();
         var response = await client.GetFromJsonAsync<JsonElement>("/faces");

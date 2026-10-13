@@ -23,7 +23,7 @@ public sealed class IngressFaceEndpointTests
         return factory;
     }
 
-    public sealed class Factory : WebApplicationFactory<Program>
+    public sealed class Factory : WebApplicationFactory<Chorus.Server.Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {

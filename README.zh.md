@@ -18,7 +18,7 @@
   <a href="https://codecov.io/gh/cuihairu/chorus"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/chorus/branch/main/graph/badge.svg" /></a>
   <a href="https://github.com/cuihairu/chorus/releases"><img alt="Release" src="https://img.shields.io/github/v/release/cuihairu/chorus?sort=semver" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
-  <img alt=".NET" src="https://img.shields.io/badge/.NET-9.0-512BD4" />
+  <img alt=".NET" src="https://img.shields.io/badge/.NET-10.0-512BD4" />
 </p>
 
 ## 文档（VuePress）
@@ -96,8 +96,8 @@ flowchart TB
 
 ## 技术栈与支持
 
-- 语言：C#（随 .NET 9 默认 C# 版本）
-- .NET：`net9.0`（见 `global.json`）
+- 语言：C#（随 .NET 10 默认 C# 版本）
+- .NET：`net10.0`（见 `global.json`）
 - 平台：Windows / Linux / macOS（服务器端），客户端以 WebSocket 协议接入
 
 ## 发布与 Tag
