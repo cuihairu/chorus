@@ -45,8 +45,8 @@ DOTNET_ENVIRONMENT=Production dotnet ./publish/Chorus.Server.dll
 | --- | --- | --- | --- |
 | `GET /health` | 存活探针 | ✅ | ✅（Gateway / EngineHost 各自） |
 | `GET /ready` | **就绪探针（仅拆分 Gateway）**：任意引擎消息（心跳/欢迎/快照）在 `Ipc:ReadinessMaxSilenceMs` 内收到 → 200，否则 503 | ❌ | ✅（Gateway） |
-| `GET /sessions` | 会话/客户端指标 JSON | ✅ | ❌ 仅 EngineHost 侧有权威数据，但**未暴露**；用 `/metrics` |
-| `GET /matches` | match 级聚合视图 JSON | ✅ | ❌ 同上 |
+| `GET /sessions` | 会话/客户端指标 JSON（每客户端 lag/ack 明细） | ✅ | ✅（EngineHost；`c7846a6` 补齐——引擎是拆分模式的会话权威，此前未暴露） |
+| `GET /matches` | match 级聚合视图 JSON | ✅ | ❌ 权威 `MatchRegistry` 仅在单进程；用 `/metrics` |
 | `GET /faces` | listener face 计数器 JSON | ✅ | ✅（Gateway） |
 | `GET /metrics` | Prometheus 文本（`chorus_*`） | ✅ | ✅（三端各自） |
 | `POST /ingress/{platform}` | 平台事件入口 | ✅ | ✅（Gateway） |

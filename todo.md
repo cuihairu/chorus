@@ -50,6 +50,7 @@
 - [x] 峰值测量支持（`4ea4273`，242 测试）
 - [x] Engine→Gateway IPC 发布失败可观测（`8e87a47`，694 测试）：EngineHost 侧补齐 `chorus_ipc_publish_failures_total`（快照 best-effort 发布失败计数并告警、欢迎发布失败计数并 rethrow），与 Gateway 侧同指标名构成双向覆盖；此前 `EngineBusSessionClient.SafePublishAsync` 静默吞掉失败、`RenderEngine` 无该指标（observability.md 已同步）
 - [x] 快照体积可观测（`f301aa3`，696 测试）：`SessionDiagnostics.LastSnapshotBytes` 记录每 session 最近一次下发快照的线字节数（`/sessions` 自动暴露），`ChorusMetricsText` 增 `chorus_snapshot_bytes` gauge（跨 session 取最大）；此前 tuning.md 记为「未暴露」的调优信号缺口已闭合（tuning.md/observability.md 已同步）
+- [x] EngineHost 诊断端点可用性（`c7846a6`，698 测试）：新增 `GET /sessions`（拆分模式下的会话权威，补 deployment.md 表 ❌/未暴露 缺口，**已代决(巡检 R2)**——部署表标 ❌ 是「未暴露」的缺口而非有意排除，引擎已是会话权威，暴露只读诊断端点与既有 `/health`、`/metrics` 同信任模型）；顺带修复 latent bug：EngineHost 只 `AddHostedService<EngineIpcService>()`（仅注册 `IHostedService`），`/metrics` 直接注入 `EngineIpcService` 时 DI 解析失败 → **一直 500**，改 `AddSingleton` + `AddHostedService(sp => ...)` 后恢复；补 `ProgramMarker.cs` 让测试可 `WebApplicationFactory<Chorus.EngineHost.Program>` 托管 EngineHost（首次有测试覆盖其 HTTP 面，deployment/api/observability 已同步）
 
 ## 5. 文档定稿
 

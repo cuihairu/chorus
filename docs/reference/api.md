@@ -53,16 +53,18 @@ curl -X POST http://localhost:5168/ingress/test -H 'content-type: application/js
 |---|---|---|---|
 | `GET /` | 自述 | `{"name":"Chorus.EngineHost","ok":true}` | `Program.cs:34` |
 | `GET /health` | 存活探针 | 200 空 | `Program.cs:35` |
-| `GET /metrics` | Prometheus 文本：会话诊断 + `chorus_process_cpu_percent`（worker CPU，首抓省略） | text | `Program.cs:36`；CPU 刻度 `EngineHost/ProcessCpuGauge.cs` |
+| `GET /sessions` | 会话/客户端诊断 JSON（每客户端 lag/ack 明细；拆分模式下的会话权威） | JSON | `Program.cs:39`（`c7846a6` 补齐） |
+| `GET /metrics` | Prometheus 文本：会话诊断 + `chorus_ipc_publish_failures_total` + `chorus_snapshot_bytes` + `chorus_process_cpu_percent`（worker CPU，首抓省略） | text | `Program.cs:40`；CPU 刻度 `EngineHost/ProcessCpuGauge.cs` |
 
 ```bash
 curl http://localhost:5067/health
+curl http://localhost:5067/sessions
 curl http://localhost:5067/metrics
 ```
 
 ### Chorus.Server（单进程，`src/Chorus.Server/Program.cs`）
 
-单进程形态多两个诊断端点；`/sessions`、`/matches` 只在此形态暴露（权威数据在引擎侧，拆分模式不转发）：
+单进程形态多一个诊断端点；`/matches` 只在此形态暴露（权威 `MatchRegistry` 在单进程）。`/sessions` 拆分模式下由 EngineHost 暴露（见上）：
 
 | 方法 路径 | 用途 | 出处 |
 |---|---|---|
