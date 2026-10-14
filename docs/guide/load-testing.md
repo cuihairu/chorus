@@ -65,4 +65,7 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 
 ## 测试覆盖
 
-工具的纯逻辑（payload 形状、重复 id 行为、选项解析）由 `LoadToolTests` 覆盖；端到端行为靠对真实 Gateway/Server 的运行验证（冒烟：`--platform test` 下 ingress 受理/判重、WS 快照/ACK/重连、引擎侧 `chorus_events_applied_total` 与 `chorus_snapshots_sent_total` 均按预期增长）。
+- 纯逻辑（payload 形状、重复 id 行为、CLI 旗标/环境变量/错误路径解析）由 `LoadToolTests` 覆盖。
+- `IngressDriver` 的状态分桶（200/判重/429/503/其他）与并行 producer 下的计数精确性由 `IngressDriverTests` 覆盖（stub handler，计数器为 Interlocked）。
+- `ClientSimulation` 经传输缝（`connect` 委托，同 `ChorusClient` 惯例）注入测试服务器内存 WS 通道，覆盖 hello/welcome/快照回放/ACK 与断连重连完整握手循环（`ClientSimulationTests`）。
+- 对真实 Gateway/Server 的运行验证（冒烟：`--platform test` 下 ingress 受理/判重、WS 快照/ACK/重连、引擎侧 `chorus_events_applied_total` 与 `chorus_snapshots_sent_total` 均按预期增长）。

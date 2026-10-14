@@ -76,6 +76,7 @@
 - [x] 文档站构建与部署（`docs.yml`：`npm ci` + `vuepress build` + Pages；2026-10-14 修复 npm override 非法键导致的红灯 `127b0d5`，pin 纪律见 docs/guide/getting-started.md `f3ce94a`）
 - [x] docs.yml 触发过滤修正（`0b092f3`）：原 `paths-ignore`（抄自 ci.yml，那里对「纯文档不编译」正确）使 build+deploy 文档站的 workflow 反被纯文档提交跳过——最近 14 提交中 7 个纯文档提交全部未触发 Pages 重建，`docs/.vuepress/` 配置改坏 CI 也不拦；改为 `paths` 包含站点真实输入（`docs/**` + `package.json`/lock + workflow 自身，站点不读 src/），代码与台账提交不再触发冗余文档构建
 - [x] 单客户端出站队列积压导出（`6d738b7`，审计 B3「待导出」闭合）：`OutboundClientQueue.Dropped` 新增 `clientQueueDropped`（per-client）/ `totalClientQueueDropped`（session 汇总）+ 指标 `chorus_client_queue_dropped_total`。顺带修掉一个潜伏计数缺陷：capacity-1 槽原用 `DropOldest`，`TryWrite` 在丢弃旧项后仍返回 true（仅 writer 完成时返回 false），原 `_dropped` 分支实为死代码、真实替换从未计数；改用 `FullMode.Wait` + 显式自逐出（交付语义与 DropOldest 一致，逐出可精确计数，`BoundedChannelOptions` 无公开的丢弃回调可用）
+- [x] 负载工具与传输层测试覆盖补齐（PATROL1015，`4247128`/`fe94464`/`dcea9ce`/`eb6c592`，729 测试）：LoadTool 全仓最低（22%）——`IngressDriver` 计数器补 Interlocked（并行 producer 丢更新缺陷）+ 状态分桶/失败/会话轮转测试；`ClientSimulation` 加 `connect` 传输缝（镜像 ChorusClient 惯例）+ 真实 /ws e2e（hello/welcome/快照/ACK/断连重连）+ 修复重连退避 `Task.Delay` 在 try 外的取消泄漏；`LoadToolOptions` 旗标/环境变量/错误路径全补。`ChorusMessaging`：NamedPipe 收发链路（原仅测 dispose）、IPC 工厂各 transport 选择与配置校验、信封编解码失败路径。`ChorusClient`：帧跳号 gap→resync 拉取（`Session:SnapshotEveryTicks=2` 注入确定性 gap）+ 回放帧幂等丢弃。顺带修复既存 flake：`WireSnapshotFrameEventsTests` 读帧助手遇非 snapshot 帧即退出循环（`1f63956`）。`Program.cs`（顶层语句入口胶水）不测
 
 ## 8. 实现分析与改进
 
