@@ -184,8 +184,8 @@
 
 ## 17. 小游戏平台适配（架构审计确认缺失）
 
-- [ ] 抖音小游戏 SDK + 登录/身份映射 + 实时通信 + 排行榜适配
-- [ ] 快手小游戏 SDK + 登录/身份映射 + 实时通信 + 排行榜适配
+- [x] 抖音小游戏 SDK + 登录/身份映射 + 实时通信 + 排行榜适配（`3dcd658`，55 测试，[patrol1224]）：适配层契约按官方公开文档落地——`MiniGamePlatformCapabilities` 能力表防编造（`tt.login`/开放数据域/云存储/游戏排行 API 名已核实；服务端 code2session 与容器内 WebSocket 未找到公开资料(待核)）；`HttpMiniGameLoginExchange` 配置驱动 fail-closed；`MiniGameIdentityBinder` 身份映射（确定性派生、冲突 fail-visible）；`MiniGameLeaderboardProjector` 排行投影（能力门控、不重排）；凭据/真机联调待外部（见 docs/reference/platform-douyin-mini-game.md）
+- [x] 快手小游戏 SDK + 登录/身份映射 + 实时通信 + 排行榜适配（`3dcd658`，[patrol1224]）：公开文档仅覆盖小程序，小游戏全部能力未找到公开资料(待核)——能力表全待核、`Supports` 恒 false、排行榜投影恒 null；已核实的小程序 code2Session 官方形态（`oauth2/mp/code2session`）作为配置参照落地；平台入口确认/凭据/真机待外部（见 docs/reference/platform-kuaishou-mini-game.md）
 
 ## 18. 迁移与恢复（架构审计确认缺失）
 
