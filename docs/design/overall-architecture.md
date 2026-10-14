@@ -762,6 +762,15 @@ public sealed record DataCommand
 * 关键数据不能在失败时静默丢弃。
 * 不要求初期引入 Kafka 或 RabbitMQ。
 
+当前实现：`src/Chorus.Data/`（数据面契约，独立工程，无外部依赖，供未来独立 Data Worker 进程使用）——
+`DataCommand.cs`（DataReliabilityLevel 四级 + DataReliabilityPolicy 五项语义，未定义级别 fail-closed +
+`DataCommands.Validate` 返回违规字段名，含未定义分级 / `SchemaVersion<=0` 检查；`Level` 为无默认值的构造参数，
+漏设编译期失败）、`DataCommandIdempotencyTracker.cs`（TryBegin/Commit/Rollback 原子幂等台账，沿用
+EventDeduplicator 的占位-提交-回滚纪律 + TTL + 容量安全阀）、`DataCommandOutbox.cs`（有界 FIFO 交接队列：
+计数准入保证并发下容量硬上限，满载时按分级分派——普通统计 Dropped 计数可观测、其余级别 RejectedFull
+fail-visible，envelope 带 EnqueuedAtMs 支撑排队延迟可观测）。Data Player、Repository、持久化属后续项；
+本 outbox 只是交接缓冲而非持久化，关键经济仍须先落业务流水再对玩家承诺成功。
+
 ---
 
 # 9. 排行榜子系统
