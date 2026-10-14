@@ -33,7 +33,7 @@
 |---|---|---|---|
 | 一 | 单体内**代码分层**：`platform-ingress` 与 `streamer-ws` 两个 listener 共用一套门面实现（`PlatformIngressFace` / `StreamerWsFace`，验证/限流/超时/去重/门禁单点），同进程部署（单体仍是默认部署形态） | 平台接入批次 | **已完成**：todo §2 平台接入三项、§3 Match/阵营三项全勾；两个 listener 的门禁与投递均已合一（下两节） |
 | 二 | **四角色、三进程**：platform-gw、streamer-gw、room-worker（承载多房间）；`RoomManager` 作为逻辑组件寄宿 worker 侧，由 `MatchRegistry` 升级为房间注册 + 路由表 | todo.md 阶段一正确性五项完成 | **已触发（5/5：9ad322d、499f01c、def21d2、78f2597、0409cf2），进行中**：进程可拆已交付（`Gateway:Roles`，15a6dad）——一个 Gateway 进程可只承载 `platform` 或 `streamer` 角色，platform-gw / streamer-gw / room-worker（EngineHost）三进程成为配置选项，门面零复制；三进程接线已通（5c5d25c，2026-10-13：eng→gw 通道按 `Gateway:Id` 后缀区分、引擎按 `Ipc:GatewayIds` 扇出，守卫 `ThreeProcessEndToEndTests`：platform-gw 注入的事件出现在 streamer-gw 的 WS 客户端）；房间侧尚未升级（见下「RoomManager 何时上」） |
-| 三 | room-worker 独立多进程/多机，room-manager 才单独成进程（房间粘性 + 快照恢复） | 单 worker 高峰 CPU > 60%，或单机房间数达数百量级 | **未满足，差 2 条**：①单 worker 高峰 CPU 无数据（`Chorus.LoadTool` 冒烟是功能验证，量级数百事件，不是峰值测量）；②单机房间数无数百量级部署数据。两条都是运行期指标，仓内无法自证，留待生产/长期压测峰值数据（仪器已备：`chorus_process_cpu_percent` worker 进程 CPU 刻度 + LoadTool 运行期采样报峰值，见 todo §4 峰值测量项）。**不依赖数据的代码半边已先行交付（be2eff7，2026-10-13）**：`RoomAffinity`（FNV-1a 稳定散列 + 排序 worker 集合的纯函数映射——同一房间在同一 worker 集合下恒得同一 worker，§5.1 单写者不变式）+ `RoomRouteTable`（整体换图的共享路由表，room-manager 推送、双网关同读，§5.3），守卫 `RoomAffinityTests` 7 例；**暂无生产接线**，消费者（room-manager 发布路由、网关预路由）等阶段三触发再接。恢复半边（§5.2）不被这两条数据门控，但需先定 `IGameModule` 快照恢复契约（见 §5），待拍板后另行开工 |
+| 三 | room-worker 独立多进程/多机，room-manager 才单独成进程（房间粘性 + 快照恢复） | 单 worker 高峰 CPU > 60%，或单机房间数达数百量级 | **未满足，差 2 条**：①单 worker 高峰 CPU 无数据（`Chorus.LoadTool` 冒烟是功能验证，量级数百事件，不是峰值测量）；②单机房间数无数百量级部署数据。两条都是运行期指标，仓内无法自证，留待生产/长期压测峰值数据（仪器已备：`chorus_process_cpu_percent` worker 进程 CPU 刻度 + LoadTool 运行期采样报峰值，见 todo §4 峰值测量项）。**不依赖数据的代码半边已先行交付（be2eff7，2026-10-13）**：`RoomAffinity`（FNV-1a 稳定散列 + 排序 worker 集合的纯函数映射——同一房间在同一 worker 集合下恒得同一 worker，§5.1 单写者不变式）+ `RoomRouteTable`（整体换图的共享路由表，room-manager 推送、双网关同读，§5.3），守卫 `RoomAffinityTests` 7 例；**暂无生产接线**，消费者（room-manager 发布路由、网关预路由）等阶段三触发再接。恢复半边（§5.2）不被这两条数据门控，其 `IGameModule` 恢复契约已拍板并落地（`062cc68`，2026-10-14），生产接线仍等阶段三触发 |
 
 
 **streamer-ws 门面已合一（§3.5 路由抽象的第一片）**：两个 listener 的 `streamer-ws` 门禁此前是 Server/Gateway 两份漂移拷贝，现已抽为 `Chorus.Gateway.Core/Faces/StreamerWsFace` 一份，两宿主只在 `IStreamerSessionRouter` / `IStreamerSessionBinding` 缝上分叉：
@@ -60,7 +60,7 @@ hello 鉴权（fail-closed）、协议版本门禁、消息体积上限、ACK �
 
 ### 5.2 恢复路径（恢复半边）
 
-房间进程重启需有权威快照可回。当前快照仅存在于内存、无持久化——先补评审阶段三的快照版本/大小上限/应用失败路径与恢复闭环，再谈跨机。落地前的第一个契约缺口：`IGameModule` 只有 `GetStateSnapshot()`（读出），没有「从权威快照重建模块状态」的回写入口（2026-10-13 盘点），恢复闭环需要先定这个公开契约（接口形状、与 `ApplyEvents` 的启动顺序、应用失败如何处置），属设计决策，待拍板。契约选项、权衡与推荐已起草：[snapshot-restore.md](./snapshot-restore.md)（推荐回写入口进 `IGameModule` + 线协议 JSON 输入 + fail-closed），拍板后即可按其 §7 验收清单开工。
+房间进程重启需有权威快照可回。契约缺口已闭合：`IGameModule` 现有必选回写入口 `RestoreState(version, JsonElement)`（2026-10-14 拍板方案 A 并落地，`062cc68`）——恢复输入取线协议 JSON（`version` 透传线协议 `ServerSnapshot.v`），单点 `GameModuleRestorer` 在 actor 工厂内执行（`Create` 后、`SessionActor` 前），恢复完成前无任何 tick/ingress 事件到达模块，恢复失败 fail-closed 拒绝会话启动（`SessionRegistry.StartFailures` 可观测，不留半状态 actor）；两处出生点共用同一执行器 → parity by construction。当前无生产接线（恢复源默认 null = 全新启动，行为不变）；**尚未闭合的半边**是「权威快照从哪来」——持久化介质选型与写盘时机（契约层已备 `ISnapshotBackend`/`SnapshotStore` 与 `ISnapshotRecoverySource` 两个缝），随阶段三触发再接线。契约选项、权衡与实现详见 [snapshot-restore.md](./snapshot-restore.md)。
 
 ### 5.3 跨进程路由形态（路由表）
 

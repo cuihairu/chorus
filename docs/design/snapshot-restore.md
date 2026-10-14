@@ -1,7 +1,8 @@
-# 模块快照恢复契约（阶段三恢复半边，待拍板）
+# 模块快照恢复契约（阶段三恢复半边，已拍板方案 A 并落地）
 
-> 状态：**待拍板（2026-10-13 起草）**。本文只起草选项、权衡与推荐，不改任何代码；
-> 拍板选定后按 §7 验收清单开工。上游问题见 [process-topology.md §5](./process-topology.md)。
+> 状态：**已拍板方案 A（2026-10-14）并落地**（`062cc68`，11 测试）。本文保留选项、
+> 权衡与推荐作为决策记录；当前实现见文末「当前实现」段，验收见 §7。
+> 上游问题见 [process-topology.md §5](./process-topology.md)。
 
 ## 结论先行
 
@@ -92,7 +93,33 @@ public interface ISnapshotRestorable { void RestoreState(long version, JsonEleme
 重建负责，状态重建逻辑不外泄到工厂（A > B）；0.x 破坏窗口 + 实现面仅仓内，
 是唯一便宜的时机。输入形态取线协议 JSON（语义点 1），失败 fail-closed（语义点 3）。
 
-## 验收测试清单（拍板后按此开工）
+→ **2026-10-14 拍板：方案 A**，已按 §7 验收清单全部落地（`062cc68`，11 测试）。
+实现见下节。
+
+## 当前实现（2026-10-14，`062cc68`）
+
+- **契约成员**：`IGameModule.RestoreState(long version, JsonElement state)` 为必选成员
+  （`src/Chorus.Engine/Abstractions/IGameModule.cs`）——编译期强制每个模块回答「怎么重建」。
+- **恢复输入**：线协议 JSON（`GetStateSnapshot()` 往返），`version` 即线协议 `ServerSnapshot.v`。
+- **单点执行器**：`GameModuleRestorer.Restore(module, sessionId, source, config)`
+  （`src/Chorus.Engine/Session/GameModuleRestorer.cs`）。两处出生点（单体 `SessionManager.CreateActor`
+  / 拆分 `EngineIpcService.CreateActor`）在 `IGameModuleFactory.Create` 之后、`SessionActor`
+  构造之前调用同一执行器 → **parity by construction**；恢复发生在 actor 工厂内，结构上
+  保证「恢复完成前无任何 tick/ingress 事件到达模块」且「失败不留半状态 actor」。
+- **fail-closed**：未知 `version`（< 1）/ 超 `MaxSnapshotBytes`（复用 tick 侧同口径体积门）/
+  模块恢复抛异常，一律抛 `SnapshotRestoreException`（携带 SessionId）→ 会话拒绝启动，
+  由 `SessionRegistry.StartFailures` 计入可观测（失败的会话没有 actor 诊断可读）。
+- **无快照 = 全新启动**：`ISnapshotRecoverySource.TryGet` 返回 false 即全新启动，今天的默认行为不变。
+- **样本模块**：`SampleGameModule.RestoreState` 只恢复会话私有状态（`tickId`/`matchId` +
+  三类 per-user 计数）；`match` 节是跨会话 store 投影，不属模块私有恢复契约（恢复后随新事件重建）。
+- **无生产接线**：两个 `Program.cs` 不注册默认恢复源，构造参数默认 `null` = 今天行为完全
+  不变。持久化介质与写盘时机是独立后续决策（生产接线随拓扑工作）；`ISnapshotRecoverySource`
+  是缝——注入哪个实现由未来决策给。
+
+§7 验收清单 1-6 由 `ModuleRestoreTests`（11 测试）金测覆盖；第 7 条由
+[versioning.md](./versioning.md) 兼容面记录（`IGameModule` 破坏性变更 + 恢复语义）。
+
+## 验收测试清单（已全部完成，`062cc68`）
 
 1. 恢复后首个 `GetStateSnapshot()` 与权威快照语义一致（含 `v` 透传）。
 2. 恢复完成前 `ApplyEvents` 不被调用：tick 与 ingress 并发打进来也成立

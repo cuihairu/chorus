@@ -132,7 +132,7 @@
 ## 10. 进程拓扑
 
 - [ ] 阶段三多 worker：等单 worker 峰值 CPU > 60% 或单机房间数达数百量级（运行期数据，仓内无法自证）
-- [ ] 恢复半边：IGameModule 快照恢复契约待拍板（见 docs/design/snapshot-restore.md）
+- [x] 恢复半边：IGameModule 快照恢复契约落地（`062cc68`，11 测试）：方案 A（回写入口进 `IGameModule`，必选成员）+ 线协议 JSON 输入 + fail-closed。`RestoreState(version, JsonElement)` 必选 = 编译期强制每模块回答「怎么重建」；单点 `GameModuleRestorer` 在 actor 工厂内执行（`Create` 后、`SessionActor` 前），两处出生点共用 → parity by construction；未知版本/超 `MaxSnapshotBytes`/模块异常一律拒绝启动，`SessionRegistry.StartFailures` 可观测，不留半状态 actor；无生产接线（两 Program.cs 不注册默认恢复源，null = 今天行为不变）
 
 ## 11. 帧同步方案
 
@@ -173,7 +173,7 @@
 - [x] DataCommand 契约 + 幂等 + 可靠性分级（`56fd01e`，32 测试）：新工程 `src/Chorus.Data`（零依赖，供未来独立 Data Worker 进程）；`DataReliabilityLevel` 四级 + `DataReliabilityPolicy` 五项语义逐条对齐审计 §8.1（未定义级别 fail-closed，不猜默认策略）；`DataCommands.Validate` fail-visible 返回违规字段名（§8.3 关键数据不静默丢），`Level` 无默认值漏设编译期失败；`DataCommandIdempotencyTracker` 原子幂等台账（TryBegin/Commit/Rollback，沿用 EventDeduplicator 纪律，失败绝不被误记为已处理 + TTL + 容量安全阀）；`DataCommandOutbox` 有界 FIFO（计数准入容量硬上限、满载按分级分派：统计 Dropped 计数可观测/其余 RejectedFull、envelope 带 EnqueuedAtMs 供排队延迟可观测）；排行榜/持久化/统计属后续项
 - [x] Data Player + 游戏记录 Repository（`fb6f0fe`，29 测试）：`PlayerRecord`/`PlayerRepository` 对齐审计 §8.1 玩家资料四要求——版本号守卫（只接受 current+1，旧值回写/跳版本 fail-visible，last-writer-wins 被挡）、并发写恰好一赢（CAS）、幂等（同版本同内容重放 = no-op 成功，同版本不同内容 = 冲突）、查询一致性（读总返回已提交最新版本；资料更新合并键值不洗掉其他命令的键）；`GameRecord`/`GameRecordRepository` 追加式不可改（同 RecordId 重放同内容幂等 no-op、不同内容/RoomId 冲突不覆盖历史）、顺序由生产者负责（不校验 sequence 单调）、查询按 sequence 升序 + 游标严格大于 + 无 sequence 记录稳定追加序；持久化边界由 DataCommandOutbox/业务流水提供，生产接线属后续项
 - [x] 排行榜子系统：RoomRank / MatchRank / PeriodRank / GlobalRank / PlatformRank（`b6ff76e`，33 测试）：`LeaderboardScope` 四作用域（Room/Match/Period/Global）共用 `LeaderboardStore`——替换式投影（UpsertScore，房间/单局权威状态直投、天然幂等；只暴露引擎侧，客户端不能自报分 §9.2）、幂等增量（AddDelta 按 sourceId 先占锚点再改分，重复事件不重复加分、并发同源恰好一次、未知参与者从 0 起算、负增量可纠错）、确定性并列（分数降序 + 同分 participantId 字典序 + 竞赛名次 1,2,2,4）、最终冻结（Freeze 即封榜，写入 fail-visible 拒绝、查询恒返冻结时刻名次、重复冻结幂等）、周期榜按 scope key 携带周期实现跨周期自然重置、查询与更新分离（Query 返回独立快照）；`PlatformLeaderboardRegistry` + `IPlatformLeaderboardAdapter` 适配器注册（未注册平台 fail-closed 返回 false/null，空作用域/参与者抛错；B 站无官方写回通道不内置实现）；平台延迟聚合/缓存/查询 API 属后续项
-- [x] 持久化层：DB 选型 + 快照持久化 + 恢复（`d5232cf`，21 测试）：按审计口径落地为**后端可插拔契约层**——`ISnapshotBackend`（存储组件按实际需求选择、不硬编码选型，审计 §186 行；初期不引外部 DB 依赖，真实 DB 接线随生产需求出现）+ `InMemorySnapshotBackend` 参考实现 + `SnapshotStore`；快照记录 `StateSnapshot` 携带 Version/SchemaVersion/Checksum，**版本单调守卫**（旧写者迟到快照绝不覆盖新状态：TrySave 返 false / Save 抛 InvalidOperationException，同版本重放幂等拒绝）、**完整性校验**（SHA-256 前 8 字节大端 long，写入侧重算不信调用方自报、读取时校验，损坏记录抛 `SnapshotIntegrityViolationException` 而非当作「未持久化」触发错误重建）；状态重建（恢复的执行半边）属 §10 IGameModule 待拍板项
+- [x] 持久化层：DB 选型 + 快照持久化 + 恢复（`d5232cf`，21 测试）：按审计口径落地为**后端可插拔契约层**——`ISnapshotBackend`（存储组件按实际需求选择、不硬编码选型，审计 §186 行；初期不引外部 DB 依赖，真实 DB 接线随生产需求出现）+ `InMemorySnapshotBackend` 参考实现 + `SnapshotStore`；快照记录 `StateSnapshot` 携带 Version/SchemaVersion/Checksum，**版本单调守卫**（旧写者迟到快照绝不覆盖新状态：TrySave 返 false / Save 抛 InvalidOperationException，同版本重放幂等拒绝）、**完整性校验**（SHA-256 前 8 字节大端 long，写入侧重算不信调用方自报、读取时校验，损坏记录抛 `SnapshotIntegrityViolationException` 而非当作「未持久化」触发错误重建）；状态重建（恢复的执行半边）已随 §10 恢复契约落地（`062cc68`）
 - [x] 统计与分析管道（`d9c7f6b`，14 测试）：`AnalyticsPipeline` 从 DataCommandOutbox 批量消费（DrainOnce 有界批处理），按 CommandType 注册提取器产出 `StatSample` 派生统计；幂等（同 CommandId 绝不重复计数，DuplicateCount 可观测）、普通统计可丢弃可重建（Reset 即重建入口，§8.1；不丢失级别走 outbox RejectedFull 不经过本管道）、可观测不致命（未知 CommandType/提取器异常/空提取结果跳过并计 SkippedCount，统计故障不拖垮引擎）、每个指标自动带 `*` 跨 scope 聚合键；离线/窗口等复杂聚合与生产接线属后续项
 
 ## 16. 匹配与机器人（架构审计确认缺失）
@@ -189,7 +189,7 @@
 
 ## 18. 迁移与恢复（架构审计确认缺失）
 
-- [ ] 快照持久化 + 状态恢复 + 事件补齐
+- [x] 快照持久化 + 状态恢复 + 事件补齐（持久化 `d5232cf` + 状态恢复 `062cc68` + 事件补齐 = 恢复完成前不投递任何事件（gate）+ 客户端补帧 `758a6a5`；历史事件重放属 spec「明确不做」）
 - [x] Epoch / 路由版本 + 旧写者隔离（`2415c92`，21 测试）：`RoomAuthorityRegistry` 落地审计 §11.1 保证 1/2/3/4/7——两阶段接管（TryBeginTakeover 冻结旧写者=停止权威写入的明确机制；TryCompleteTakeover 恢复完成后换主且 Epoch+1、旧写者彻底出局；TryAbortTakeover 恢复失败回滚旧写者不伪装接管成功）、迁移期间人人无权威（新 Worker 恢复完成前不接权威输入）、过期路由识别（IsRouteCurrent 按 epoch 判定，迟到旧接管请求 fail-visible 拒绝）、未 Begin 直接 Complete 的单方面夺权被拒、重复注册 fail-visible 不隐式换主、CAS 防并发双注册；保证 5（事件恢复）与 IGameModule 恢复契约同门控（§10），保证 6 已由 SnapshotStore 落地（§15）；生产接线随阶段三多 worker（等运行期门控）
 - [x] Worker 故障接管测试（`f4775df`，6 测试，[patrol1224]）：控制面故障接管编排端到端（跨 WorkerRegistry + RoomAuthorityRegistry）——过期 worker 仅从健康集排除驱动接管决策；旧写者冻结、换主 Epoch+1、接管中止回滚不伪装成功、重复/迟到接管 fail-visible、旧 epoch 路由被拒、故障恢复的旧写者不自动回授权威
 

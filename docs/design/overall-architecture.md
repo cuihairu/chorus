@@ -1049,9 +1049,9 @@ sequenceDiagram
 
 ## 11.2 与现有代码的关系
 
-现有 `IGameModule` 有 `GetStateSnapshot()`，但没有完整的恢复契约。
+`IGameModule` 恢复契约已落地（2026-10-14，`062cc68`，方案 A）：`RestoreState(version, JsonElement)` 为必选成员（线协议 JSON 输入），单点 `GameModuleRestorer` 在 actor 工厂内执行——恢复完成前无 tick/ingress 事件到达模块，失败 fail-closed 拒绝会话启动且不残留半状态 actor（详见 docs/design/snapshot-restore.md）。
 
-快照生成、持久化、状态恢复、待处理事件补齐和权威写入隔离是不同的能力，必须分别验收。
+快照生成、持久化、状态恢复、待处理事件补齐和权威写入隔离是不同的能力，必须分别验收。当前状态：持久化半边已交付（`d5232cf`，`SnapshotStore` + 版本单调守卫 + 完整性校验）；状态恢复半边已交付（`062cc68`）；事件补齐以「恢复完成前不投递任何事件」为 gate 满足（历史事件重放属 spec「明确不做」）；权威写入隔离已由 `RoomAuthorityRegistry` 交付（`2415c92`）。
 
 ---
 
