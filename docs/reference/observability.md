@@ -106,6 +106,7 @@ frame-sync P2 的 resync 路径计数此前只在 `/sessions` 可见，现同步
 | `chorus_ws_message_too_large_total` | counter | 消息体超限被拒的次数 |
 | `chorus_ws_acks_accepted_total` | counter | 被接受（未触发限流）的 WS ACK 数 |
 | `chorus_ws_acks_dropped_total` | counter | 触发限流被丢弃的 WS ACK 数 |
+| `chorus_ws_resync_dropped_total` | counter | 网关 `/ws` resync 固定窗口限流（`Faces:StreamerWs:ResyncPerMinute`）丢弃的请求数（`c896855`）。与引擎侧 `chorus_resync_throttled_total` 互补：该计数发生在请求到达引擎之前，异常升高说明客户端在打转（频繁重连/全量 resync） |
 
 ### IPC
 
