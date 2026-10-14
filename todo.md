@@ -172,7 +172,7 @@
 
 - [x] DataCommand 契约 + 幂等 + 可靠性分级（`56fd01e`，32 测试）：新工程 `src/Chorus.Data`（零依赖，供未来独立 Data Worker 进程）；`DataReliabilityLevel` 四级 + `DataReliabilityPolicy` 五项语义逐条对齐审计 §8.1（未定义级别 fail-closed，不猜默认策略）；`DataCommands.Validate` fail-visible 返回违规字段名（§8.3 关键数据不静默丢），`Level` 无默认值漏设编译期失败；`DataCommandIdempotencyTracker` 原子幂等台账（TryBegin/Commit/Rollback，沿用 EventDeduplicator 纪律，失败绝不被误记为已处理 + TTL + 容量安全阀）；`DataCommandOutbox` 有界 FIFO（计数准入容量硬上限、满载按分级分派：统计 Dropped 计数可观测/其余 RejectedFull、envelope 带 EnqueuedAtMs 供排队延迟可观测）；排行榜/持久化/统计属后续项
 - [x] Data Player + 游戏记录 Repository（`fb6f0fe`，29 测试）：`PlayerRecord`/`PlayerRepository` 对齐审计 §8.1 玩家资料四要求——版本号守卫（只接受 current+1，旧值回写/跳版本 fail-visible，last-writer-wins 被挡）、并发写恰好一赢（CAS）、幂等（同版本同内容重放 = no-op 成功，同版本不同内容 = 冲突）、查询一致性（读总返回已提交最新版本；资料更新合并键值不洗掉其他命令的键）；`GameRecord`/`GameRecordRepository` 追加式不可改（同 RecordId 重放同内容幂等 no-op、不同内容/RoomId 冲突不覆盖历史）、顺序由生产者负责（不校验 sequence 单调）、查询按 sequence 升序 + 游标严格大于 + 无 sequence 记录稳定追加序；持久化边界由 DataCommandOutbox/业务流水提供，生产接线属后续项
-- [ ] 排行榜子系统：RoomRank / MatchRank / PeriodRank / GlobalRank / PlatformRank
+- [x] 排行榜子系统：RoomRank / MatchRank / PeriodRank / GlobalRank / PlatformRank（`b6ff76e`，33 测试）：`LeaderboardScope` 四作用域（Room/Match/Period/Global）共用 `LeaderboardStore`——替换式投影（UpsertScore，房间/单局权威状态直投、天然幂等；只暴露引擎侧，客户端不能自报分 §9.2）、幂等增量（AddDelta 按 sourceId 先占锚点再改分，重复事件不重复加分、并发同源恰好一次、未知参与者从 0 起算、负增量可纠错）、确定性并列（分数降序 + 同分 participantId 字典序 + 竞赛名次 1,2,2,4）、最终冻结（Freeze 即封榜，写入 fail-visible 拒绝、查询恒返冻结时刻名次、重复冻结幂等）、周期榜按 scope key 携带周期实现跨周期自然重置、查询与更新分离（Query 返回独立快照）；`PlatformLeaderboardRegistry` + `IPlatformLeaderboardAdapter` 适配器注册（未注册平台 fail-closed 返回 false/null，空作用域/参与者抛错；B 站无官方写回通道不内置实现）；平台延迟聚合/缓存/查询 API 属后续项
 - [ ] 持久化层：DB 选型 + 快照持久化 + 恢复
 - [ ] 统计与分析管道
 

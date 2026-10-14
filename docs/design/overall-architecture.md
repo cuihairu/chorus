@@ -870,6 +870,18 @@ flowchart TB
 
 全局排行可以适度延迟更新，但必须明确延迟范围、失败恢复和重建方法。
 
+当前实现：`src/Chorus.Data/Leaderboard.cs`（`LeaderboardScope` Room/Match/Period/Global 四作用域 +
+`LeaderboardStore`）——替换式投影 `UpsertScore`（房间/单局榜来自 Room/Match 权威状态，同参与者再投影是
+替换而非累加，天然幂等；本 API 只暴露给引擎侧，客户端不能自报分）、幂等增量 `AddDelta`
+（先按 sourceId 占幂等锚点再改分，重复事件绝不重复加分，未知参与者从 0 起算，负增量可用于纠错）、
+确定性并列（分数降序、同分按 participantId 字典序、并列共享竞赛名次 1,2,2,4）、
+最终成绩冻结 `Freeze`（冻结即封榜，之后一切写入 fail-visible 拒绝，查询恒返回冻结时刻名次，
+重复冻结幂等）、周期榜把周期并入 scope key（跨周期换 key 即自然重置）、`Query` 返回独立快照
+（查询与更新分离）。`PlatformLeaderboard.cs`（`IPlatformLeaderboardAdapter` +
+`PlatformLeaderboardRegistry`）：平台原生榜按适配器接入，未注册平台 fail-closed（TrySubmit 返 false、
+TryGet 返 null），空作用域/参与者为契约违规直接抛错；B 站因无官方写回通道（P3 决议、Writeback 恒 false）
+不内置实现。平台延迟聚合、查询缓存、Leaderboard Query API 属后续项。
+
 ---
 
 # 10. 直播平台与小游戏平台双适配架构
