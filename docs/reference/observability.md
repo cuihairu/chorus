@@ -30,7 +30,7 @@ scrape_configs:
       - targets: ["localhost:5300"]        # Chorus.Gateway
 ```
 
-单进程模式（Chorus.Server）没有 IPC 跳，`chorus_ipc_publish_failures_total` 恒为 0；拆分模式下仅 Gateway 面输出该计数（`src/Chorus.Gateway.Core/Metrics/ChorusMetricsText.cs:54-55`）。EngineHost 的 `EngineBusSessionClient.SafePublishAsync` 捕获发布失败但**不计数、不暴露**（`src/Chorus.EngineHost/EngineBusSessionClient.cs:64-70`），`RenderEngine` 亦无该指标。
+单进程模式（Chorus.Server）没有 IPC 跳，`chorus_ipc_publish_failures_total` 恒为 0。拆分模式下两侧各自输出本方向的发布失败：Gateway 面计数 Gateway→Engine 事件（`src/Chorus.Gateway/GatewayIpcService.cs`），EngineHost 面计数 Engine→Gateway 快照与欢迎（`src/Chorus.EngineHost/EngineIpcService.cs`，由 `RenderEngine` 输出）。引擎侧快照发布是 best-effort（发布失败不杀 tick，见 `EngineBusSessionClient.SafePublishAsync`），但失败会计数并告警，不再静默吞掉（`8e87a47`）。
 
 ## 指标清单
 
@@ -96,7 +96,7 @@ scrape_configs:
 
 | 指标 | 类型 | 含义 |
 | --- | --- | --- |
-| `chorus_ipc_publish_failures_total` | counter | IPC 发布失败次数（Gateway→Engine 事件、Engine→Gateway 快照/欢迎） |
+| `chorus_ipc_publish_failures_total` | counter | IPC 发布失败次数。Gateway 面计 Gateway→Engine 事件，EngineHost 面计 Engine→Gateway 快照/欢迎（`8e87a47`） |
 | `chorus_ipc_engine_silence_ms` | gauge | Gateway 距最近一次收到 EngineHost 消息（心跳/欢迎/快照）的毫秒数；从未收到为 `-1`。`/ready` 依此判定（阈值 `Ipc:ReadinessMaxSilenceMs`） |
 
 ## 关联 ID（correlation）

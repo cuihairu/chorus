@@ -48,6 +48,7 @@
 - [x] 结构化日志 sessionId/tickId/clientId（`7209d91`）
 - [x] 本地压测工具 Chorus.LoadTool（`578415b`）
 - [x] 峰值测量支持（`4ea4273`，242 测试）
+- [x] Engine→Gateway IPC 发布失败可观测（`8e87a47`，694 测试）：EngineHost 侧补齐 `chorus_ipc_publish_failures_total`（快照 best-effort 发布失败计数并告警、欢迎发布失败计数并 rethrow），与 Gateway 侧同指标名构成双向覆盖；此前 `EngineBusSessionClient.SafePublishAsync` 静默吞掉失败、`RenderEngine` 无该指标（observability.md 已同步）
 
 ## 5. 文档定稿
 
