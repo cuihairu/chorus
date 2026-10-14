@@ -105,6 +105,37 @@ public sealed class ChorusClientTests
     }
 
     [Fact]
+    public async Task FrameGaps_PullResync_WithinCooldown()
+    {
+        // Snapshots every 2 ticks: the client observes tickId jumps (0, 2, 4,
+        // ...) - every periodic frame is a gap, so the SDK must keep pulling
+        // the missing window, cooldown-limited, and drop replayed frames.
+        using var factory = new WebApplicationFactory<Chorus.Server.Program>()
+            .WithWebHostBuilder(b => b.UseSetting("Session:SnapshotEveryTicks", "2"));
+        var wsClient = factory.Server.CreateWebSocketClient();
+
+        var options = ChorusClientOptions.Default(
+                new Uri(factory.Server.BaseAddress, "ws").ToString(), "s-sdk-gap", "c-sdk-gap")
+            with { ResyncCooldown = TimeSpan.FromMilliseconds(100) };
+
+        await using var client = await ChorusClient.ConnectAsync(
+            options, _ => { },
+            connect: (uri, ct) => wsClient.ConnectAsync(uri, ct));
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 5000 && client.ResyncsSent < 2)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.True(client.ResyncsSent >= 2,
+            $"frames={client.FramesApplied} resyncs={client.ResyncsSent}");
+        // Replayed frames must be dropped idempotently: the applied id only
+        // ever moves forward.
+        Assert.True(client.LastAppliedFrameId >= client.FramesApplied);
+    }
+
+    [Fact]
     public async Task Connect_ToUnreachableServer_Throws()
     {
         var options = ChorusClientOptions.Default("ws://localhost:1/ws", "s-x", "c-x");
