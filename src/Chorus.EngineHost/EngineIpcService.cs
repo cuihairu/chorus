@@ -279,6 +279,9 @@ public sealed class EngineIpcService : BackgroundService
     /// <summary>Failed Engine→Gateway IPC publishes (snapshots + welcomes), for the /metrics surface.</summary>
     public long PublishFailures => Interlocked.Read(ref _publishFailures);
 
+    /// <summary>Sessions refused at start (restore fail-closed), for the /metrics surface.</summary>
+    public long StartFailures => _registry.StartFailures;
+
     /// <summary>
     /// Engine→Gateway publish that must reach the gateway (the welcome). On
     /// failure the count is recorded and the exception rethrown so the

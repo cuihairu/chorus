@@ -16,25 +16,35 @@ public static class ChorusMetricsText
     public static string ContentTypeValue => ContentType;
 
     /// <summary>Server (single-process) surface: session aggregates + both faces + IPC.</summary>
-    public static string RenderServer(IReadOnlyList<SessionDiagnostics> sessions, FaceCounters faces, long ipcPublishFailures)
+    public static string RenderServer(
+        IReadOnlyList<SessionDiagnostics> sessions,
+        FaceCounters faces,
+        long ipcPublishFailures,
+        long sessionStartFailures = 0)
     {
         var sb = new StringBuilder();
         AppendFaceMetrics(sb, faces);
 
         sb.AppendLine("# TYPE chorus_ipc_publish_failures_total counter");
         sb.AppendLine($"chorus_ipc_publish_failures_total {ipcPublishFailures}");
+        AppendStartFailures(sb, sessionStartFailures);
 
         AppendSessionMetrics(sb, sessions);
         return sb.ToString();
     }
 
     /// <summary>EngineHost surface: session aggregates + Engine→Gateway IPC failures + worker process CPU when a sample exists.</summary>
-    public static string RenderEngine(IReadOnlyList<SessionDiagnostics> sessions, long ipcPublishFailures, double? processCpuPercent = null)
+    public static string RenderEngine(
+        IReadOnlyList<SessionDiagnostics> sessions,
+        long ipcPublishFailures,
+        double? processCpuPercent = null,
+        long sessionStartFailures = 0)
     {
         var sb = new StringBuilder();
 
         sb.AppendLine("# TYPE chorus_ipc_publish_failures_total counter");
         sb.AppendLine($"chorus_ipc_publish_failures_total {ipcPublishFailures}");
+        AppendStartFailures(sb, sessionStartFailures);
 
         AppendSessionMetrics(sb, sessions);
 
@@ -60,6 +70,17 @@ public static class ChorusMetricsText
         sb.AppendLine("# TYPE chorus_ipc_engine_silence_ms gauge");
         sb.AppendLine($"chorus_ipc_engine_silence_ms {engineSilenceMs}");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Sessions refused at start (restore fail-closed / module construction
+    /// throw) have no actor diagnostics, so they cannot appear in
+    /// <c>/sessions</c> — this counter is the only way to see such failures.
+    /// </summary>
+    private static void AppendStartFailures(StringBuilder sb, long sessionStartFailures)
+    {
+        sb.AppendLine("# TYPE chorus_session_start_failures_total counter");
+        sb.AppendLine($"chorus_session_start_failures_total {sessionStartFailures}");
     }
 
     private static void AppendSessionMetrics(StringBuilder sb, IReadOnlyList<SessionDiagnostics> sessions)

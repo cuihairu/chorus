@@ -39,6 +39,7 @@ scrape_configs:
 | 指标 | 类型 | 含义 |
 | --- | --- | --- |
 | `chorus_sessions` | gauge | 当前存活 Session 数 |
+| `chorus_session_start_failures_total` | counter | 拒绝启动的 Session 数（快照恢复 fail-closed / 模块构造抛异常）。这类失败没有 actor 诊断可读，`/sessions` 看不到——本计数是唯一暴露面（Server 与 EngineHost 均输出） |
 | `chorus_events_ingested_total` | counter | 进入 Session 事件道的事件数（去重后、调度前） |
 | `chorus_events_applied_total` | counter | 在 tick 中结算进权威状态的事件数 |
 | `chorus_events_merged_total` | counter | 被归并合并的事件数（归并不丢计数，见 [帧同步设计](../design/frame-sync.md)） |

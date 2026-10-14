@@ -55,6 +55,7 @@ public sealed class MetricsEndpointTests
         Assert.Contains("chorus_ws_connections_total", metrics);
         Assert.Contains("chorus_tick_errors_total", metrics);
         Assert.Contains("chorus_ipc_publish_failures_total 0", metrics);
+        Assert.Contains("chorus_session_start_failures_total 0", metrics);
     }
 
     [Fact]
@@ -95,6 +96,7 @@ public sealed class MetricsEndpointTests
         Assert.Contains("chorus_sessions", metrics);
         Assert.Contains("chorus_ipc_publish_failures_total", metrics);
         Assert.Contains("chorus_snapshot_bytes", metrics);
+        Assert.Contains("chorus_session_start_failures_total", metrics);
     }
 
     [Fact]
@@ -201,6 +203,25 @@ public sealed class MetricsEndpointTests
 
         Assert.Contains("# TYPE chorus_frame_history_bytes gauge", metrics);
         Assert.Contains("chorus_frame_history_bytes 65536", metrics);
+    }
+
+    [Fact]
+    public void Renderer_SessionStartFailures_EmittedOnBothSurfaces()
+    {
+        // A session refused at start (restore fail-closed / module construction
+        // throw) leaves no actor diagnostics, so /sessions cannot show it —
+        // this counter is the only way to see such failures.
+        var engine = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderEngine(
+            Array.Empty<Chorus.Engine.Session.SessionDiagnostics>(), ipcPublishFailures: 0, sessionStartFailures: 2);
+        Assert.Contains("# TYPE chorus_session_start_failures_total counter", engine);
+        Assert.Contains("chorus_session_start_failures_total 2", engine);
+
+        var server = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderServer(
+            Array.Empty<Chorus.Engine.Session.SessionDiagnostics>(),
+            new Chorus.Gateway.Core.Faces.FaceCounters(),
+            ipcPublishFailures: 0,
+            sessionStartFailures: 3);
+        Assert.Contains("chorus_session_start_failures_total 3", server);
     }
 
     [Fact]
