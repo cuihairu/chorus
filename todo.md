@@ -32,6 +32,7 @@
 - [x] MessageBus/ActorRef/Router 抽象（`0eac8ac`）
 - [x] InProc / NamedPipe / UDS / TCP / HTTP 五种 transport（`8f18bde`）
 - [x] 共享会话生命周期 SessionRegistry（`a6eae7f`）
+- [x] SessionRegistry dispose 幂等（`6f9efca`，699 测试）：CI 实证关停竞态 `ObjectDisposedException`——拆分引擎 `EngineIpcService : BackgroundService`，`BackgroundService.DisposeAsync` 在 execute 任务未完成时会二次调 `StopAsync`，`_registry.DisposeAsync()` 二次执行命中已 dispose 的 `_sweepCts`；加 `Interlocked.Exchange` 守卫使二次 dispose 变 no-op（五种 transport bus 均已幂等、`base.StopAsync` 自带 `_executeTask` 空守卫，dispose 链路闭合；单进程 `SessionManager : IAsyncDisposable` 非 BackgroundService，无此风险）
 - [x] streamer-ws 门面合一（`e0501bc`/`3a10f9d`）
 - [x] platform-ingress 门面合一（`0eac8ac`）
 - [x] 广播快照按 tick 去重（`50f0045`，232 测试）
@@ -69,6 +70,7 @@
 - [x] 覆盖率上传 Codecov（`ci.yml`）
 - [x] Tag 自动 Release（`release.yml`）
 - [x] 文档站构建与部署（`docs.yml`：`npm ci` + `vuepress build` + Pages；2026-10-14 修复 npm override 非法键导致的红灯 `127b0d5`，pin 纪律见 docs/guide/getting-started.md `f3ce94a`）
+- [x] docs.yml 触发过滤修正（`0b092f3`）：原 `paths-ignore`（抄自 ci.yml，那里对「纯文档不编译」正确）使 build+deploy 文档站的 workflow 反被纯文档提交跳过——最近 14 提交中 7 个纯文档提交全部未触发 Pages 重建，`docs/.vuepress/` 配置改坏 CI 也不拦；改为 `paths` 包含站点真实输入（`docs/**` + `package.json`/lock + workflow 自身，站点不读 src/），代码与台账提交不再触发冗余文档构建
 
 ## 8. 实现分析与改进
 
