@@ -13,12 +13,24 @@ public sealed class SessionManager : IAsyncDisposable
 {
     private readonly SessionRegistry _registry;
     private readonly IGameModuleFactory _gameFactory;
+    private readonly ISnapshotRecoverySource? _recoverySource;
 
     public SessionConfig Config => _registry.Config;
 
-    public SessionManager(IGameModuleFactory gameFactory, SessionConfig config)
+    /// <summary>
+    /// Session start failures (e.g. snapshot restore refusing a session,
+    /// fail-closed) - observable because the failed session has no actor
+    /// diagnostics to read.
+    /// </summary>
+    public long StartFailures => _registry.StartFailures;
+
+    public SessionManager(
+        IGameModuleFactory gameFactory,
+        SessionConfig config,
+        ISnapshotRecoverySource? recoverySource = null)
     {
         _gameFactory = gameFactory;
+        _recoverySource = recoverySource;
         // The probe reads the actor's own diagnostics: a session with
         // connected clients is never idle-evicted. Monitor locks are
         // reentrant, so the registry calling back into TryGet under its own
@@ -32,6 +44,10 @@ public sealed class SessionManager : IAsyncDisposable
     private SessionActor CreateActor(string sessionId)
     {
         var game = _gameFactory.Create(sessionId);
+        // Restore before the actor exists: no tick and no ingress event can
+        // reach an unrestored module (parity with EngineIpcService - both
+        // call the same single-point restorer inside the factory).
+        GameModuleRestorer.Restore(game, sessionId, _recoverySource, _registry.Config);
         var actor = new SessionActor(sessionId, _registry.Config, game);
         actor.Start();
         return actor;

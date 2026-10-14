@@ -177,6 +177,8 @@ public sealed class GatewayReadinessTests
         public string Name => "headless";
         public object GetStateSnapshot() => new { };
         public void ApplyEvents(long tickId, System.Collections.Generic.IReadOnlyList<Chorus.Protocol.Models.AudienceEvent> events) { }
+        public void RestoreState(long version, System.Text.Json.JsonElement state) { }
+
         public void Dispose() { }
     }
 }

@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Chorus.Engine.Abstractions;
+using Chorus.Protocol;
 using Chorus.Protocol.Models;
 
 namespace Chorus.SampleGame;
@@ -79,7 +81,16 @@ public sealed class SampleGameModule : IGameModule
             game = Name,
             sessionId = _sessionId,
             match,
+            matchId = _matchId,
             tickId = _tickId,
+            // Full per-user maps: the restore contract round-trips through
+            // this snapshot (totals/top below are display projections).
+            users = new
+            {
+                likes = _likesByUser,
+                gifts = _giftsByUser,
+                comments = _commentsByUser,
+            },
             totals = new
             {
                 users = _likesByUser.Keys.Union(_giftsByUser.Keys).Union(_commentsByUser.Keys).Distinct().Count(),
@@ -102,6 +113,64 @@ public sealed class SampleGameModule : IGameModule
             }
         };
     }
+
+    /// <summary>
+    /// Restores session-local state (tick, match id, per-user counters) from
+    /// the snapshot produced by <see cref="GetStateSnapshot"/>. The <c>match</c>
+    /// section is a cross-session store projection and deliberately not part
+    /// of the per-session restore contract (it rebuilds as new events arrive).
+    /// Anything unrecognized throws - the session then refuses to start
+    /// (fail-closed, snapshot-restore.md 方案 A).
+    /// </summary>
+    public void RestoreState(long version, JsonElement state)
+    {
+        if (version != 1)
+        {
+            throw new InvalidOperationException($"sample module supports snapshot version 1 only, got {version}");
+        }
+
+        RestorableState? restored;
+        try
+        {
+            restored = state.Deserialize<RestorableState>(ProtocolJson.SerializerOptions);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException("malformed sample snapshot state", ex);
+        }
+
+        if (restored?.Users is null)
+        {
+            throw new InvalidOperationException("sample snapshot state is missing the users section");
+        }
+
+        _tickId = restored.TickId;
+        _matchId = restored.MatchId;
+        _likesByUser.Clear();
+        _giftsByUser.Clear();
+        _commentsByUser.Clear();
+        foreach (var (userId, likes) in restored.Users.Likes ?? new())
+        {
+            _likesByUser[userId] = likes;
+        }
+
+        foreach (var (userId, gifts) in restored.Users.Gifts ?? new())
+        {
+            _giftsByUser[userId] = gifts;
+        }
+
+        foreach (var (userId, comments) in restored.Users.Comments ?? new())
+        {
+            _commentsByUser[userId] = comments;
+        }
+    }
+
+    private sealed record RestorableState(long TickId, string? MatchId, RestorableUsers? Users);
+
+    private sealed record RestorableUsers(
+        Dictionary<string, long>? Likes,
+        Dictionary<string, long>? Gifts,
+        Dictionary<string, long>? Comments);
 
     public void Dispose()
     {

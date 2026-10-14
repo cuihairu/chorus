@@ -96,6 +96,10 @@ public sealed class SessionManagerLifecycleTests
         {
         }
 
+        public void RestoreState(long version, System.Text.Json.JsonElement state)
+        {
+        }
+
         public void Dispose()
         {
         }

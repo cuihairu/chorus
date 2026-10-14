@@ -20,6 +20,8 @@ public sealed class SessionActorRefTests
         public string Name => "stub-actorref";
         public object GetStateSnapshot() => new { };
         public void ApplyEvents(long tickId, IReadOnlyList<AudienceEvent> events) { }
+        public void RestoreState(long version, System.Text.Json.JsonElement state) { }
+
         public void Dispose() { }
     }
 

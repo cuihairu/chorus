@@ -13,6 +13,7 @@ public sealed class EngineIpcService : BackgroundService
     private readonly IGameModuleFactory _gameFactory;
     private readonly SessionConfig _sessionConfig;
     private readonly IpcSettings _ipcSettings;
+    private readonly ISnapshotRecoverySource? _recoverySource;
 
     private readonly SessionRegistry _registry;
     private readonly Dictionary<(string SessionId, string ClientId), EngineBusSessionClient> _clients = new();
@@ -27,11 +28,13 @@ public sealed class EngineIpcService : BackgroundService
         ILogger<EngineIpcService> logger,
         IGameModuleFactory gameFactory,
         SessionConfig sessionConfig,
-        IConfiguration config)
+        IConfiguration config,
+        ISnapshotRecoverySource? recoverySource = null)
     {
         _logger = logger;
         _gameFactory = gameFactory;
         _sessionConfig = sessionConfig;
+        _recoverySource = recoverySource;
 
         // Session lifecycle (cap, idle eviction, sweep) is shared with the
         // monolith's SessionManager. The sweep loop stays off: the engine
@@ -150,6 +153,10 @@ public sealed class EngineIpcService : BackgroundService
     private SessionActor CreateActor(string sessionId)
     {
         var game = _gameFactory.Create(sessionId);
+        // Restore before the actor exists: no tick and no ingress event can
+        // reach an unrestored module (parity with the monolith's
+        // SessionManager - both call the same single-point restorer).
+        GameModuleRestorer.Restore(game, sessionId, _recoverySource, _sessionConfig);
         var actor = new SessionActor(sessionId, _sessionConfig, game);
         actor.Start();
         return actor;

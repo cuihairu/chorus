@@ -126,6 +126,10 @@ public sealed class SessionActorOutboundTests
         {
         }
 
+        public void RestoreState(long version, System.Text.Json.JsonElement state)
+        {
+        }
+
         public void Dispose()
         {
         }

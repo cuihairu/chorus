@@ -17,6 +17,8 @@ public sealed class SessionRegistryTests
         public string Name => "stub-registry";
         public object GetStateSnapshot() => new { };
         public void ApplyEvents(long tickId, IReadOnlyList<Chorus.Protocol.Models.AudienceEvent> events) { }
+        public void RestoreState(long version, System.Text.Json.JsonElement state) { }
+
         public void Dispose() { }
     }
 

@@ -53,6 +53,15 @@ public sealed class SessionRegistry : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Session creations that failed (e.g. snapshot restore refusing the
+    /// session, fail-closed). The failure itself is thrown to the caller and
+    /// no actor is inserted - this counter makes the rejections observable.
+    /// </summary>
+    public long StartFailures => Interlocked.Read(ref _startFailures);
+
+    private long _startFailures;
+
     public SessionActor GetOrCreate(string sessionId, long? nowMs = null)
     {
         var now = nowMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -75,7 +84,19 @@ public sealed class SessionRegistry : IAsyncDisposable
                 evicted = EvictIdlestLocked();
             }
 
-            actor = _createActor(sessionId);
+            try
+            {
+                actor = _createActor(sessionId);
+            }
+            catch
+            {
+                // Factory failure (e.g. restore fail-closed): count it,
+                // propagate, and leave nothing behind - no half state actor
+                // in the table.
+                Interlocked.Increment(ref _startFailures);
+                throw;
+            }
+
             _sessions[sessionId] = new Entry { Actor = actor, LastSeenAtMs = now };
         }
 

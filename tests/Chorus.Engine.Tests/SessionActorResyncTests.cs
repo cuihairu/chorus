@@ -119,6 +119,10 @@ public sealed class SessionActorResyncTests
         {
         }
 
+        public void RestoreState(long version, System.Text.Json.JsonElement state)
+        {
+        }
+
         public void Dispose()
         {
         }

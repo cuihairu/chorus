@@ -201,6 +201,10 @@ public sealed class SessionActorBackpressureTests
         {
         }
 
+        public void RestoreState(long version, System.Text.Json.JsonElement state)
+        {
+        }
+
         public void Dispose()
         {
         }
@@ -214,6 +218,10 @@ public sealed class SessionActorBackpressureTests
 
         public void ApplyEvents(long tickId, IReadOnlyList<AudienceEvent> events)
             => throw new InvalidOperationException("boom");
+
+        public void RestoreState(long version, System.Text.Json.JsonElement state)
+        {
+        }
 
         public void Dispose()
         {
@@ -236,6 +244,10 @@ public sealed class SessionActorBackpressureTests
             {
                 Thread.Sleep(_sleepMs);
             }
+        }
+
+        public void RestoreState(long version, System.Text.Json.JsonElement state)
+        {
         }
 
         public void Dispose()

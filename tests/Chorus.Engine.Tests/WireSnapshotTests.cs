@@ -58,6 +58,8 @@ public sealed class WireSnapshotTests
         public string Name => "tiny-wire";
         public object GetStateSnapshot() => new { counter = 1 };
         public void ApplyEvents(long tickId, IReadOnlyList<AudienceEvent> events) { }
+        public void RestoreState(long version, System.Text.Json.JsonElement state) { }
+
         public void Dispose() { }
     }
 
