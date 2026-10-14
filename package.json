@@ -39,7 +39,6 @@
     "vuepress-html-webpack-plugin": {
       "loader-utils": "^1.4.1"
     },
-    "webpack-log": "^3.0.2",
-    "webpack-log>nanoid": "3.3.12"
+    "webpack-log": "^3.0.2"
   }
 }
