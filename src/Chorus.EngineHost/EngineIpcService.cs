@@ -19,6 +19,7 @@ public sealed class EngineIpcService : BackgroundService
     private readonly Dictionary<(string SessionId, string ClientId), EngineBusSessionClient> _clients = new();
     private readonly BroadcastOwnerRegistry _broadcastOwners = new();
     private long _lastSweepMs;
+    private long _publishFailures;
 
     private IMessageBus? _incoming;
     private IMessageBus? _outgoing;
@@ -195,7 +196,8 @@ public sealed class EngineIpcService : BackgroundService
                     _broadcastOwners.OnConnect(cmd.SessionId, cmd.ClientId);
                     var client = new EngineBusSessionClient(
                         _outgoing, cmd.SessionId, cmd.ClientId,
-                        () => _broadcastOwners.IsOwner(cmd.SessionId, cmd.ClientId));
+                        () => _broadcastOwners.IsOwner(cmd.SessionId, cmd.ClientId),
+                        RecordPublishFailure);
                     _clients[(cmd.SessionId, cmd.ClientId)] = client;
                     await session.AddClientAsync(client);
 
@@ -209,7 +211,7 @@ public sealed class EngineIpcService : BackgroundService
                         ServerTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                         ProtocolVersion: Chorus.Protocol.ProtocolVersionPolicy.Current
                     );
-                    await _outgoing.PublishAsync(
+                    await PublishRequiredAsync(
                         EnvelopeFactory.Create(IpcMessageTypes.EngineWelcome, cmd.SessionId, welcome),
                         cancellationToken);
                 }
@@ -272,6 +274,33 @@ public sealed class EngineIpcService : BackgroundService
                 }
                 break;
         }
+    }
+
+    /// <summary>Failed Engine→Gateway IPC publishes (snapshots + welcomes), for the /metrics surface.</summary>
+    public long PublishFailures => Interlocked.Read(ref _publishFailures);
+
+    /// <summary>
+    /// Engine→Gateway publish that must reach the gateway (the welcome). On
+    /// failure the count is recorded and the exception rethrown so the
+    /// connect handler aborts — the gateway's welcome budget then surfaces it.
+    /// </summary>
+    private async Task PublishRequiredAsync(Envelope env, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _outgoing!.PublishAsync(env, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            RecordPublishFailure(env, ex);
+            throw;
+        }
+    }
+
+    private void RecordPublishFailure(Envelope env, Exception ex)
+    {
+        Interlocked.Increment(ref _publishFailures);
+        _logger.LogWarning(ex, "IPC publish failed type={Type} session={SessionId} message={MessageId}", env.Type, env.SessionId, env.MessageId);
     }
 
     /// <summary>Session diagnostics for the /metrics surface.</summary>

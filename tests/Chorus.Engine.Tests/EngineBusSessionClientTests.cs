@@ -36,6 +36,26 @@ public sealed class EngineBusSessionClientTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
+    private sealed class FailingBus : IMessageBus
+    {
+        public int Attempts { get; private set; }
+
+        public ValueTask PublishAsync(Envelope envelope, CancellationToken cancellationToken)
+        {
+            Attempts++;
+            throw new InvalidOperationException("bus down");
+        }
+
+        public async IAsyncEnumerable<Envelope> SubscribeAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     private static SessionSnapshot BroadcastSnapshot() => new(
         SessionId: "s-bus",
         TickId: 7,
@@ -58,8 +78,8 @@ public sealed class EngineBusSessionClientTests
     public async Task Broadcast_PublishedOnce_ByOwnerOnly()
     {
         var bus = new RecordingBus();
-        var owner = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => true);
-        var follower = new EngineBusSessionClient(bus, "s-bus", "c2", isBroadcastOwner: () => false);
+        var owner = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => true, onPublishFailure: (_, _) => { });
+        var follower = new EngineBusSessionClient(bus, "s-bus", "c2", isBroadcastOwner: () => false, onPublishFailure: (_, _) => { });
 
         await owner.SendSnapshotAsync(BroadcastSnapshot(), CancellationToken.None);
         await follower.SendSnapshotAsync(BroadcastSnapshot(), CancellationToken.None);
@@ -73,8 +93,8 @@ public sealed class EngineBusSessionClientTests
     public async Task Directed_PublishedOnlyByTargetClient()
     {
         var bus = new RecordingBus();
-        var c1 = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => true);
-        var c2 = new EngineBusSessionClient(bus, "s-bus", "c2", isBroadcastOwner: () => false);
+        var c1 = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => true, onPublishFailure: (_, _) => { });
+        var c2 = new EngineBusSessionClient(bus, "s-bus", "c2", isBroadcastOwner: () => false, onPublishFailure: (_, _) => { });
 
         await c1.SendSnapshotAsync(DirectedSnapshot("c2"), CancellationToken.None);
         await c2.SendSnapshotAsync(DirectedSnapshot("c2"), CancellationToken.None);
@@ -90,7 +110,7 @@ public sealed class EngineBusSessionClientTests
         // Transfer window between an owner disconnect and the next tick:
         // one broadcast may be skipped rather than duplicated.
         var bus = new RecordingBus();
-        var c1 = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => false);
+        var c1 = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => false, onPublishFailure: (_, _) => { });
 
         await c1.SendSnapshotAsync(BroadcastSnapshot(), CancellationToken.None);
 
@@ -105,11 +125,32 @@ public sealed class EngineBusSessionClientTests
         // unchanged. Assert pass-through with a non-default version so a
         // hardcoded 1 cannot satisfy the test.
         var bus = new RecordingBus();
-        var client = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => true);
+        var client = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => true, onPublishFailure: (_, _) => { });
 
         await client.SendSnapshotAsync(BroadcastSnapshot() with { V = 2 }, CancellationToken.None);
 
         var body = EnvelopeFactory.DeserializeBody<ServerSnapshot>(Assert.Single(bus.Published));
         Assert.Equal(2, body.V);
+    }
+
+    [Fact]
+    public async Task PublishFailure_ReportedAndSwallowed()
+    {
+        // observability.md: a snapshot publish failure at the engine boundary
+        // is best-effort (the tick must not die) but must not vanish — it is
+        // reported so the service can count and expose it.
+        var bus = new FailingBus();
+        var failures = new List<(string Type, string Message)>();
+        var client = new EngineBusSessionClient(
+            bus, "s-bus", "c1",
+            isBroadcastOwner: () => true,
+            onPublishFailure: (env, _) => failures.Add((env.Type, env.MessageId)));
+
+        // Must not throw: best-effort semantics preserved.
+        await client.SendSnapshotAsync(BroadcastSnapshot(), CancellationToken.None);
+
+        Assert.Equal(1, bus.Attempts);
+        var failure = Assert.Single(failures);
+        Assert.Equal(IpcMessageTypes.EngineSnapshot, failure.Type);
     }
 }

@@ -87,10 +87,22 @@ public sealed class MetricsEndpointTests
             }),
         };
 
-        var metrics = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderEngine(diagnostics);
+        var metrics = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderEngine(diagnostics, ipcPublishFailures: 0);
 
         Assert.Contains("chorus_ack_lag_ticks 8", metrics);
         Assert.Contains("chorus_sessions 2", metrics);
+    }
+
+    [Fact]
+    public void Renderer_Engine_EmitsIpcPublishFailures()
+    {
+        // The EngineHost surface now reports Engine→Gateway publish failures
+        // (snapshots + welcomes), parity with the gateway's counter.
+        var metrics = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderEngine(
+            Array.Empty<Chorus.Engine.Session.SessionDiagnostics>(), ipcPublishFailures: 5);
+
+        Assert.Contains("# TYPE chorus_ipc_publish_failures_total counter", metrics);
+        Assert.Contains("chorus_ipc_publish_failures_total 5", metrics);
     }
 
     private static void PostIngressEvent(HttpClient client, string eventId)

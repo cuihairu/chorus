@@ -10,13 +10,15 @@ public sealed class EngineBusSessionClient : ISessionClient
     private readonly IMessageBus _outgoing;
     private readonly string _sessionId;
     private readonly Func<bool> _isBroadcastOwner;
+    private readonly Action<Envelope, Exception> _onPublishFailure;
 
-    public EngineBusSessionClient(IMessageBus outgoing, string sessionId, string clientId, Func<bool> isBroadcastOwner)
+    public EngineBusSessionClient(IMessageBus outgoing, string sessionId, string clientId, Func<bool> isBroadcastOwner, Action<Envelope, Exception> onPublishFailure)
     {
         _outgoing = outgoing;
         _sessionId = sessionId;
         ClientId = clientId;
         _isBroadcastOwner = isBroadcastOwner;
+        _onPublishFailure = onPublishFailure;
     }
 
     public string ClientId { get; }
@@ -66,8 +68,13 @@ public sealed class EngineBusSessionClient : ISessionClient
         {
             await _outgoing.PublishAsync(env, cancellationToken);
         }
-        catch
+        catch (Exception ex)
         {
+            // Snapshot delivery is best-effort at the engine boundary — the
+            // tick must not die on a gateway hiccup — but the failure is
+            // reported so it is counted and logged (parity with the gateway
+            // side's chorus_ipc_publish_failures_total) instead of vanishing.
+            _onPublishFailure(env, ex);
         }
     }
 }

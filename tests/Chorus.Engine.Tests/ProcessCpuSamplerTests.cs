@@ -72,7 +72,7 @@ public sealed class ProcessCpuSamplerTests
     [Fact]
     public void RenderEngine_WithValue_EmitsGaugeLine_InInvariantFormat()
     {
-        var text = ChorusMetricsText.RenderEngine(Array.Empty<SessionDiagnostics>(), 37.5);
+        var text = ChorusMetricsText.RenderEngine(Array.Empty<SessionDiagnostics>(), ipcPublishFailures: 0, processCpuPercent: 37.5);
         Assert.Contains("# TYPE chorus_process_cpu_percent gauge", text, StringComparison.Ordinal);
         Assert.Contains(
             "chorus_process_cpu_percent " + 37.5.ToString("0.##", CultureInfo.InvariantCulture),
@@ -83,7 +83,7 @@ public sealed class ProcessCpuSamplerTests
     [Fact]
     public void RenderEngine_WithoutSample_OmitsLine()
     {
-        var text = ChorusMetricsText.RenderEngine(Array.Empty<SessionDiagnostics>(), null);
+        var text = ChorusMetricsText.RenderEngine(Array.Empty<SessionDiagnostics>(), ipcPublishFailures: 0, processCpuPercent: null);
         Assert.DoesNotContain("chorus_process_cpu_percent", text, StringComparison.Ordinal);
     }
 }

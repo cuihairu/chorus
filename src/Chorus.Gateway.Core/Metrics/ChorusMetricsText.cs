@@ -28,10 +28,14 @@ public static class ChorusMetricsText
         return sb.ToString();
     }
 
-    /// <summary>EngineHost surface: session aggregates + worker process CPU when a sample exists.</summary>
-    public static string RenderEngine(IReadOnlyList<SessionDiagnostics> sessions, double? processCpuPercent = null)
+    /// <summary>EngineHost surface: session aggregates + Engine→Gateway IPC failures + worker process CPU when a sample exists.</summary>
+    public static string RenderEngine(IReadOnlyList<SessionDiagnostics> sessions, long ipcPublishFailures, double? processCpuPercent = null)
     {
         var sb = new StringBuilder();
+
+        sb.AppendLine("# TYPE chorus_ipc_publish_failures_total counter");
+        sb.AppendLine($"chorus_ipc_publish_failures_total {ipcPublishFailures}");
+
         AppendSessionMetrics(sb, sessions);
 
         // Null = no previous scrape yet: omit the line rather than publish a

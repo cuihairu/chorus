@@ -36,7 +36,7 @@ var processCpu = new ProcessCpuGauge();
 app.MapGet("/", () => new { name = "Chorus.EngineHost", ok = true });
 app.MapGet("/health", () => Results.Ok());
 app.MapGet("/metrics", (EngineIpcService engine) => Results.Text(
-    ChorusMetricsText.RenderEngine(engine.GetDiagnostics(), processCpu.Sample()),
+    ChorusMetricsText.RenderEngine(engine.GetDiagnostics(), engine.PublishFailures, processCpu.Sample()),
     ChorusMetricsText.ContentTypeValue));
 
 app.Run();
