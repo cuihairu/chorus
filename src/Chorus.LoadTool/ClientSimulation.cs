@@ -26,6 +26,7 @@ public sealed class ClientSimulation
     private readonly Random _random;
     private readonly int _disconnectEverySeconds;
     private readonly int _reconnectBackoffMs;
+    private readonly Func<Uri, CancellationToken, Task<WebSocket>>? _connect;
 
     public long SnapshotsReceived => Interlocked.Read(ref _snapshots);
     public long AcksSent => Interlocked.Read(ref _acks);
@@ -39,8 +40,15 @@ public sealed class ClientSimulation
     private long _snapshots, _acks, _disconnects, _resyncs, _lastSnapshotTick;
     private int _lastLag;
 
+    /// <summary>
+    /// <paramref name="connect"/> is a transport seam for tests (default: a
+    /// real <see cref="ClientWebSocket"/>), mirroring
+    /// <c>ChorusClient.ConnectAsync</c> so the test server's in-memory WS
+    /// transport can be injected.
+    /// </summary>
     public ClientSimulation(string baseWsUrl, string sessionId, string clientId, string? token, string profile,
-        int disconnectEverySeconds, int reconnectBackoffMs, int seed)
+        int disconnectEverySeconds, int reconnectBackoffMs, int seed,
+        Func<Uri, CancellationToken, Task<WebSocket>>? connect = null)
     {
         _baseWsUrl = baseWsUrl;
         _sessionId = sessionId;
@@ -50,16 +58,17 @@ public sealed class ClientSimulation
         _disconnectEverySeconds = disconnectEverySeconds;
         _reconnectBackoffMs = reconnectBackoffMs;
         _random = new Random(seed);
+        _connect = connect;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var ws = new ClientWebSocket();
+            WebSocket? ws = null;
             try
             {
-                await ws.ConnectAsync(new Uri(_baseWsUrl), cancellationToken).ConfigureAwait(false);
+                ws = await ConnectAsync(cancellationToken).ConfigureAwait(false);
                 await SendHelloAsync(ws, cancellationToken).ConfigureAwait(false);
 
                 using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -106,11 +115,11 @@ public sealed class ClientSimulation
             }
             finally
             {
-                if (ws.State is WebSocketState.Open or WebSocketState.CloseReceived or WebSocketState.CloseSent)
+                if (ws is not null && ws.State is WebSocketState.Open or WebSocketState.CloseReceived or WebSocketState.CloseSent)
                 {
                     try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "load done", CancellationToken.None); } catch { }
                 }
-                ws.Dispose();
+                ws?.Dispose();
             }
 
             if (cancellationToken.IsCancellationRequested)
@@ -118,11 +127,34 @@ public sealed class ClientSimulation
                 return;
             }
 
-            await Task.Delay(_reconnectBackoffMs + _random.Next(500), cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await Task.Delay(_reconnectBackoffMs + _random.Next(500), cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
         }
     }
 
-    private async Task SendHelloAsync(ClientWebSocket ws, CancellationToken cancellationToken)
+    /// <summary>Opens one connection cycle's socket. The test seam returns the
+    /// already-connected socket; the default connects a real
+    /// <see cref="ClientWebSocket"/>.</summary>
+    private async Task<WebSocket> ConnectAsync(CancellationToken cancellationToken)
+    {
+        var uri = new Uri(_baseWsUrl);
+        if (_connect is not null)
+        {
+            return await _connect(uri, cancellationToken).ConfigureAwait(false);
+        }
+
+        var ws = new ClientWebSocket();
+        await ws.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
+        return ws;
+    }
+
+    private async Task SendHelloAsync(WebSocket ws, CancellationToken cancellationToken)
     {
         var hello = new ClientHello(
             ProtocolTypes.Hello, _sessionId, _clientId, _token,
@@ -130,7 +162,7 @@ public sealed class ClientSimulation
         await SendTextAsync(ws, JsonSerializer.SerializeToUtf8Bytes(hello, ProtocolJson.SerializerOptions), cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task AckLoopAsync(ClientWebSocket ws, SemaphoreSlim sendGate, CancellationToken cancellationToken, int firstDelayMs)
+    private async Task AckLoopAsync(WebSocket ws, SemaphoreSlim sendGate, CancellationToken cancellationToken, int firstDelayMs)
     {
         await Task.Delay(firstDelayMs + _random.Next(250), cancellationToken).ConfigureAwait(false);
 
@@ -162,7 +194,7 @@ public sealed class ClientSimulation
         }
     }
 
-    private async Task ReceiveLoopAsync(ClientWebSocket ws, SemaphoreSlim sendGate, CancellationToken cancellationToken)
+    private async Task ReceiveLoopAsync(WebSocket ws, SemaphoreSlim sendGate, CancellationToken cancellationToken)
     {
         var buffer = new byte[64 * 1024];
         while (ws.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
@@ -206,7 +238,7 @@ public sealed class ClientSimulation
         }
     }
 
-    private async Task SendResyncAsync(ClientWebSocket ws, SemaphoreSlim sendGate, long fromFrameId, CancellationToken cancellationToken)
+    private async Task SendResyncAsync(WebSocket ws, SemaphoreSlim sendGate, long fromFrameId, CancellationToken cancellationToken)
     {
         var resync = new ClientResync(ProtocolTypes.Resync, _sessionId, _clientId, fromFrameId);
         await SendTextAsyncLocked(ws, sendGate, JsonSerializer.SerializeToUtf8Bytes(resync, ProtocolJson.SerializerOptions), cancellationToken).ConfigureAwait(false);
@@ -226,7 +258,7 @@ public sealed class ClientSimulation
         }
     }
 
-    private static async Task SendTextAsync(ClientWebSocket ws, byte[] payload, CancellationToken cancellationToken)
+    private static async Task SendTextAsync(WebSocket ws, byte[] payload, CancellationToken cancellationToken)
     {
         await ws.SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false);
     }
@@ -235,7 +267,7 @@ public sealed class ClientSimulation
     /// Send serialized on the per-connection gate so the ack loop and the
     /// resync path can never interleave frames on the socket.
     /// </summary>
-    private static async Task SendTextAsyncLocked(ClientWebSocket ws, SemaphoreSlim sendGate, byte[] payload, CancellationToken cancellationToken)
+    private static async Task SendTextAsyncLocked(WebSocket ws, SemaphoreSlim sendGate, byte[] payload, CancellationToken cancellationToken)
     {
         await sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try

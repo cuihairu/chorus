@@ -96,6 +96,59 @@ public sealed class LoadToolTests
     }
 
     [Fact]
+    public void Options_ParsesRemainingFlags()
+    {
+        var options = LoadToolOptions.Parse(new[]
+        {
+            "--platform", "bilibili",
+            "--producers", "8",
+            "--disconnect-every", "45",
+            "--reconnect-ms", "250",
+            "--users", "100",
+            "--gift-rate", "0.5",
+            "--dup-rate", "0.1",
+            "--token", "t1",
+            "--engine-metrics", "http://127.0.0.1:9/metrics",
+            "--report-every", "2",
+        });
+
+        Assert.Equal("bilibili", options.Platform);
+        Assert.Equal(8, options.ProducerConnections);
+        Assert.Equal(45, options.DisconnectEverySeconds);
+        Assert.Equal(250, options.ReconnectBackoffMs);
+        Assert.Equal(100, options.UserPoolSize);
+        Assert.Equal(0.5, options.GiftRate);
+        Assert.Equal(0.1, options.DuplicateRate);
+        Assert.Equal("t1", options.Token);
+        Assert.Equal("http://127.0.0.1:9/metrics", options.EngineMetricsUrl);
+        Assert.Equal(2, options.ReportEverySeconds);
+    }
+
+    [Fact]
+    public void Options_HasDefaults()
+    {
+        var options = LoadToolOptions.Parse(Array.Empty<string>());
+
+        Assert.Equal("http://127.0.0.1:5168", options.BaseUrl);
+        Assert.Equal("douyin", options.Platform);
+        Assert.Equal(4, options.Sessions);
+        Assert.Equal(50, options.EventsPerSecondPerSession);
+        Assert.Equal(3, options.ClientsPerSession);
+        Assert.Equal(4, options.ProducerConnections);
+        Assert.Equal("fast,normal,slow", options.AckMix);
+        Assert.Equal(20, options.DisconnectEverySeconds);
+        Assert.Equal(1000, options.ReconnectBackoffMs);
+        Assert.Equal(60, options.DurationSeconds);
+        Assert.Equal(5000, options.UserPoolSize);
+        Assert.Equal(0.05, options.GiftRate);
+        Assert.Equal(0.02, options.DuplicateRate);
+        Assert.Null(options.MatchId);
+        Assert.Null(options.Token);
+        Assert.Null(options.EngineMetricsUrl);
+        Assert.Equal(5, options.ReportEverySeconds);
+    }
+
+    [Fact]
     public void Options_EnvironmentOverridesDefaults()
     {
         var previous = Environment.GetEnvironmentVariable("CHORUS_LOAD_URL");
@@ -109,5 +162,45 @@ public sealed class LoadToolTests
         {
             Environment.SetEnvironmentVariable("CHORUS_LOAD_URL", previous);
         }
+    }
+
+    [Fact]
+    public void Options_EnvironmentOverridesPlatformTokenAndEngineMetrics()
+    {
+        string[] names = ["CHORUS_LOAD_PLATFORM", "CHORUS_WS_TOKEN", "CHORUS_LOAD_ENGINE_METRICS"];
+        var previous = names.ToDictionary(n => n, n => Environment.GetEnvironmentVariable(n));
+        try
+        {
+            Environment.SetEnvironmentVariable("CHORUS_LOAD_PLATFORM", "kuaishou");
+            Environment.SetEnvironmentVariable("CHORUS_WS_TOKEN", "env-tok");
+            Environment.SetEnvironmentVariable("CHORUS_LOAD_ENGINE_METRICS", "http://10.0.0.3:9/metrics");
+
+            // Environment wins: it is applied after the CLI flags so a scripted
+            // CI run can redirect a flag-carrying command line.
+            var options = LoadToolOptions.Parse(["--platform", "bilibili"]);
+
+            Assert.Equal("kuaishou", options.Platform);
+            Assert.Equal("env-tok", options.Token);
+            Assert.Equal("http://10.0.0.3:9/metrics", options.EngineMetricsUrl);
+        }
+        finally
+        {
+            foreach (var (name, value) in previous)
+            {
+                Environment.SetEnvironmentVariable(name, value);
+            }
+        }
+    }
+
+    [Fact]
+    public void Options_MissingValueThrows()
+    {
+        Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(["--url"]));
+    }
+
+    [Fact]
+    public void Options_UnknownArgumentThrows()
+    {
+        Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(["--nope", "x"]));
     }
 }
