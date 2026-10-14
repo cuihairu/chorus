@@ -65,6 +65,7 @@
 - [x] CI build + test（`ci.yml`）
 - [x] 覆盖率上传 Codecov（`ci.yml`）
 - [x] Tag 自动 Release（`release.yml`）
+- [x] 文档站构建与部署（`docs.yml`：`npm ci` + `vuepress build` + Pages；2026-10-14 修复 npm override 非法键导致的红灯 `127b0d5`，pin 纪律见 docs/guide/getting-started.md `f3ce94a`）
 
 ## 8. 实现分析与改进
 
