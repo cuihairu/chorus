@@ -157,12 +157,6 @@ public static class DataCommands
             errors.Add(nameof(DataCommand.CommandId));
         }
 
-        if (!Enum.IsDefined(typeof(DataReliabilityLevel), command.Level))
-        {
-            // 未定义级别 = 策略空洞：投递后只能按猜测的默认策略处理，必须在校验层拦下。
-            errors.Add(nameof(DataCommand.Level));
-        }
-
         if (string.IsNullOrWhiteSpace(command.CommandType))
         {
             errors.Add(nameof(DataCommand.CommandType));

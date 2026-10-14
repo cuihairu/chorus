@@ -170,7 +170,7 @@
 
 ## 15. 数据面（架构审计确认缺失）
 
-- [ ] DataCommand 契约 + 幂等 + 可靠性分级
+- [x] DataCommand 契约 + 幂等 + 可靠性分级（`56fd01e`，32 测试）：新工程 `src/Chorus.Data`（零依赖，供未来独立 Data Worker 进程）；`DataReliabilityLevel` 四级 + `DataReliabilityPolicy` 五项语义逐条对齐审计 §8.1（未定义级别 fail-closed，不猜默认策略）；`DataCommands.Validate` fail-visible 返回违规字段名（§8.3 关键数据不静默丢），`Level` 无默认值漏设编译期失败；`DataCommandIdempotencyTracker` 原子幂等台账（TryBegin/Commit/Rollback，沿用 EventDeduplicator 纪律，失败绝不被误记为已处理 + TTL + 容量安全阀）；`DataCommandOutbox` 有界 FIFO（计数准入容量硬上限、满载按分级分派：统计 Dropped 计数可观测/其余 RejectedFull、envelope 带 EnqueuedAtMs 供排队延迟可观测）；Data Player/Repository/持久化属后续项
 - [ ] Data Player + 游戏记录 Repository
 - [ ] 排行榜子系统：RoomRank / MatchRank / PeriodRank / GlobalRank / PlatformRank
 - [ ] 持久化层：DB 选型 + 快照持久化 + 恢复
