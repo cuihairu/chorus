@@ -37,7 +37,7 @@ todo §3.5 要求评估并规划共享内存 transport（MemoryMappedFile + Flat
    客户端，最后一个掉线清空、重连重选；转移窗口内当 tick 广播可跳过一次，
    下一 tick 追上）；定向 resync 快照仅由被定向的那个客户端发布。Gateway
    零改动（null-target 本就扇出全 session）。回归守卫：
-   `EngineBroadcastOwnerTests`（5 例选举/转移/独立）、
+   `BroadcastOwnerRegistryTests`（5 例选举/转移/独立）、
    `EngineBusSessionClientTests`（3 例发布过滤）、
    `SplitModeEndToEndTests.TwoClientsSameSession_BothReceiveSnapshots`
    （双客户端同 session 均收到广播的端到端验收）。
@@ -92,7 +92,7 @@ todo §3.5 要求评估并规划共享内存 transport（MemoryMappedFile + Flat
 
 阶段划分（届时执行）：
 
-1. **阶段 A**：eng→gw 快照按 tick 去重（替代项 1，独立收益）——**✅ 已交付（50f0045）**：广播快照仅由 owner 每 session 每 tick 发布一条，Gateway 零改动，eng→gw 消息量降为「tick 频率」；守卫 `EngineBroadcastOwnerTests` 5 例 + `EngineBusSessionClientTests` 3 例 + `TwoClientsSameSession_BothReceiveSnapshots`。阶段 B/C 仍按触发条件等待真实瓶颈；
+1. **阶段 A**：eng→gw 快照按 tick 去重（替代项 1，独立收益）——**✅ 已交付（50f0045）**：广播快照仅由 owner 每 session 每 tick 发布一条，Gateway 零改动，eng→gw 消息量降为「tick 频率」；守卫 `BroadcastOwnerRegistryTests` 5 例 + `EngineBusSessionClientTests` 3 例 + `TwoClientsSameSession_BothReceiveSnapshots`。阶段 B/C 仍按触发条件等待真实瓶颈；
 2. **阶段 B**：`Ipc:Transport=SharedMemory` 原型，仅快照通道（可丢语义），
    事件/控制通道仍走 UDS；与 UDS 做 A/B 基准；
 3. **阶段 C**：基准胜出且崩溃恢复验证通过后，才考虑默认切换与 FlatBuffers。

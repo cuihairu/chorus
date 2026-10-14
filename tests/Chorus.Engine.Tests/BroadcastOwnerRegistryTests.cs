@@ -9,7 +9,7 @@ namespace Chorus.Engine.Tests;
 /// client, and the last disconnect clears ownership so a later re-connect
 /// re-elects.
 /// </summary>
-public sealed class EngineBroadcastOwnerTests
+public sealed class BroadcastOwnerRegistryTests
 {
     [Fact]
     public void FirstConnectOwns_SecondDoesNotSteal()

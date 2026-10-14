@@ -12,7 +12,7 @@ namespace Chorus.Engine.Tests;
 /// delta over wall delta scaled by core count; the gauge omits the line until a
 /// previous sample exists.
 /// </summary>
-public sealed class ProcessCpuSamplerTests
+public sealed class ProcessCpuGaugeTests
 {
     private static (TimeSpan Cpu, DateTimeOffset Wall) At(double cpuSeconds, int wallSeconds) =>
         (TimeSpan.FromSeconds(cpuSeconds), DateTimeOffset.UnixEpoch.AddSeconds(wallSeconds));
