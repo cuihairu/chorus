@@ -225,6 +225,30 @@ public sealed class MetricsEndpointTests
     }
 
     [Fact]
+    public void Renderer_WsResyncDropped_EmittedOnFaceSurfaces()
+    {
+        // The gateway-side /ws resync fixed-window limiter drops requests before
+        // they ever reach the engine, so the engine's chorus_resync_throttled_total
+        // cannot see them - this is the gateway-side half of the same signal.
+        var faces = new Chorus.Gateway.Core.Faces.FaceCounters();
+        for (var i = 0; i < 7; i++)
+        {
+            faces.WsResyncDropped();
+        }
+
+        var server = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderServer(
+            Array.Empty<Chorus.Engine.Session.SessionDiagnostics>(),
+            faces,
+            ipcPublishFailures: 0);
+        Assert.Contains("# TYPE chorus_ws_resync_dropped_total counter", server);
+        Assert.Contains("chorus_ws_resync_dropped_total 7", server);
+
+        var gateway = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderGateway(
+            faces, ipcPublishFailures: 0, engineSilenceMs: 0);
+        Assert.Contains("chorus_ws_resync_dropped_total 7", gateway);
+    }
+
+    [Fact]
     public void Renderer_Engine_EmitsIpcPublishFailures()
     {
         // The EngineHost surface now reports Engine→Gateway publish failures

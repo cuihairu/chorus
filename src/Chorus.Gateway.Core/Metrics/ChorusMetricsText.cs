@@ -185,6 +185,7 @@ public static class ChorusMetricsText
         AppendCounter(sb, "chorus_ws_message_too_large_total", ws.MessageTooLarge);
         AppendCounter(sb, "chorus_ws_acks_accepted_total", ws.AckAccepted);
         AppendCounter(sb, "chorus_ws_acks_dropped_total", ws.AckDropped);
+        AppendCounter(sb, "chorus_ws_resync_dropped_total", ws.ResyncDropped);
     }
 
     private static void AppendCounter(StringBuilder sb, string name, long value)
