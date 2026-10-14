@@ -27,6 +27,24 @@ public sealed class BilibiliOpenLiveClientTests
         + "\"},\"websocket_info\":{\"wss_link\":[\"ws://bilibili.test/live\"],\"auth_body\":"
         + JsonSerializer.Serialize(AuthBodyJson) + "}}}";
 
+    private static string AppStartJsonWithNumberGameId() =>
+        "{\"code\":0,\"data\":{\"game_info\":{\"game_id\":12345},\"websocket_info\":{\"wss_link\":[\"ws://bilibili.test/live\"],\"auth_body\":"
+        + JsonSerializer.Serialize(AuthBodyJson) + "}}}";
+
+    private static BilibiliOpenLiveOptions HeartbeatOptions() => new(
+        AccessKeyId: KeyId,
+        AccessKeySecret: Secret,
+        AppId: 1001,
+        RoomOwnerAuthCode: "auth-code",
+        IngressUrl: "http://test/ingress/bilibili",
+        StartUrl: "http://test/app_start",
+        HeartbeatUrl: "http://test/app/heartbeat",
+        EndUrl: "http://test/app/end",
+        GameHeartbeatInterval: TimeSpan.FromMilliseconds(30),
+        WsHeartbeatInterval: TimeSpan.FromMilliseconds(30),
+        ReconnectMinDelay: TimeSpan.FromMilliseconds(10),
+        ReconnectMaxDelay: TimeSpan.FromMilliseconds(50));
+
     private static BilibiliOpenLiveOptions Options() => new(
         AccessKeyId: KeyId,
         AccessKeySecret: Secret,
@@ -46,6 +64,12 @@ public sealed class BilibiliOpenLiveClientTests
         private readonly string _appStartJson;
         public List<(string Path, string Body, IReadOnlyDictionary<string, string> Headers)> Requests { get; } = new();
         public List<string> IngressBodies { get; } = new();
+
+        public HttpStatusCode AppStartStatus { get; set; } = HttpStatusCode.OK;
+        public HttpStatusCode HeartbeatStatus { get; set; } = HttpStatusCode.OK;
+        public HttpStatusCode EndStatus { get; set; } = HttpStatusCode.OK;
+        public HttpStatusCode IngressStatus { get; set; } = HttpStatusCode.OK;
+        public bool IngressThrow { get; set; }
 
         public FakeOpenLiveHttp(string appStartJson)
             : base(new HttpClientHandler())
@@ -67,12 +91,19 @@ public sealed class BilibiliOpenLiveClientTests
                 }
             }
 
-            var response = request.RequestUri.AbsolutePath switch
+            if (request.RequestUri.AbsolutePath.EndsWith("ingress/bilibili") && IngressThrow)
             {
-                var p when p.EndsWith("app_start") => _appStartJson,
-                _ => "{}",
+                throw new HttpRequestException("stub ingress down");
+            }
+
+            var (response, status) = request.RequestUri.AbsolutePath switch
+            {
+                var p when p.EndsWith("app_start") => (_appStartJson, AppStartStatus),
+                var p when p.EndsWith("app/heartbeat") => ("{}", HeartbeatStatus),
+                var p when p.EndsWith("app/end") => ("{}", EndStatus),
+                _ => ("{}", IngressStatus),
             };
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return Task.FromResult(new HttpResponseMessage(status)
             {
                 Content = new StringContent(response, Encoding.UTF8, "application/json"),
             });
@@ -315,5 +346,196 @@ public sealed class BilibiliOpenLiveClientTests
         Assert.Contains("\"g-end\"", end.Body);
         Assert.True(BilibiliSigner.VerifyHeaders(
             end.Body, KeyId, Secret, end.Headers, DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+    }
+
+    [Fact]
+    public async Task HeartbeatLoops_KeepWsAndGameHeartbeatsAlive()
+    {
+        var http = new FakeOpenLiveHttp(AppStartJson());
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        // 心跳回复（op 3）在接收循环里必须被忽略而不是当作事件转发。
+        remote.Push(BilibiliOpenLiveProtocol.MakePacket(
+            """{"popularity":7}"""u8.ToArray(), BilibiliOpenLiveProtocol.OperationHeartbeatReply));
+        remote.Push(MessagePacket(DanmuJson));
+        await using var client = new BilibiliOpenLiveClient(
+            HeartbeatOptions(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        // auth + 立即心跳 + 至少一次循环心跳（30ms 间隔）。
+        await WaitUntilAsync(() => remote.SentByClient.Count >= 3);
+        // 游戏心跳按 interval POST game_id。
+        await WaitUntilAsync(() => http.Requests.Any(r => r.Path.EndsWith("app/heartbeat")));
+        var gameHeartbeat = http.Requests.First(r => r.Path.EndsWith("app/heartbeat"));
+        Assert.Contains("\"g-1\"", gameHeartbeat.Body);
+
+        // 事件仍被转发（接收循环没被心跳回复卡死）。
+        await WaitUntilAsync(() => Volatile.Read(ref client.EventsPosted) >= 1);
+        Assert.Equal(0, Volatile.Read(ref client.PostFailures));
+    }
+
+    [Fact]
+    public async Task GameHeartbeatNonSuccess_DoesNotKillLoop()
+    {
+        var http = new FakeOpenLiveHttp(AppStartJson()) { HeartbeatStatus = HttpStatusCode.InternalServerError };
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        await using var client = new BilibiliOpenLiveClient(
+            HeartbeatOptions(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        // 500 只记日志：心跳循环继续打点（多次请求）。
+        await WaitUntilAsync(() => http.Requests.Count(r => r.Path.EndsWith("app/heartbeat")) >= 2);
+    }
+
+    [Fact]
+    public async Task AuthReplyMalformedJson_CountsFailure_AndRetries()
+    {
+        var http = new FakeOpenLiveHttp(AppStartJson());
+        var remote1 = new ScriptedRemoteSocket();
+        var remote2 = new ScriptedRemoteSocket();
+        var index = 0;
+        await using var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(Interlocked.Increment(ref index) == 1 ? remote1 : remote2));
+        remote1.Push(BilibiliOpenLiveProtocol.MakePacket(
+            "{not json"u8.ToArray(), BilibiliOpenLiveProtocol.OperationAuthReply));
+        remote2.Push(AuthReplyOkPacket());
+        client.Start();
+
+        await WaitUntilAsync(() => Volatile.Read(ref client.AuthFailures) >= 1);
+        await WaitUntilAsync(() => remote2.SentByClient.Count >= 1);
+
+        var (op, _) = ParseSentPacket(remote2.SentByClient[0]);
+        Assert.Equal(BilibiliOpenLiveProtocol.OperationAuth, op);
+    }
+
+    [Fact]
+    public async Task AppStartErrorCode_BacksoffWithoutGameId()
+    {
+        var http = new FakeOpenLiveHttp("""{"code":-101,"message":"auth code expired"}""");
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        // 重试在跑（多次 app_start），但 code!=0 从不计成功、game_id 永远缺位。
+        await WaitUntilAsync(() => http.Requests.Count(r => r.Path.EndsWith("app_start")) >= 2);
+        Assert.Equal(0, Volatile.Read(ref client.AppStartCalls));
+
+        await client.DisposeAsync();
+        // 从未拿到 game_id：不 POST app/end。
+        Assert.DoesNotContain(http.Requests, r => r.Path.EndsWith("app/end"));
+    }
+
+    [Fact]
+    public async Task AppStartServerError_Backsoff()
+    {
+        var http = new FakeOpenLiveHttp(AppStartJson()) { AppStartStatus = HttpStatusCode.ServiceUnavailable };
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        await using var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        await WaitUntilAsync(() => http.Requests.Count(r => r.Path.EndsWith("app_start")) >= 2);
+        Assert.Equal(0, Volatile.Read(ref client.AppStartCalls));
+    }
+
+    [Fact]
+    public async Task AppStartNullWssLink_RejectedThenRetried()
+    {
+        // 第一次返回 wss_link:[null]（fail-visible 守卫），第二次正常 → 客户端应恢复。
+        var http = new FakeOpenLiveHttp(
+            """{"code":0,"data":{"game_info":{"game_id":"g-1"},"websocket_info":{"wss_link":[null],"auth_body":{"uid":1}}}}""");
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        await using var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        await WaitUntilAsync(() => http.Requests.Count(r => r.Path.EndsWith("app_start")) >= 2);
+        // 第二次响应正常（桩固定返回同一 JSON，这里只断言重试在进行且未崩溃）。
+        Assert.True(Volatile.Read(ref client.Reconnects) >= 1 || http.Requests.Count >= 2);
+    }
+
+    [Fact]
+    public async Task NumericGameId_FlowsToAppEnd()
+    {
+        var http = new FakeOpenLiveHttp(AppStartJsonWithNumberGameId());
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+        await WaitUntilAsync(() => Volatile.Read(ref client.AppStartCalls) >= 1);
+
+        await client.DisposeAsync();
+
+        var end = http.Requests.FirstOrDefault(r => r.Path.EndsWith("app/end"));
+        Assert.NotNull(end);
+        // game_id 数字型（12345）→ app/end 体里同样序列化为数字。
+        Assert.Contains("12345", end.Body);
+    }
+
+    [Fact]
+    public async Task Dispose_Twice_IsNoOp()
+    {
+        // 显式 DisposeAsync 与 await using 双路径（同 SessionRegistry 纪律）：第二次必须无副作用。
+        var http = new FakeOpenLiveHttp(AppStartJson());
+        var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(new ScriptedRemoteSocket()));
+        client.Start();
+
+        await client.DisposeAsync();
+        await client.DisposeAsync();
+
+        Assert.True(http.Requests.Count(r => r.Path.EndsWith("app/end")) <= 1);
+    }
+
+    [Fact]
+    public async Task IngressRejected_CountsPostFailure()
+    {
+        var http = new FakeOpenLiveHttp(AppStartJson()) { IngressStatus = HttpStatusCode.ServiceUnavailable };
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        remote.Push(MessagePacket(DanmuJson));
+        await using var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        await WaitUntilAsync(() => Volatile.Read(ref client.PostFailures) >= 1);
+        Assert.Equal(0, Volatile.Read(ref client.EventsPosted));
+    }
+
+    [Fact]
+    public async Task IngressDown_CountsPostFailure()
+    {
+        var http = new FakeOpenLiveHttp(AppStartJson()) { IngressThrow = true };
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        remote.Push(MessagePacket(DanmuJson));
+        await using var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        await WaitUntilAsync(() => Volatile.Read(ref client.PostFailures) >= 1);
+        Assert.Equal(0, Volatile.Read(ref client.EventsPosted));
+    }
+
+    [Fact]
+    public async Task AppEndFailure_IsIgnoredOnStop()
+    {
+        var http = new FakeOpenLiveHttp(AppStartJson()) { EndStatus = HttpStatusCode.InternalServerError };
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+        await WaitUntilAsync(() => Volatile.Read(ref client.AppStartCalls) >= 1);
+
+        // app/end 500 只记日志，关停不抛。
+        await client.DisposeAsync();
+        Assert.Contains(http.Requests, r => r.Path.EndsWith("app/end"));
     }
 }

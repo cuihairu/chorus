@@ -37,6 +37,7 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
     private Task _loop = Task.CompletedTask;
     private string? _lastGameId;
     private bool _started;
+    private int _disposed;
 
     // 本轮会话是否已通过认证（RunOnce 内写、RunAsync 读，决定退避是否重置）。
     private bool _sessionEstablished;
@@ -91,6 +92,12 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // 幂等：显式 DisposeAsync 与 await using 双路径只放行一次。
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         await StopAsync().ConfigureAwait(false);
         _sendGate.Dispose();
         _loopCts.Dispose();
