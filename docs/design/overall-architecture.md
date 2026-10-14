@@ -768,7 +768,11 @@ public sealed record DataCommand
 漏设编译期失败）、`DataCommandIdempotencyTracker.cs`（TryBegin/Commit/Rollback 原子幂等台账，沿用
 EventDeduplicator 的占位-提交-回滚纪律 + TTL + 容量安全阀）、`DataCommandOutbox.cs`（有界 FIFO 交接队列：
 计数准入保证并发下容量硬上限，满载时按分级分派——普通统计 Dropped 计数可观测、其余级别 RejectedFull
-fail-visible，envelope 带 EnqueuedAtMs 支撑排队延迟可观测）。Data Player、Repository、持久化属后续项；
+fail-visible，envelope 带 EnqueuedAtMs 支撑排队延迟可观测）——`PlayerRecord.cs`（PlayerRecord + PlayerRepository：
+版本守卫只接受 current+1，旧值回写与跳版本 fail-visible，同版本同内容重放为幂等 no-op、不同内容为冲突，
+资料更新合并键值不洗掉其他命令的键，读取总返回已提交最新版本）、`GameRecord.cs`
+（GameRecord + GameRecordRepository：追加式不可改，同 RecordId 重放同内容幂等 no-op、不同内容或不同 RoomId 冲突，
+查询按 sequence 升序 + 游标严格大于，无 sequence 记录按稳定追加序）。排行榜、持久化、统计管道属后续项；
 本 outbox 只是交接缓冲而非持久化，关键经济仍须先落业务流水再对玩家承诺成功。
 
 ---
