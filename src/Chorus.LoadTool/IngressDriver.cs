@@ -68,24 +68,24 @@ public sealed class IngressDriver
                 switch ((int)response.StatusCode)
                 {
                     case 200:
-                        _accepted++;
+                        Interlocked.Increment(ref _accepted);
                         var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                         if (body.Contains("\"duplicated\":true", StringComparison.Ordinal))
                         {
-                            _duplicated++;
+                            Interlocked.Increment(ref _duplicated);
                         }
                         break;
                     case 429:
-                        _rateLimited++;
+                        Interlocked.Increment(ref _rateLimited);
                         break;
                     case 503:
-                        _laneFull++;
+                        Interlocked.Increment(ref _laneFull);
                         break;
                     default:
-                        _other++;
+                        Interlocked.Increment(ref _other);
                         break;
                 }
-                _sent++;
+                Interlocked.Increment(ref _sent);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -93,8 +93,8 @@ public sealed class IngressDriver
             }
             catch (Exception)
             {
-                _other++;
-                _sent++;
+                Interlocked.Increment(ref _other);
+                Interlocked.Increment(ref _sent);
             }
 
             var elapsed = (int)stopwatch.ElapsedMilliseconds;
