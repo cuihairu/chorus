@@ -71,6 +71,7 @@
 - [x] Tag 自动 Release（`release.yml`）
 - [x] 文档站构建与部署（`docs.yml`：`npm ci` + `vuepress build` + Pages；2026-10-14 修复 npm override 非法键导致的红灯 `127b0d5`，pin 纪律见 docs/guide/getting-started.md `f3ce94a`）
 - [x] docs.yml 触发过滤修正（`0b092f3`）：原 `paths-ignore`（抄自 ci.yml，那里对「纯文档不编译」正确）使 build+deploy 文档站的 workflow 反被纯文档提交跳过——最近 14 提交中 7 个纯文档提交全部未触发 Pages 重建，`docs/.vuepress/` 配置改坏 CI 也不拦；改为 `paths` 包含站点真实输入（`docs/**` + `package.json`/lock + workflow 自身，站点不读 src/），代码与台账提交不再触发冗余文档构建
+- [x] 单客户端出站队列积压导出（`6d738b7`，审计 B3「待导出」闭合）：`OutboundClientQueue.Dropped` 新增 `clientQueueDropped`（per-client）/ `totalClientQueueDropped`（session 汇总）+ 指标 `chorus_client_queue_dropped_total`。顺带修掉一个潜伏计数缺陷：capacity-1 槽原用 `DropOldest`，`TryWrite` 在丢弃旧项后仍返回 true（仅 writer 完成时返回 false），原 `_dropped` 分支实为死代码、真实替换从未计数；改用 `FullMode.Wait` + 显式自逐出（交付语义与 DropOldest 一致，逐出可精确计数，`BoundedChannelOptions` 无公开的丢弃回调可用）
 
 ## 8. 实现分析与改进
 

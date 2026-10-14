@@ -241,7 +241,7 @@ title: 帧同步最佳实践
 - 每 tick 事件数
 - 每 tick 丢弃/合并事件数
 - 强制快照次数
-- 单客户端出站队列积压（注：当前 `OutboundClientQueue.Dropped` 未进 `SessionDiagnostics` 与指标，见 `src/Chorus.Engine/Session/OutboundClientQueue.cs`——待导出）
+- 单客户端出站队列积压：`OutboundClientQueue.Dropped`（每客户端 latest-wins 槽被替换掉的快照数）已导出到 `/sessions` 的每客户端 `clientQueueDropped` 与 session 汇总 `totalClientQueueDropped`，指标 `chorus_client_queue_dropped_total`（`6d738b7`）。容量为 1 的槽只有「丢弃」这一种积压信号，槽深度无意义
 
 重点看三个危险信号：
 
