@@ -101,12 +101,18 @@ public sealed class WireSnapshotFrameEventsTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
 
         long firstTick = -1;
-        while (firstTick < 0 && !cts.IsCancellationRequested)
+        while (!cts.IsCancellationRequested)
         {
             var snap = await ReadSnapshotAsync(ws, buffer, cts.Token);
-            if (snap != null)
+            if (snap == null)
             {
-                firstTick = snap.Value.GetProperty("tickId").GetInt64();
+                break;
+            }
+
+            firstTick = snap.Value.GetProperty("tickId").GetInt64();
+            if (firstTick >= 1)
+            {
+                break;
             }
         }
 
@@ -140,16 +146,25 @@ public sealed class WireSnapshotFrameEventsTests
         ws.Dispose();
     }
 
+    /// <summary>Reads the next snapshot frame, skipping any other frame in
+    /// between (resync replies, ack replies) - null only when the connection
+    /// closed. Breaking the loop on the first unrelated frame used to make the
+    /// replay test order- and timing-sensitive.</summary>
     private static async Task<JsonElement?> ReadSnapshotAsync(WebSocket ws, byte[] buffer, CancellationToken ct)
     {
-        var result = await ws.ReceiveAsync(buffer, ct);
-        var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
-        var doc = JsonSerializer.Deserialize<JsonElement>(text);
-        if (doc.TryGetProperty("type", out var type) && type.GetString() == "snapshot")
+        while (true)
         {
-            return doc;
-        }
+            var result = await ws.ReceiveAsync(buffer, ct);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                return null;
+            }
 
-        return null;
+            var doc = JsonSerializer.Deserialize<JsonElement>(Encoding.UTF8.GetString(buffer, 0, result.Count));
+            if (doc.TryGetProperty("type", out var type) && type.GetString() == "snapshot")
+            {
+                return doc;
+            }
+        }
     }
 }
