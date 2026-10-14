@@ -147,6 +147,24 @@ public sealed class MetricsEndpointTests
     }
 
     [Fact]
+    public void Renderer_ClientQueueDropped_SumsAcrossSessions()
+    {
+        var diagnostics = new List<Chorus.Engine.Session.SessionDiagnostics>
+        {
+            new("s1", 10, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Array.Empty<Chorus.Engine.Session.SessionClientDiagnostics>(),
+                TotalClientQueueDropped: 3),
+            new("s2", 10, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                new[] { new Chorus.Engine.Session.SessionClientDiagnostics("c1", 0, 2, 8, 0, 0, -1, ClientQueueDropped: 1) },
+                TotalClientQueueDropped: 1),
+        };
+
+        var metrics = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderEngine(diagnostics, ipcPublishFailures: 0);
+
+        Assert.Contains("# TYPE chorus_client_queue_dropped_total counter", metrics);
+        Assert.Contains("chorus_client_queue_dropped_total 4", metrics);
+    }
+
+    [Fact]
     public void Renderer_Engine_EmitsIpcPublishFailures()
     {
         // The EngineHost surface now reports Engine→Gateway publish failures

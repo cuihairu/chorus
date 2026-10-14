@@ -40,7 +40,9 @@ public sealed record SessionDiagnostics(
     /// <summary>Current frame-history footprint in encoded bytes (frame-sync P2).</summary>
     long FrameHistoryBytes = 0,
     /// <summary>Encoded wire size of the most recent snapshot this session sent (tuning: snapshot-size signal; 0 = none yet).</summary>
-    long LastSnapshotBytes = 0
+    long LastSnapshotBytes = 0,
+    /// <summary>Snapshots evicted from clients' latest-wins outbound slots before the transport picked them up (audit B3 backlog signal).</summary>
+    long TotalClientQueueDropped = 0
 );
 
 public sealed record SessionClientDiagnostics(
@@ -50,5 +52,7 @@ public sealed record SessionClientDiagnostics(
     long LagTicks,
     long LastAckAgeMs,
     long ResyncCount,
-    long LastResyncAgeMs
+    long LastResyncAgeMs,
+    /// <summary>Latest-wins slot evictions for this client (audit B3 backlog signal).</summary>
+    long ClientQueueDropped = 0
 );

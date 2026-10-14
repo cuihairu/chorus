@@ -71,6 +71,7 @@ public static class ChorusMetricsText
         var mailboxMax = 0;
         var ackLagMax = 0L;
         var snapshotBytesMax = 0L;
+        long clientQueueDropped = 0;
 
         foreach (var s in sessions)
         {
@@ -92,6 +93,7 @@ public static class ChorusMetricsText
             tickMsMax = Math.Max(tickMsMax, s.LastTickProcessMs);
             mailboxMax = Math.Max(mailboxMax, s.MailboxDepth);
             snapshotBytesMax = Math.Max(snapshotBytesMax, s.LastSnapshotBytes);
+            clientQueueDropped += s.TotalClientQueueDropped;
             foreach (var c in s.Clients)
             {
                 ackLagMax = Math.Max(ackLagMax, c.LagTicks);
@@ -125,6 +127,7 @@ public static class ChorusMetricsText
         sb.AppendLine($"chorus_ack_lag_ticks {ackLagMax}");
         sb.AppendLine("# TYPE chorus_snapshot_bytes gauge");
         sb.AppendLine($"chorus_snapshot_bytes {snapshotBytesMax}");
+        AppendCounter(sb, "chorus_client_queue_dropped_total", clientQueueDropped);
     }
 
     private static void AppendFaceMetrics(StringBuilder sb, FaceCounters faces)

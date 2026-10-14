@@ -727,9 +727,11 @@ public sealed class SessionActor : IAsyncDisposable
     {
         var now = NowMs();
         var clients = new List<SessionClientDiagnostics>(_clients.Count);
-        foreach (var (_, state) in _clients.Values)
+        var clientQueueDropped = 0L;
+        foreach (var (client, state) in _clients.Values)
         {
             var lag = TickId - state.LastAckTickId;
+            clientQueueDropped += client.Dropped;
             clients.Add(new SessionClientDiagnostics(
                 ClientId: state.ClientId,
                 ConnectedTickId: state.ConnectedTickId,
@@ -737,7 +739,8 @@ public sealed class SessionActor : IAsyncDisposable
                 LagTicks: lag,
                 LastAckAgeMs: Math.Max(0, now - state.LastAckTimeMs),
                 ResyncCount: state.ResyncCount,
-                LastResyncAgeMs: state.LastResyncTimeMs <= 0 ? -1 : Math.Max(0, now - state.LastResyncTimeMs)
+                LastResyncAgeMs: state.LastResyncTimeMs <= 0 ? -1 : Math.Max(0, now - state.LastResyncTimeMs),
+                ClientQueueDropped: client.Dropped
             ));
         }
 
@@ -769,7 +772,8 @@ public sealed class SessionActor : IAsyncDisposable
             TotalResyncWindowMisses: Interlocked.Read(ref _totalResyncWindowMisses),
             TotalResyncThrottled: Interlocked.Read(ref _totalResyncThrottled),
             FrameHistoryBytes: _frameHistory.Bytes,
-            LastSnapshotBytes: Interlocked.Read(ref _lastSnapshotBytes)
+            LastSnapshotBytes: Interlocked.Read(ref _lastSnapshotBytes),
+            TotalClientQueueDropped: clientQueueDropped
         );
     }
 

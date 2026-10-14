@@ -64,6 +64,61 @@ public sealed class SessionActorOutboundTests
         }
     }
 
+    [Fact]
+    public async Task QueueDroppedFlowIntoSessionDiagnostics_AndPerClient()
+    {
+        // Audit B3 (frame-sync-best-practices §可观测性 "待导出"): the latest-wins
+        // slot's DropOldest evictions are the single-client outbound backlog
+        // signal and must surface in session diagnostics (per-client detail +
+        // session total), then in the metrics render.
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var actor = new SessionActor("s-drop", new SessionConfig
+        {
+            TickDurationMs = 10,
+            SnapshotEveryTicks = 1,
+        }, new CountingGameModule());
+
+        await actor.AddClientAsync(new SlowClient(release.Task));
+        actor.Start();
+
+        try
+        {
+            // Pump enters the blocked first send (signal inside SendSnapshotAsync);
+            // every further tick then overwrites the queued snapshot: 3 more ticks
+            // guarantee at least one eviction without racing the blocked one.
+            await WaitForConditionAsync(() => actor.Diagnostics.Clients.Count == 1, timeoutMs: 5000);
+            await WaitForTickAsync(actor, 5);
+
+            Assert.True(actor.Diagnostics.TotalClientQueueDropped >= 1,
+                $"session total saw no drops ({actor.Diagnostics.TotalClientQueueDropped})");
+            var client = Assert.Single(actor.Diagnostics.Clients);
+            Assert.True(client.ClientQueueDropped >= 1,
+                $"per-client drops saw no evictions ({client.ClientQueueDropped})");
+        }
+        finally
+        {
+            release.SetResult();
+            await actor.DisposeAsync();
+        }
+    }
+
+    private sealed class SlowClient : ISessionClient
+    {
+        private readonly Task _release;
+
+        public SlowClient(Task release)
+        {
+            _release = release;
+        }
+
+        public string ClientId => "c-slow";
+
+        public async ValueTask SendSnapshotAsync(SessionSnapshot snapshot, CancellationToken cancellationToken)
+        {
+            await _release.ConfigureAwait(false);
+        }
+    }
+
     private static async Task WaitForTickAsync(SessionActor actor, long minTick, int timeoutMs = 5000)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
