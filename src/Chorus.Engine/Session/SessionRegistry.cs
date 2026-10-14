@@ -26,6 +26,7 @@ public sealed class SessionRegistry : IAsyncDisposable
     private readonly Func<string, bool> _hasClients;
     private readonly CancellationTokenSource _sweepCts = new();
     private readonly Task _sweepLoop;
+    private int _disposed;
 
     public SessionConfig Config { get; }
 
@@ -213,6 +214,15 @@ public sealed class SessionRegistry : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Legal to run twice: EngineIpcService.StopAsync disposes the registry
+        // and BackgroundService.DisposeAsync calls StopAsync again when the
+        // execute task has not finished. Without the guard the second pass
+        // throws ObjectDisposedException cancelling the disposed sweep CTS.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _sweepCts.Cancel();
         try
         {

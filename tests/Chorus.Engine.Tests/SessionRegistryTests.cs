@@ -52,6 +52,20 @@ public sealed class SessionRegistryTests
     }
 
     [Fact]
+    public async Task DisposeAsync_SecondCallIsNoOp()
+    {
+        // The split engine's registry is disposed from EngineIpcService.StopAsync,
+        // and BackgroundService.DisposeAsync calls StopAsync again when the
+        // execute task has not finished - so a second dispose is legal. It used
+        // to blow up with ObjectDisposedException on the swept-then-disposed
+        // sweep CTS.
+        var registry = CreateRegistry();
+
+        await registry.DisposeAsync();
+        await registry.DisposeAsync();
+    }
+
+    [Fact]
     public async Task CapExceeded_EvictsIdlestFirst()
     {
         await using var registry = CreateRegistry(maxSessions: 2);
