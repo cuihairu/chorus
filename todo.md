@@ -165,7 +165,7 @@
 - [x] 平台账号唯一绑定：`(Platform, PlatformAccountId) → Room` 存储 + 唯一性约束 + 换绑流程（`244a16f`，15 测试）：`PlatformBindingRegistry` 内存实现（冲突 fail-visible 不隐式换绑、换绑/解绑 CAS 防并发双绑与迟到解绑、并发绑恰好一个赢）；持久化属 §15，生产接线随控制面路由落地
 - [x] 身份映射：platform identity → streamer/player 映射（`b5b5993`，15 测试）：`PlatformIdentityRegistry`（Streamer/Player 身份表，冲突 fail-visible 不隐式覆盖、换绑/解绑 CAS、同身份重映射幂等、并发绑恰好一个赢）；主播 WS 认证当前是共享 token，接线随控制面落地
 - [x] Room 生命周期状态机：Created/Waiting/Active/Idle/Sleeping/Migrating/Recovering/Closing/Destroyed（`6c89316`，27 测试）：`RoomLifecycleTransitions` 纯跃迁表 + `RoomLifecycleRegistry` 每房间状态（非法跃迁 fail-visible、状态不撕裂）；审计 §5.1 五约束逐条落地（Destroyed 只经 Closing 到达、无驱逐出口——容量淘汰不等同房间销毁、Sleeping 非终态且经 Recovering 恢复、Migrating 必经 Recovering 且可中止、终态记录才可 Forget）；持久化属 §15
-- [ ] Worker 注册与健康管理
+- [x] Worker 注册与健康管理（`8212d18`，14 测试）：`WorkerRegistry`（注册/幂等重注册、心跳单调不回退、健康窗口判定、快照有序）；健康是观察——过期 worker 仅从健康集排除、不自动移除（摘除是显式控制决策，边界满窗口按过期 fail-closed）；`SortedWorkerIds()` 直接喂 `RoomAffinity.Assign`（阶段三代码半边，接线等运行期数据门控）
 - [x] 平台能力注册（平台支持的事件类型/版本/权限）（`a322b91`，12 测试）：`PlatformCapabilityRegistry`（事件类型集合 + Ingest/Writeback 方向标志，未注册平台 fail-closed）；默认值与已落地映射器对齐（B 站四类型只读、抖音/快手占位三类型），Server/Gateway Program.cs 播种；B 站 Writeback 恒 false（P3 决议）
 
 ## 15. 数据面（架构审计确认缺失）

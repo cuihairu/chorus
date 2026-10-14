@@ -486,6 +486,12 @@ Closing 到达（唯一销毁路径，业务条件与持久化策略由调用方
 
 目标是一个 Worker 承载多个 Room。
 
+当前实现：`src/Chorus.Engine/Routing/WorkerRegistry.cs`（注册/幂等重注册、心跳单调不回退、
+心跳窗口健康判定、有序快照、`SortedWorkerIds()` 直接喂 `RoomAffinity.Assign`）。健康检测是**观察**
+而非动作：过期 worker 只从健康集排除、不自动移除，摘除走显式 `Remove`（优雅下线）——避免把网络抖动
+误判成摘除决策。阶段三的接线（room-manager 发布路由表、网关预路由）仍等运行期 CPU 峰值与数百房间
+量级数据门控（todo §10），在此之前它是单 worker 退化形态。
+
 ```
 flowchart LR
     RM["Room Manager / Route Controller"]
