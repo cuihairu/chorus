@@ -29,6 +29,16 @@ public sealed class MetricsEndpointTests
         }
     }
 
+    public sealed class EngineHostFactory : WebApplicationFactory<global::Chorus.EngineHost.Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            // Random socket dir so concurrent EngineHost hosts never collide on
+            // the default /tmp/chorus.
+            builder.UseSetting("Ipc:UnixSocketDir", $"/tmp/chorus-test-eh-{Guid.NewGuid():N}");
+        }
+    }
+
     [Fact]
     public void ServerMetrics_ExposeSessionAndFaceCounters()
     {
@@ -72,6 +82,32 @@ public sealed class MetricsEndpointTests
         Assert.Contains("chorus_ws_acks_dropped_total", metrics);
         Assert.Contains("chorus_ipc_publish_failures_total", metrics);
         Assert.DoesNotContain("chorus_sessions", metrics);
+    }
+
+    [Fact]
+    public void EngineHostMetrics_ExposeIpcFailuresAndSnapshotBytes()
+    {
+        using var factory = new EngineHostFactory();
+        var client = factory.CreateClient();
+
+        var metrics = client.GetStringAsync("/metrics").GetAwaiter().GetResult();
+
+        Assert.Contains("chorus_sessions", metrics);
+        Assert.Contains("chorus_ipc_publish_failures_total", metrics);
+        Assert.Contains("chorus_snapshot_bytes", metrics);
+    }
+
+    [Fact]
+    public void EngineHostSessions_ExposedForSplitModeParity()
+    {
+        using var factory = new EngineHostFactory();
+        var client = factory.CreateClient();
+
+        // The engine is the session-state authority in split mode; /sessions
+        // restores the monolith's per-client lag/ack diagnostics.
+        var sessions = client.GetStringAsync("/sessions").GetAwaiter().GetResult();
+
+        Assert.Equal("[]", sessions.Trim());
     }
 
     [Fact]

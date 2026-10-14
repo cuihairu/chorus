@@ -27,7 +27,11 @@ builder.Services.AddSingleton(sp =>
         ResyncRequestCooldownMs: cfg.GetValue("Session:ResyncRequestCooldownMs", 1000)
     );
 });
-builder.Services.AddHostedService<EngineIpcService>();
+// Register the concrete type (not just IHostedService): the /metrics and
+// /sessions endpoints inject EngineIpcService directly. AddHostedService alone
+// only registers it under IHostedService, which made those endpoints 500.
+builder.Services.AddSingleton<EngineIpcService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<EngineIpcService>());
 
 var app = builder.Build();
 
@@ -35,6 +39,10 @@ var processCpu = new ProcessCpuGauge();
 
 app.MapGet("/", () => new { name = "Chorus.EngineHost", ok = true });
 app.MapGet("/health", () => Results.Ok());
+// Session/client diagnostics (per-client lag/ack detail the /metrics aggregates
+// cannot give). The engine is the authority for session state in split mode, so
+// exposing it here restores parity with the monolith's /sessions.
+app.MapGet("/sessions", (EngineIpcService engine) => engine.GetDiagnostics());
 app.MapGet("/metrics", (EngineIpcService engine) => Results.Text(
     ChorusMetricsText.RenderEngine(engine.GetDiagnostics(), engine.PublishFailures, processCpu.Sample()),
     ChorusMetricsText.ContentTypeValue));
