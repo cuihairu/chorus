@@ -179,7 +179,7 @@
 ## 16. 匹配与机器人（架构审计确认缺失）
 
 - [x] Matchmaker：匹配策略 + 参与者分配（`839e6ec`，19 测试）：`MatchmakingPolicy`（模式/最小最大人数/填充模式，等真人模式必须给等待上限否则构造期拒绝）、`Matchmaker`（FIFO 先到先得、一局最多 MaxParticipants 超额留队、真人凑满 Min 即开局、凑不满按规则 1 配置行事：等真人超时填充或立即填充、补齐到 Min 不 padding 到 Max）、重复排队 fail-visible、开局消耗队列不二次组局、机器人填充委托 `IBotParticipantFactory` 并在组局边界校验产出（数量/独立 ParticipantId/非空 BotId，规则 2 强制，残缺产出 InvalidOperationException）；时间由调用方传入不读墙钟；Match/Room 创建绑定属调用方（审计 §6 ParticipantSet 之后流程）
-- [ ] Bot 工厂 + Bot Participant + 统一输入队列
+- [x] Bot 工厂 + Bot Participant + 统一输入队列（`b0a04cf`，21 测试）：`DefaultBotParticipantFactory`（进程内单调序号生成独立 ParticipantId/BotId，规则 2；机器人是参与者层实体，非虚构主播账号、非伪造 WS 客户端）+ `BotAction` 纯数据记录（无委托/回调/状态引用，策略只能产出动作，规则 3 队列半边；显式 TargetTick + bot 内 Sequence 幂等锚点，规则 5）+ `BotActionQueue` 统一输入队列（规则 4：与平台事件/主播操作进同一条确定性输入流——总序 TargetTick 升序 + 同 Tick BotId 字典序 + bot 内 Sequence，排序只依赖动作字段与提交顺序无关；同 (BotId,Sequence) 重放 fail-visible 拒绝计入 DuplicateCount；容量硬上限满载 RejectedFullCount 可观测不静默丢）
 - [ ] 机器人策略配置与动作
 
 ## 17. 小游戏平台适配（架构审计确认缺失）
