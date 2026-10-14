@@ -777,7 +777,10 @@ fail-visible，envelope 带 EnqueuedAtMs 支撑排队延迟可观测）——`Pl
 初期不引外部 DB 依赖；`InMemorySnapshotBackend` 为单进程参考实现；快照记录携带 Version/SchemaVersion/
 Checksum，版本单调守卫使旧写者迟到快照绝不覆盖新状态，完整性校验为 SHA-256 前 8 字节大端 long、
 写入侧重算 + 读取时校验，损坏记录抛 `SnapshotIntegrityViolationException` 而非当作「未持久化」）。
-排行榜查询缓存与统计管道属后续项；本 outbox 只是交接缓冲而非持久化，关键经济仍须先落业务流水
+`AnalyticsPipeline.cs`（统计管道：从 DataCommandOutbox 批量消费，按 CommandType 注册提取器产出
+`StatSample` 派生统计；同 CommandId 幂等不重复计、Reset 即重建入口、未知类型/提取器异常跳过计数
+可观测、每指标自动带 `*` 跨 scope 聚合键）。排行榜查询缓存与离线/窗口聚合属后续项；
+本 outbox 只是交接缓冲而非持久化，关键经济仍须先落业务流水
 再对玩家承诺成功。
 
 ---
