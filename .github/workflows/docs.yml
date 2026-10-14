@@ -2,13 +2,14 @@ name: docs
 
 on:
   push:
-    paths-ignore:
-      - "**.md"
+    # Rebuild the Pages site only when its inputs change. The previous
+    # paths-ignore (copied from ci.yml, where it is correct) made doc-only
+    # pushes skip the build, so doc fixes never reached the site.
+    paths:
       - "docs/**"
-      - "LICENSE"
-      - ".gitignore"
-      - "*.svg"
-      - ".editorconfig"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/docs.yml"
     branches: ["main"]
   workflow_dispatch:
 
