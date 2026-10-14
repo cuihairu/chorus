@@ -24,6 +24,12 @@ public sealed class SessionManager : IAsyncDisposable
     /// </summary>
     public long StartFailures => _registry.StartFailures;
 
+    /// <summary>Cumulative sessions removed by the client-less idle sweep.</summary>
+    public long IdleEvictions => _registry.IdleEvictions;
+
+    /// <summary>Cumulative sessions evicted to make room under MaxSessions.</summary>
+    public long CapacityEvictions => _registry.CapacityEvictions;
+
     public SessionManager(
         IGameModuleFactory gameFactory,
         SessionConfig config,

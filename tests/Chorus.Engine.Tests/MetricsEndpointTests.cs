@@ -56,6 +56,8 @@ public sealed class MetricsEndpointTests
         Assert.Contains("chorus_tick_errors_total", metrics);
         Assert.Contains("chorus_ipc_publish_failures_total 0", metrics);
         Assert.Contains("chorus_session_start_failures_total 0", metrics);
+        Assert.Contains("chorus_session_idle_evictions_total 0", metrics);
+        Assert.Contains("chorus_session_capacity_evictions_total 0", metrics);
     }
 
     [Fact]
@@ -97,6 +99,8 @@ public sealed class MetricsEndpointTests
         Assert.Contains("chorus_ipc_publish_failures_total", metrics);
         Assert.Contains("chorus_snapshot_bytes", metrics);
         Assert.Contains("chorus_session_start_failures_total", metrics);
+        Assert.Contains("chorus_session_idle_evictions_total", metrics);
+        Assert.Contains("chorus_session_capacity_evictions_total", metrics);
     }
 
     [Fact]
@@ -206,22 +210,29 @@ public sealed class MetricsEndpointTests
     }
 
     [Fact]
-    public void Renderer_SessionStartFailures_EmittedOnBothSurfaces()
+    public void Renderer_SessionRegistryCounters_EmittedOnBothSurfaces()
     {
-        // A session refused at start (restore fail-closed / module construction
-        // throw) leaves no actor diagnostics, so /sessions cannot show it —
-        // this counter is the only way to see such failures.
+        // Registry-level lifecycle counters: sessions that never produced (or
+        // no longer have) actor diagnostics, so /sessions cannot show them.
+        var registry = new Chorus.Gateway.Core.Metrics.SessionRegistryCounters(
+            StartFailures: 2, IdleEvictions: 5, CapacityEvictions: 1);
+
         var engine = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderEngine(
-            Array.Empty<Chorus.Engine.Session.SessionDiagnostics>(), ipcPublishFailures: 0, sessionStartFailures: 2);
+            Array.Empty<Chorus.Engine.Session.SessionDiagnostics>(), ipcPublishFailures: 0, registry: registry);
         Assert.Contains("# TYPE chorus_session_start_failures_total counter", engine);
         Assert.Contains("chorus_session_start_failures_total 2", engine);
+        Assert.Contains("# TYPE chorus_session_idle_evictions_total counter", engine);
+        Assert.Contains("chorus_session_idle_evictions_total 5", engine);
+        Assert.Contains("chorus_session_capacity_evictions_total 1", engine);
 
         var server = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderServer(
             Array.Empty<Chorus.Engine.Session.SessionDiagnostics>(),
             new Chorus.Gateway.Core.Faces.FaceCounters(),
             ipcPublishFailures: 0,
-            sessionStartFailures: 3);
-        Assert.Contains("chorus_session_start_failures_total 3", server);
+            registry: registry);
+        Assert.Contains("chorus_session_start_failures_total 2", server);
+        Assert.Contains("chorus_session_idle_evictions_total 5", server);
+        Assert.Contains("chorus_session_capacity_evictions_total 1", server);
     }
 
     [Fact]

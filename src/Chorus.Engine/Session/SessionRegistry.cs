@@ -63,6 +63,16 @@ public sealed class SessionRegistry : IAsyncDisposable
 
     private long _startFailures;
 
+    /// <summary>Cumulative sessions removed by the client-less idle sweep.</summary>
+    public long IdleEvictions => Interlocked.Read(ref _idleEvictions);
+
+    private long _idleEvictions;
+
+    /// <summary>Cumulative sessions evicted to make room under MaxSessions.</summary>
+    public long CapacityEvictions => Interlocked.Read(ref _capacityEvictions);
+
+    private long _capacityEvictions;
+
     public SessionActor GetOrCreate(string sessionId, long? nowMs = null)
     {
         var now = nowMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -142,6 +152,7 @@ public sealed class SessionRegistry : IAsyncDisposable
             return null;
         }
 
+        Interlocked.Increment(ref _capacityEvictions);
         return victim.Actor;
     }
 
@@ -172,6 +183,11 @@ public sealed class SessionRegistry : IAsyncDisposable
         foreach (var victim in victims)
         {
             await DisposeQuietlyAsync(victim).ConfigureAwait(false);
+        }
+
+        if (victims.Count > 0)
+        {
+            Interlocked.Add(ref _idleEvictions, victims.Count);
         }
 
         return victims.Count;

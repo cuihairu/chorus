@@ -282,6 +282,12 @@ public sealed class EngineIpcService : BackgroundService
     /// <summary>Sessions refused at start (restore fail-closed), for the /metrics surface.</summary>
     public long StartFailures => _registry.StartFailures;
 
+    /// <summary>Cumulative sessions removed by the client-less idle sweep.</summary>
+    public long IdleEvictions => _registry.IdleEvictions;
+
+    /// <summary>Cumulative sessions evicted to make room under MaxSessions.</summary>
+    public long CapacityEvictions => _registry.CapacityEvictions;
+
     /// <summary>
     /// Engine→Gateway publish that must reach the gateway (the welcome). On
     /// failure the count is recorded and the exception rethrown so the

@@ -44,7 +44,12 @@ app.MapGet("/health", () => Results.Ok());
 // exposing it here restores parity with the monolith's /sessions.
 app.MapGet("/sessions", (EngineIpcService engine) => engine.GetDiagnostics());
 app.MapGet("/metrics", (EngineIpcService engine) => Results.Text(
-    ChorusMetricsText.RenderEngine(engine.GetDiagnostics(), engine.PublishFailures, processCpu.Sample(), engine.StartFailures),
+    ChorusMetricsText.RenderEngine(
+        engine.GetDiagnostics(),
+        engine.PublishFailures,
+        processCpu.Sample(),
+        registry: new Chorus.Gateway.Core.Metrics.SessionRegistryCounters(
+            engine.StartFailures, engine.IdleEvictions, engine.CapacityEvictions)),
     ChorusMetricsText.ContentTypeValue));
 
 app.Run();

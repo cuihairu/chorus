@@ -20,14 +20,14 @@ public static class ChorusMetricsText
         IReadOnlyList<SessionDiagnostics> sessions,
         FaceCounters faces,
         long ipcPublishFailures,
-        long sessionStartFailures = 0)
+        SessionRegistryCounters? registry = null)
     {
         var sb = new StringBuilder();
         AppendFaceMetrics(sb, faces);
 
         sb.AppendLine("# TYPE chorus_ipc_publish_failures_total counter");
         sb.AppendLine($"chorus_ipc_publish_failures_total {ipcPublishFailures}");
-        AppendStartFailures(sb, sessionStartFailures);
+        AppendRegistryMetrics(sb, registry);
 
         AppendSessionMetrics(sb, sessions);
         return sb.ToString();
@@ -38,13 +38,13 @@ public static class ChorusMetricsText
         IReadOnlyList<SessionDiagnostics> sessions,
         long ipcPublishFailures,
         double? processCpuPercent = null,
-        long sessionStartFailures = 0)
+        SessionRegistryCounters? registry = null)
     {
         var sb = new StringBuilder();
 
         sb.AppendLine("# TYPE chorus_ipc_publish_failures_total counter");
         sb.AppendLine($"chorus_ipc_publish_failures_total {ipcPublishFailures}");
-        AppendStartFailures(sb, sessionStartFailures);
+        AppendRegistryMetrics(sb, registry);
 
         AppendSessionMetrics(sb, sessions);
 
@@ -73,14 +73,19 @@ public static class ChorusMetricsText
     }
 
     /// <summary>
-    /// Sessions refused at start (restore fail-closed / module construction
-    /// throw) have no actor diagnostics, so they cannot appear in
-    /// <c>/sessions</c> — this counter is the only way to see such failures.
+    /// Registry-level lifecycle counters. Refused-at-start sessions and evicted
+    /// sessions have no actor diagnostics, so they cannot appear in
+    /// <c>/sessions</c> — these counters are their only exposition.
     /// </summary>
-    private static void AppendStartFailures(StringBuilder sb, long sessionStartFailures)
+    private static void AppendRegistryMetrics(StringBuilder sb, SessionRegistryCounters? registry)
     {
+        var r = registry ?? SessionRegistryCounters.None;
         sb.AppendLine("# TYPE chorus_session_start_failures_total counter");
-        sb.AppendLine($"chorus_session_start_failures_total {sessionStartFailures}");
+        sb.AppendLine($"chorus_session_start_failures_total {r.StartFailures}");
+        sb.AppendLine("# TYPE chorus_session_idle_evictions_total counter");
+        sb.AppendLine($"chorus_session_idle_evictions_total {r.IdleEvictions}");
+        sb.AppendLine("# TYPE chorus_session_capacity_evictions_total counter");
+        sb.AppendLine($"chorus_session_capacity_evictions_total {r.CapacityEvictions}");
     }
 
     private static void AppendSessionMetrics(StringBuilder sb, IReadOnlyList<SessionDiagnostics> sessions)

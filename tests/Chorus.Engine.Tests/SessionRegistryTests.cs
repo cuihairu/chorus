@@ -76,6 +76,8 @@ public sealed class SessionRegistryTests
         var freshest = registry.GetOrCreate("freshest", nowMs: 120_000);
 
         Assert.Equal(2, registry.Count);
+        Assert.Equal(1, registry.CapacityEvictions);
+        Assert.Equal(0, registry.IdleEvictions);
         Assert.False(registry.TryGet("older", out _));
         Assert.True(registry.TryGet("newer", out _));
         Assert.True(registry.TryGet("freshest", out _));
@@ -94,6 +96,8 @@ public sealed class SessionRegistryTests
         var swept = await registry.SweepIdleAsync(nowMs: 1_000 + 700_000);
 
         Assert.Equal(1, swept);
+        Assert.Equal(1, registry.IdleEvictions);
+        Assert.Equal(0, registry.CapacityEvictions);
         Assert.Equal(1, registry.Count);
         Assert.False(registry.TryGet("idle", out _));
         Assert.True(registry.TryGet("active", out _));

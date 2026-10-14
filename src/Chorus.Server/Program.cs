@@ -139,7 +139,12 @@ app.MapGet("/faces", (FaceCounters faces) => faces);
 // Single-process topology has no IPC hop; publish failures stay 0 here and
 // are real counters on the Gateway/EngineHost surfaces.
 app.MapGet("/metrics", (SessionManager sessions, FaceCounters faces) => Results.Text(
-    ChorusMetricsText.RenderServer(sessions.GetDiagnostics(), faces, ipcPublishFailures: 0, sessionStartFailures: sessions.StartFailures),
+    ChorusMetricsText.RenderServer(
+        sessions.GetDiagnostics(),
+        faces,
+        ipcPublishFailures: 0,
+        registry: new Chorus.Gateway.Core.Metrics.SessionRegistryCounters(
+            sessions.StartFailures, sessions.IdleEvictions, sessions.CapacityEvictions)),
     ChorusMetricsText.ContentTypeValue));
 
 // platform-ingress listener face (docs/design/process-topology.md §4): shared
