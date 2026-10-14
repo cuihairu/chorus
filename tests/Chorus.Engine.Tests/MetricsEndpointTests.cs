@@ -165,6 +165,45 @@ public sealed class MetricsEndpointTests
     }
 
     [Fact]
+    public void Renderer_ResyncCounters_SumAcrossSessions()
+    {
+        // frame-sync P2 counters were collected into SessionDiagnostics (visible
+        // via /sessions) but never exported to the Prometheus surface.
+        var diagnostics = new List<Chorus.Engine.Session.SessionDiagnostics>
+        {
+            new("s1", 10, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Array.Empty<Chorus.Engine.Session.SessionClientDiagnostics>(),
+                TotalResyncRequests: 5, TotalResyncReplays: 3, TotalResyncWindowMisses: 1, TotalResyncThrottled: 2),
+            new("s2", 10, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Array.Empty<Chorus.Engine.Session.SessionClientDiagnostics>(),
+                TotalResyncRequests: 4, TotalResyncReplays: 2, TotalResyncWindowMisses: 0, TotalResyncThrottled: 1),
+        };
+
+        var metrics = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderEngine(diagnostics, ipcPublishFailures: 0);
+
+        Assert.Contains("# TYPE chorus_resync_requests_total counter", metrics);
+        Assert.Contains("chorus_resync_requests_total 9", metrics);
+        Assert.Contains("chorus_resync_replays_total 5", metrics);
+        Assert.Contains("chorus_resync_window_misses_total 1", metrics);
+        Assert.Contains("chorus_resync_throttled_total 3", metrics);
+    }
+
+    [Fact]
+    public void Renderer_FrameHistoryBytes_MaxAcrossSessions()
+    {
+        var diagnostics = new List<Chorus.Engine.Session.SessionDiagnostics>
+        {
+            new("s1", 10, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Array.Empty<Chorus.Engine.Session.SessionClientDiagnostics>(),
+                FrameHistoryBytes: 1024),
+            new("s2", 10, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Array.Empty<Chorus.Engine.Session.SessionClientDiagnostics>(),
+                FrameHistoryBytes: 65536),
+        };
+
+        var metrics = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderEngine(diagnostics, ipcPublishFailures: 0);
+
+        Assert.Contains("# TYPE chorus_frame_history_bytes gauge", metrics);
+        Assert.Contains("chorus_frame_history_bytes 65536", metrics);
+    }
+
+    [Fact]
     public void Renderer_Engine_EmitsIpcPublishFailures()
     {
         // The EngineHost surface now reports Engine→Gateway publish failures

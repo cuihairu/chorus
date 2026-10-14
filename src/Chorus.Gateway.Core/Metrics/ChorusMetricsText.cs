@@ -67,10 +67,12 @@ public static class ChorusMetricsText
         long ingested = 0, applied = 0, merged = 0, dropped = 0, overflow = 0, gifts = 0;
         long snapshots = 0, resyncs = 0, overruns = 0, errors = 0, oversize = 0;
         long ackAccepted = 0, ackDuplicate = 0, ackStale = 0, ackInvalid = 0;
+        long resyncRequests = 0, resyncReplays = 0, resyncWindowMisses = 0, resyncThrottled = 0;
         var tickMsMax = 0L;
         var mailboxMax = 0;
         var ackLagMax = 0L;
         var snapshotBytesMax = 0L;
+        var frameHistoryBytesMax = 0L;
         long clientQueueDropped = 0;
 
         foreach (var s in sessions)
@@ -93,7 +95,12 @@ public static class ChorusMetricsText
             tickMsMax = Math.Max(tickMsMax, s.LastTickProcessMs);
             mailboxMax = Math.Max(mailboxMax, s.MailboxDepth);
             snapshotBytesMax = Math.Max(snapshotBytesMax, s.LastSnapshotBytes);
+            frameHistoryBytesMax = Math.Max(frameHistoryBytesMax, s.FrameHistoryBytes);
             clientQueueDropped += s.TotalClientQueueDropped;
+            resyncRequests += s.TotalResyncRequests;
+            resyncReplays += s.TotalResyncReplays;
+            resyncWindowMisses += s.TotalResyncWindowMisses;
+            resyncThrottled += s.TotalResyncThrottled;
             foreach (var c in s.Clients)
             {
                 ackLagMax = Math.Max(ackLagMax, c.LagTicks);
@@ -128,6 +135,15 @@ public static class ChorusMetricsText
         sb.AppendLine("# TYPE chorus_snapshot_bytes gauge");
         sb.AppendLine($"chorus_snapshot_bytes {snapshotBytesMax}");
         AppendCounter(sb, "chorus_client_queue_dropped_total", clientQueueDropped);
+
+        // frame-sync P2 resync path health (previously only in /sessions):
+        // requests -> answered from history / window miss / cooldown-throttled.
+        AppendCounter(sb, "chorus_resync_requests_total", resyncRequests);
+        AppendCounter(sb, "chorus_resync_replays_total", resyncReplays);
+        AppendCounter(sb, "chorus_resync_window_misses_total", resyncWindowMisses);
+        AppendCounter(sb, "chorus_resync_throttled_total", resyncThrottled);
+        sb.AppendLine("# TYPE chorus_frame_history_bytes gauge");
+        sb.AppendLine($"chorus_frame_history_bytes {frameHistoryBytesMax}");
     }
 
     private static void AppendFaceMetrics(StringBuilder sb, FaceCounters faces)

@@ -62,6 +62,18 @@ scrape_configs:
 | `chorus_snapshot_bytes` | gauge | 最近一次下发的快照线字节数（取所有 Session 最大值；无快照时为 0）。调优信号：快照体积漂移无需 profiler 即可观察（`f301aa3`），`/sessions` 的 `lastSnapshotBytes` 为同值的每 session 明细 |
 | `chorus_client_queue_dropped_total` | counter | 客户端出站 latest-wins 槽被替换掉的快照数（跨 Session 累加）。单客户端积压信号：容量为 1 的槽只在发送落后超过一拍时丢弃，`/sessions` 的每客户端 `clientQueueDropped` 为明细（`6d738b7`） |
 
+### 帧同步 / resync（Engine 侧聚合）
+
+frame-sync P2 的 resync 路径计数此前只在 `/sessions` 可见，现同步导出到 `/metrics`：
+
+| 指标 | 类型 | 含义 |
+| --- | --- | --- |
+| `chorus_resync_requests_total` | counter | 客户端发起的 resync 请求数（冷却过滤前） |
+| `chorus_resync_replays_total` | counter | 从帧历史窗口答复的 resync 请求数 |
+| `chorus_resync_window_misses_total` | counter | 窗口起点缺失（以最新快照 + 强制回复）的 resync 请求数。调优信号：持续增长说明帧历史窗口过小 |
+| `chorus_resync_throttled_total` | counter | 被 per-client 冷却拒绝的 resync 请求数 |
+| `chorus_frame_history_bytes` | gauge | 当前帧历史编码字节占用（取所有 Session 最大值） |
+
 ### ACK（Engine 侧分类计数）
 
 | 指标 | 类型 | 含义 |
