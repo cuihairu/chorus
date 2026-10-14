@@ -1306,12 +1306,12 @@ Code Agent 必须从真实代码出发确认以下内容：
 
 | 状态 | 数量 | 说明 |
 | --- | --- | --- |
-| **Implemented** | 22 | 生产接线 + 测试覆盖 |
-| **Partial** | 12 | 代码存在但不完整或未接线 |
-| **Planned** | 1 | 仅文档，无代码 |
-| **Missing** | 45 | 无任何代码 |
+| **Implemented** | 52 | 有实现 + 测试覆盖（部分为契约层，生产接线随触发条件） |
+| **Partial** | 22 | 代码存在但不完整或未接线 |
+| **Missing** | 5 | 无任何代码 |
+| **明确不做** | 1 | 决议不做（见 todo「明确不做」段） |
 
-**核心结论：** 实时执行核心（SessionActor tick/mailbox/snapshot/ACK）、双入口接入面（Platform/Streamer Gateway + 验证/去重/限流/鉴权）、Gateway/EngineHost 拆分 + 5 种 IPC transport、Prometheus 指标——全部生产接线且有测试。控制面（identity/binding/Room 实体/生命周期/matchmaking/bot/worker registry）、数据面（DataCommand/Data Worker/排行榜/持久化）、迁移恢复、小游戏平台适配——全部缺失或仅文档。
+**核心结论（2026-10-14 复核）：** 实时执行核心（SessionActor tick/mailbox/snapshot/ACK）、双入口接入面（Platform/Streamer Gateway + 验证/去重/限流/鉴权）、Gateway/EngineHost 拆分 + 5 种 IPC transport、Prometheus 指标——生产接线且有测试。**2026-10-13/14 已补齐**：控制面（平台绑定/身份映射/Room 生命周期/Worker 注册健康/平台能力注册）、数据面（DataCommand 契约+幂等+分级+outbox / Player+GameRecord 仓储 / 排行榜 / 快照持久化 / 统计管道）、匹配与机器人（Matchmaker / Bot 工厂+统一输入队列+策略+运行时）、小游戏适配（抖音服务端 OpenAPI 三项官方核实落地 + 通用能力表防编造）、迁移恢复（恢复契约 + Epoch 接管 + 旧写者隔离）、B 站弹幕适配器。**剩余缺口**集中在：多 Worker 集群接线（等运行期数据门控）、Room 独立实体与 RoomManager 进程、真实 DB 选型、路由/数据面/排行榜指标、抖音快手**直播**适配器真实字段联调（待外部凭据）。
 
 ## 17.2 逐项审计表
 
@@ -1321,43 +1321,43 @@ Code Agent 必须从真实代码出发确认以下内容：
 | --- | --- | --- | --- |
 | 1 | Platform Gateway | **Implemented** | `PlatformIngressFace.cs:52-140`（限流→体帽→超时→验签→mapper 链→去重→Tell）；`IngressRateLimiter.cs`；测试 `PlatformIngressFaceTests.cs` 等 7 文件 |
 | 2 | Streamer Gateway | **Implemented** | `StreamerWsFace.cs:69-223`（hello→协议门→token 鉴权 fail-closed→ACK 频控→连接生命周期）；测试 `StreamerWsAuthEndpointTests.cs` 等 4 文件 |
-| 3 | MiniGame Gateway | **Missing** | 无小游戏客户端 SDK、无登录/房间 API。`PlatformNames.cs` 仅 Douyin/Kuaishou |
-| 4 | Admin API | **Partial** | `Chorus.Server/Program.cs:104-106`：只读诊断 `GET /sessions`、`GET /matches`；无配置管理、无运维端点 |
-| 5 | Identity Mapping | **Missing** | 无 identity service，无 platform/streamer/player 映射 |
-| 6 | Platform Binding | **Missing** | 无 `(Platform, PlatformAccountId) → Room` 绑定存储，无唯一性约束，无换绑流程 |
-| 7 | Room Directory | **Partial** | `SessionRegistry.cs:15-218`（session 表 + LRU 驱逐 + 空闲清扫）；**是 session 目录不是 Room 实体**，无生命周期状态 |
-| 8 | Matchmaking | **Missing** | 无匹配、无参与者分配、无机器人填充 |
-| 9 | Room Routing | **Partial** | `InProcSessionActorRouter.cs:14-27` + `IpcSessionActorRouter.cs:13-26`（session→actor 路由已接线）；`RoomAffinity.cs:12-46` + `RoomRouteTable`（**未接线**，`RoomAffinity.cs:10` 注明 "No production wiring yet"） |
-| 10 | Worker Registry | **Missing** | 无 worker 注册、健康上报、容量跟踪 |
-| 11 | Platform Capability Registry | **Missing** | 无能力/版本注册。`PlatformNames.cs` 是常量列表 |
+| 3 | MiniGame Gateway | **Implemented** | `MiniGame/MiniGamePlatformCapabilities.cs`（能力表防编造，未知平台 fail-visible）+ `MiniGameLoginExchange.cs`（配置驱动换 session，fail-closed）+ `MiniGameIdentityBinder.cs` + `MiniGameLeaderboardProjector.cs`；抖音服务端 OpenAPI 专项 `Douyin/DouyinAccessTokenProvider.cs`/`DouyinMiniGameAuthClient.cs`/`DouyinRankUploadAdapter.cs`（官方核实 2026-10-14，`41ceaeb`）；测试 `MiniGame*Tests` 4 + `DouyinMiniGameClientTests`/`DouyinRankUploadAdapterTests` |
+| 4 | Admin API | **Partial** | `Chorus.Server/Program.cs:134-147`：只读诊断 `GET /sessions`、`/matches`、`/faces`、`/metrics`、`/health`；无配置管理、无运维端点 |
+| 5 | Identity Mapping | **Implemented** | `Routing/PlatformIdentityRegistry.cs`（Streamer/Player 身份表，冲突 fail-visible、换绑/解绑 CAS、并发绑恰好一赢）；`b5b5993`，15 测试 `PlatformIdentityRegistryTests.cs` |
+| 6 | Platform Binding | **Implemented** | `Routing/PlatformBindingRegistry.cs`（`(Platform, PlatformAccountId) → Room` 唯一绑定 + 换绑 CAS）；`244a16f`，15 测试 `PlatformBindingRegistryTests.cs`；持久化属 §15 缝 |
+| 7 | Room Directory | **Partial** | `SessionRegistry.cs:15-218`（session 表 + LRU 驱逐 + 空闲清扫）+ `Routing/RoomLifecycle.cs`（每房间生命周期状态）；**仍无独立 Room 实体与 RoomManager 进程**（阶段三门控） |
+| 8 | Matchmaking | **Implemented** | `Matchmaking/Matchmaker.cs:17-116`（`MatchmakingPolicy` 模式/人数/填充 + FIFO 先到先得 + 超时填充 + 机器人填充边界校验）；`839e6ec`，19 测试 `MatchmakerTests.cs` |
+| 9 | Room Routing | **Partial** | `InProcSessionActorRouter.cs` + `IpcSessionActorRouter.cs`（session→actor 路由已接线）；`Routing/RoomAffinity.cs:12-46` + `RoomRouteTable`（**未接线**，`RoomAffinity.cs:10` 注明 "No production wiring yet"）；`Routing/RoomAuthorityRegistry.cs`（Epoch 路由版本 + 接管） |
+| 10 | Worker Registry | **Implemented** | `Routing/WorkerRegistry.cs`（注册/幂等重注册、心跳单调不回退、健康窗口、有序快照；过期仅从健康集排除）；`8212d18`，14 测试 `WorkerRegistryTests.cs` |
+| 11 | Platform Capability Registry | **Implemented** | `Routing/PlatformCapabilityRegistry.cs`（事件类型集合 + Ingest/Writeback 方向标志，未注册平台 fail-closed；默认值与已落地映射器对齐）；`a322b91`，12 测试 `PlatformCapabilityRegistryTests.cs` |
 | 12 | Room Actor | **Implemented** | `SessionActor.cs:8-626`（权威状态 + 双通道 mailbox + 固定 tick + 快照 + ACK + 背压 + 诊断）；测试 6 文件 |
-| 13 | Game Module | **Implemented** | `IGameModule.cs:5-12` + `SampleGameModule.cs:6-109`（计数聚合 + top-10）；测试 `SampleGameModuleTests.cs` |
-| 14 | Bot Runtime | **Missing** | 零命中。无 bot/strategy/bot action |
-| 15 | Realtime Sync | **Partial** | ACK `SessionActor.cs:344-374`；快照 `:447-542`；**delta sync 缺失**（每次全量 state JSON） |
-| 16 | Data Command Ingress | **Missing** | 无命令校验/幂等层 |
-| 17 | Durable Buffer / Outbox | **Missing** | 无 outbox、无持久化缓冲 |
-| 18 | Data Worker Pool | **Missing** | 无 Data Worker |
-| 19 | Player Data Repository | **Missing** | 无玩家持久化 |
-| 20 | Game Record Repository | **Missing** | 无游戏记录持久化 |
-| 21 | Leaderboard Subsystem | **Missing** | 零命中 `leaderboard|scoreboard|ranking|rank`。`SampleGameModule` top 列表是展示计数器非排行榜子系统 |
-| 22 | Statistics / Analytics | **Missing** | 无分析管道。仅内存诊断计数器 `SessionDiagnostics.cs` |
-| 23 | 全部存储（Config/DurableState/PlayerDB/GameDB/LeaderboardDB/EventLog） | **Missing** | 无任何持久化。零 DB 包（仅 Memory/Logging/Configuration） |
+| 13 | Game Module | **Implemented** | `IGameModule.cs`（`GetStateSnapshot` + **`RestoreState(version, JsonElement)` 必选**，`062cc68`）+ `SampleGameModule.cs`（计数聚合 + top-10）；测试 `SampleGameModuleTests.cs`、`ModuleRestoreTests.cs` |
+| 14 | Bot Runtime | **Implemented** | `Matchmaking/BotRuntime.cs`（`DefaultBotParticipantFactory` 独立 ParticipantId/BotId + `BotAction` 纯数据 + `BotActionQueue` 统一输入队列确定性总序）+ `Matchmaking/BotStrategy.cs`（`BotStrategyConfig`/`BotWorldView`/`IBotStrategy`/`ScriptedBotStrategy`/`BotRuntime`）；`b0a04cf`/`505ca5f`，测试 `BotParticipantTests.cs`/`BotStrategyTests.cs` |
+| 15 | Realtime Sync | **Partial** | ACK `SessionActor.cs:344-374`；快照 `WireSnapshot.cs`/`ServerSnapshot.cs`（V=1）；帧历史 ring buffer + `resync` 补帧（`758a6a5`）；**delta 同步「明确不做」**（每次全量 state JSON） |
+| 16 | Data Command Ingress | **Implemented** | `Chorus.Data/DataCommand.cs`（`DataCommand` + `DataCommands.Validate` fail-visible + `DataReliabilityLevel`/`DataReliabilityPolicy`）；`56fd01e`，32 测试 `DataCommandContractTests.cs` |
+| 17 | Durable Buffer / Outbox | **Implemented** | `Chorus.Data/DataCommandOutbox.cs`（有界 FIFO；满载按可靠性分级分派 Dropped/RejectedFull；`EnqueuedAtMs` 排队延迟可观测）；`56fd01e`，测试 `DataCommandOutboxTests.cs` |
+| 18 | Data Worker Pool | **Partial** | 消费半边 `AnalyticsPipeline`（从 outbox `DrainOnce` 有界批处理，`d9c7f6b`）已落地；**独立 Data Worker 进程未建**（`Chorus.Data` 零依赖，为未来进程预留） |
+| 19 | Player Data Repository | **Implemented** | `Chorus.Data/PlayerRepository`（版本守卫只接受 current+1、CAS 并发一赢、幂等重放、合并键值）；`fb6f0fe`，29 测试 `PlayerRepositoryTests.cs` |
+| 20 | Game Record Repository | **Implemented** | `Chorus.Data/GameRecord.cs`（追加式不可改、同 RecordId 重放幂等、冲突不覆盖历史、游标查询）；`fb6f0fe`，测试 `GameRecordRepositoryTests.cs` |
+| 21 | Leaderboard Subsystem | **Implemented** | `Chorus.Data/Leaderboard.cs`（`LeaderboardScope` 四作用域 + `LeaderboardStore` 替换式投影/幂等增量/确定性并列 1,2,2,4/冻结）+ `PlatformLeaderboard.cs`（`IPlatformLeaderboardAdapter` + `PlatformLeaderboardRegistry` fail-closed）；`b6ff76e`，33 测试 `LeaderboardStoreTests.cs`/`PlatformLeaderboardTests.cs` |
+| 22 | Statistics / Analytics | **Implemented** | `Chorus.Data/AnalyticsPipeline.cs`（outbox 批量消费 + 提取器 + 幂等 + 可丢弃可重建 + 故障不致命）；`d9c7f6b`，14 测试 `AnalyticsPipelineTests.cs` |
+| 23 | 全部存储（Config/DurableState/PlayerDB/GameDB/LeaderboardDB/EventLog） | **Partial** | 契约层落地：`Chorus.Data/StateSnapshot.cs` 的 `ISnapshotBackend`（可插拔选型）+ `InMemorySnapshotBackend` + `SnapshotStore`（版本单调 + SHA-256 校验）；`d5232cf`，21 测试 `StateSnapshotStoreTests.cs`；**真实 DB 接线随生产需求**（不硬编码选型） |
 
 ### §3 领域对象
 
 | # | 对象 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| 24 | PlatformAccount | **Missing** | 无平台身份实体 |
-| 25 | PlatformBinding | **Missing** | 无绑定实体 |
-| 26 | Streamer | **Missing** | 无 Streamer 实体（WS token + clientId 是唯一身份） |
-| 27 | Player | **Missing** | 无 Player 实体（仅 `AudienceEvent.UserId` 不透明字符串） |
-| 28 | Room（独立于 Session） | **Missing** | Session 是唯一运行时房间实体。架构文档 §3.1 的待定问题结论：**Session 保留为房间运行时实体** |
+| 24 | PlatformAccount | **Partial** | 无独立实体；以 `(Platform, PlatformAccountId)` 记录于 `PlatformBinding`/`PlatformIdentityMapping` |
+| 25 | PlatformBinding | **Implemented** | `Routing/PlatformBindingRegistry.cs`（`PlatformBinding` record + 唯一性约束 + 换绑 CAS） |
+| 26 | Streamer | **Partial** | 无独立实体；`PlatformIdentity(Kind=Streamer)` + 主播 WS 共享 token（接线随控制面路由） |
+| 27 | Player | **Partial** | 无独立实体；`PlatformIdentity(Kind=Player)` + `PlayerRecord`（§15 仓储） |
+| 28 | Room（独立于 Session） | **Missing** | 架构文档 §3.1 结论：**Session 保留为房间运行时实体**；房间生命周期/权威状态分别落在 `RoomLifecycleRegistry`/`RoomAuthorityRegistry`，独立 Room 实体未建 |
 | 29 | Session | **Implemented** | `SessionActor.cs:8`、`SessionRegistry.cs:15`、`SessionManager.cs:12`；测试 `SessionRegistryTests.cs`、`SessionManagerLifecycleTests.cs` |
-| 30 | Match | **Partial** | `MatchStateStore.cs:5-93` + `MatchRegistry.cs:5-86`：**仅展示聚合**（各阵营计数），无权威比赛状态、无生命周期 |
-| 31 | Participant | **Missing** | 无参与者实体 |
-| 32 | Bot | **Missing** | 无 |
-| 33 | RoomWorker | **Missing** | 无 |
-| 34 | RoomRoute | **Missing** | `RoomRouteTable` 持有 sessionId→workerId 字典但无 RoomRoute 记录（Epoch/RouteVersion） |
+| 30 | Match | **Partial** | `MatchStateStore.cs:5-93` + `MatchRegistry.cs:5-86`：**仅展示聚合**（各阵营计数）；权威比赛状态由 `Matchmaker` 创建侧持有，无生命周期 |
+| 31 | Participant | **Implemented** | `Matchmaking/Matchmaker.cs:75` `MatchParticipant` + `IBotParticipantFactory` 产出校验（数量/独立 ParticipantId/非空 BotId）；`839e6ec`/`b0a04cf` |
+| 32 | Bot | **Implemented** | `Matchmaking/BotRuntime.cs` `DefaultBotParticipantFactory`（进程内单调序号，机器人是参与者层实体，非伪造账号/WS 客户端） |
+| 33 | RoomWorker | **Partial** | worker 身份/心跳/健康在 `WorkerRegistry`，权威在 `RoomAuthorityRegistry`；**无 RoomWorker 实体** |
+| 34 | RoomRoute | **Partial** | `RoomAuthorityRegistry`（Epoch 路由版本 + 接管状态）+ `RoomRouteTable`（未接线）；无独立 RoomRoute 记录 |
 
 ### §4 双入口路由
 
@@ -1365,7 +1365,7 @@ Code Agent 必须从真实代码出发确认以下内容：
 | --- | --- | --- | --- |
 | 35 | 平台事件入口 + 验证 | **Implemented** | `PlatformIngressFace.cs:52-140`（验签 `:73`、去重 `:98`、Tell `:106-129`） |
 | 36 | 主播连接 + 鉴权 | **Implemented** | `StreamerWsFace.cs:128-136`（token 鉴权 fail-closed）；测试 `StreamerWsAuthEndpointTests.cs` |
-| 37 | IRoomRouter 接口 | **Missing** | 无 `IRoomRouter` 类型。现有缝是 `ISessionActorRouter`（session 级）+ `IStreamerSessionRouter` |
+| 37 | IRoomRouter 接口 | **Missing** | 无 `IRoomRouter` 类型（已复核）；现有缝是 `ISessionActorRouter`（session 级）+ `IStreamerSessionRouter` |
 | 38 | RoomRouteTable | **Partial** | `RoomAffinity.cs:53-73`（类存在 + 原子 Replace/Snapshot/TryGetWorker）；**未接线**（`RoomAffinity.cs:10`） |
 | 39 | RoomAffinity | **Partial** | `RoomAffinity.cs:12-46`（FNV-1a 稳定哈希 + 排序 worker 集 → 确定性分配）；**未接线** |
 
@@ -1373,17 +1373,17 @@ Code Agent 必须从真实代码出发确认以下内容：
 
 | # | 项 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| 40 | Room 生命周期状态机 | **Missing** | 无 Created/Waiting/Active/Idle/Sleeping/Migrating/Recovering/Closing/Destroyed 状态。`client-resync-state-machine.md` 定义的是客户端侧状态机非 Room 生命周期 |
-| 41 | Room Manager / Route Controller | **Missing** | `process-topology.md` 明确推迟到阶段三："房间注册/健康/路由下推等阶段三触发时再建" |
-| 42 | Worker 分配 | **Missing** | `RoomAffinity.Assign` 是分配函数但无调用方；无容量评估、无分配流程 |
+| 40 | Room 生命周期状态机 | **Implemented** | `Routing/RoomLifecycle.cs`（`RoomLifecycleState`/`RoomLifecycleAction`/`RoomLifecycleTransitions` 纯跃迁表 + `RoomLifecycleRegistry`）；`6c89316`，27 测试 `RoomLifecycleTests.cs`；审计 §5.1 五约束逐条落地 |
+| 41 | Room Manager / Route Controller | **Partial** | 决策逻辑已落地（生命周期 `RoomLifecycleRegistry` + 健康 `WorkerRegistry` + 权威 `RoomAuthorityRegistry` + 分配 `RoomAffinity`）；**RoomManager 独立进程未建**（`process-topology.md` 阶段三门控） |
+| 42 | Worker 分配 | **Partial** | `RoomAffinity.Assign`（确定性）+ `WorkerRegistry.SortedWorkerIds()` 已就位；**无调用方**（阶段三门控） |
 
 ### §6 匹配与机器人
 
 | # | 项 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| 43 | Matchmaker | **Missing** | 无 |
-| 44 | Bot Factory / Bot Participant | **Missing** | 无 |
-| 45 | Bot 动作进入统一输入队列 | **Missing** | 无 |
+| 43 | Matchmaker | **Implemented** | `Matchmaking/Matchmaker.cs:116`（FIFO + 人数规则 + 填充 + 机器人边界校验）；`839e6ec`，19 测试 `MatchmakerTests.cs` |
+| 44 | Bot Factory / Bot Participant | **Implemented** | `Matchmaking/BotRuntime.cs:8` `DefaultBotParticipantFactory`（独立 ParticipantId/BotId）；`b0a04cf` |
+| 45 | Bot 动作进入统一输入队列 | **Implemented** | `Matchmaking/BotRuntime.cs:40-61`（`BotAction` 纯数据 + `BotActionQueue` 与平台事件同流确定性总序）；`b0a04cf` |
 | 46 | MatchStateStore | **Partial** | `MatchStateStore.cs:5-93`：内存聚合 likes/gifts/comments per faction；`MatchRegistry.cs:5-86`：事件计数。**确认仅展示聚合** |
 
 ### §7 帧同步
@@ -1396,24 +1396,24 @@ Code Agent 必须从真实代码出发确认以下内容：
 | 50 | Actor Mailbox | **Implemented** | `SessionActor.cs:20-21`：双通道（无界控制 + 有界事件，`SingleReader: true`） |
 | 51 | 固定 Tick Loop | **Implemented** | `SessionActor.cs:112`：`PeriodicTimer(TickDurationMs)`（66ms）；tick 超时守卫 `:402-405` |
 | 52 | 快照 | **Implemented** | `WireSnapshot.cs:13-33` + `ServerSnapshot.cs`（V=1）；`SessionActor.cs:447-542`（周期 + 强制 resync + 体帽） |
-| 53 | 增量同步 | **Missing** | 每次全量 state JSON，无 delta/merge 协议 |
+| 53 | 增量同步 | **明确不做** | todo「明确不做」：不引入增量快照/回滚同步/确定性重放；客户端缺口由 `resync` 补帧覆盖（`758a6a5`） |
 | 54 | ACK | **Implemented** | `ClientAck.cs` + `SessionActor.cs:156-157/:344-374`（invalid/duplicate/stale/accepted 分类） |
 
 ### §8 异步数据
 
 | # | 项 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| 55 | DataCommand 契约 | **Missing** | 无 |
-| 56 | Data Worker | **Missing** | 无 |
-| 57 | 可靠性分级 | **Missing** | 无 |
-| 58 | 数据命令幂等 | **Missing** | 无（`EventDeduplicator` 是事件入口去重非数据命令幂等） |
-| 59 | 重试 / DLQ | **Missing** | 无 |
+| 55 | DataCommand 契约 | **Implemented** | `Chorus.Data/DataCommand.cs`（契约 + `DataCommands.Validate` fail-visible）；`56fd01e`，32 测试 `DataCommandContractTests.cs` |
+| 56 | Data Worker | **Partial** | 消费半边 `AnalyticsPipeline`（outbox `DrainOnce` 批量消费，`d9c7f6b`）已落地；**独立 Data Worker 进程未建** |
+| 57 | 可靠性分级 | **Implemented** | `DataReliabilityLevel` 四级 + `DataReliabilityPolicy` 五项语义（未定义级别 fail-closed，不猜默认）；`56fd01e` |
+| 58 | 数据命令幂等 | **Implemented** | `Chorus.Data/DataCommandIdempotencyTracker.cs`（TryBegin/Commit/Rollback 原子台账 + TTL + 容量阀）；`56fd01e`，测试 `DataCommandIdempotencyTrackerTests.cs` |
+| 59 | 重试 / DLQ | **Partial** | outbox 满载按分级分派（可丢弃计 Dropped / 其余 RejectedFull）+ 幂等锚点支持安全重放；**无 DLQ / 自动重试队列** |
 
 ### §9 排行榜
 
 | # | 项 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| 60 | 任何排行榜代码 | **Missing** | 零命中。`SampleGameModule` top 列表是展示计数器非排行榜子系统 |
+| 60 | 任何排行榜代码 | **Implemented** | `Chorus.Data/Leaderboard.cs` + `Chorus.Data/PlatformLeaderboard.cs`（四作用域 store + 平台适配器注册）；`b6ff76e`，33 测试 `LeaderboardStoreTests.cs`/`PlatformLeaderboardTests.cs` |
 
 ### §10 平台适配
 
@@ -1421,20 +1421,20 @@ Code Agent 必须从真实代码出发确认以下内容：
 | --- | --- | --- | --- |
 | 61 | 抖音直播适配器 | **Partial** | `DouyinPlatformEventMapper.cs:28-121`（已接线）；**占位模式**——`DouyinPlatformEventMapper.cs:9-26` 注明 "NOT the official Douyin schema…TODO(joint-debugging)" |
 | 62 | 快手直播适配器 | **Partial** | `KuaishouPlatformEventMapper.cs:25-173`（AES-256-CBC 解密 + 映射，已接线）；同样占位模式——内层布局 "NOT publicly documented…must be replaced at joint debugging" |
-| 63 | 哔哩哔哩适配器 | **Planned** | 仅文档 `bilibili-danmaku-adapter.md`，结论=部分支持，无代码 |
-| 64 | 抖音小游戏 SDK | **Missing** | 无 |
-| 65 | 快手小游戏 SDK | **Missing** | 无 |
-| 66 | 平台能力注册 | **Missing** | 无 |
+| 63 | 哔哩哔哩适配器 | **Implemented** | `Bilibili/`（`BilibiliSigner`/`BilibiliOpenLiveProtocol`/`BilibiliOpenLiveClient`/`BilibiliPlatformEventMapper`/`BilibiliPlatformEventVerifier`/`BilibiliIngressBridgeHostedService`）；`ff8399c`（34 测试）+ `8f5d5be`（40 测试）；P3 反向写入决议不做 |
+| 64 | 抖音小游戏 SDK | **Implemented** | `MiniGame/` 通用层 + `Douyin/DouyinAccessTokenProvider.cs`/`DouyinMiniGameAuthClient.cs`/`DouyinRankUploadAdapter.cs`（服务端 OpenAPI 三项官方核实，`41ceaeb`）；直播观众事件推送确认无服务端通道（不伪造推送客户端） |
+| 65 | 快手小游戏 SDK | **Implemented** | `MiniGame/` 通用层（能力表全待核、`Supports` 恒 false、投影恒 null——不编造平台能力）；小程序 code2Session 形态作配置参照；小游戏端点待官方资料 |
+| 66 | 平台能力注册 | **Implemented** | `Routing/PlatformCapabilityRegistry.cs`（事件类型集合 + Ingest/Writeback 方向标志，未注册平台 fail-closed）；`a322b91`，12 测试 `PlatformCapabilityRegistryTests.cs` |
 
 ### §11 迁移与恢复
 
 | # | 项 | 状态 | 证据 |
 | --- | --- | --- | --- |
-| 67 | 快照持久化 | **Missing** | `snapshot-restore.md`："快照仅存在于内存、无持久化" |
-| 68 | 状态恢复 | **Missing** | `IGameModule.cs:5-12` 只有 `GetStateSnapshot()`（读出），无 `RestoreState` 入口。`snapshot-restore.md` 待拍板 |
-| 69 | 恢复后事件补齐 | **Missing** | 无 |
-| 70 | Epoch / 路由版本 | **Missing** | 无 |
-| 71 | 旧写者隔离 | **Missing** | 无 |
+| 67 | 快照持久化 | **Implemented** | `Chorus.Data/StateSnapshot.cs`（`ISnapshotBackend` 可插拔 + `InMemorySnapshotBackend` + `SnapshotStore`，版本单调 + SHA-256 完整性校验）；`d5232cf`，21 测试 `StateSnapshotStoreTests.cs` |
+| 68 | 状态恢复 | **Implemented** | 方案 A 已拍板并落地：`IGameModule.RestoreState(version, JsonElement)` 必选成员 + `Session/GameModuleRestorer.cs` 单点（actor 工厂内、两出生点 parity by construction）+ fail-closed 三态；`062cc68`，11 测试 `ModuleRestoreTests.cs`；无生产接线 |
+| 69 | 恢复后事件补齐 | **Implemented** | gate：恢复完成前不投递任何事件（`GameModuleRestorer` 先于 `SessionActor`）+ 客户端补帧 `resync`（`758a6a5`）；历史事件重放属 spec「明确不做」 |
+| 70 | Epoch / 路由版本 | **Implemented** | `Routing/RoomAuthorityRegistry.cs`（Epoch 单调 + `IsRouteCurrent` 过期路由识别）；`2415c92`，21 测试 `RoomAuthorityRegistryTests.cs` |
+| 71 | 旧写者隔离 | **Implemented** | 两阶段接管（冻结旧写者 → 恢复完成换主 Epoch+1 → 旧写者出局，可中止回滚）；`2415c92` + 端到端 `f4775df`（6 测试 `WorkerTakeoverEndToEndTests.cs`） |
 
 ### §12 部署拓扑
 
@@ -1442,7 +1442,7 @@ Code Agent 必须从真实代码出发确认以下内容：
 | --- | --- | --- | --- |
 | 72 | 单进程模式 | **Implemented** | `Chorus.Server/Program.cs:13-125`（全 face + actor 同进程，`InProcSessionActorRouter`） |
 | 73 | Gateway/EngineHost 拆分 | **Implemented** | `Chorus.Gateway/Program.cs` + `Chorus.EngineHost/Program.cs`；`GatewayRoles.cs:10-34`；IPC 5 种 transport；`/ready` 探针 |
-| 74 | 多 Worker 集群 | **Partial** | 三进程拓扑（platform-gw + streamer-gw + 一个 EngineHost）已实现并测试；`RoomAffinity`/`RoomRouteTable` 存在但**未接线**；多 EngineHost 集群级 Room 路由与权威接管不存在 |
+| 74 | 多 Worker 集群 | **Partial** | 三进程拓扑（platform-gw + streamer-gw + 一个 EngineHost）已实现并测试；`RoomAffinity`/`RoomRouteTable`/`RoomAuthorityRegistry`（Epoch 接管）存在但**未接线**；多 EngineHost 集群级 Room 路由与权威接管**等运行期数据门控**（todo §10） |
 
 ### §13 可观测性
 
@@ -1451,25 +1451,28 @@ Code Agent 必须从真实代码出发确认以下内容：
 | 75 | 指标端点 | **Implemented** | 三主机 `GET /metrics`；`ChorusMetricsText.cs:12-147` |
 | 76 | 平台事件指标 | **Implemented** | `chorus_ingress_accepted/duplicates/unverified/unmapped/rate_limited/too_large/timed_out_total` |
 | 77 | Room/Tick 指标 | **Implemented** | `chorus_sessions`、`chorus_events_*`、`chorus_tick_*`、`chorus_snapshots_*`、`chorus_acks_*` 等 |
-| 78 | 路由指标 | **Missing** | 无房间路由失败/迁移/接管计数 |
-| 79 | Data Worker 指标 | **Missing** | 无 Data Worker |
-| 80 | 排行榜指标 | **Missing** | 无排行榜 |
+| 78 | 路由指标 | **Missing** | 无房间路由失败/迁移/接管计数（`RoomAuthorityRegistry` 有状态无指标导出） |
+| 79 | Data Worker 指标 | **Missing** | 无 Prometheus 导出（`AnalyticsPipeline` 有 SkippedCount/DuplicateCount 进程内计数） |
+| 80 | 排行榜指标 | **Missing** | 无 Prometheus 导出（`LeaderboardStore`/`PlatformLeaderboardRegistry` 无指标导出） |
 
 ## 17.3 关键差距与下一步
 
-**已完成（2026-10-13 本轮）：**
-1. 帧同步 P2（帧历史 ring buffer + `resync` 拉取消息 + 快照 `frameEvents` 信封字段）——`758a6a5`，18 守卫
-2. 帧同步 P1（帧号语义 + 客户端按帧号回放状态机 `Chorus.LoadTool.FramePlayer`）——本轮回填测试
+**2026-10-13/14 已补齐（本表状态随之更新）：**
+1. 控制面五项：平台绑定 `244a16f` / 身份映射 `b5b5993` / Room 生命周期 `6c89316` / Worker 注册健康 `8212d18` / 平台能力注册 `a322b91`
+2. 数据面：DataCommand 契约+幂等+分级 `56fd01e` / Player+GameRecord 仓储 `fb6f0fe` / 排行榜 `b6ff76e` / 快照持久化 `d5232cf` / 统计管道 `d9c7f6b`
+3. 匹配与机器人：Matchmaker `839e6ec` / Bot 工厂+统一输入队列 `b0a04cf` / 策略与运行时 `505ca5f`
+4. 迁移与恢复：恢复契约 `062cc68` / Epoch 接管 `2415c92` / 故障接管 e2e `f4775df`
+5. 小游戏适配：抖音服务端 OpenAPI 官方核实落地 `41ceaeb` / 通用能力表（防编造）
+6. B 站弹幕适配器 P1+P2 `ff8399c`/`8f5d5be`（P3 反向写入决议不做）
+7. 帧同步 P1/P2/P3 + 客户端 SDK `213155b`（三行接入，见 [quickstart-frame-sync.md](../guide/quickstart-frame-sync.md)）
 
-**可立即推进的（有代码基础）：**
-3. 抖音/快手适配器联调（占位模式 → 真实字段映射）
-4. IGameModule 恢复契约拍板 → 状态恢复代码
+**剩余缺口（按解锁条件分类）：**
 
-**需要先决策的：**
-5. Room vs Session 语义（审计结论：Session 保留为房间运行时实体）
-6. 平台账号唯一绑定（需要存储层决策）
-7. 持久化策略（DB 选型、可靠性分级）
-
-**需要先调研的：**
-8. 抖音/快手小游戏平台（官方资料、能力矩阵）
-9. 多 Worker 触发条件（CPU 峰值 + 房间量级运行期数据）
+| 缺口 | 解锁条件 |
+| --- | --- |
+| 多 Worker 集群接线（路由下推 / RoomManager 进程 / 集群级权威接管） | 运行期数据：单 worker 峰值 CPU > 60% 或单机房间数达数百量级（仪器 `4ea4273` 已备） |
+| 真实 DB 选型与接线（`ISnapshotBackend` 之外） | 生产存储需求出现（契约层已就绪，不硬编码选型） |
+| 抖音/快手**直播**适配器真实字段与验签 | 平台开发者凭据 + 官方回调文档（占位契约已就位，替换单文件即可） |
+| 快手小游戏端点 | 官方公开文档或后台确认 |
+| 路由 / 数据面 / 排行榜 Prometheus 指标 | 随上述接线一并落地（当前仅进程内计数） |
+| 增量同步 | **明确不做**（todo「明确不做」段） |

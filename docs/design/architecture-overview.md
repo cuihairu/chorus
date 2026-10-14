@@ -78,7 +78,7 @@ flowchart TB
 
 ## 快照与恢复契约
 
-引擎每 tick 产出权威快照（全量、JSON、带 schema 版本 `V=1` 上线）。恢复路径（房间进程重启后从快照重建 GameModule 状态）的契约选项见 [snapshot-restore.md](./snapshot-restore.md)，当前待拍板，未实现。
+引擎每 tick 产出权威快照（全量、JSON、带 schema 版本 `V=1` 上线）。恢复路径（房间进程重启后从快照重建 GameModule 状态）的契约已拍板（方案 A：快照内嵌恢复点，RoomLeader 重启后加载最新快照重建）并实现（`062cc68`），细节见 [snapshot-restore.md](./snapshot-restore.md)，故障接管 e2e 验证见 [overall-architecture.md](./overall-architecture.md) §17.3。
 
 ## 相关页面
 
