@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Chorus.Adapters.Abstractions\Chorus.Adapters.Abstractions.csproj" />
+    <ProjectReference Include="..\Chorus.Engine\Chorus.Engine.csproj" />
     <ProjectReference Include="..\Chorus.Protocol\Chorus.Protocol.csproj" />
   </ItemGroup>
 
