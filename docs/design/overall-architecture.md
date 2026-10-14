@@ -772,8 +772,13 @@ fail-visible，envelope 带 EnqueuedAtMs 支撑排队延迟可观测）——`Pl
 版本守卫只接受 current+1，旧值回写与跳版本 fail-visible，同版本同内容重放为幂等 no-op、不同内容为冲突，
 资料更新合并键值不洗掉其他命令的键，读取总返回已提交最新版本）、`GameRecord.cs`
 （GameRecord + GameRecordRepository：追加式不可改，同 RecordId 重放同内容幂等 no-op、不同内容或不同 RoomId 冲突，
-查询按 sequence 升序 + 游标严格大于，无 sequence 记录按稳定追加序）。排行榜、持久化、统计管道属后续项；
-本 outbox 只是交接缓冲而非持久化，关键经济仍须先落业务流水再对玩家承诺成功。
+查询按 sequence 升序 + 游标严格大于，无 sequence 记录按稳定追加序）。`StateSnapshot.cs`（快照持久化层：
+`ISnapshotBackend` 后端可插拔——存储组件按实际持久化、查询、吞吐和恢复需求选择，不硬编码选型，
+初期不引外部 DB 依赖；`InMemorySnapshotBackend` 为单进程参考实现；快照记录携带 Version/SchemaVersion/
+Checksum，版本单调守卫使旧写者迟到快照绝不覆盖新状态，完整性校验为 SHA-256 前 8 字节大端 long、
+写入侧重算 + 读取时校验，损坏记录抛 `SnapshotIntegrityViolationException` 而非当作「未持久化」）。
+排行榜查询缓存与统计管道属后续项；本 outbox 只是交接缓冲而非持久化，关键经济仍须先落业务流水
+再对玩家承诺成功。
 
 ---
 
