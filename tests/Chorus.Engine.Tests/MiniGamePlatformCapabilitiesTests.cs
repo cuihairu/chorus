@@ -18,6 +18,8 @@ public sealed class MiniGamePlatformCapabilitiesTests
         Assert.True(capabilities.Supports(MiniGameCapability.LoginClientCode));
         Assert.True(capabilities.Supports(MiniGameCapability.OpenDataDomain));
         Assert.True(capabilities.Supports(MiniGameCapability.FriendRankData));
+        // 服务端 OpenAPI 正文 2026-10-14 核实（端点/参数/响应字段齐全）。
+        Assert.True(capabilities.Supports(MiniGameCapability.ServerSessionExchange));
     }
 
     [Fact]
@@ -25,9 +27,19 @@ public sealed class MiniGamePlatformCapabilitiesTests
     {
         var capabilities = MiniGamePlatformCapabilities.Douyin;
 
-        // 未找到公开资料(待核)：不得当作可用能力。
-        Assert.False(capabilities.Supports(MiniGameCapability.ServerSessionExchange));
+        // 未找到公开资料(待核)：不得当作可用能力。服务端 OpenAPI 菜单已见全，
+        // 无直播观众事件推送通道——实时通道维持不可用，不伪造推送客户端。
         Assert.False(capabilities.Supports(MiniGameCapability.RealtimeWebSocket));
+    }
+
+    [Fact]
+    public void Douyin_ServerSessionExchange_VerifiedWithOfficialEndpoint()
+    {
+        var entry = MiniGamePlatformCapabilities.Douyin.Entry(MiniGameCapability.ServerSessionExchange)!;
+
+        Assert.Equal(MiniGameCapabilityStatus.VerifiedOfficial, entry.Status);
+        Assert.Contains("jscode2session", entry.OfficialApi);
+        Assert.StartsWith("https://developer.open-douyin.com/", entry.Evidence);
     }
 
     [Fact]

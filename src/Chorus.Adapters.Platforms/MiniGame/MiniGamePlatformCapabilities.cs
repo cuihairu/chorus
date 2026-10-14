@@ -102,17 +102,21 @@ public sealed record MiniGamePlatformCapabilities(
                 "(官方索引页列有 tt.login: /develop/api/open-capacity/log-in/tt-login；正文页 JS 渲染，返回字段未找到公开资料(待核))"),
             new(
                 MiniGameCapability.ServerSessionExchange,
-                MiniGameCapabilityStatus.NotFoundPublicDocs,
-                null,
-                "未找到公开资料(待核)：服务端 code2session 端点/参数/响应字段未获得公开正文" +
-                "（服务端 OpenAPI 文档页为 JS 渲染，公开抓取仅返回导航壳）"),
+                MiniGameCapabilityStatus.VerifiedOfficial,
+                "GET /mgplatform/api/apps/jscode2session?appid&secret&code|anonymous_code",
+                "https://developer.open-douyin.com/docs/resource/zh-CN/mini-game/develop/server/log-in/code-2-session " +
+                "(服务端 OpenAPI 正文 2026-10-14 核实：error==0 → openid/session_key/unionid/anonymous_openid；" +
+                "已落地 DouyinMiniGameAuthClient，见 docs/reference/platform-douyin.md §2.2)"),
             new(
                 MiniGameCapability.RealtimeWebSocket,
                 MiniGameCapabilityStatus.NotFoundPublicDocs,
                 null,
                 "未找到公开资料(待核)：官方小游戏 JavaScript API 索引的「网络」分类仅列 " +
                 "tt.getNetworkType / tt.onNetworkStatusChange / tt.offNetworkStatusChange，" +
-                "未见 socket / WebSocket API；容器内实时通道能力无法从公开资料确认"),
+                "未见 socket / WebSocket API；容器内实时通道能力无法从公开资料确认。" +
+                "2026-10-14 复核：服务端 OpenAPI 菜单已见全（凭证/登录/数据缓存/二维码/其它/" +
+                "订阅消息/赛事×2），无直播观众事件服务端推送通道——直播互动仅客户端 " +
+                "tt.getLiveManager + LiveManager，不伪造推送客户端"),
             new(
                 MiniGameCapability.OpenDataDomain,
                 MiniGameCapabilityStatus.VerifiedOfficial,
@@ -131,7 +135,6 @@ public sealed record MiniGamePlatformCapabilities(
         new List<string>
         {
             "小游戏 AppID / AppSecret（凭据，待外部提供，绝不写进代码）",
-            "服务端 code2session 端点与参数（待核后接线，见 docs/reference/platform-douyin-mini-game.md）",
             "真机与开发者工具联调验证容器内实时通道（Socket）能力是否存在",
         });
 
