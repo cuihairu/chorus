@@ -54,6 +54,40 @@ public sealed class SessionActorResyncTests
         await AnyAsync(received, s => s.Forced == false, startIndex: countAfterAck);
     }
 
+    [Fact]
+    public async Task ForcedResync_FiresOffPeriodicTicks()
+    {
+        // SnapshotEveryTicks=0：没有任何周期快照可搭车，滞后客户端的强制
+        // 重同步必须在非周期 tick 上自行发出——且每条都是定向 Forced 包。
+        var received = new List<SessionSnapshot>();
+        await using var actor = new SessionActor("s-resync-offperiod", new SessionConfig
+        {
+            TickDurationMs = 20,
+            SnapshotEveryTicks = 0,
+            MaxLagTicks = 3,
+            ResyncCooldownMs = 50,
+        }, new CountingGameModule());
+
+        await actor.AddClientAsync(new CapturingClient("c1", received));
+        actor.Start();
+
+        await AnyAsync(received, s =>
+            s.Forced == true && s.Reason == "lag" && s.TargetClientId == "c1");
+
+        Lock.Wait();
+        try
+        {
+            // 从未有广播快照混入：全部是定向重同步。
+            Assert.All(received, s => Assert.Equal("c1", s.TargetClientId));
+        }
+        finally
+        {
+            Lock.Release();
+        }
+
+        Assert.True(actor.Diagnostics.TotalResyncSnapshotsSent >= 1);
+    }
+
     private static async Task AnyAsync(List<SessionSnapshot> snapshots, Func<SessionSnapshot, bool> predicate, int startIndex = 0)
     {
         var sw = Stopwatch.StartNew();

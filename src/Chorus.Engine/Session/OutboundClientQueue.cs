@@ -98,9 +98,14 @@ public sealed class OutboundClientQueue : IAsyncDisposable
             return;
         }
 
-        await _replayGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // gated：门是否已握在手上。取消可能发生在等门时（未获取，不能放），
+        // 也可能在帧间（已获取，finally 放）——两种都不许逃逸（调用方是
+        // fire-and-forget，逃出去就是未观察任务异常）。
+        var gated = false;
         try
         {
+            await _replayGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gated = true;
             foreach (var wire in frames)
             {
                 await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -126,7 +131,7 @@ public sealed class OutboundClientQueue : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            // Cancelled between frames (or waiting for the send gate): the
+            // Cancelled between frames (or waiting for either gate): the
             // caller discarded this task, so nothing may escape.
         }
         catch (Exception)
@@ -134,7 +139,10 @@ public sealed class OutboundClientQueue : IAsyncDisposable
         }
         finally
         {
-            _replayGate.Release();
+            if (gated)
+            {
+                _replayGate.Release();
+            }
         }
     }
 
