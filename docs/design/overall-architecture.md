@@ -475,6 +475,13 @@ stateDiagram-v2
 * 房间迁移必须保留必要的权威状态和待处理事件。
 * 销毁房间必须有明确业务条件与持久化策略。
 
+当前实现：`src/Chorus.Engine/Routing/RoomLifecycle.cs`（`RoomLifecycleTransitions` 纯跃迁表 +
+`RoomLifecycleRegistry` 每房间状态，非法跃迁 fail-visible）。五条约束逐条可测：Destroyed 只能从
+Closing 到达（唯一销毁路径，业务条件与持久化策略由调用方保证）；注册表**无驱逐 API**（`SessionRegistry`
+的容量淘汰仍是缓存关注点，不隐含业务销毁）；Sleeping 非终态且只能经 Recovering 回到 Active（休眠≠丢弃
+权威状态）；Migrating 只能经 Recovering 回到 Active、可中止走 Closing；终态记录才能 `TryForget`。
+持久化属 todo §15，生产接线随控制面路由落地——在此之前它是单进程退化形态。
+
 ## 5.2 Worker 分配
 
 目标是一个 Worker 承载多个 Room。
