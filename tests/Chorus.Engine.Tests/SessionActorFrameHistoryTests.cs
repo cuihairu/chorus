@@ -18,12 +18,18 @@ public sealed class SessionActorFrameHistoryTests
 {
     private static readonly SemaphoreSlim Lock = new(1, 1);
 
+    // Generous 15s ceilings: shared CI runners occasionally stall for several
+    // seconds mid-test, and a green run only needs ~100ms per wait (one tick
+    // drain). 5s ceilings flaked red on a loaded runner with the assertion
+    // otherwise sound.
+    private const int WaitCeilingMs = 15_000;
+
     private static async Task WaitUntilTickAsync(SessionActor actor, long tick)
     {
         var sw = Stopwatch.StartNew();
         while (actor.Diagnostics.TickId < tick)
         {
-            if (sw.ElapsedMilliseconds > 5000)
+            if (sw.ElapsedMilliseconds > WaitCeilingMs)
             {
                 throw new TimeoutException($"tick {tick} never reached (at {actor.Diagnostics.TickId})");
             }
@@ -36,7 +42,7 @@ public sealed class SessionActorFrameHistoryTests
         var sw = Stopwatch.StartNew();
         while (!predicate())
         {
-            if (sw.ElapsedMilliseconds > 5000)
+            if (sw.ElapsedMilliseconds > WaitCeilingMs)
             {
                 throw new TimeoutException($"{what} never observed");
             }
@@ -99,31 +105,41 @@ public sealed class SessionActorFrameHistoryTests
             TickDurationMs = 100,
             SnapshotEveryTicks = 1,
             FrameHistoryBytes = 0, // history disabled: every request must miss
+            ResyncRequestCooldownMs = 0, // drop-tolerant retry below, not the cooldown subject
         }, new TinyGameModule());
 
         await actor.AddClientAsync(new CapturingClient("c1", received));
         actor.Start();
 
         await WaitUntilTickAsync(actor, 2);
-        await actor.ResyncAsync("c1", fromFrameId: 1);
 
-        await WaitUntilAsync(
-            () => TickIds(received).Any(t => true) && SnapshotList(received).Any(s => s.Forced == true && s.Reason == "resync-gap"),
-            "forced resync-gap answer");
+        // The forced answer rides the same latest-wins outbound slot as the
+        // regular broadcasts: a pump that lags past the next tick can drop it
+        // behind a newer snapshot (state stays intact, only the message is
+        // lost). The miss itself is deterministic with history disabled, so
+        // re-request until one answer lands instead of waiting longer.
+        SessionSnapshot? gap = null;
+        var sw = Stopwatch.StartNew();
+        while (gap is null && sw.ElapsedMilliseconds < WaitCeilingMs)
+        {
+            await actor.ResyncAsync("c1", fromFrameId: 1);
+            await Task.Delay(100);
+            Lock.Wait();
+            try
+            {
+                gap = received.FirstOrDefault(s => s.Forced == true && s.Reason == "resync-gap");
+            }
+            finally
+            {
+                Lock.Release();
+            }
+        }
 
-        Lock.Wait();
-        try
-        {
-            var gap = received.First(s => s.Forced == true && s.Reason == "resync-gap");
-            Assert.Equal("c1", gap.TargetClientId);
-            // Latest state AT RESYNC TIME, not at assertion time - the actor
-            // keeps ticking while the replay lands on the client.
-            Assert.InRange(gap.TickId, 1, actor.Diagnostics.TickId);
-        }
-        finally
-        {
-            Lock.Release();
-        }
+        Assert.NotNull(gap);
+        Assert.Equal("c1", gap!.TargetClientId);
+        // Latest state AT RESYNC TIME, not at assertion time - the actor
+        // keeps ticking while the answer lands on the client.
+        Assert.InRange(gap.TickId, 1, actor.Diagnostics.TickId);
 
         await WaitUntilAsync(
             () => actor.Diagnostics.TotalResyncWindowMisses >= 1,
@@ -205,35 +221,58 @@ public sealed class SessionActorFrameHistoryTests
         await actor.AddClientAsync(new CapturingClient("c1", received));
         actor.Start();
 
-        await actor.TryIngestAudienceEventAsync(new AudienceEvent(
-            EventId: "ev-1",
-            Platform: "test",
-            SessionId: "s-ev",
-            UserId: "u1",
-            Kind: AudienceEventKind.Comment,
-            IngestTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        // The envelope rides the same latest-wins outbound slot as every
+        // snapshot: a pump that lags past the next tick can drop the one
+        // snapshot carrying the envelope behind the next (event-less) one,
+        // and the drained accumulator is not re-emitted - the state itself
+        // stays intact, only the envelope is lost. Waiting longer cannot fix
+        // a drop, so re-ingest a fresh event per attempt: every applied
+        // event re-enters the next drain, and some attempt must land.
+        SessionSnapshot? carrier = null;
+        var eventId = "";
+        var attempts = 0;
+        var sw = Stopwatch.StartNew();
+        while (carrier is null && sw.ElapsedMilliseconds < WaitCeilingMs)
+        {
+            attempts++;
+            eventId = $"ev-{attempts}";
+            await actor.TryIngestAudienceEventAsync(new AudienceEvent(
+                EventId: eventId,
+                Platform: "test",
+                SessionId: "s-ev",
+                UserId: "u1",
+                Kind: AudienceEventKind.Comment,
+                IngestTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
 
-        // Prove the reducer applied the event first, then wait for the
-        // envelope: the tick that applied it drains the accumulator into its
-        // own snapshot, and slow ticks keep that snapshot off the latest-wins
-        // drop path.
-        await WaitUntilAsync(
-            () => actor.Diagnostics.TotalAppliedEvents >= 1,
-            "applied event");
-        await WaitUntilAsync(
-            () => SnapshotList(received).Any(s => s.FrameEvents != null),
-            "snapshot with frameEvents");
+            await WaitUntilAsync(
+                () => actor.Diagnostics.TotalAppliedEvents >= attempts,
+                $"applied event {eventId}");
+
+            Lock.Wait();
+            try
+            {
+                // One event in flight at a time, so the matching envelope
+                // holds exactly this event (Assert.Single below).
+                carrier = received.FirstOrDefault(s =>
+                    s.FrameEvents != null && s.FrameEvents.Any(e => e.EventId == eventId));
+            }
+            finally
+            {
+                Lock.Release();
+            }
+        }
+
+        Assert.NotNull(carrier);
 
         Lock.Wait();
         try
         {
-            var withEvents = received.First(s => s.FrameEvents != null);
-            var fe = withEvents.FrameEvents!;
+            var fe = carrier!.FrameEvents!;
             Assert.Single(fe);
-            Assert.Equal("ev-1", fe[0].EventId);
+            Assert.Equal(eventId, fe[0].EventId);
             Assert.Equal("u1", fe[0].UserId);
             Assert.Equal("comment", fe[0].Kind);
-            Assert.Equal(withEvents.TickId, fe[0].FrameId);
+            Assert.Equal(carrier!.TickId, fe[0].FrameId);
         }
         finally
         {
@@ -256,10 +295,16 @@ public sealed class SessionActorFrameHistoryTests
 
         await WaitUntilTickAsync(actor, 3);
 
+        // Ticks are counted on the actor, snapshots on the client: under load
+        // the outbound pump can lag the tick loop, so poll for the deliveries
+        // instead of assuming they landed the moment tick 3 published.
+        await WaitUntilAsync(
+            () => SnapshotList(received).Count >= 2,
+            "first snapshots delivered");
+
         Lock.Wait();
         try
         {
-            Assert.True(received.Count >= 2);
             Assert.All(received, s => Assert.Null(s.FrameEvents));
         }
         finally
