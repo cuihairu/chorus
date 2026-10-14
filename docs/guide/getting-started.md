@@ -66,3 +66,10 @@ npm run docs:build
 ```
 
 产物目录：`docs/.vuepress/dist`
+
+> **依赖 pin 注意**：文档站是 VuePress 1.x + webpack 4 旧链，`package.json` 的
+> `overrides` 里有一批安全 pin。改 pin 时本地验证 `npm ci` 与 `npm run docs:build`
+> 都通过再提交——两个已踩过的坑：`"a>b"` 形式的 override 键是 pnpm 语法，npm 会以
+> `EINVALIDTAGNAME` 拒绝（嵌套对象才是 npm 写法）；webpack-log 3.0.2 声明
+> `nanoid: ^2.0.3` 且把 `require('nanoid')` 当函数调用，钉到 nanoid 3.x 会让构建
+> 在 `nanoid is not a function` 处失败。
