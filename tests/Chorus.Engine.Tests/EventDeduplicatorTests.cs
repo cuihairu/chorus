@@ -178,4 +178,14 @@ public sealed class EventDeduplicatorTests
         // liveness preserved) and exactly one of the earlier ids is forgotten.
         Assert.True(dedup.TryReserve(PlatformNames.Douyin, "dy-new", out _));
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_NonPositiveTtl_Throws(long seconds)
+    {
+        // TTL 非正数 = 去重窗口归零，构造期即拒绝。
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new EventDeduplicator(TimeSpan.FromSeconds(seconds)));
+    }
 }

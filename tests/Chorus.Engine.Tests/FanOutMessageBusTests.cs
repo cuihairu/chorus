@@ -63,6 +63,23 @@ public sealed class FanOutMessageBusTests
         });
     }
 
+    [Fact]
+    public void Constructor_NoChildren_Throws()
+    {
+        // 空子总线集合构造期即拒绝：没有下游的发布会静默丢失。
+        Assert.Throws<ArgumentException>(() => new FanOutMessageBus(Array.Empty<IMessageBus>()));
+    }
+
+    [Fact]
+    public async Task ChildCancel_RethrowsInsteadOfAggregating()
+    {
+        // 取消不是投递失败：必须原样上抛，不能被 AggregateException 吞掉。
+        await using var fan = new FanOutMessageBus(new IMessageBus[] { new CancelingBus() });
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            async () => await fan.PublishAsync(Env(), CancellationToken.None));
+    }
+
     private static async Task PumpAsync(IMessageBus bus, List<Envelope> into)
     {
         await foreach (var env in bus.SubscribeAsync(CancellationToken.None))
@@ -88,6 +105,21 @@ public sealed class FanOutMessageBusTests
     {
         public ValueTask PublishAsync(Envelope envelope, CancellationToken cancellationToken)
             => throw new InvalidOperationException("child down");
+
+        public async IAsyncEnumerable<Envelope> SubscribeAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            yield break;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class CancelingBus : IMessageBus
+    {
+        public ValueTask PublishAsync(Envelope envelope, CancellationToken cancellationToken)
+            => throw new OperationCanceledException();
 
         public async IAsyncEnumerable<Envelope> SubscribeAsync(
             [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)

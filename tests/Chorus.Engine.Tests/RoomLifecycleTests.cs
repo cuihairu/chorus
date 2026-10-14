@@ -1,3 +1,4 @@
+using System.Linq;
 using Chorus.Engine.Routing;
 
 namespace Chorus.Engine.Tests;
@@ -284,5 +285,20 @@ public sealed class RoomLifecycleTests
         var registry = new RoomLifecycleRegistry();
 
         Assert.ThrowsAny<ArgumentException>(() => registry.TryCreate(roomId!, out _));
+    }
+
+    [Fact]
+    public void AllowedActions_IsReverseIndexOfTransitionTable()
+    {
+        // AllowedActions 是 CanTransition 的反向索引：两者必须逐状态一致，
+        // 否则给调用方的「合法动作」清单会多漏（构造出非法菜单/漏掉收敛路径）。
+        foreach (var from in Enum.GetValues<RoomLifecycleState>())
+        {
+            var expected = Enum.GetValues<RoomLifecycleAction>()
+                .Where(action => RoomLifecycleTransitions.CanTransition(from, action, out _))
+                .ToHashSet();
+
+            Assert.Equal(expected, RoomLifecycleTransitions.AllowedActions(from));
+        }
     }
 }

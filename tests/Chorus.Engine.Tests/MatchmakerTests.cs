@@ -221,6 +221,22 @@ public sealed class MatchmakerTests
         Assert.Throws<InvalidOperationException>(() => matchmaker.TryFormMatch(StartMs + 10_000));
     }
 
+    [Fact]
+    public void FactoryOutput_DuplicateParticipantId_IsRejected()
+    {
+        // 规则 2 的另一半：工厂产出的 ParticipantId 互相重复（与真人共命名空间）
+        // 也必须在组局边界拒绝——参与者身份是后续路由与去重的锚点。
+        var dupFactory = new DelegatingFactory(count =>
+            Enumerable.Range(0, count)
+                .Select(i => new MatchParticipant("bot-dup", IsBot: true, PlayerId: null, BotId: $"bot-def-{i}"))
+                .ToArray());
+        var matchmaker = new Matchmaker(NewPolicy(min: 3), dupFactory);
+        matchmaker.Join("req-1", "streamer-a", StartMs);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => matchmaker.TryFormMatch(StartMs + 10_000));
+        Assert.Contains("ParticipantId 重复", ex.Message);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -244,6 +260,17 @@ public sealed class MatchmakerTests
     {
         // 规则 1 的另一半：等真人模式必须有等待上限，否则永远卡住。
         Assert.Throws<ArgumentException>(() => NewPolicy(fillMode: MatchmakingFillMode.WaitForRealPlayers, waitTimeoutMs: null));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void Policy_BlankMode_Throws(string? mode)
+    {
+        // 策略必须带模式标识（按模式区分策略），空白在构造期即拒绝。
+        Assert.Throws<ArgumentException>(
+            () => new MatchmakingPolicy(mode!, 2, 4, MatchmakingFillMode.FillWithBotsImmediately, null));
     }
 
     [Fact]

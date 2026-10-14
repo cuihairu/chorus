@@ -148,6 +148,89 @@ public sealed class DefaultAudienceEventReducerTests
     }
 
     [Fact]
+    public void Reduce_Comments_NotMerged_AndPreservedVerbatim()
+    {
+        var reducer = new DefaultAudienceEventReducer();
+
+        // 评论不合并不压缩：超载只按入序截断，原文与身份字段保持原样。
+        AudienceEvent Comment(string id, string user, string text) => new(
+            EventId: id, Platform: "test", SessionId: "s1", UserId: user,
+            Kind: AudienceEventKind.Comment, IngestTimeMs: 3000, Text: text);
+
+        var events = new List<AudienceEvent>
+        {
+            Comment("c1", "u1", "hello"),
+            Comment("c2", "u2", "second"),
+            Comment("c3", "u3", "third"),
+        };
+
+        var reduced = reducer.Reduce(events, maxEventsPerTick: 2);
+
+        Assert.Equal(2, reduced.Events.Count);
+        Assert.Equal(new[] { "c1", "c2" }, reduced.Events.Select(e => e.EventId).ToArray());
+        Assert.All(reduced.Events, e => Assert.Equal(AudienceEventKind.Comment, e.Kind));
+        Assert.Equal("hello", reduced.Events[0].Text);
+        Assert.Equal(0, reduced.MergedInputEvents);
+        // 被截断的 1 条评论计入 dropped（没有合并可回收）。
+        Assert.Equal(1, reduced.DroppedInputEvents);
+    }
+
+    [Fact]
+    public void Reduce_PassthroughKinds_EmittedFirst_AndTruncate()
+    {
+        var reducer = new DefaultAudienceEventReducer();
+
+        AudienceEvent Enter(string id, string user) => new(
+            EventId: id, Platform: "test", SessionId: "s1", UserId: user,
+            Kind: AudienceEventKind.Enter, IngestTimeMs: 4000);
+
+        // 进场/房间事件走 passthrough：不合并，且在礼物/点赞之前产出。
+        var events = new List<AudienceEvent>
+        {
+            Enter("en1", "u1"),
+            Enter("en2", "u2"),
+            Enter("en3", "u3"),
+            new AudienceEvent("l1", "test", "s1", "u1", AudienceEventKind.Like, 5000),
+        };
+
+        var reduced = reducer.Reduce(events, maxEventsPerTick: 2);
+
+        Assert.Equal(2, reduced.Events.Count);
+        Assert.All(reduced.Events, e => Assert.Equal(AudienceEventKind.Enter, e.Kind));
+        Assert.Equal(0, reduced.MergedInputEvents);
+        // 4 条输入、预算 2 且 passthrough 不可合并 → 截掉的 2 条计入 dropped。
+        Assert.Equal(2, reduced.DroppedInputEvents);
+    }
+
+    [Fact]
+    public void Reduce_GiftGroups_TruncateAtBudget()
+    {
+        var reducer = new DefaultAudienceEventReducer();
+
+        // 3 个礼物组各 2 次：预算 2 → 只产出前两个组，组内计数仍守恒。
+        var events = new List<AudienceEvent>();
+        for (var i = 0; i < 6; i++)
+        {
+            events.Add(new AudienceEvent(
+                EventId: $"g{i}", Platform: "test", SessionId: "s1", UserId: $"u{i / 2}",
+                Kind: AudienceEventKind.Gift, IngestTimeMs: 6000 + i,
+                GiftId: "g1", GiftCount: 1, GiftValue: 5));
+        }
+
+        var reduced = reducer.Reduce(events, maxEventsPerTick: 2);
+
+        Assert.Equal(2, reduced.Events.Count);
+        Assert.All(reduced.Events, e =>
+        {
+            Assert.Equal(AudienceEventKind.Gift, e.Kind);
+            Assert.Equal("merged", e.Platform);
+            Assert.Equal(2, e.GiftCount);
+        });
+        // 6 条输入合并成 3 组（mergedInputEvents=3），预算 2 又截掉 1 组 → 计入 dropped。
+        Assert.Equal(1, reduced.DroppedInputEvents);
+    }
+
+    [Fact]
     public void Reduce_SameUserDifferentFaction_NotMerged()
     {
         var reducer = new DefaultAudienceEventReducer();

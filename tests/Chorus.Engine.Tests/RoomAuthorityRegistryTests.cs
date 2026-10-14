@@ -236,4 +236,62 @@ public sealed class RoomAuthorityRegistryTests
         Assert.ThrowsAny<ArgumentException>(() => registry.TryRegister(id!, "worker-a"));
         Assert.ThrowsAny<ArgumentException>(() => registry.TryRegister("room-1", id!));
     }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void IsAuthoritative_BlankRoomId_ReturnsFalse(string? roomId)
+    {
+        var registry = NewRegistry();
+
+        // fail-closed：空白 roomId 直接判无权威，不落入字典查询。
+        Assert.False(registry.IsAuthoritative(roomId!, "worker-a"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void IsAuthoritative_BlankWorkerId_ReturnsFalse(string? workerId)
+    {
+        var registry = NewRegistry();
+
+        Assert.False(registry.IsAuthoritative("room-1", workerId!));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void IsRouteCurrent_BlankRoomId_ReturnsFalse(string? roomId)
+    {
+        var registry = NewRegistry();
+
+        Assert.False(registry.IsRouteCurrent(roomId!, epoch: 1));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void IsRouteCurrent_NonPositiveEpoch_ReturnsFalse(long epoch)
+    {
+        var registry = NewRegistry();
+
+        // epoch 从 1 开始：0/负数一律视为过期路由，不查表。
+        Assert.False(registry.IsRouteCurrent("room-1", epoch));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Takeover_NonPositiveEpoch_Throws(long epoch)
+    {
+        var registry = NewRegistry();
+
+        // 两阶段接管的三个入口都要在 epoch 非正数时 fail-visible（不静默拒绝也不误判）。
+        Assert.Throws<ArgumentOutOfRangeException>(() => registry.TryBeginTakeover("room-1", epoch));
+        Assert.Throws<ArgumentOutOfRangeException>(() => registry.TryCompleteTakeover("room-1", epoch, "worker-b"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => registry.TryAbortTakeover("room-1", epoch));
+    }
 }

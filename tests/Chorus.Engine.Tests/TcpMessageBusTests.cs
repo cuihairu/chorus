@@ -47,4 +47,49 @@ public sealed class TcpMessageBusTests
 
         await bus.DisposeAsync();
     }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void Constructor_BlankHost_Throws(string? host)
+    {
+        Assert.Throws<ArgumentException>(() => new TcpMessageBus(host!, port: 0));
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(65536)]
+    public void Constructor_PortOutOfRange_Throws(int port)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TcpMessageBus("127.0.0.1", port));
+    }
+
+    [Theory]
+    [InlineData("localhost")]
+    [InlineData("0.0.0.0")]
+    [InlineData("*")]
+    [InlineData("::")]
+    [InlineData("127.0.0.1")]
+    public async Task StartServer_ResolvesHosts_AndListens(string host)
+    {
+        // 各主机写法都要落到可监听地址（回环 / IPv4 通配 / IPv6 通配 / 字面 IP），
+        // port 0 交给内核分配。
+        await using var bus = new TcpMessageBus(host, port: 0);
+
+        bus.StartServer();
+
+        Assert.True(bus.ListeningPort > 0);
+    }
+
+    [Fact]
+    public async Task StartServer_Twice_IsIdempotent()
+    {
+        await using var bus = new TcpMessageBus("127.0.0.1", port: 0);
+
+        bus.StartServer();
+        bus.StartServer();
+
+        Assert.True(bus.ListeningPort > 0);
+    }
 }

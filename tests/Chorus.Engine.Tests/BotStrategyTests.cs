@@ -225,11 +225,105 @@ public sealed class BotStrategyTests
         Assert.Equal(2, queue.Count);
     }
 
+    [Fact]
+    public void ScriptedStrategy_Guards_ThrowVisibly()
+    {
+        var config = new BotStrategyConfig("scripted");
+
+        Assert.Throws<ArgumentNullException>(() => new ScriptedBotStrategy(null!, "b", "p", []));
+        Assert.Throws<ArgumentNullException>(() => new ScriptedBotStrategy(config, "b", "p", null!));
+        Assert.Throws<ArgumentException>(() => new ScriptedBotStrategy(config, " ", "p", []));
+        Assert.Throws<ArgumentException>(() => new ScriptedBotStrategy(config, "b", " ", []));
+    }
+
+    [Theory]
+    [InlineData("not-a-number")]
+    [InlineData("-1")]
+    [InlineData("3")] // 超过脚本长度
+    public void ScriptedStrategy_RestoreInvalidState_Throws(string state)
+    {
+        var strategy = new ScriptedBotStrategy(
+            new BotStrategyConfig("scripted"), "bot-1", "p-bot-1", [Script(1), Script(2)]);
+
+        Assert.Throws<ArgumentException>(() => strategy.RestoreState(state));
+    }
+
+    [Fact]
+    public void Runtime_Guards_ThrowVisibly()
+    {
+        var runtime = new BotRuntime(new BotActionQueue());
+        var strategy = new ScriptedBotStrategy(
+            new BotStrategyConfig("scripted"), "bot-1", "p-bot-1", [Script(1)]);
+
+        Assert.Throws<ArgumentException>(() => runtime.Register(" ", strategy));
+        Assert.Throws<ArgumentNullException>(() => runtime.Register("p", null!));
+        Assert.Throws<ArgumentException>(() => runtime.Unregister(" "));
+        Assert.Throws<ArgumentNullException>(() => runtime.Tick(null!));
+    }
+
+    [Fact]
+    public void Runtime_StrategyReturningNull_CountedAsError()
+    {
+        var runtime = new BotRuntime(new BotActionQueue());
+        runtime.Register("p-null", new NullDecideStrategy());
+
+        var submitted = runtime.Tick(View(5));
+
+        Assert.Equal(0, submitted);
+        Assert.Equal(1, runtime.StrategyErrorsCount);
+    }
+
+    [Fact]
+    public void Runtime_IllegalAction_CountedAndIsolated()
+    {
+        // TrySubmit 对缺身份的动作抛错：只影响该 bot（计错 + 中止该 bot 的本批），
+        // 不拖垮整轮 Tick。
+        var queue = new BotActionQueue();
+        var runtime = new BotRuntime(queue);
+        runtime.Register("p-bad", new IllegalActionStrategy());
+        runtime.Register("p-bot-1", new ScriptedBotStrategy(
+            new BotStrategyConfig("scripted"), "bot-1", "p-bot-1", [Script(5)]));
+
+        var submitted = runtime.Tick(View(5));
+
+        Assert.Equal(1, submitted);
+        Assert.Equal(1, runtime.StrategyErrorsCount);
+        Assert.Equal(1, queue.Count);
+    }
+
     private sealed class ThrowingStrategy : IBotStrategy
     {
         public string StrategyId => "throwing";
 
         public IReadOnlyList<BotAction> Decide(BotWorldView view) => throw new InvalidOperationException("boom");
+
+        public string? ExportState() => null;
+
+        public void RestoreState(string? state)
+        {
+        }
+    }
+
+    private sealed class NullDecideStrategy : IBotStrategy
+    {
+        public string StrategyId => "null-decide";
+
+        public IReadOnlyList<BotAction>? Decide(BotWorldView view) => null;
+
+        public string? ExportState() => null;
+
+        public void RestoreState(string? state)
+        {
+        }
+    }
+
+    /// <summary>产出缺 BotId 的非法动作：触发 TrySubmit 的 fail-visible 抛错。</summary>
+    private sealed class IllegalActionStrategy : IBotStrategy
+    {
+        public string StrategyId => "illegal";
+
+        public IReadOnlyList<BotAction> Decide(BotWorldView view)
+            => [new("", "p-bad", 5, 1, "vote", null)];
 
         public string? ExportState() => null;
 

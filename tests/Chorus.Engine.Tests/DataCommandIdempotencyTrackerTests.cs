@@ -133,4 +133,23 @@ public sealed class DataCommandIdempotencyTrackerTests
         // 被驱逐的 cmd-a 可重新处理（可观测的容量换稳定性折衷，同 EventDeduplicator 安全阀语义）。
         Assert.True(tracker.TryBegin(NewCommand("cmd-a"), StartMs + 3, out _));
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_NonPositiveTtl_Throws(long seconds)
+    {
+        // TTL 非正数会让每条记录立即过期（抑制窗口归零），构造期即拒绝。
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new DataCommandIdempotencyTracker(TimeSpan.FromSeconds(seconds)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_NonPositiveCapacity_Throws(int capacity)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new DataCommandIdempotencyTracker(TimeSpan.FromSeconds(60), capacity: capacity));
+    }
 }
