@@ -38,7 +38,9 @@ public sealed record SessionDiagnostics(
     /// <summary>Resync requests rejected by the per-client cooldown (frame-sync P2).</summary>
     long TotalResyncThrottled = 0,
     /// <summary>Current frame-history footprint in encoded bytes (frame-sync P2).</summary>
-    long FrameHistoryBytes = 0
+    long FrameHistoryBytes = 0,
+    /// <summary>Encoded wire size of the most recent snapshot this session sent (tuning: snapshot-size signal; 0 = none yet).</summary>
+    long LastSnapshotBytes = 0
 );
 
 public sealed record SessionClientDiagnostics(

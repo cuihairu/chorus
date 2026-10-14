@@ -50,6 +50,32 @@ public sealed class SessionActorSnapshotTests
     }
 
     [Fact]
+    public async Task Snapshot_ExposesLastWireBytes()
+    {
+        // Tuning signal (tuning.md): the diagnostics expose the encoded wire
+        // size of the most recent snapshot so snapshot-size drift is visible
+        // without a profiler.
+        var received = new List<SessionSnapshot>();
+        await using var actor = new SessionActor("s-bytes", new SessionConfig
+        {
+            TickDurationMs = 10,
+            SnapshotEveryTicks = 1,
+        }, new CountingGameModule());
+
+        await actor.AddClientAsync(new CapturingClient("c1", received));
+        actor.Start();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (actor.Diagnostics.LastSnapshotBytes == 0 && sw.ElapsedMilliseconds < 5000)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.True(actor.Diagnostics.LastSnapshotBytes > 0,
+            "a sent snapshot must publish its encoded wire size");
+    }
+
+    [Fact]
     public async Task OversizeState_SendSkipped_Counted()
     {
         var received = new List<SessionSnapshot>();
@@ -75,6 +101,8 @@ public sealed class SessionActorSnapshotTests
 
         Assert.True(actor.Diagnostics.TotalSnapshotsOversize >= 1);
         Assert.Equal(0, actor.Diagnostics.TotalSnapshotsSent);
+        // An oversize state is skipped before encoding, so no wire size is recorded.
+        Assert.Equal(0, actor.Diagnostics.LastSnapshotBytes);
         lock (received)
         {
             Assert.Empty(received);

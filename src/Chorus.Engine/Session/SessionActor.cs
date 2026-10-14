@@ -51,6 +51,7 @@ public sealed class SessionActor : IAsyncDisposable
     private long _totalTickOverruns;
     private long _totalTickErrors;
     private long _totalSnapshotsOversize;
+    private long _lastSnapshotBytes;
     private long _totalResyncRequests;
     private long _totalResyncReplays;
     private long _totalResyncWindowMisses;
@@ -448,7 +449,9 @@ public sealed class SessionActor : IAsyncDisposable
             Reason: "resync-gap",
             TargetClientId: c.ClientId,
             FrameEvents: DrainFrameEvents());
-        _ = item.Client.SendSnapshotAsync(WireSnapshot.Encode(latest), CancellationToken.None);
+        var latestWire = WireSnapshot.Encode(latest);
+        RecordSnapshotBytes(latestWire);
+        _ = item.Client.SendSnapshotAsync(latestWire, CancellationToken.None);
         Interlocked.Increment(ref _totalResyncSnapshotsSent);
     }
 
@@ -609,6 +612,7 @@ public sealed class SessionActor : IAsyncDisposable
                         Forced: false,
                         FrameEvents: frameEvents);
                     var wire = WireSnapshot.Encode(snapshot);
+                    RecordSnapshotBytes(wire);
                     _frameHistory.Add(wire);
                     foreach (var (client, _) in _clients.Values)
                     {
@@ -645,7 +649,9 @@ public sealed class SessionActor : IAsyncDisposable
                         ClientLastAckTickId: force ? forceInfo!.LastAckTickId : null,
                         FrameEvents: frameEvents
                     );
-                    await client.SendSnapshotAsync(WireSnapshot.Encode(snapshot), cancellationToken).ConfigureAwait(false);
+                    var perClientWire = WireSnapshot.Encode(snapshot);
+                    RecordSnapshotBytes(perClientWire);
+                    await client.SendSnapshotAsync(perClientWire, cancellationToken).ConfigureAwait(false);
                     Interlocked.Increment(ref _totalSnapshotsSent);
                     if (force)
                     {
@@ -675,7 +681,9 @@ public sealed class SessionActor : IAsyncDisposable
                         ClientLastAckTickId: forceInfo.LastAckTickId,
                         FrameEvents: frameEvents
                     );
-                    await client.SendSnapshotAsync(WireSnapshot.Encode(snapshot), cancellationToken).ConfigureAwait(false);
+                    var forcedWire = WireSnapshot.Encode(snapshot);
+                    RecordSnapshotBytes(forcedWire);
+                    await client.SendSnapshotAsync(forcedWire, cancellationToken).ConfigureAwait(false);
                     Interlocked.Increment(ref _totalSnapshotsSent);
                     stateInfo.LastResyncTimeMs = now;
                     stateInfo.ResyncCount++;
@@ -760,9 +768,13 @@ public sealed class SessionActor : IAsyncDisposable
             TotalResyncReplays: Interlocked.Read(ref _totalResyncReplays),
             TotalResyncWindowMisses: Interlocked.Read(ref _totalResyncWindowMisses),
             TotalResyncThrottled: Interlocked.Read(ref _totalResyncThrottled),
-            FrameHistoryBytes: _frameHistory.Bytes
+            FrameHistoryBytes: _frameHistory.Bytes,
+            LastSnapshotBytes: Interlocked.Read(ref _lastSnapshotBytes)
         );
     }
+
+    private void RecordSnapshotBytes(WireSnapshot wire) =>
+        Interlocked.Exchange(ref _lastSnapshotBytes, wire.EncodedJson.Length);
 
     private static long NowMs() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 

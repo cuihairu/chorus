@@ -94,6 +94,23 @@ public sealed class MetricsEndpointTests
     }
 
     [Fact]
+    public void Renderer_SnapshotBytes_MaxAcrossSessions()
+    {
+        var diagnostics = new List<Chorus.Engine.Session.SessionDiagnostics>
+        {
+            new("s1", 10, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Array.Empty<Chorus.Engine.Session.SessionClientDiagnostics>(),
+                LastSnapshotBytes: 512),
+            new("s2", 10, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, Array.Empty<Chorus.Engine.Session.SessionClientDiagnostics>(),
+                LastSnapshotBytes: 4096),
+        };
+
+        var metrics = Chorus.Gateway.Core.Metrics.ChorusMetricsText.RenderEngine(diagnostics, ipcPublishFailures: 0);
+
+        Assert.Contains("# TYPE chorus_snapshot_bytes gauge", metrics);
+        Assert.Contains("chorus_snapshot_bytes 4096", metrics);
+    }
+
+    [Fact]
     public void Renderer_Engine_EmitsIpcPublishFailures()
     {
         // The EngineHost surface now reports Engine→Gateway publish failures
