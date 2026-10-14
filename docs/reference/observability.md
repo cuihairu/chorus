@@ -59,6 +59,7 @@ scrape_configs:
 | `chorus_snapshots_sent_total` | counter | 下发快照数 |
 | `chorus_snapshots_resync_total` | counter | 强制 resync 快照数（客户端 lag 超 `MaxLagTicks`） |
 | `chorus_snapshots_oversize_total` | counter | 序列化后超过 `MaxSnapshotBytes` 被跳过的快照数 |
+| `chorus_snapshot_bytes` | gauge | 最近一次下发的快照线字节数（取所有 Session 最大值；无快照时为 0）。调优信号：快照体积漂移无需 profiler 即可观察（`f301aa3`），`/sessions` 的 `lastSnapshotBytes` 为同值的每 session 明细 |
 
 ### ACK（Engine 侧分类计数）
 

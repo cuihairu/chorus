@@ -133,7 +133,7 @@ title: 参数调优
 - 收益：进一步省 CPU/带宽（约 30–60%），但需要客户端同步换解码库；
 - 成本：新增依赖 + 线协议破坏性变更（0.x 允许，但两个平台生态的 JS/TS 客户端都要跟）；
 - 决定：先把 JSON 路径的「序列化一次复用」吃满，观察 `chorus_tick_duration_ms` 与
-  快照体积（当前 `/sessions` 未暴露 `lastSnapshotBytes`，先以 `chorus_snapshots_oversize_total` 观察超限）再议；引入时机放在 1.0 的线协议
+  快照体积（`/sessions` 的 `lastSnapshotBytes` 与 `/metrics` 的 `chorus_snapshot_bytes` 已暴露每 session 最近一次快照的线字节数，`8e87a47` 同批 `f301aa3`；超限另见 `chorus_snapshots_oversize_total`）再议；引入时机放在 1.0 的线协议
   版本 bump 上（见 [版本策略](./versioning.md)），不单独发破坏性变更。
 
 危险信号：
