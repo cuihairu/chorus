@@ -59,4 +59,44 @@ public sealed class TestPlatformEventMapperTests
 
         Assert.Null(mapper.TryMap(PlatformNames.Douyin, """{"sessionId":"s1"}""", ingestTimeMs: 1));
     }
+
+    [Fact]
+    public void Mapper_MissingSessionId_ReturnsNull()
+    {
+        var mapper = new TestPlatformEventMapper();
+
+        Assert.Null(mapper.TryMap(PlatformNames.Test, """{"eventId":"e1"}""", ingestTimeMs: 1));
+    }
+
+    [Fact]
+    public void Mapper_BlankSessionId_ReturnsNull()
+    {
+        var mapper = new TestPlatformEventMapper();
+
+        Assert.Null(mapper.TryMap(PlatformNames.Test, """{"sessionId":"   ","eventId":"e1"}""", ingestTimeMs: 1));
+    }
+
+    [Fact]
+    public void Mapper_NumericKind_ParsedAsEnum()
+    {
+        var mapper = new TestPlatformEventMapper();
+        const string raw = """{"sessionId":"s1","eventId":"e1","userId":"u1","kind":3}""";
+
+        var ev = mapper.TryMap(PlatformNames.Test, raw, ingestTimeMs: 1);
+
+        Assert.NotNull(ev);
+        Assert.Equal(AudienceEventKind.Gift, ev!.Kind);
+    }
+
+    [Fact]
+    public void Mapper_UnknownStringKind_FallsBackToComment()
+    {
+        var mapper = new TestPlatformEventMapper();
+        const string raw = """{"sessionId":"s1","eventId":"e1","userId":"u1","kind":"UnknownKind"}""";
+
+        var ev = mapper.TryMap(PlatformNames.Test, raw, ingestTimeMs: 1);
+
+        Assert.NotNull(ev);
+        Assert.Equal(AudienceEventKind.Comment, ev!.Kind);
+    }
 }

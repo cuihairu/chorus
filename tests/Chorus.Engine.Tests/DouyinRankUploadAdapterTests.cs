@@ -134,6 +134,21 @@ public sealed class DouyinRankUploadAdapterTests
     }
 
     [Fact]
+    public void TrySubmit_MalformedResponse_ReturnsFalse_Counted()
+    {
+        var api = new DouyinJsonApi();
+        api.Sticky(TokenPath, TokenJson());
+        api.Sticky(UploadPath, "not-json");
+        var adapter = new DouyinRankUploadAdapter(
+            new DouyinMiniGameOptions(AppId, "test-secret", "http://test"),
+            CompetitionId, ScheduleId, http: api);
+
+        Assert.False(adapter.TrySubmit("s", "ou-A", 100));
+        Assert.Equal(0, adapter.Uploads);
+        Assert.Equal(1, adapter.Rejections);
+    }
+
+    [Fact]
     public void TrySubmit_ExpiredToken_Invalidates_AndRetriesOnce()
     {
         // 28001008 = token 过期：失效重取、重试恰好一次。

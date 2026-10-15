@@ -53,6 +53,24 @@ public sealed class BilibiliOpenLiveProtocolTests
     }
 
     [Fact]
+    public void ParseFrames_CorruptHeader_YieldsNothing()
+    {
+        // pack_len < HeaderSize (corrupt or truncated header) → yield break, no frames.
+        var corrupt = new byte[BilibiliOpenLiveProtocol.HeaderSize];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(corrupt.AsSpan(0, 4), 4);
+        Assert.Empty(BilibiliOpenLiveProtocol.ParseFrames(corrupt));
+    }
+
+    [Fact]
+    public void ParseFrames_PackLenExceedsData_YieldsNothing()
+    {
+        // pack_len > data.Length → yield break, no frames.
+        var corrupt = new byte[BilibiliOpenLiveProtocol.HeaderSize];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(corrupt.AsSpan(0, 4), 1024);
+        Assert.Empty(BilibiliOpenLiveProtocol.ParseFrames(corrupt));
+    }
+
+    [Fact]
     public void DecodeBody_Deflate_RoundTrip()
     {
         var original = Encoding.UTF8.GetBytes("""{"cmd":"DANMU_MSG","data":{"msg":"压缩弹幕"}}""");
@@ -82,6 +100,28 @@ public sealed class BilibiliOpenLiveProtocolTests
             BilibiliOpenLiveProtocol.ProtoVerBrotli, compressed.ToArray());
 
         Assert.Equal(original, decoded);
+    }
+
+    [Fact]
+    public void DecodeBody_Normal_ReturnsBody()
+    {
+        var body = Encoding.UTF8.GetBytes("""{"cmd":"NORMAL"}""");
+
+        var decoded = BilibiliOpenLiveProtocol.DecodeBody(
+            BilibiliOpenLiveProtocol.ProtoVerNormal, body);
+
+        Assert.Equal(body, decoded);
+    }
+
+    [Fact]
+    public void DecodeBody_UnknownVersion_Throws()
+    {
+        var body = Encoding.UTF8.GetBytes("x");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => BilibiliOpenLiveProtocol.DecodeBody(99, body));
+
+        Assert.Contains("unknown", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

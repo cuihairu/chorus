@@ -117,6 +117,28 @@ public sealed class AnalyticsPipelineTests
     }
 
     [Fact]
+    public void Drain_MaxCommandsZero_Throws()
+    {
+        var pipeline = NewPipeline();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => pipeline.DrainOnce(maxCommands: 0));
+    }
+
+    [Fact]
+    public void Drain_ExtractorReturnsNull_SkippedAndCounted()
+    {
+        var outbox = new DataCommandOutbox(64);
+        outbox.Enqueue(NewCommand("cmd-1", type: "null-extractor"), 1_000);
+        var pipeline = NewPipeline(outbox);
+        pipeline.Register("null-extractor", _ => null!);
+
+        pipeline.DrainOnce();
+
+        Assert.Equal(1, pipeline.SkippedCount);
+        Assert.Equal(0, pipeline.Get("comments.total", "room-1"));
+    }
+
+    [Fact]
     public void Drain_RespectsMaxCommands()
     {
         var outbox = new DataCommandOutbox(64);

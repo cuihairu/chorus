@@ -121,4 +121,41 @@ public sealed class BilibiliSignerTests
         };
         Assert.False(BilibiliSigner.VerifyHeaders(Body, KeyId, Secret, headers, Ts));
     }
+
+    [Fact]
+    public void VerifyHeaders_NullBody_Rejected()
+    {
+        Assert.False(BilibiliSigner.VerifyHeaders(null!, KeyId, Secret, AsVerifyDict(Build()), Ts));
+    }
+
+    [Fact]
+    public void VerifyHeaders_NullHeaders_Rejected()
+    {
+        Assert.False(BilibiliSigner.VerifyHeaders(Body, KeyId, Secret, null!, Ts));
+    }
+
+    [Fact]
+    public void VerifyHeaders_MissingAuthorization_Rejected()
+    {
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in Build())
+        {
+            if (name != BilibiliSigner.AuthorizationHeader)
+            {
+                headers[name] = value;
+            }
+        }
+
+        Assert.False(BilibiliSigner.VerifyHeaders(Body, KeyId, Secret, headers, Ts));
+    }
+
+    [Fact]
+    public void VerifyHeaders_EmptyAuthorization_Rejected()
+    {
+        var headers = new Dictionary<string, string>(Build(), StringComparer.OrdinalIgnoreCase)
+        {
+            [BilibiliSigner.AuthorizationHeader] = "   ",
+        };
+        Assert.False(BilibiliSigner.VerifyHeaders(Body, KeyId, Secret, headers, Ts));
+    }
 }
