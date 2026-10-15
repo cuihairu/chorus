@@ -1,16 +1,14 @@
-using System.Security.Cryptography;
-using System.Text;
+using System.Text.RegularExpressions;
 using Chorus.Adapters.Platforms;
 using Chorus.LoadTool;
 
 namespace Chorus.Engine.Tests;
 
 /// <summary>
-/// Load-tool signing coverage: the helper must produce the documented
-/// placeholder scheme (HMAC-SHA256(secret, rawBody) as lowercase hex) that the
-/// gateway's Douyin verifier checks. Expected values are hardcoded vectors
-/// computed independently (python3 hmac/hashlib), not round-trips through the
-/// helper, so a regression in the construction is caught.
+/// Load-tool signing helper coverage with vectors computed independently of
+/// both the helper and the gateway verifiers (python3 hmac/hashlib), so a
+/// regression in either construction is caught. Parity with the gateway
+/// construction is asserted directly against the verifier code.
 /// </summary>
 public sealed class IngressSignerTests
 {
@@ -19,70 +17,123 @@ public sealed class IngressSignerTests
     private const string Expected = "8d3ac7dee14cfddc255a450a7e3416802a2d2b5deff4b83dadedc2344cf3d507";
 
     [Fact]
-    public void ComputeSignature_KnownVector_MatchesDocumentedScheme()
+    public void Sign_Douyin_KnownVector_MatchesDocumentedScheme()
     {
-        Assert.Equal(Expected, IngressSigner.ComputeSignature(Body, Secret));
+        var signature = IngressSigner.Sign("douyin", Body, Secret);
+
+        Assert.Equal(DouyinPlatformEventVerifier.DefaultSignatureHeader, signature!.Value.Name);
+        Assert.Equal(Expected, signature.Value.Value);
     }
 
     [Fact]
-    public void ComputeSignature_SecondVector_MatchesDocumentedScheme()
+    public void Sign_Douyin_PassesTheGatewayVerifier()
     {
-        // Second vector (also computed with python3 hmac/hashlib) so the vector
-        // table is not a single lucky coincidence.
-        const string body = """{"session_id":"load-s1","event_id":"evt-abc","user_id":"u42","event":"comment","match_id":null}""";
-        const string expected = "e8c4edfb46d1d15699150cc0d1efe17f8b715e6a3d2b0d5c4d8fceac46b79135";
+        var signature = IngressSigner.Sign("douyin", Body, Secret)!;
+        var verifier = new DouyinPlatformEventVerifier(Secret);
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [signature.Value.Name] = signature.Value.Value,
+        };
 
-        Assert.Equal(expected, IngressSigner.ComputeSignature(body, "loadtool-signing-key"));
+        // The contract that matters: what the tool signs, the gateway accepts.
+        Assert.True(verifier.Verify(PlatformNames.Douyin, Body, headers));
     }
 
     [Fact]
-    public void ComputeSignature_IsLowercaseHex()
+    public void Sign_Kuaishou_PassesTheGatewayVerifier()
     {
-        var signature = IngressSigner.ComputeSignature(Body, Secret);
+        var signature = IngressSigner.Sign("kuaishou", Body, Secret)!;
 
-        Assert.Equal(64, signature.Length);
+        var verifier = new KuaishouPlatformEventVerifier(Secret);
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [signature.Value.Name] = signature.Value.Value,
+        };
+
+        Assert.Equal("kwaisign", signature.Value.Name);
+        Assert.True(verifier.Verify(PlatformNames.Kuaishou, Body, headers));
+    }
+
+    [Fact]
+    public void Sign_Douyin_KnownVector_IsHmacSha256OfRawBody()
+    {
+        // Independent recomputation of the documented placeholder construction
+        // (HMAC-SHA256 of the raw body, lowercase hex) inside the test.
+        var expected = Convert.ToHexString(
+            System.Security.Cryptography.HMACSHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(Secret),
+                System.Text.Encoding.UTF8.GetBytes(Body))).ToLowerInvariant();
+
+        Assert.Equal(expected, IngressSigner.Sign("douyin", Body, Secret)!.Value.Value);
+    }
+
+    [Fact]
+    public void Sign_Kuaishou_KnownVector_IsSha1OfBodyPlusToken()
+    {
+        // Official Kuaishou construction: sha1Hex(rawBody + token), lowercase.
+        const string expected = "1d9e41c01faf769dd954e8e6f08ab12b7de4feaf";
+
+        Assert.Equal(expected, IngressSigner.Sign("kuaishou", Body, Secret)!.Value.Value);
+    }
+
+    [Fact]
+    public void Sign_SignatureIsLowercaseHex()
+    {
+        var signature = IngressSigner.Sign("douyin", Body, Secret)!.Value.Value;
+
         Assert.Matches("^[0-9a-f]{64}$", signature);
+    }
+
+    [Fact]
+    public void Sign_IsCaseInsensitiveOnPlatformName()
+    {
+        Assert.Equal(Expected, IngressSigner.Sign("DOUYIN", Body, Secret)!.Value.Value);
+        Assert.True(IngressSigner.CanSign("Douyin"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Sign_BlankSecret_ReturnsNoHeader(string? secret)
+    {
+        // Same normalization the gateway verifiers apply: no secret means
+        // nothing to sign with, and an empty signature would be worse than none.
+        Assert.Null(IngressSigner.Sign("douyin", Body, secret));
+    }
+
+    [Theory]
+    [InlineData("test")]
+    [InlineData("bilibili")]
+    [InlineData("anything-else")]
+    public void Sign_PlatformWithoutSigner_ReturnsNoHeader(string platform)
+    {
+        // The tool refuses to invent a scheme it cannot verify against the
+        // gateway's own code (Bilibili's is a different construction, the test
+        // platform is AllowAll).
+        Assert.False(IngressSigner.CanSign(platform));
+        Assert.Null(IngressSigner.Sign(platform, Body, Secret));
+    }
+
+    [Fact]
+    public void CanSign_MatchesTheSignedPlatforms()
+    {
+        Assert.True(IngressSigner.CanSign("douyin"));
+        Assert.True(IngressSigner.CanSign("kuaishou"));
+        Assert.False(IngressSigner.CanSign("test"));
     }
 
     [Theory]
     [InlineData("dy-2")]
     [InlineData("s2")]
-    public void ComputeSignature_ChangesWhenBodyChanges(string tamperedField)
+    public void Sign_Douyin_ChangesWhenBodyChanges(string tamperedField)
     {
-        Assert.NotEqual(Expected, IngressSigner.ComputeSignature(Body.Replace("dy-1", tamperedField), Secret));
+        Assert.NotEqual(Expected, IngressSigner.Sign("douyin", Body.Replace("dy-1", tamperedField), Secret)!.Value.Value);
     }
 
     [Fact]
-    public void ComputeSignature_ChangesWhenSecretChanges()
+    public void Sign_Douyin_ChangesWhenSecretChanges()
     {
-        Assert.NotEqual(Expected, IngressSigner.ComputeSignature(Body, "other-secret"));
-    }
-
-    [Fact]
-    public void ComputeSignature_MatchesGatewayVerifierConstruction()
-    {
-        Assert.Equal(
-            DouyinPlatformEventVerifier.ComputeSignature(Body, Secret),
-            IngressSigner.ComputeSignature(Body, Secret));
-    }
-
-    [Fact]
-    public void SignatureHeader_IsGatewayDefaultHeader()
-    {
-        Assert.Equal(DouyinPlatformEventVerifier.DefaultSignatureHeader, IngressSigner.SignatureHeader);
-    }
-
-    [Fact]
-    public void SignedBody_PassesGatewayVerifier()
-    {
-        // End-to-end guarantee for this feature: the load tool's signature over
-        // the body it posts is accepted by the fail-closed gateway verifier.
-        var verifier = new DouyinPlatformEventVerifier(Secret);
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            [IngressSigner.SignatureHeader] = IngressSigner.ComputeSignature(Body, Secret),
-        };
-
-        Assert.True(verifier.Verify(PlatformNames.Douyin, Body, headers));
+        Assert.NotEqual(Expected, IngressSigner.Sign("douyin", Body, "other-secret")!.Value.Value);
     }
 }

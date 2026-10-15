@@ -5,7 +5,8 @@ namespace Chorus.LoadTool;
 /// <summary>
 /// Sends audience events to /ingress/{platform} at a fixed rate per session
 /// across several parallel producers. Counts by HTTP status: 200 (accepted),
-/// 200+duplicated, 429 (rate limited), 503 (event lane full).
+/// 200+duplicated, 401 (unverified signature), 429 (rate limited),
+/// 503 (event lane full).
 /// </summary>
 public sealed class IngressDriver
 {
@@ -20,9 +21,10 @@ public sealed class IngressDriver
     public long Duplicated => Interlocked.Read(ref _duplicated);
     public long RateLimited => Interlocked.Read(ref _rateLimited);
     public long LaneFull => Interlocked.Read(ref _laneFull);
+    public long Unauthorized => Interlocked.Read(ref _unauthorized);
     public long Other => Interlocked.Read(ref _other);
 
-    private long _sent, _accepted, _duplicated, _rateLimited, _laneFull, _other;
+    private long _sent, _accepted, _duplicated, _rateLimited, _laneFull, _unauthorized, _other;
 
     public IngressDriver(HttpClient http, string baseUrl, string platform, LoadToolOptions options)
     {
@@ -61,12 +63,12 @@ public sealed class IngressDriver
             var payload = factory.Create(sessionId);
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/ingress/{_platform}");
             request.Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
-            if (!string.IsNullOrWhiteSpace(_options.SignSecret))
+            var signature = IngressSigner.Sign(_platform, payload, _options.SignSecret);
+            if (signature is not null)
             {
-                // Documented Douyin placeholder scheme: sign the exact body bytes
-                // that go on the wire (the gateway hashes the raw body it reads).
-                request.Headers.TryAddWithoutValidation(
-                    IngressSigner.SignatureHeader, IngressSigner.ComputeSignature(payload, _options.SignSecret));
+                // Sign the exact body bytes that go on the wire: the gateway
+                // hashes the raw body it reads back.
+                request.Headers.TryAddWithoutValidation(signature.Value.Name, signature.Value.Value);
             }
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -82,6 +84,12 @@ public sealed class IngressDriver
                         {
                             Interlocked.Increment(ref _duplicated);
                         }
+                        break;
+                    case 401:
+                        // Fail-closed signature rejection: a different failure
+                        // from a 500 or a transport error - wrong or missing
+                        // signature - and it must not hide inside other=.
+                        Interlocked.Increment(ref _unauthorized);
                         break;
                     case 429:
                         Interlocked.Increment(ref _rateLimited);

@@ -55,7 +55,7 @@ public sealed class IngressDriverTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var body = request.Content!.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult();
-            request.Headers.TryGetValues(IngressSigner.SignatureHeader, out var signatures);
+            request.Headers.TryGetValues(IngressSigner.DouyinSignatureHeader, out var signatures);
             seen.Enqueue((body, signatures?.FirstOrDefault()));
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Plain) });
         }
@@ -194,5 +194,24 @@ public sealed class IngressDriverTests
 
         Assert.True(seen.Count >= 3, $"only {seen.Count} reached the stub");
         Assert.All(seen, item => Assert.Null(item.Signature));
+    }
+
+    [Fact]
+    public async Task FailClosed401s_CountAsUnauthorized_NotOther()
+    {
+        // The 2026-10-15 run burned its whole duration on pure 401s that hid
+        // inside other=: wrong-or-missing-signature is a different failure
+        // from a 500 or a transport error and must be readable on its own.
+        var handler = new StubHandler(_ => (HttpStatusCode.Unauthorized, "{}"));
+        var driver = new IngressDriver(new HttpClient(handler), "http://stub", "test", Options());
+
+        using var cts = new CancellationTokenSource();
+        await RunUntilAsync(driver, () => driver.EventsSent >= 5, cts);
+
+        Assert.True(driver.EventsSent >= 5, $"sent={driver.EventsSent}");
+        Assert.Equal(driver.EventsSent, driver.Unauthorized);
+        Assert.Equal(0, driver.Accepted);
+        Assert.Equal(0, driver.Other);
+        Assert.Equal(0, driver.RateLimited);
     }
 }

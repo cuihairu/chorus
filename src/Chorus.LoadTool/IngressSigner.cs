@@ -4,26 +4,59 @@ using System.Text;
 namespace Chorus.LoadTool;
 
 /// <summary>
-/// Client-side Douyin ingress signature: the documented placeholder contract
-/// the gateway verifies (HMAC-SHA256(secret, rawBody) as lowercase hex in the
-/// X-Douyin-Signature header). Mirrors DouyinPlatformEventVerifier so the load
-/// tool can drive a gateway that has Ingress:Douyin:AppSecret configured
-/// instead of burning the whole run on fail-closed 401s.
+/// Client-side ingress signatures for the load tool, mirroring the gateway's
+/// own platform verifiers so a signed load run measures the engine instead of
+/// silently measuring its own fail-closed 401s (2026-10-15 run: ok=0,
+/// other=6316). Supported: douyin (placeholder HMAC-SHA256 scheme) and
+/// kuaishou (official sha1Hex(body + token)). Other platforms get no
+/// signature: the tool refuses to invent a scheme it cannot verify against
+/// the gateway's code. Construction parity with the verifiers is pinned by
+/// IngressSignerTests (verifier round-trip + independent known vectors).
 /// </summary>
 public static class IngressSigner
 {
-    /// <summary>Default signature header the gateway verifier reads.</summary>
-    public const string SignatureHeader = "X-Douyin-Signature";
+    /// <summary>A signature header the driver attaches to an ingress post.</summary>
+    public readonly record struct Signature(string Name, string Value);
 
-    /// <summary>
-    /// HMAC-SHA256(secret, rawBody) as lowercase hex over the exact body bytes
-    /// that are posted (UTF-8), which is what the gateway hashes back.
-    /// </summary>
-    public static string ComputeSignature(string rawBody, string secret)
+    public const string DouyinSignatureHeader = "X-Douyin-Signature";
+    public const string KuaishouSignatureHeader = "kwaisign";
+
+    public static bool CanSign(string platform)
+        => IsDouyin(platform) || IsKuaishou(platform);
+
+    /// <summary>Signature header for an ingress post, or null when the secret
+    /// is blank (same normalization the gateway verifiers apply: no secret
+    /// means nothing to sign with) or the platform has no supported scheme.</summary>
+    public static Signature? Sign(string platform, string rawBody, string? secret)
     {
-        var key = Encoding.UTF8.GetBytes(secret);
-        var payload = Encoding.UTF8.GetBytes(rawBody);
-        var hash = HMACSHA256.HashData(key, payload);
-        return Convert.ToHexString(hash).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(secret))
+        {
+            return null;
+        }
+
+        var key = secret.Trim();
+        if (IsDouyin(platform))
+        {
+            return new Signature(DouyinSignatureHeader, DouyinSignature(rawBody, key));
+        }
+
+        return IsKuaishou(platform)
+            ? new Signature(KuaishouSignatureHeader, KuaishouSignature(rawBody, key))
+            : null;
     }
+
+    /// <summary>Douyin placeholder: HMAC-SHA256(secret, rawBody) as lowercase hex.</summary>
+    public static string DouyinSignature(string rawBody, string secret)
+        => Convert.ToHexString(HMACSHA256.HashData(
+            Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(rawBody))).ToLowerInvariant();
+
+    /// <summary>Kuaishou official: sha1Hex(rawBody + token) as lowercase hex.</summary>
+    public static string KuaishouSignature(string rawBody, string token)
+        => Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes(rawBody + token))).ToLowerInvariant();
+
+    private static bool IsDouyin(string? platform)
+        => string.Equals(platform?.Trim(), "douyin", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsKuaishou(string? platform)
+        => string.Equals(platform?.Trim(), "kuaishou", StringComparison.OrdinalIgnoreCase);
 }

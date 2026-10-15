@@ -15,6 +15,12 @@ Console.WriteLine($"[loadtool] target={options.BaseUrl} platform={options.Platfo
                   $"sessions={options.Sessions} rate={options.EventsPerSecondPerSession}/s/session " +
                   $"clients={options.ClientsPerSession} duration={options.DurationSeconds}s");
 
+if (string.IsNullOrWhiteSpace(options.SignSecret))
+{
+    // Upfront so an about-to-be-wasted run is visible before it burns.
+    Console.Error.WriteLine(IngressDiagnostics.UnsignedRunWarning(options.Platform));
+}
+
 var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 var ingress = new IngressDriver(httpClient, options.BaseUrl, options.Platform, options);
 
@@ -70,7 +76,13 @@ await PrintEngineMetricsAsync(httpClient, options);
 
 // Fail loudly when a run sent events but the gateway accepted none: that is
 // the pure-401 signature-failure shape (2026-10-15 run: ok=0, other=6316).
-return ZeroAcceptedAlarm.Report(ingress.EventsSent, ingress.Accepted);
+if (ingress.EventsSent > 0 && ingress.Accepted == 0)
+{
+    Console.Error.WriteLine(IngressDiagnostics.NothingAcceptedWarning(
+        options.Platform, ingress.EventsSent, ingress.Unauthorized));
+}
+
+return IngressDiagnostics.ExitCodeFor(ingress.EventsSent, ingress.Accepted);
 
 static async Task AwaitQuietly(Task task)
 {
@@ -113,7 +125,7 @@ async Task ReportLoopAsync(IReadOnlyList<ClientSimulation> sims, IngressDriver i
         var reconnects = sims.Sum(s => s.Disconnects);
         Console.WriteLine(
             $"[loadtool] t={tick * Math.Max(1, opts.ReportEverySeconds)}s " +
-            $"ingress(sent={ing.EventsSent},ok={ing.Accepted},dup={ing.Duplicated},429={ing.RateLimited},503={ing.LaneFull},err={ing.Other}) " +
+            $"ingress(sent={ing.EventsSent},ok={ing.Accepted},dup={ing.Duplicated},401={ing.Unauthorized},429={ing.RateLimited},503={ing.LaneFull},err={ing.Other}) " +
             $"ws(snaps={snaps},acks={acks},maxLag={maxLag},reconnects={reconnects})");
     }
 }
@@ -124,7 +136,7 @@ void PrintSummary(IReadOnlyList<ClientSimulation> sims, IngressDriver ing, LoadT
     var maxLag = sims.Count == 0 ? 0 : sims.Max(s => s.LastLagTicks);
     Console.WriteLine("[loadtool] done. ingress: " +
         $"sent={ing.EventsSent} accepted={ing.Accepted} duplicated={ing.Duplicated} " +
-        $"rateLimited={ing.RateLimited} laneFull={ing.LaneFull} other={ing.Other}");
+        $"unauthorized={ing.Unauthorized} rateLimited={ing.RateLimited} laneFull={ing.LaneFull} other={ing.Other}");
     Console.WriteLine("[loadtool] ws: " +
         $"snapshots={sims.Sum(s => s.SnapshotsReceived)} acks={sims.Sum(s => s.AcksSent)} " +
         $"resyncs={sims.Sum(s => s.ResyncsSent)} maxLagTicks={maxLag} reconnects={reconnects}");

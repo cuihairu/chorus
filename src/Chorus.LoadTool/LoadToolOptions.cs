@@ -76,7 +76,7 @@ public sealed record LoadToolOptions(
         {
             BaseUrl = Env("CHORUS_LOAD_URL") ?? o.BaseUrl,
             Platform = Env("CHORUS_LOAD_PLATFORM") ?? o.Platform,
-            SignSecret = Env("CHORUS_LOAD_DOUYIN_SECRET") ?? o.SignSecret,
+            SignSecret = Env("CHORUS_LOAD_SIGN_SECRET") ?? Env("CHORUS_LOAD_DOUYIN_SECRET") ?? o.SignSecret,
             Token = Env("CHORUS_WS_TOKEN") ?? o.Token,
             EngineMetricsUrl = Env("CHORUS_LOAD_ENGINE_METRICS") ?? o.EngineMetricsUrl,
         };
@@ -106,12 +106,9 @@ public sealed record LoadToolOptions(
               --gift-rate <0..1>           Fraction of events that are gifts (default 0.05)
               --dup-rate <0..1>            Fraction of duplicate event ids (default 0.02)
               --match <id>                 Optional match id shared by all sessions
-              --sign <secret>              Sign ingress posts with the Douyin
-                                           placeholder scheme (HMAC-SHA256 of the
-                                           raw body, lowercase hex, sent as
-                                           X-Douyin-Signature). Use the same
-                                           value as the gateway's
-                                           Ingress:Douyin:AppSecret. Env:
+              --sign <secret>              Sign ingress posts (douyin placeholder
+                                           HMAC-SHA256, kuaishou sha1 scheme).
+                                           Env: CHORUS_LOAD_SIGN_SECRET or
                                            CHORUS_LOAD_DOUYIN_SECRET
               --token <tok>                WS auth token (or CHORUS_WS_TOKEN)
               --engine-metrics <url>       Engine /metrics URL: scraped at the end, and
