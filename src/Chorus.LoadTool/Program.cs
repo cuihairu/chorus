@@ -68,6 +68,10 @@ PrintSummary(simulations, ingress, options);
 PrintPeaks(peaks);
 await PrintEngineMetricsAsync(httpClient, options);
 
+// Fail loudly when a run sent events but the gateway accepted none: that is
+// the pure-401 signature-failure shape (2026-10-15 run: ok=0, other=6316).
+return ZeroAcceptedAlarm.Report(ingress.EventsSent, ingress.Accepted);
+
 static async Task AwaitQuietly(Task task)
 {
     try

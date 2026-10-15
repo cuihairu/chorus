@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Chorus.LoadTool;
 
@@ -44,6 +46,19 @@ public sealed class IngressDriverTests
         }
 
         private int _attempts;
+    }
+
+    /// <summary>Records each post's raw body and signature header without
+    /// parsing the payload, so douyin-shaped bodies work too.</summary>
+    private sealed class RecordingHandler(ConcurrentQueue<(string Body, string? Signature)> seen) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = request.Content!.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult();
+            request.Headers.TryGetValues(IngressSigner.SignatureHeader, out var signatures);
+            seen.Enqueue((body, signatures?.FirstOrDefault()));
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(Plain) });
+        }
     }
 
     private static LoadToolOptions Options(int sessions = 1, int producers = 1, int rate = 200)
@@ -141,5 +156,43 @@ public sealed class IngressDriverTests
         // completed send plus at most one cancelled in-flight per producer.
         Assert.Equal(driver.EventsSent, driver.Accepted);
         Assert.InRange(handler.SessionIds.Length, driver.EventsSent, driver.EventsSent + 2);
+    }
+
+    [Fact]
+    public async Task SignSecret_SignsEveryPostWithDouyinScheme()
+    {
+        const string secret = "loadtool-signing-key";
+        var seen = new ConcurrentQueue<(string Body, string? Signature)>();
+        var driver = new IngressDriver(new HttpClient(new RecordingHandler(seen)), "http://stub", "douyin",
+            Options() with { SignSecret = secret });
+
+        using var cts = new CancellationTokenSource();
+        await RunUntilAsync(driver, () => driver.EventsSent >= 3, cts);
+
+        Assert.True(seen.Count >= 3, $"only {seen.Count} reached the stub");
+        // Independent assertion of the documented scheme (not a round-trip
+        // through IngressSigner): the header must be HMAC-SHA256 of the exact
+        // raw body the driver posts, as lowercase hex.
+        foreach (var (body, signature) in seen)
+        {
+            Assert.NotNull(signature);
+            var expected = Convert.ToHexString(
+                HMACSHA256.HashData(Encoding.UTF8.GetBytes(secret), Encoding.UTF8.GetBytes(body))).ToLowerInvariant();
+            Assert.Equal(expected, signature);
+            Assert.Equal(64, signature!.Length);
+        }
+    }
+
+    [Fact]
+    public async Task NoSignSecret_NoSignatureHeaderOnPosts()
+    {
+        var seen = new ConcurrentQueue<(string Body, string? Signature)>();
+        var driver = new IngressDriver(new HttpClient(new RecordingHandler(seen)), "http://stub", "douyin", Options());
+
+        using var cts = new CancellationTokenSource();
+        await RunUntilAsync(driver, () => driver.EventsSent >= 3, cts);
+
+        Assert.True(seen.Count >= 3, $"only {seen.Count} reached the stub");
+        Assert.All(seen, item => Assert.Null(item.Signature));
     }
 }

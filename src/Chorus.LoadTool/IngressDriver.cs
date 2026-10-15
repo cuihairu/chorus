@@ -58,8 +58,16 @@ public sealed class IngressDriver
         while (!cancellationToken.IsCancellationRequested)
         {
             var sessionId = _sessions[index++ % _sessions.Length];
+            var payload = factory.Create(sessionId);
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/ingress/{_platform}");
-            request.Content = new StringContent(factory.Create(sessionId), System.Text.Encoding.UTF8, "application/json");
+            request.Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+            if (!string.IsNullOrWhiteSpace(_options.SignSecret))
+            {
+                // Documented Douyin placeholder scheme: sign the exact body bytes
+                // that go on the wire (the gateway hashes the raw body it reads).
+                request.Headers.TryAddWithoutValidation(
+                    IngressSigner.SignatureHeader, IngressSigner.ComputeSignature(payload, _options.SignSecret));
+            }
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             try

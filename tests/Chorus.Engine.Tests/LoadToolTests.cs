@@ -143,6 +143,7 @@ public sealed class LoadToolTests
         Assert.Equal(0.05, options.GiftRate);
         Assert.Equal(0.02, options.DuplicateRate);
         Assert.Null(options.MatchId);
+        Assert.Null(options.SignSecret);
         Assert.Null(options.Token);
         Assert.Null(options.EngineMetricsUrl);
         Assert.Equal(5, options.ReportEverySeconds);
@@ -202,5 +203,40 @@ public sealed class LoadToolTests
     public void Options_UnknownArgumentThrows()
     {
         Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(["--nope", "x"]));
+    }
+
+    [Fact]
+    public void Options_ParsesSignFlag()
+    {
+        var options = LoadToolOptions.Parse(["--sign", "s3cr3t"]);
+
+        Assert.Equal("s3cr3t", options.SignSecret);
+    }
+
+    [Fact]
+    public void Options_SignMissingValueThrows()
+    {
+        Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(["--sign"]));
+    }
+
+    [Fact]
+    public void Options_EnvironmentOverridesSignSecret()
+    {
+        const string name = "CHORUS_LOAD_DOUYIN_SECRET";
+        var previous = Environment.GetEnvironmentVariable(name);
+        try
+        {
+            Environment.SetEnvironmentVariable(name, "env-secret");
+
+            // Environment wins over the CLI flag, like the other load options:
+            // a scripted CI run can redirect a flag-carrying command line.
+            var options = LoadToolOptions.Parse(["--sign", "flag-secret"]);
+
+            Assert.Equal("env-secret", options.SignSecret);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, previous);
+        }
     }
 }
