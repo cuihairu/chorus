@@ -50,6 +50,12 @@ title: 通信抽象（进程内/进程间）
 
 TCP/HTTP 传输的端口与 URL 不按 id 区分，同机多网关共享 worker 用 UDS/NamedPipe；跨机多网关的端口口径属阶段三（见 [进程拓扑](./process-topology.md) §4）。
 
+### socket 文件生命周期（2026-10-16 决策）
+
+UDS 的 socket 文件是 bind 创建的路径入口，其删除权归属曾经踩过竞态：.NET 6 起 `Socket.Dispose` 会无条件 unlink 用 `UnixDomainSocketEndPoint` 绑定的路径（dotnet/runtime#52103，无 opt-out）。滚动重启时新进程先删-绑抢走同名路径，旧进程随后 dispose——它按**路径** unlink，砍掉的是新进程 socket 的文件入口：内核 socket 未死，但后续全部连接 ENOENT（此前压测靠手工 `rm -f /tmp/chorus/*.sock` 绕过，根因即此）。
+
+决策（已代决）：`UnixDomainSocketMessageBus` 用自定义 `RawUnixEndPoint`（自管 sockaddr_un 序列化，布局同 `UnixDomainSocketEndPoint`）做服务端 bind。BCL 的删除跟踪只识别 `UnixDomainSocketEndPoint` 本类型（sealed），自定义端点不进入跟踪，路径删除权回归总线自身；关闭时按 **bind 身份守卫**删除——记录 bind 时刻路径上文件的 `CreationTimeUtc`（Unix 上即 st_ctime，bind 后元数据不再变化），仅当文件仍是本进程 bind 时那份才删，新进程重绑的同名文件绝不误删。删除动作挂在 `DisposeAsync`（accept 循环尾部不可靠：带取消 token 的 `Task.Run` 任务可能从未被调度）。异常退出的残留文件由下次 `StartServer` 的删-绑流程兜底，身份未知时保守不删。客户端 `ConnectAsync` 保持 BCL 端点（从不 bind，不进删除跟踪）。
+
 ## 关于 Windows “支持 Unix Socket”
 
 Windows 的 AF_UNIX（Unix Domain Socket）支持在系统版本与运行环境（例如容器、权限、路径规则）上仍有差异；因此框架层面建议：
