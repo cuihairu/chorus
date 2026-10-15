@@ -49,6 +49,7 @@
 - [x] 结构化日志 sessionId/tickId/clientId（`7209d91`）
 - [x] 本地压测工具 Chorus.LoadTool（`578415b`）
 - [x] 峰值测量支持（`4ea4273`，242 测试）
+- [ ] LoadTool 入口事件签名支持（PATROL1015）：`--rate` 直发 ingress 时若网关未配置平台密钥则全部 401 fail-closed（2026-10-15 实测 accepted=0、`other=6316`、无任何告警，压测时长白烧）；补 `--sign <secret>`（或 `CHORUS_LOAD_DOUYIN_SECRET`）按 douyin 占位 HMAC-SHA256 规范签名 + 驱动结束零 accepted 显性告警退出码，让阶段三门控数据可用仓内工具复现
 - [x] Engine→Gateway IPC 发布失败可观测（`8e87a47`，694 测试）：EngineHost 侧补齐 `chorus_ipc_publish_failures_total`（快照 best-effort 发布失败计数并告警、欢迎发布失败计数并 rethrow），与 Gateway 侧同指标名构成双向覆盖；此前 `EngineBusSessionClient.SafePublishAsync` 静默吞掉失败、`RenderEngine` 无该指标（observability.md 已同步）
 - [x] 快照体积可观测（`f301aa3`，696 测试）：`SessionDiagnostics.LastSnapshotBytes` 记录每 session 最近一次下发快照的线字节数（`/sessions` 自动暴露），`ChorusMetricsText` 增 `chorus_snapshot_bytes` gauge（跨 session 取最大）；此前 tuning.md 记为「未暴露」的调优信号缺口已闭合（tuning.md/observability.md 已同步）
 - [x] 会话驱逐可观测（PATROL1014）：`SessionRegistry` 两条驱逐路径（容量驱逐 `EvictIdlestLocked` / 空闲清扫 `SweepIdleAsync`）此前零计数——`chorus_sessions` gauge 下降无法区分正常结束与被驱逐；增 `IdleEvictions`/`CapacityEvictions` 累计计数（Interlocked），`ChorusMetricsText` 增 `chorus_session_idle_evictions_total` / `chorus_session_capacity_evictions_total`，注册表级三计数收拢为 `SessionRegistryCounters` 记录（`RenderServer`/`RenderEngine` 各接 `registry` 参数，替换裸 `sessionStartFailures`），Server/EngineHost 接线；observability.md 已同步，`SessionRegistryTests` 两例加计数断言 + `Renderer_SessionRegistryCounters_EmittedOnBothSurfaces` 守卫
@@ -146,7 +147,7 @@
 
 ## 10. 进程拓扑
 
-- [ ] 阶段三多 worker：等单 worker 峰值 CPU > 60% 或单机房间数达数百量级（运行期数据，仓内无法自证）
+- [ ] 阶段三多 worker：等单 worker 峰值 CPU > 60% 或单机房间数达数百量级（2026-10-15 已实测单 worker 门控数据：14 核裸机无 cgroup 配额；300 房间 + 20k rps 签名事件 → `process_cpu_percent` 峰值 15.09、`events_applied_total` 39349、`snapshots_sent_total` 1611127、`tick_overruns` 378、`tick_errors` 0、驱动 sent=69029 ok=69028；800 房间 + 30k rps → 峰值 15.26（与 300 房间持平）、`events_applied_total` 30851、`tick_overruns` 349、驱动 sent=70112 ok=70110。即 ~2.14 核当量，距 60% 触发线（8.4 核）约 4 倍余量，房间数从 300→800 峰值不变说明数百房间远未逼近单 worker 瓶颈：条款 1 未触发，条款 2 虽可满足但由 CPU 数据看属产品决策而非负载所迫，维持未勾等用户拍板）。注意：该数据用仓外带签名的驱动压出——仓内 LoadTool 的 `--rate` 在未配置平台密钥时全部 401 静默失败（accepted=0 且无告警），见下方 LoadTool 签名条目
 - [x] 恢复半边：IGameModule 快照恢复契约落地（`062cc68`，11 测试）：方案 A（回写入口进 `IGameModule`，必选成员）+ 线协议 JSON 输入 + fail-closed。`RestoreState(version, JsonElement)` 必选 = 编译期强制每模块回答「怎么重建」；单点 `GameModuleRestorer` 在 actor 工厂内执行（`Create` 后、`SessionActor` 前），两处出生点共用 → parity by construction；未知版本/超 `MaxSnapshotBytes`/模块异常一律拒绝启动，`SessionRegistry.StartFailures` 可观测，不留半状态 actor；无生产接线（两 Program.cs 不注册默认恢复源，null = 今天行为不变）
 
 ## 11. 帧同步方案
