@@ -94,6 +94,14 @@ public sealed class SessionActorFrameHistoryTests
         Assert.True(actor.Diagnostics.TotalResyncRequests >= 1);
         Assert.True(actor.Diagnostics.TotalResyncReplays >= 1);
         Assert.Equal(0, actor.Diagnostics.TotalResyncWindowMisses);
+
+        // Per-client observability (the /sessions JSON surface): this client
+        // joined at or before the first frame (it received the replay of
+        // frame 1). ResyncCount/LastResyncAgeMs are lag-forced paths and are
+        // pinned in SessionActorResyncTests.
+        var client = Assert.Single(actor.Diagnostics.Clients);
+        Assert.Equal("c1", client.ClientId);
+        Assert.InRange(client.ConnectedTickId, 0, 1);
     }
 
     [Fact]
@@ -311,6 +319,57 @@ public sealed class SessionActorFrameHistoryTests
         {
             Lock.Release();
         }
+    }
+
+    [Fact]
+    public async Task SingleTickOverAccumulatorCap_TrimsEnvelope_StateStaysIntact()
+    {
+        // 帧事件累计上限（SessionActor 私有 const 4096）：一整个批次超过上限
+        // 时最老（此处即该批自己）被裁掉 —— 状态照常进快照、applied 计数不丢，
+        // 只是信封不再携带这些帧事件；累计器永远有界。
+        var received = new List<SessionSnapshot>();
+        await using var actor = new SessionActor("s-trim", new SessionConfig
+        {
+            TickDurationMs = 500,
+            SnapshotEveryTicks = 1,
+            InputDelayTicks = 1,
+            MaxEventsPerTick = 5000,
+        }, new TinyGameModule());
+
+        await actor.AddClientAsync(new CapturingClient("c1", received));
+        actor.Start();
+
+        for (var i = 0; i < 4200; i++)
+        {
+            await actor.TryIngestAudienceEventAsync(new AudienceEvent(
+                EventId: $"ev-{i}",
+                Platform: "test",
+                SessionId: "s-trim",
+                UserId: "u1",
+                Kind: AudienceEventKind.Comment,
+                IngestTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        }
+
+        await WaitUntilAsync(
+            () => actor.Diagnostics.TotalAppliedEvents >= 4200,
+            "oversized batch never applied");
+        await WaitUntilAsync(
+            () => SnapshotList(received).Count > 0,
+            "first snapshots delivered");
+
+        var maxEnvelope = 0;
+        Lock.Wait();
+        try
+        {
+            maxEnvelope = received.Max(s => s.FrameEvents?.Count ?? 0);
+        }
+        finally
+        {
+            Lock.Release();
+        }
+
+        Assert.True(maxEnvelope <= 4096,
+            $"frame envelope grew to {maxEnvelope}, above the accumulator cap");
     }
 
     private static List<SessionSnapshot> SnapshotList(List<SessionSnapshot> received)

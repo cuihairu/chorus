@@ -102,6 +102,63 @@ public sealed class SessionActorOutboundTests
         }
     }
 
+    [Fact]
+    public async Task DirectIngest_AcceptsOnRunningActor_CompatWrapperIgnoresResult()
+    {
+        // Both ingest entry points on a running actor: the bounded lane
+        // accepts the command (true) and the fire-and-forget wrapper just
+        // completes - the applied count is the shared observable.
+        await using var actor = new SessionActor("s-ing", new SessionConfig
+        {
+            TickDurationMs = 10,
+            SnapshotEveryTicks = 1,
+        }, new CountingGameModule());
+        actor.Start();
+
+        Assert.True(await actor.TryIngestAudienceEventAsync(MakeEvent("s-ing", "ev-a")));
+
+        await actor.IngestAudienceEventAsync(MakeEvent("s-ing", "ev-b"));
+
+        await WaitForConditionAsync(() => actor.Diagnostics.TotalAppliedEvents >= 2, timeoutMs: 5000);
+    }
+
+    [Fact]
+    public async Task OverBudgetTick_MergesLikes_AndDropsExcess()
+    {
+        // MaxEventsPerTick=2 with 2 same-user likes + 2 comments in one tick:
+        // the likes merge into one event (merged counter) and the budget cut
+        // drops the excess comment (dropped counter) - both must surface in
+        // session diagnostics, not vanish silently.
+        await using var actor = new SessionActor("s-red", new SessionConfig
+        {
+            // Long tick so all four events land in the same reduce batch.
+            TickDurationMs = 1000,
+            SnapshotEveryTicks = 1,
+            InputDelayTicks = 1,
+            MaxEventsPerTick = 2,
+        }, new CountingGameModule());
+        actor.Start();
+
+        await actor.TryIngestAudienceEventAsync(MakeEvent("s-red", "like-1", AudienceEventKind.Like));
+        await actor.TryIngestAudienceEventAsync(MakeEvent("s-red", "like-2", AudienceEventKind.Like));
+        await actor.TryIngestAudienceEventAsync(MakeEvent("s-red", "cm-1", AudienceEventKind.Comment));
+        await actor.TryIngestAudienceEventAsync(MakeEvent("s-red", "cm-2", AudienceEventKind.Comment));
+
+        await WaitForConditionAsync(() => actor.Diagnostics.TotalAppliedEvents >= 2, timeoutMs: 5000);
+
+        Assert.Equal(2, actor.Diagnostics.TotalAppliedEvents);
+        Assert.Equal(1, actor.Diagnostics.TotalMergedEvents);
+        Assert.Equal(1, actor.Diagnostics.TotalDroppedEvents);
+    }
+
+    private static AudienceEvent MakeEvent(string sessionId, string eventId, AudienceEventKind kind = AudienceEventKind.Comment) => new(
+        EventId: eventId,
+        Platform: "test",
+        SessionId: sessionId,
+        UserId: "u1",
+        Kind: kind,
+        IngestTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
     private sealed class SlowClient : ISessionClient
     {
         private readonly Task _release;

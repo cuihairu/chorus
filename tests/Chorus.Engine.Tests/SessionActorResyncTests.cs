@@ -49,6 +49,29 @@ public sealed class SessionActorResyncTests
 
         Assert.Equal("lag", forced.Reason);
 
+        // Per-client resync observability (the /sessions JSON surface): the lag
+        // increment rides the tick that published this forced snapshot, so
+        // poll the republished diagnostics instead of reading them once.
+        var sw = Stopwatch.StartNew();
+        SessionClientDiagnostics client = default!;
+        while (true)
+        {
+            client = Assert.Single(actor.Diagnostics.Clients);
+            if (client.ResyncCount >= 1)
+            {
+                break;
+            }
+
+            if (sw.ElapsedMilliseconds > 5000)
+            {
+                throw new TimeoutException($"per-client resync never counted ({client.ResyncCount})");
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(client.LastResyncAgeMs >= 0, $"lastResyncAgeMs={client.LastResyncAgeMs}");
+
         // Phase 2: the client catches up -> snapshots are no longer forced.
         await actor.AckAsync("c1", latest, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         await AnyAsync(received, s => s.Forced == false, startIndex: countAfterAck);
