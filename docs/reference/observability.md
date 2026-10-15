@@ -75,6 +75,7 @@ frame-sync P2 的 resync 路径计数此前只在 `/sessions` 可见，现同步
 | `chorus_resync_replays_total` | counter | 从帧历史窗口答复的 resync 请求数 |
 | `chorus_resync_window_misses_total` | counter | 窗口起点缺失（以最新快照 + 强制回复）的 resync 请求数。调优信号：持续增长说明帧历史窗口过小 |
 | `chorus_resync_throttled_total` | counter | 被 per-client 冷却拒绝的 resync 请求数 |
+| `chorus_resync_replay_capped_total` | counter | 窗口超过 `Session:MaxResyncReplayTicks`、以单条强制快照对齐的 resync 请求数（2026-10-15 重放限界）。调优信号：占比高说明大量客户端落后超过重放上限（重连风暴/长断线），应结合 `chorus_ws_resync_dropped_total` 看客户端是否在打转 |
 | `chorus_frame_history_bytes` | gauge | 当前帧历史编码字节占用（取所有 Session 最大值） |
 
 ### ACK（Engine 侧分类计数）

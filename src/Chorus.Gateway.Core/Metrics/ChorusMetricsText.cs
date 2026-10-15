@@ -94,6 +94,7 @@ public static class ChorusMetricsText
         long snapshots = 0, resyncs = 0, overruns = 0, errors = 0, oversize = 0;
         long ackAccepted = 0, ackDuplicate = 0, ackStale = 0, ackInvalid = 0;
         long resyncRequests = 0, resyncReplays = 0, resyncWindowMisses = 0, resyncThrottled = 0;
+        long resyncReplayCapped = 0;
         var tickMsMax = 0L;
         var mailboxMax = 0;
         var ackLagMax = 0L;
@@ -127,6 +128,7 @@ public static class ChorusMetricsText
             resyncReplays += s.TotalResyncReplays;
             resyncWindowMisses += s.TotalResyncWindowMisses;
             resyncThrottled += s.TotalResyncThrottled;
+            resyncReplayCapped += s.TotalResyncReplayCapped;
             foreach (var c in s.Clients)
             {
                 ackLagMax = Math.Max(ackLagMax, c.LagTicks);
@@ -168,6 +170,9 @@ public static class ChorusMetricsText
         AppendCounter(sb, "chorus_resync_replays_total", resyncReplays);
         AppendCounter(sb, "chorus_resync_window_misses_total", resyncWindowMisses);
         AppendCounter(sb, "chorus_resync_throttled_total", resyncThrottled);
+        // Windows larger than MaxResyncReplayTicks: answered with one forced
+        // snapshot instead of a replay burst (todo.md:156 churn blocker ③).
+        AppendCounter(sb, "chorus_resync_replay_capped_total", resyncReplayCapped);
         sb.AppendLine("# TYPE chorus_frame_history_bytes gauge");
         sb.AppendLine($"chorus_frame_history_bytes {frameHistoryBytesMax}");
     }

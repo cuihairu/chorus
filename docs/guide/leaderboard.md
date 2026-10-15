@@ -57,7 +57,7 @@ _scores?.ProjectScore(sessionId, userId, authoritativeTotal);
 ## 读分：只读查询端点
 
 `GET /leaderboard/{scope}/{scopeId}?top=N`，由两个**持有会话**的宿主暴露
-（`src/Chorus.Server/Program.cs:145`、`src/Chorus.EngineHost/Program.cs:52`；
+（`src/Chorus.Server/Program.cs:145`、`src/Chorus.EngineHost/Program.cs:53`；
 网关不持有会话状态，不设此端点）：
 
 ```bash

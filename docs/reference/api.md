@@ -55,9 +55,9 @@ curl -X POST http://localhost:5168/ingress/test -H 'content-type: application/js
 |---|---|---|---|
 | `GET /` | 自述 | `{"name":"Chorus.EngineHost","ok":true}` | `Program.cs:46` |
 | `GET /health` | 存活探针 | 200 空 | `Program.cs:47` |
-| `GET /sessions` | 会话/客户端诊断 JSON（每客户端 lag/ack 明细；拆分模式下的会话权威） | JSON | `Program.cs:51`（`c7846a6` 补齐） |
-| `GET /leaderboard/{scope}/{scopeId}` | 排行榜只读查询（scope/错误码见 [排行榜](../guide/leaderboard.md)） | JSON | `Program.cs:52` |
-| `GET /metrics` | Prometheus 文本：会话诊断 + `chorus_ipc_publish_failures_total` + `chorus_snapshot_bytes` + `chorus_process_cpu_percent`（worker CPU，首抓省略） | text | `Program.cs:53`；CPU 刻度 `EngineHost/ProcessCpuGauge.cs` |
+| `GET /sessions` | 会话/客户端诊断 JSON（每客户端 lag/ack 明细；拆分模式下的会话权威） | JSON | `Program.cs:52`（`c7846a6` 补齐） |
+| `GET /leaderboard/{scope}/{scopeId}` | 排行榜只读查询（scope/错误码见 [排行榜](../guide/leaderboard.md)） | JSON | `Program.cs:53` |
+| `GET /metrics` | Prometheus 文本：会话诊断 + `chorus_ipc_publish_failures_total` + `chorus_snapshot_bytes` + `chorus_process_cpu_percent`（worker CPU，首抓省略） | text | `Program.cs:54`；CPU 刻度 `EngineHost/ProcessCpuGauge.cs` |
 
 ```bash
 curl http://localhost:5067/health

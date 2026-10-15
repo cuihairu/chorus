@@ -21,6 +21,9 @@ tickTimeoutMs = 250
 maxSessions = 200
 idleEvictAfterMs = 600000
 maxSnapshotBytes = 1048576
+frameHistoryBytes = 8388608
+resyncRequestCooldownMs = 1000
+maxResyncReplayTicks = 128
 ```
 
 关键参数：
@@ -180,6 +183,25 @@ maxSnapshotBytes = 1048576
 
 - 冷却内重复请求计入 `TotalResyncThrottled` 后直接返回
 - 另有传输层固定窗口 `Faces:StreamerWs:ResyncPerMinute`，两层独立生效
+
+### `maxResyncReplayTicks`
+
+2026-10-15 起（churn 修复 ③，重放限界）。
+
+含义：
+
+- 单次客户端 `resync` 请求最多重放的帧数；快照携带全量状态，窗口超过该值时直接回吐一条
+  `forced=true`（`reason="resync-gap"`）最新快照对齐，不做逐帧重放
+
+默认值：
+
+- `128`（约 8.4 秒的 66ms 帧）
+
+影响：
+
+- 每次重放的 eng→gw 消息量封顶（2026-10-15 门控压测：重放洪流 × 快照分发曾把接收循环压死，见 `todo.md:156`）
+- 超限计入 `chorus_resync_replay_capped_total`（与窗口未命中 `chorus_resync_window_misses_total` 分开计数）
+- `0` 完全关闭重放：所有 `resync` 请求都走 `resync-gap` 单帧对齐
 
 ### `maxSnapshotBytes`
 

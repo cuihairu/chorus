@@ -24,5 +24,9 @@ public sealed record SessionConfig(
     int FrameHistoryBytes = 8_388_608,
     /// <summary>Per-client cooldown for client-initiated resync requests (frame-sync P2);
     /// extra requests inside the window are ignored. 0 disables throttling.</summary>
-    int ResyncRequestCooldownMs = 1000
+    int ResyncRequestCooldownMs = 1000,
+    /// <summary>Max frames replayed per client-initiated resync (todo.md:156 churn blocker
+    /// ③). Snapshots carry full state, so a window larger than this answers with one
+    /// forced snapshot instead of multiplying eng→gw volume. 0 disables replay entirely.</summary>
+    int MaxResyncReplayTicks = 128
 );

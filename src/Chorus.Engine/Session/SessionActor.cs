@@ -56,6 +56,7 @@ public sealed class SessionActor : IAsyncDisposable
     private long _totalResyncReplays;
     private long _totalResyncWindowMisses;
     private long _totalResyncThrottled;
+    private long _totalResyncReplayCapped;
 
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _runCts;
@@ -403,13 +404,16 @@ public sealed class SessionActor : IAsyncDisposable
     /// <summary>
     /// Client-initiated gap-fill (frame-sync P2, docs/design/frame-sync.md §4.3):
     /// a client that detected a gap sends the last frame it applied. When the
-    /// frame-history window still starts at or before that frame, every retained
-    /// frame is replayed in order over a direct-send path (bypassing the
-    /// latest-wins queue); otherwise the client has missed more than the buffer
-    /// holds and gets the latest state with forced=true. Requests repeat inside
-    /// the per-client cooldown are throttled. The replay runs detached so a slow
-    /// transport cannot stall the tick loop; ordering against later broadcasts
-    /// is preserved by the outbound queue's send gate.
+    /// frame-history window still starts at or before that frame and the window
+    /// fits within <c>MaxResyncReplayTicks</c>, the retained frames are
+    /// replayed in order over a direct-send path (bypassing the latest-wins
+    /// queue); otherwise the client gets the latest state with forced=true -
+    /// because it missed more than the buffer holds, or because the window is
+    /// larger than the replay cap (a full-state snapshot supersedes any number
+    /// of stale frames). Requests repeated inside the per-client cooldown are
+    /// throttled. The replay runs detached so a slow transport cannot stall the
+    /// tick loop; ordering against later broadcasts is preserved by the
+    /// outbound queue's send gate.
     /// </summary>
     private void HandleResync(ResyncCmd c)
     {
@@ -432,14 +436,27 @@ public sealed class SessionActor : IAsyncDisposable
 
         state.LastResyncRequestTimeMs = now;
 
-        if (_frameHistory.TryGetWindow(c.FromFrameId, out var frames))
+        // Bounded replay (Session:MaxResyncReplayTicks, todo.md:156 churn blocker ③):
+        // snapshots carry full state, so replaying a window larger than the cap
+        // only multiplies eng→gw volume (a far-behind client gains nothing from
+        // N-1 stale frames it will immediately be replaced by) - such requests
+        // fall through to the one forced snapshot below.
+        var windowHit = _frameHistory.TryGetWindow(c.FromFrameId, out var frames);
+        if (windowHit && _config.MaxResyncReplayTicks > 0 && frames.Count <= _config.MaxResyncReplayTicks)
         {
             Interlocked.Increment(ref _totalResyncReplays);
             _ = item.Client.SendReplayAsync(frames, CancellationToken.None);
             return;
         }
 
-        Interlocked.Increment(ref _totalResyncWindowMisses);
+        if (windowHit)
+        {
+            Interlocked.Increment(ref _totalResyncReplayCapped);
+        }
+        else
+        {
+            Interlocked.Increment(ref _totalResyncWindowMisses);
+        }
         var latest = new SessionSnapshot(
             SessionId: SessionId,
             TickId: TickId,
@@ -771,6 +788,7 @@ public sealed class SessionActor : IAsyncDisposable
             TotalResyncReplays: Interlocked.Read(ref _totalResyncReplays),
             TotalResyncWindowMisses: Interlocked.Read(ref _totalResyncWindowMisses),
             TotalResyncThrottled: Interlocked.Read(ref _totalResyncThrottled),
+            TotalResyncReplayCapped: Interlocked.Read(ref _totalResyncReplayCapped),
             FrameHistoryBytes: _frameHistory.Bytes,
             LastSnapshotBytes: Interlocked.Read(ref _lastSnapshotBytes),
             TotalClientQueueDropped: clientQueueDropped

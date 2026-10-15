@@ -30,7 +30,8 @@ builder.Services.AddSingleton(sp =>
         IdleEvictAfterMs: cfg.GetValue("Session:IdleEvictAfterMs", 600_000),
         MaxSnapshotBytes: cfg.GetValue("Session:MaxSnapshotBytes", 1_048_576),
         FrameHistoryBytes: cfg.GetValue("Session:FrameHistoryBytes", 8_388_608),
-        ResyncRequestCooldownMs: cfg.GetValue("Session:ResyncRequestCooldownMs", 1000)
+        ResyncRequestCooldownMs: cfg.GetValue("Session:ResyncRequestCooldownMs", 1000),
+        MaxResyncReplayTicks: cfg.GetValue("Session:MaxResyncReplayTicks", 128)
     );
 });
 // Register the concrete type (not just IHostedService): the /metrics and

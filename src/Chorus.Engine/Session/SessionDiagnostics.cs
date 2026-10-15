@@ -37,6 +37,9 @@ public sealed record SessionDiagnostics(
     long TotalResyncWindowMisses = 0,
     /// <summary>Resync requests rejected by the per-client cooldown (frame-sync P2).</summary>
     long TotalResyncThrottled = 0,
+    /// <summary>Resync requests whose window exceeded MaxResyncReplayTicks - answered with
+    /// latest + forced instead of a replay burst (todo.md:156 churn blocker ③).</summary>
+    long TotalResyncReplayCapped = 0,
     /// <summary>Current frame-history footprint in encoded bytes (frame-sync P2).</summary>
     long FrameHistoryBytes = 0,
     /// <summary>Encoded wire size of the most recent snapshot this session sent (tuning: snapshot-size signal; 0 = none yet).</summary>
