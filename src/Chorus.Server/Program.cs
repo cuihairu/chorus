@@ -1,6 +1,8 @@
+using Chorus.Data;
 using Chorus.Engine.Abstractions;
 using Chorus.Engine.Routing;
 using Chorus.Engine.Session;
+using Chorus.Gateway.Core.Leaderboard;
 using Chorus.Gateway.Core.Metrics;
 using Chorus.Server;
 using Chorus.SampleGame;
@@ -18,6 +20,11 @@ builder.Services.AddSingleton<IGameModuleFactory, SampleGameModuleFactory>();
 builder.Services.AddSingleton(builder.Configuration.GetSection("Session").Get<SessionConfig>() ?? new SessionConfig());
 builder.Services.AddSingleton<SessionManager>();
 builder.Services.AddSingleton<MatchRegistry>();
+// Leaderboard (audit §9): the room board is written only by the session's game
+// module through ISessionScoreSink (clients never self-report), and queried
+// read-only through /leaderboard - the store is in-memory, no durable board.
+builder.Services.AddSingleton<LeaderboardStore>();
+builder.Services.AddSingleton<ISessionScoreSink, LeaderboardScoreSink>();
 
 // Tell seam (todo §3.5): the ingress face delivers events through the shared
 // ISessionActorRouter; the monolith resolves actors in-process.
@@ -135,6 +142,7 @@ app.MapGet("/", () => new { name = "Chorus", ok = true });
 app.MapGet("/health", () => Results.Ok());
 app.MapGet("/sessions", (SessionManager sessions) => sessions.GetDiagnostics());
 app.MapGet("/matches", (MatchRegistry matches) => matches.GetDiagnostics());
+app.MapLeaderboard();
 app.MapGet("/faces", (FaceCounters faces) => faces);
 // Single-process topology has no IPC hop; publish failures stay 0 here and
 // are real counters on the Gateway/EngineHost surfaces.

@@ -28,7 +28,11 @@
 - 本地预览：`npm install && npm run docs:dev`
 - 构建静态站：`npm run docs:build`（输出：`docs/.vuepress/dist`）
 
-重点页面：[当前架构总览](docs/design/architecture-overview.md) ·
+重点页面：[架构说明（分层与取舍）](docs/architecture.md) ·
+[当前架构总览](docs/design/architecture-overview.md) ·
+[对战](docs/guide/battle.md) ·
+[匹配](docs/guide/matchmaking.md) ·
+[排行榜](docs/guide/leaderboard.md) ·
 [接口参考](docs/reference/api.md) ·
 [配置参考](docs/reference/config.md) ·
 [协议参考](docs/reference/protocol.md)

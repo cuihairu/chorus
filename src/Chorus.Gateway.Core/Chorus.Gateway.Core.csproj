@@ -20,6 +20,10 @@
     <ProjectReference Include="..\Chorus.Engine\Chorus.Engine.csproj" />
     <ProjectReference Include="..\Chorus.Adapters.Abstractions\Chorus.Adapters.Abstractions.csproj" />
     <ProjectReference Include="..\Chorus.Adapters.Platforms\Chorus.Adapters.Platforms.csproj" />
+    <!-- Chorus.Data holds the leaderboard store; this project hosts the
+         session-side score sink and the read-only query endpoint so both
+         session-owning hosts share one definition. -->
+    <ProjectReference Include="..\Chorus.Data\Chorus.Data.csproj" />
   </ItemGroup>
 
 </Project>

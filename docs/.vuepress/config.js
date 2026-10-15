@@ -8,14 +8,22 @@ module.exports = {
     docsDir: "docs",
     nav: [
       { text: "指南", link: "/guide/getting-started.html" },
+      { text: "架构", link: "/architecture.html" },
       { text: "设计", link: "/design/architecture.html" },
       { text: "参考", link: "/reference/protocol.html" }
     ],
     sidebar: {
+      "/": [
+        "/architecture.md",
+        "/decisions.md"
+      ],
       "/guide/": [
         "/guide/getting-started.md",
         "/guide/split-mode.md",
         "/guide/load-testing.md",
+        "/guide/battle.md",
+        "/guide/matchmaking.md",
+        "/guide/leaderboard.md",
         "/guide/game-module.md",
         "/guide/quickstart-frame-sync.md"
       ],

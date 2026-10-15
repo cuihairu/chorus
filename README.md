@@ -28,7 +28,11 @@
 - Local preview: `npm install && npm run docs:dev`
 - Static build: `npm run docs:build` (output: `docs/.vuepress/dist`)
 
-Key pages: [current architecture overview](docs/design/architecture-overview.md) ·
+Key pages: [architecture & trade-offs](docs/architecture.md) ·
+[current architecture overview](docs/design/architecture-overview.md) ·
+[battle](docs/guide/battle.md) ·
+[matchmaking](docs/guide/matchmaking.md) ·
+[leaderboard](docs/guide/leaderboard.md) ·
 [API reference](docs/reference/api.md) ·
 [config reference](docs/reference/config.md) ·
 [protocol reference](docs/reference/protocol.md)

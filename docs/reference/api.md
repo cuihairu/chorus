@@ -9,7 +9,7 @@ title: 接口参考（后台/管理端）
 
 ## 鉴权
 
-- **HTTP 端点（/health、/ready、/sessions、/matches、/faces、/metrics、/）无鉴权**，属内网假设；
+- **HTTP 端点（/health、/ready、/sessions、/matches、/leaderboard、/faces、/metrics、/）无鉴权**，属内网假设；
   生产部署应置于反向代理后并限制来源（见 [部署与安全](./deployment.md) 反向代理一节）。
 - 有鉴权的是两个接入面：`POST /ingress/{platform}`（平台回调验签，fail-closed）与 `WS /ws`
   （hello token 鉴权，fail-closed）。配置见 [配置参考](./config.md)。
@@ -28,13 +28,15 @@ title: 接口参考（后台/管理端）
 
 | 方法 路径 | 用途 | 响应 | 出处 |
 |---|---|---|---|
-| `GET /` | 自述 | `{"name":"Chorus.Gateway","ok":true}` | `Program.cs:100` |
-| `GET /health` | 存活探针 | 200 空 | `Program.cs:101` |
-| `GET /faces` | listener face 计数器 JSON（ingress/ws 两面） | `FaceCounters`，见下 | `Program.cs:102`，字段 `Faces/FaceCounters.cs:64`、`:73` |
-| `GET /metrics` | Prometheus 文本（`chorus_*`） | text | `Program.cs:103`，渲染 `Gateway.Core/Metrics/ChorusMetricsText.cs` |
-| `GET /ready` | 就绪探针（仅拆分 Gateway） | 200 `{"ready":true,"engineSilenceMs":n}`；静默超窗 503 `{"ready":false,"engineSilenceMs":n}` | `Program.cs:110`，判定 `Gateway/GatewayIpcService.cs:32` |
-| `POST /ingress/{platform}` | 平台事件入口（platform 角色） | 见「Ingress 错误码」 | `Program.cs:125`；`Gateway:Roles` 未选中该角色时端点不注册（404），`Program.cs:121` |
-| `WS /ws` | 主播客户端（streamer 角色） | 见「WS 协议」 | `Program.cs:133`；同上角色门禁 `Program.cs:128` |
+| `GET /` | 自述 | `{"name":"Chorus.Gateway","ok":true}` | `Program.cs:123` |
+| `GET /health` | 存活探针 | 200 空 | `Program.cs:124` |
+| `GET /faces` | listener face 计数器 JSON（ingress/ws 两面） | `FaceCounters`，见下 | `Program.cs:125`，字段 `Faces/FaceCounters.cs:67`、`:76` |
+| `GET /metrics` | Prometheus 文本（`chorus_*`） | text | `Program.cs:126`，渲染 `Gateway.Core/Metrics/ChorusMetricsText.cs` |
+| `GET /ready` | 就绪探针（仅拆分 Gateway） | 200 `{"ready":true,"engineSilenceMs":n}`；静默超窗 503 `{"ready":false,"engineSilenceMs":n}` | `Program.cs:133`，判定 `Gateway/GatewayIpcService.cs:32` |
+| `POST /ingress/{platform}` | 平台事件入口（platform 角色） | 见「Ingress 错误码」 | `Program.cs:148`；`Gateway:Roles` 未选中该角色时端点不注册（404），`Program.cs:144` |
+| `WS /ws` | 主播客户端（streamer 角色） | 见「WS 协议」 | `Program.cs:156`；同上角色门禁 `Program.cs:151` |
+
+网关不持有会话状态，因此没有 `/sessions` 与 `/leaderboard`（后者见 EngineHost / Server）。
 
 curl 示例（Gateway 在 5168）：
 
@@ -51,10 +53,11 @@ curl -X POST http://localhost:5168/ingress/test -H 'content-type: application/js
 
 | 方法 路径 | 用途 | 响应 | 出处 |
 |---|---|---|---|
-| `GET /` | 自述 | `{"name":"Chorus.EngineHost","ok":true}` | `Program.cs:34` |
-| `GET /health` | 存活探针 | 200 空 | `Program.cs:35` |
-| `GET /sessions` | 会话/客户端诊断 JSON（每客户端 lag/ack 明细；拆分模式下的会话权威） | JSON | `Program.cs:39`（`c7846a6` 补齐） |
-| `GET /metrics` | Prometheus 文本：会话诊断 + `chorus_ipc_publish_failures_total` + `chorus_snapshot_bytes` + `chorus_process_cpu_percent`（worker CPU，首抓省略） | text | `Program.cs:40`；CPU 刻度 `EngineHost/ProcessCpuGauge.cs` |
+| `GET /` | 自述 | `{"name":"Chorus.EngineHost","ok":true}` | `Program.cs:46` |
+| `GET /health` | 存活探针 | 200 空 | `Program.cs:47` |
+| `GET /sessions` | 会话/客户端诊断 JSON（每客户端 lag/ack 明细；拆分模式下的会话权威） | JSON | `Program.cs:51`（`c7846a6` 补齐） |
+| `GET /leaderboard/{scope}/{scopeId}` | 排行榜只读查询（scope/错误码见 [排行榜](../guide/leaderboard.md)） | JSON | `Program.cs:52` |
+| `GET /metrics` | Prometheus 文本：会话诊断 + `chorus_ipc_publish_failures_total` + `chorus_snapshot_bytes` + `chorus_process_cpu_percent`（worker CPU，首抓省略） | text | `Program.cs:53`；CPU 刻度 `EngineHost/ProcessCpuGauge.cs` |
 
 ```bash
 curl http://localhost:5067/health
@@ -64,18 +67,19 @@ curl http://localhost:5067/metrics
 
 ### Chorus.Server（单进程，`src/Chorus.Server/Program.cs`）
 
-单进程形态多一个诊断端点；`/matches` 只在此形态暴露（权威 `MatchRegistry` 在单进程）。`/sessions` 拆分模式下由 EngineHost 暴露（见上）：
+单进程形态多一个诊断端点；`/matches` 只在此形态暴露（权威 `MatchRegistry` 在单进程）。`/sessions` 拆分模式下由 EngineHost 暴露（见上）；`/leaderboard` 两种形态都在会话宿主上：
 
 | 方法 路径 | 用途 | 出处 |
 |---|---|---|
-| `GET /` | 自述 | `Program.cs:102` |
-| `GET /health` | 存活探针 | `Program.cs:103` |
-| `GET /sessions` | 会话/客户端诊断 JSON（lag、ack、丢弃计数） | `Program.cs:104` |
-| `GET /matches` | match 级聚合视图 JSON | `Program.cs:105` |
-| `GET /faces` | 同 Gateway | `Program.cs:106` |
-| `GET /metrics` | 同 Gateway | `Program.cs:109` |
-| `POST /ingress/{platform}` | 同 Gateway | `Program.cs:115` |
-| `WS /ws` | 同 Gateway | `Program.cs:120` |
+| `GET /` | 自述 | `Program.cs:141` |
+| `GET /health` | 存活探针 | `Program.cs:142` |
+| `GET /sessions` | 会话/客户端诊断 JSON（lag、ack、丢弃计数） | `Program.cs:143` |
+| `GET /matches` | match 级聚合视图 JSON | `Program.cs:144` |
+| `GET /leaderboard/{scope}/{scopeId}` | 排行榜只读查询（见 [排行榜](../guide/leaderboard.md)） | `Program.cs:145` |
+| `GET /faces` | 同 Gateway | `Program.cs:146` |
+| `GET /metrics` | 同 Gateway | `Program.cs:149` |
+| `POST /ingress/{platform}` | 同 Gateway | `Program.cs:160` |
+| `WS /ws` | 同 Gateway | `Program.cs:165` |
 
 ```bash
 curl http://localhost:5083/sessions
@@ -85,7 +89,7 @@ curl http://localhost:5083/matches
 ### /faces 字段
 
 `GET /faces` 返回 `IngressFaceSnapshot` + `StreamerWsFaceSnapshot` 两段
-（`src/Chorus.Gateway.Core/Faces/FaceCounters.cs:64`、`:73`）：
+（`src/Chorus.Gateway.Core/Faces/FaceCounters.cs:67`、`:76`）：
 
 - ingress：`accepted` / `rateLimited` / `tooLarge` / `timedOut` / `unverified` / `duplicates` / `unmapped`
 - streamerWs：`connections` / `unauthorized` / `protocolMismatch` / `messageTooLarge` / `ackAccepted` / `ackDropped`
@@ -110,14 +114,14 @@ curl http://localhost:5083/matches
 
 | 状态 | 条件 | 出处 |
 |---|---|---|
-| 200 `{ok,sessionId,eventId,tick?}` | 受理；`tick` 仅单进程形态（引擎 tick 经 IPC 走 welcome/snapshot） | `:128`、`:129` |
+| 200 `{ok,sessionId,eventId,tick?}` | 受理；`tick` 仅单进程形态（引擎 tick 经 IPC 走 welcome/snapshot） | `:141-143` |
 | 200 `{ok:true,duplicated:true,...}` | 重复事件（TTL 内同 `eventId`） | `:101` |
 | 400 `{error:"unmapped_event",platform}` | 未知事件类型 | `:93` |
 | 401 | 验签失败/缺验证器/缺密钥（fail-closed） | `:76` |
 | 413 | 请求体超 `Faces:PlatformIngress:MaxBodyBytes` | `:68` |
 | 429 | 超 `Faces:PlatformIngress:RateLimitPerMinute` | `:58` |
-| 503 | 引擎侧投递失败（回滚去重，平台重试即全新投递）；或事件道满 | `:119`、`:138` |
-| 504 | 单请求超 `Faces:PlatformIngress:TimeoutMs` | `:134` |
+| 503 | 引擎侧投递失败（回滚去重，平台重试即全新投递）；或事件道满 | `:133`、`:152` |
+| 504 | 单请求超 `Faces:PlatformIngress:TimeoutMs` | `:148` |
 
 ## WS 协议（/ws）
 

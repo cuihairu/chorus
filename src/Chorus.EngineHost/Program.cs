@@ -1,12 +1,18 @@
+using Chorus.Data;
 using Chorus.Engine.Abstractions;
 using Chorus.Engine.Session;
 using Chorus.EngineHost;
+using Chorus.Gateway.Core.Leaderboard;
 using Chorus.Gateway.Core.Metrics;
 using Chorus.SampleGame;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<IGameModuleFactory, SampleGameModuleFactory>();
+// Leaderboard (audit §9): split mode keeps the store engine-side with the
+// sessions it scores; the gateway holds no board and exposes no endpoint.
+builder.Services.AddSingleton<LeaderboardStore>();
+builder.Services.AddSingleton<ISessionScoreSink, LeaderboardScoreSink>();
 builder.Services.AddSingleton(sp =>
 {
     var cfg = sp.GetRequiredService<IConfiguration>();
@@ -43,6 +49,7 @@ app.MapGet("/health", () => Results.Ok());
 // cannot give). The engine is the authority for session state in split mode, so
 // exposing it here restores parity with the monolith's /sessions.
 app.MapGet("/sessions", (EngineIpcService engine) => engine.GetDiagnostics());
+app.MapLeaderboard();
 app.MapGet("/metrics", (EngineIpcService engine) => Results.Text(
     ChorusMetricsText.RenderEngine(
         engine.GetDiagnostics(),
