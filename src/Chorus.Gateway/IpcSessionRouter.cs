@@ -18,15 +18,17 @@ public sealed class IpcSessionRouter : IStreamerSessionRouter
     private const int WelcomeTimeoutSeconds = 2;
 
     private readonly GatewayIpcService _ipc;
+    private readonly FaceCounters _faces;
 
-    public IpcSessionRouter(GatewayIpcService ipc)
+    public IpcSessionRouter(GatewayIpcService ipc, FaceCounters faces)
     {
         _ipc = ipc;
+        _faces = faces;
     }
 
     public async Task<StreamerWsConnection> ConnectAsync(string sessionId, string clientId, WebSocket ws, CancellationToken cancellationToken)
     {
-        var conn = new GatewayClientConnection(sessionId, clientId, ws);
+        var conn = new GatewayClientConnection(sessionId, clientId, ws, _faces);
         var binding = new IpcSessionBinding(_ipc, sessionId, clientId, conn);
 
         // The waiter must die with the welcome window: a timed-out registration

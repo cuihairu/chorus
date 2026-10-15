@@ -92,7 +92,7 @@ curl http://localhost:5083/matches
 （`src/Chorus.Gateway.Core/Faces/FaceCounters.cs:67`、`:76`）：
 
 - ingress：`accepted` / `rateLimited` / `tooLarge` / `timedOut` / `unverified` / `duplicates` / `unmapped`
-- streamerWs：`connections` / `unauthorized` / `protocolMismatch` / `messageTooLarge` / `ackAccepted` / `ackDropped`
+- streamerWs：`connections` / `unauthorized` / `protocolMismatch` / `messageTooLarge` / `ackAccepted` / `ackDropped` / `resyncDropped` / `snapshotDropped`
 
 ## Ingress 请求与错误码
 

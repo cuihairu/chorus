@@ -110,6 +110,7 @@ frame-sync P2 的 resync 路径计数此前只在 `/sessions` 可见，现同步
 | `chorus_ws_acks_accepted_total` | counter | 被接受（未触发限流）的 WS ACK 数 |
 | `chorus_ws_acks_dropped_total` | counter | 触发限流被丢弃的 WS ACK 数 |
 | `chorus_ws_resync_dropped_total` | counter | 网关 `/ws` resync 固定窗口限流（`Faces:StreamerWs:ResyncPerMinute`）丢弃的请求数（`c896855`）。与引擎侧 `chorus_resync_throttled_total` 互补：该计数发生在请求到达引擎之前，异常升高说明客户端在打转（频繁重连/全量 resync） |
+| `chorus_ws_snapshot_dropped_total` | counter | 网关 slow-client 丢弃策略计数（2026-10-16，todo §10 阻塞②）：逐连接 latest-wins 出站槽（容量 1）被新快照替换掉的旧快照数，累加进进程级 `FaceCounters`，跨连接重连不丢历史。仅拆分模式有意义——单进程形态没有这一跳，恒为 0（其丢弃计 `chorus_client_queue_dropped_total`）。配对读：与 `chorus_ws_resync_dropped_total` 一起看——drop 上升说明客户端跟不上快照速率，丢弃帧由客户端 resync 补齐 |
 
 ### IPC
 

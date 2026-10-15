@@ -19,7 +19,7 @@ public sealed class GatewayClientConnectionTests
     public async Task SendSnapshot_PumpsOnce_AndReportsZeroDropped()
     {
         var ws = new RecordingSocket();
-        await using var conn = new GatewayClientConnection("s1", "c1", ws);
+        await using var conn = new GatewayClientConnection("s1", "c1", ws, new Chorus.Gateway.Core.Faces.FaceCounters());
 
         await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
         await WaitForAsync(() => ws.Sent.Count == 1, TimeSpan.FromSeconds(5));
@@ -32,7 +32,7 @@ public sealed class GatewayClientConnectionTests
     public async Task SendSnapshot_AfterDispose_CountsDropped()
     {
         var ws = new RecordingSocket();
-        await using var conn = new GatewayClientConnection("s1", "c1", ws);
+        await using var conn = new GatewayClientConnection("s1", "c1", ws, new Chorus.Gateway.Core.Faces.FaceCounters());
         await conn.DisposeAsync();
 
         await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
@@ -47,7 +47,7 @@ public sealed class GatewayClientConnectionTests
     {
         // 与各 MessageBus 相同的仓内契约：DisposeAsync 幂等，二次调用不得抛。
         var ws = new RecordingSocket();
-        var conn = new GatewayClientConnection("s1", "c1", ws);
+        var conn = new GatewayClientConnection("s1", "c1", ws, new Chorus.Gateway.Core.Faces.FaceCounters());
 
         await conn.DisposeAsync();
         await conn.DisposeAsync();
@@ -58,7 +58,7 @@ public sealed class GatewayClientConnectionTests
     {
         // 传输中途断开：pump 吞掉异常退出，不把异常抛回 fire-and-forget 调用方。
         var ws = new RecordingSocket(new InvalidOperationException("connection reset"));
-        await using var conn = new GatewayClientConnection("s1", "c1", ws);
+        await using var conn = new GatewayClientConnection("s1", "c1", ws, new Chorus.Gateway.Core.Faces.FaceCounters());
 
         await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
         await WaitForAsync(() => ws.SendAttempts == 1, TimeSpan.FromSeconds(5));
@@ -78,7 +78,7 @@ public sealed class GatewayClientConnectionTests
     {
         var ws = new RecordingSocket();
         ws.Close();
-        await using var conn = new GatewayClientConnection("s1", "c1", ws);
+        await using var conn = new GatewayClientConnection("s1", "c1", ws, new Chorus.Gateway.Core.Faces.FaceCounters());
 
         await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
         await conn.DisposeAsync(); // DisposeAsync 等待 pump 退出：此后断言无竞态。
@@ -88,12 +88,59 @@ public sealed class GatewayClientConnectionTests
     }
 
     [Fact]
+    public async Task SendSnapshot_SlotOccupied_CountsReplacedSnapshot()
+    {
+        // The slot must use FullMode.Wait, not DropOldest: DropOldest admits the
+        // new snapshot and silently discards the queued one (no dropped hook
+        // exists on BoundedChannelOptions), so the Dropped counter would only
+        // ever see post-dispose writes. Engine-side precedent: OutboundClientQueue.
+        // The pump is parked mid-send on snapshot 1, so snapshot 2 occupies the
+        // slot and snapshot 3 is the countable eviction.
+        var ws = new GateSocket();
+        var faces = new Chorus.Gateway.Core.Faces.FaceCounters();
+        await using var conn = new GatewayClientConnection("s1", "c1", ws, faces);
+
+        await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
+        await WaitForAsync(() => ws.SendsQueued == 1, TimeSpan.FromSeconds(5));
+
+        await conn.SendSnapshotAsync(Snapshot(2), CancellationToken.None); // slot empty
+        await conn.SendSnapshotAsync(Snapshot(3), CancellationToken.None); // replaces 2
+
+        Assert.Equal(1, conn.Dropped);
+        Assert.Equal(1, faces.StreamerWs.SnapshotDropped); // mirrored process-wide
+
+        ws.ReleaseAll();
+        await WaitForAsync(() => ws.Sent.Count == 2, TimeSpan.FromSeconds(5));
+
+        var ticks = ws.Sent.Select(DecodeTickId).ToArray();
+        Assert.Equal(new long[] { 1, 3 }, ticks); // 2 never reached the transport
+    }
+
+    [Fact]
+    public async Task SendSnapshot_SlotFree_DoesNotCountDrop()
+    {
+        var ws = new RecordingSocket();
+        var faces = new Chorus.Gateway.Core.Faces.FaceCounters();
+        await using var conn = new GatewayClientConnection("s1", "c1", ws, faces);
+
+        await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
+
+        await WaitForAsync(() => ws.Sent.Count == 1, TimeSpan.FromSeconds(5));
+        Assert.Equal(0, conn.Dropped);
+        Assert.Equal(0, faces.StreamerWs.SnapshotDropped);
+    }
+
+    private static long DecodeTickId(byte[] frame)
+        => System.Text.Json.JsonSerializer.Deserialize<ServerSnapshot>(
+            System.Text.Encoding.UTF8.GetString(frame), Chorus.Protocol.ProtocolJson.SerializerOptions)!.TickId;
+
+    [Fact]
     public async Task Dispose_CancelsPumpWaitingOnChannel_SwallowingOce()
     {
         // Pump sitting on the empty channel when the connection closes: the
         // cancellation must be swallowed, not escaped as an unobserved fault.
         var ws = new RecordingSocket();
-        await using var conn = new GatewayClientConnection("s1", "c1", ws);
+        await using var conn = new GatewayClientConnection("s1", "c1", ws, new Chorus.Gateway.Core.Faces.FaceCounters());
 
         await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
         await WaitForAsync(() => ws.Sent.Count == 1, TimeSpan.FromSeconds(5));
@@ -107,7 +154,7 @@ public sealed class GatewayClientConnectionTests
         // Transport dies mid-send: dispose must join a faulted pump and not
         // surface the transport exception to the caller.
         var ws = new RecordingSocket(new WebSocketException("connection reset"));
-        await using var conn = new GatewayClientConnection("s1", "c1", ws);
+        await using var conn = new GatewayClientConnection("s1", "c1", ws, new Chorus.Gateway.Core.Faces.FaceCounters());
 
         await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
         await WaitForAsync(() => ws.SendAttempts == 1, TimeSpan.FromSeconds(5));
@@ -200,6 +247,49 @@ public sealed class GatewayClientConnectionTests
                 Sent.Add(copy);
                 return Task.CompletedTask;
             }
+        }
+    }
+
+    /// <summary>
+    /// Parks the pump mid-send so the latest-wins slot can be observed while
+    /// occupied: send 1 blocks inside the transport, sends 2 and 3 then queue
+    /// behind it. Two release slots let the two surviving sends through.
+    /// </summary>
+    private sealed class GateSocket : WebSocket
+    {
+        private readonly SemaphoreSlim _sendGate = new(0, 2);
+        private WebSocketState _state = WebSocketState.Open;
+
+        public override WebSocketState State => _state;
+        public override WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override string? SubProtocol => null;
+
+        public int SendsQueued { get; private set; }
+        public List<byte[]> Sent { get; } = new();
+
+        public void ReleaseAll() => _sendGate.Release(2);
+
+        public override void Abort() => throw new NotSupportedException();
+        public override Task<WebSocketReceiveResult> ReceiveAsync(
+            ArraySegment<byte> buffer, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+        public override Task CloseAsync(
+            WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+        public override Task CloseOutputAsync(
+            WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+        public override void Dispose() { }
+
+        public override async Task SendAsync(
+            ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken)
+        {
+            SendsQueued++;
+            await _sendGate.WaitAsync(cancellationToken);
+            var copy = new byte[buffer.Count];
+            Buffer.BlockCopy(buffer.Array!, buffer.Offset, copy, 0, buffer.Count);
+            Sent.Add(copy);
         }
     }
 }

@@ -5,6 +5,7 @@ using Chorus.Engine.Abstractions;
 using Chorus.Engine.Session;
 using Chorus.EngineHost;
 using Chorus.Gateway;
+using Chorus.Gateway.Core.Faces;
 using Chorus.Messaging;
 using Chorus.Messaging.Ipc;
 using Chorus.Messaging.Transports;
@@ -886,7 +887,7 @@ public sealed class IpcAckResyncLoopTests
 
         public RecordingConnection(string sessionId, string clientId)
         {
-            Inner = new GatewayClientConnection(sessionId, clientId, new RecordingSocket(_sent, _gate));
+            Inner = new GatewayClientConnection(sessionId, clientId, new RecordingSocket(_sent, _gate), new FaceCounters());
         }
 
         public GatewayClientConnection Inner { get; }

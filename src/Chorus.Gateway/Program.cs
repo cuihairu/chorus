@@ -20,7 +20,9 @@ builder.Services.AddSingleton(IngressFaceOptions.FromConfiguration(builder.Confi
 builder.Services.AddSingleton<IngressFaceGuard>();
 builder.Services.AddSingleton<FaceCounters>();
 builder.Services.AddSingleton(StreamerWsFaceOptions.FromConfiguration(builder.Configuration));
-builder.Services.AddSingleton(sp => new IpcSessionRouter(sp.GetRequiredService<GatewayIpcService>()));
+builder.Services.AddSingleton(sp => new IpcSessionRouter(
+    sp.GetRequiredService<GatewayIpcService>(),
+    sp.GetRequiredService<FaceCounters>()));
 
 // Tell seam (todo §3.5): the ingress face delivers events through the shared
 // ISessionActorRouter; this host routes Tells over the engine IPC.

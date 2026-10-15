@@ -30,7 +30,7 @@ public sealed class IpcSessionRouterTests
         var ws = new ErrorRecordingSocket();
         try
         {
-            var router = new IpcSessionRouter(gateway);
+            var router = new IpcSessionRouter(gateway, new FaceCounters());
 
             var conn = await router.ConnectAsync("s-r", "c-r", ws, CancellationToken.None);
 
@@ -61,7 +61,7 @@ public sealed class IpcSessionRouterTests
         {
             await gateway.StartAsync(CancellationToken.None);
             await WarmUpGatewayAsync(gateway, CancellationToken.None);
-            var router = new IpcSessionRouter(gateway);
+            var router = new IpcSessionRouter(gateway, new FaceCounters());
 
             var conn = await router.ConnectAsync("s-r2", "c-r2", ws, CancellationToken.None);
 
@@ -103,7 +103,7 @@ public sealed class IpcSessionRouterTests
         {
             await gateway.StartAsync(CancellationToken.None);
             await WarmUpGatewayAsync(gateway, CancellationToken.None);
-            var router = new IpcSessionRouter(gateway);
+            var router = new IpcSessionRouter(gateway, new FaceCounters());
 
             var conn = await router.ConnectAsync("s-r3", "c-r3", ws, CancellationToken.None);
             Assert.Null(conn.Welcome); // timed out after 2s

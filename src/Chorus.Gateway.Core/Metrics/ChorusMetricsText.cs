@@ -196,6 +196,10 @@ public static class ChorusMetricsText
         AppendCounter(sb, "chorus_ws_acks_accepted_total", ws.AckAccepted);
         AppendCounter(sb, "chorus_ws_acks_dropped_total", ws.AckDropped);
         AppendCounter(sb, "chorus_ws_resync_dropped_total", ws.ResyncDropped);
+        // Latest-wins eviction on the gateway hop (split mode only; the
+        // monolith has no such slot and its drops are chorus_client_queue_dropped_total).
+        // todo.md:156 churn blocker ②: the drop policy existed but was uncountable.
+        AppendCounter(sb, "chorus_ws_snapshot_dropped_total", ws.SnapshotDropped);
     }
 
     private static void AppendCounter(StringBuilder sb, string name, long value)

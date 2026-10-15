@@ -26,6 +26,7 @@ public sealed class FaceCounters
     private long _wsAckAccepted;
     private long _wsAckDropped;
     private long _wsResyncDropped;
+    private long _wsSnapshotDropped;
 
     [JsonPropertyName("ingress")]
     public IngressFaceSnapshot Ingress => new(
@@ -45,7 +46,8 @@ public sealed class FaceCounters
         Interlocked.Read(ref _wsMessageTooLarge),
         Interlocked.Read(ref _wsAckAccepted),
         Interlocked.Read(ref _wsAckDropped),
-        Interlocked.Read(ref _wsResyncDropped));
+        Interlocked.Read(ref _wsResyncDropped),
+        Interlocked.Read(ref _wsSnapshotDropped));
 
     public void IngressAccepted() => Interlocked.Increment(ref _ingressAccepted);
     public void IngressRateLimited() => Interlocked.Increment(ref _ingressRateLimited);
@@ -62,6 +64,7 @@ public sealed class FaceCounters
     public void WsAckAccepted() => Interlocked.Increment(ref _wsAckAccepted);
     public void WsAckDropped() => Interlocked.Increment(ref _wsAckDropped);
     public void WsResyncDropped() => Interlocked.Increment(ref _wsResyncDropped);
+    public void WsSnapshotDropped() => Interlocked.Increment(ref _wsSnapshotDropped);
 }
 
 public sealed record IngressFaceSnapshot(
@@ -80,4 +83,11 @@ public sealed record StreamerWsFaceSnapshot(
     long MessageTooLarge,
     long AckAccepted,
     long AckDropped,
-    long ResyncDropped = 0);
+    long ResyncDropped = 0,
+    /// <summary>
+    /// Split mode only: snapshots evicted from a client's latest-wins outbound
+    /// slot because the transport could not keep up (GatewayClientConnection).
+    /// The monolith has no such hop and reports 0; its drops are
+    /// chorus_client_queue_dropped_total.
+    /// </summary>
+    long SnapshotDropped = 0);
