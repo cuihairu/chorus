@@ -358,8 +358,10 @@ public sealed class IpcAckResyncLoopTests
     {
         var socketDir = $"/tmp/chorus-test-target-{Guid.NewGuid():N}";
         Directory.CreateDirectory(socketDir);
+        // The gateway hosts the eng->gw listener itself; this end is a plain
+        // client whose PublishAsync connects on demand. Hosting a competing
+        // server here would steal the socket file from the gateway's listener.
         var engineSide = new UnixDomainSocketMessageBus(Path.Combine(socketDir, "chorus_eng_to_gw.sock"));
-        engineSide.StartServer();
         // The gateway publishes gw.connect on gw->eng; host that end too so
         // RegisterClientAsync completes.
         var engineIngress = new UnixDomainSocketMessageBus(Path.Combine(socketDir, "chorus_gw_to_eng.sock"));
@@ -373,6 +375,10 @@ public sealed class IpcAckResyncLoopTests
         {
             await gateway.StartAsync(cts.Token);
             await WarmUpGatewayAsync(gateway, cts.Token);
+            // Wait for the gateway's own eng->gw listener to bind before the
+            // snapshot publish below; the warm-up envelope is ignored by the
+            // gateway's dispatch switch.
+            await WarmUpAsync(engineSide, cts.Token);
             await gateway.RegisterClientAsync(target.Inner, cts.Token);
             await gateway.RegisterClientAsync(other.Inner, cts.Token);
 
