@@ -69,6 +69,11 @@ public sealed class IpcSessionRouterTests
             Assert.NotNull(conn.Binding);
             var sent = Encoding.UTF8.GetString(Assert.Single(ws.Sent));
             Assert.Contains("Engine welcome timeout", sent);
+
+            // The binding still forwards ack/resync over IPC after the welcome
+            // timed out — both must succeed on the live outgoing bus.
+            await conn.Binding.AckAsync(42, 1234L, CancellationToken.None);
+            await conn.Binding.ResyncAsync(40, CancellationToken.None);
         }
         finally
         {
