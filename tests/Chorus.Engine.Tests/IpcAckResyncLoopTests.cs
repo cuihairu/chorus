@@ -8,6 +8,7 @@ using Chorus.Gateway;
 using Chorus.Messaging;
 using Chorus.Messaging.Ipc;
 using Chorus.Messaging.Transports;
+using Chorus.Protocol;
 using Chorus.Protocol.Messages;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -619,7 +620,10 @@ public sealed class IpcAckResyncLoopTests
 
         public override Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken)
         {
-            var doc = System.Text.Json.JsonSerializer.Deserialize<ServerSnapshot>((ReadOnlySpan<byte>)buffer.AsSpan());
+            // The wire format is the WS protocol's camelCase JSON; decode with
+            // the same options or TickId and friends stay at their defaults.
+            var doc = System.Text.Json.JsonSerializer.Deserialize<ServerSnapshot>(
+                (ReadOnlySpan<byte>)buffer.AsSpan(), ProtocolJson.SerializerOptions);
             _gate.Wait();
             try
             {
