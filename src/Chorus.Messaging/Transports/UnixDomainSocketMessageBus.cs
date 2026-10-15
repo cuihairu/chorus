@@ -85,12 +85,13 @@ public sealed class UnixDomainSocketMessageBus : IMessageBus
                 {
                     using var socket = accepted;
                     await using var stream = new NetworkStream(socket, ownsSocket: false);
+                    using var reader = new FrameReader(stream);
                     while (!_cts.IsCancellationRequested)
                     {
                         byte[]? frame;
                         try
                         {
-                            frame = await LengthPrefixedStream.ReadFrameAsync(stream, _cts.Token);
+                            frame = await reader.ReadFrameAsync(_cts.Token);
                         }
                         catch
                         {
@@ -152,6 +153,11 @@ public sealed class UnixDomainSocketMessageBus : IMessageBus
 
     public async ValueTask PublishAsync(Envelope envelope, CancellationToken cancellationToken)
     {
+        // Serialize before the write lock: on the split-mode eng-to-gw channel
+        // every session's snapshots share one socket, and JSON cost inside the
+        // critical section made every publisher queue behind it.
+        var bytes = JsonEnvelopeCodec.Serialize(envelope);
+
         await _clientLock.WaitAsync(cancellationToken);
         try
         {
@@ -164,7 +170,6 @@ public sealed class UnixDomainSocketMessageBus : IMessageBus
                 _clientStream = new NetworkStream(_clientSocket, ownsSocket: false);
             }
 
-            var bytes = JsonEnvelopeCodec.Serialize(envelope);
             await LengthPrefixedStream.WriteFrameAsync(_clientStream, bytes, cancellationToken);
         }
         finally

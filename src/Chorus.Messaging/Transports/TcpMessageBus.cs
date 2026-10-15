@@ -76,12 +76,13 @@ public sealed class TcpMessageBus : IMessageBus
                     using var tcp = accepted;
                     tcp.NoDelay = true;
                     await using var stream = tcp.GetStream();
+                    using var reader = new FrameReader(stream);
                     while (!_cts.IsCancellationRequested)
                     {
                         byte[]? frame;
                         try
                         {
-                            frame = await LengthPrefixedStream.ReadFrameAsync(stream, _cts.Token);
+                            frame = await reader.ReadFrameAsync(_cts.Token);
                         }
                         catch
                         {

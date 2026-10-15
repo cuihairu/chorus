@@ -60,9 +60,10 @@ public sealed class NamedPipeMessageBus : IMessageBus
                 var t = Task.Run(async () =>
                 {
                     await using var s = server;
+                    using var reader = new FrameReader(s);
                     while (!_cts.IsCancellationRequested && s.IsConnected)
                     {
-                        var frame = await LengthPrefixedStream.ReadFrameAsync(s, _cts.Token);
+                        var frame = await reader.ReadFrameAsync(_cts.Token);
                         if (frame == null)
                         {
                             break;
