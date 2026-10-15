@@ -175,7 +175,7 @@
 ## 13. 文档一致性
 
 - [x] 文档-代码一致性审计（2026-10-13，41 条修复，见 docs/audit-doc-consistency.zh.md）
-- [ ] 文档站双语配对（2026-10-16 执行单：根目录 4/4 完成，子目录顺延下一轮）：docs/ 根目录 4 篇实质文档全部配对（architecture / decisions / audit-doc-consistency / README 首页），`X.md`=英文、`X.zh.md`=中文、两份顶部切换器；子目录登记——docs/design/ 14 篇（overall-architecture.md 1478 行、review-2026-10-12-chatgpt.md 546 行、client-resync-state-machine.md 363 行等）、docs/guide/ 8 篇、docs/reference/ 15 篇，共 37 篇均中文单语无配对。剩余缺口：子目录 37 篇双语配对；docs/design/spec.md:157 的 `[整体架构](./architecture.md)` 现指向英文版根页（按新英文版走，子目录轮次再统一处理）
+- [ ] 文档站双语配对（2026-10-16 执行单：根目录 4/4 完成，子目录顺延下一轮）：docs/ 根目录 4 篇实质文档全部配对（architecture / decisions / audit-doc-consistency / README 首页），`X.md`=英文、`X.zh.md`=中文、两份顶部切换器；子目录登记——docs/design/ 14 篇（overall-architecture.md 1478 行、review-2026-10-12-chatgpt.md 546 行、client-resync-state-machine.md 363 行等）、docs/guide/ 8 篇、docs/reference/ 15 篇，共 37 篇均中文单语无配对。剩余缺口：子目录 37 篇双语配对。（注：docs/design/spec.md:157 的 `[整体架构](./architecture.md)` 是相对 spec.md 自身目录的链接，解析为 docs/design/architecture.md，与根目录英文版无关，本轮不受影响、无需处理）
 - [x] 总体架构与 Code Agent 实施规范（2026-10-13，80 项审计，见 docs/design/overall-architecture.md）
 - [x] 架构图进文档（`89d2275`）
 - [x] API 参考文档（`67daedc`）
