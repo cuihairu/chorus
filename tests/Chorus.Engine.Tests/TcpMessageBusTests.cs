@@ -71,10 +71,11 @@ public sealed class TcpMessageBusTests
     [InlineData("*")]
     [InlineData("::")]
     [InlineData("127.0.0.1")]
+    [InlineData("no.such.host.invalid")]
     public async Task StartServer_ResolvesHosts_AndListens(string host)
     {
-        // 各主机写法都要落到可监听地址（回环 / IPv4 通配 / IPv6 通配 / 字面 IP），
-        // port 0 交给内核分配。
+        // 各主机写法都要落到可监听地址（回环 / IPv4 通配 / IPv6 通配 / 字面 IP；
+        // 其余无法解析的主机名 fail-open 回环，port 0 交给内核分配。
         await using var bus = new TcpMessageBus(host, port: 0);
 
         bus.StartServer();
