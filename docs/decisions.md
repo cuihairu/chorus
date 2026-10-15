@@ -99,3 +99,35 @@
   非法长度拒绝），对端零感知；TCP/NamedPipe 的「锁内序列化」未动（本轮只优化实测瓶颈的 UDS 路径，
   无实测需求不扩散改动面）。回滚面：三个传输的 `FrameReader` 换回 `LengthPrefixedStream.ReadFrameAsync`、
   合并写回退为两次写。多 socket 分片与写合并泵（帧批写入队列）留待门控复测后再定。
+
+### D9 门控复测取基线：②（多 socket 分片 / 写合并泵）维持暂缓（已代决，2026-10-16）
+
+- **背景**：D8 落地（帧层流水线读 + 合并写 + 序列化出锁）时把「多 socket 按 session 分片」与
+  「写合并泵」留待门控复测取新基线再定参数——缺基线而不是外部条件。本轮补齐该基线：同一拓扑
+  （EngineHost + platform-gw + streamer-gw，`Ipc:GatewayIds=platform-gw,streamer-gw`、
+  `Session:MaxSessions=1000`）同参数，在 D8 前树 `e74291c` 与 D8 后树 HEAD 各跑一轮
+  （两树分别 `dotnet build -c Debug -o` 到独立目录，避免中途切换工作树）。主证据是
+  churn-free 组（800 房 ×1 客户端、`--disconnect-every 0`、128 producers、60s），其工作量匹配
+  （送达 107,794 vs 108,085，差 0.3%）；churn 组（800 房 ×3 客户端 = 2,400 WS）驱动侧工作量
+  不匹配（送达 53,105 vs 32,657），仅作旁证。
+- **测量结果（churn-free 主证据）**：`ipc_publish_failures` 4,324→1,425（−67%；按
+  `snapshots_sent` 折算 0.69%→0.21%）、`snapshots_sent` +11.0%、引擎 `client_queue_dropped`
+  −97%、网关 `ws_snapshot_dropped` −95%、引擎峰值 CPU 30.32→27.08（−10.7%，14 核 4.25→3.79 核）、
+  无计划重连 4,775→1,678（−65%）、双侧零事件损失（零 503/429/401）、`maxLagTicks` 13 双侧不变、
+  错误类别一致。**唯一恶化项** `tick_overruns`（`TickTimeoutMs=250`）13→38（+2.9×）。
+- **恶化项结构定位**（未插桩计时）：tick 体内快照广播是 await 的
+  （`SessionActor.cs:636/671/703`），经 `EngineBusSessionClient.SendSnapshotAsync` → UDS
+  `PublishAsync` 在单一 `_clientLock` 上串行写单一 socket；D8 每帧 I/O 变便宜后交付量 +11%，
+  同一 socket 的写阻塞暴露面随之上升（churn 组同向：1→15）。故残余瓶颈是「tick 内联 await 发布」
+  与「单 socket 串行扇出」这一对，不是带宽也不是每帧 I/O 次数。合并写缓冲的每帧分配
+  （`WriteFrameAsync` 对 ≤16KiB 帧 `new byte[4+n]`，实测快照均值 2,748 B）不构成 250ms 级停摆来源。
+- **决定**：② 维持暂缓，理由从「缺基线」更新为「有基线且触发线未达」——三组峰值 21.67–30.32%
+  （3.0–4.25 核）距 60% 触发线（8.4 核）2.0–2.8 倍余量；且写合并泵会把 `PublishAsync` 的失败语义
+  从同步变异步（`snapshots_sent_total` 从「已写」变「已入队」、`SafePublishAsync` 与
+  `WelcomePublisher` 的取舍需重排、welcome 延迟预算改动），而其目标工作负载（30k rps）仍被
+  LoadTool 单进程驱动卡住（本轮 churn-free 仅 1,797 rps；churn 下上限 ~862 rps）。
+- **触发条件（明确化）**：满足任一即重开 ②——引擎峰值 CPU > 60%（8.4 核）；或 LoadTool 驱动改造
+  （异步发送 / 多进程驱动）落地后能把 800 房 churn 组的送达推到目标速率并复现 `tick_overruns`
+  随交付量上升的趋势。两者都不满足前不为不可达负载改关键路径语义。
+- **方法学注记**：驱动吞吐随机器负载波动（本轮 churn-free 1,797 rps vs R1015D 记录 4,706 rps），
+  绝对速率不可跨轮比较；跨树比较只能用同轮 A/B 的归一化计数（每 `snapshots_sent`、每重连）。
