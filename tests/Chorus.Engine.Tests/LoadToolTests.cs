@@ -125,6 +125,45 @@ public sealed class LoadToolTests
     }
 
     [Fact]
+    public void Options_ParsesWsUrlFlag()
+    {
+        var options = LoadToolOptions.Parse(new[]
+        {
+            "--url", "http://127.0.0.1:5168",
+            "--ws-url", "ws://127.0.0.1:5169/ws",
+        });
+
+        Assert.Equal("ws://127.0.0.1:5169/ws", options.WsUrl);
+        Assert.Equal("ws://127.0.0.1:5169/ws", options.EffectiveWsUrl);
+    }
+
+    [Fact]
+    public void WsEndpoint_DerivesFromBaseUrl()
+    {
+        Assert.Equal("ws://127.0.0.1:5168/ws", LoadToolOptions.WsEndpoint("http://127.0.0.1:5168"));
+        Assert.Equal("ws://127.0.0.1:5168/ws", LoadToolOptions.WsEndpoint("http://127.0.0.1:5168/"));
+        Assert.Equal("wss://gw.example.com/ws", LoadToolOptions.WsEndpoint("https://gw.example.com"));
+        Assert.Equal("wss://gw.example.com/ws", LoadToolOptions.WsEndpoint("https://gw.example.com/"));
+        Assert.Equal("ws://127.0.0.1:5168/ws", LoadToolOptions.WsEndpoint("127.0.0.1:5168"));
+    }
+
+    [Fact]
+    public void WsEndpoint_ExplicitUrlWins()
+    {
+        Assert.Equal("ws://127.0.0.1:5169/ws", LoadToolOptions.WsEndpoint("http://127.0.0.1:5168", "ws://127.0.0.1:5169/ws"));
+        Assert.Equal("ws://127.0.0.1:5169/ws", LoadToolOptions.WsEndpoint("http://127.0.0.1:5168", "ws://127.0.0.1:5169/ws/"));
+    }
+
+    [Fact]
+    public void Options_EffectiveWsUrlDerivesWhenUnset()
+    {
+        var options = LoadToolOptions.Parse(new[] { "--url", "http://127.0.0.1:5168" });
+
+        Assert.Null(options.WsUrl);
+        Assert.Equal("ws://127.0.0.1:5168/ws", options.EffectiveWsUrl);
+    }
+
+    [Fact]
     public void Options_HasDefaults()
     {
         var options = LoadToolOptions.Parse(Array.Empty<string>());

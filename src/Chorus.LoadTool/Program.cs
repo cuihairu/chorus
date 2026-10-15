@@ -11,7 +11,7 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-Console.WriteLine($"[loadtool] target={options.BaseUrl} platform={options.Platform} " +
+Console.WriteLine($"[loadtool] target={options.BaseUrl} ws={options.EffectiveWsUrl} platform={options.Platform} " +
                   $"sessions={options.Sessions} rate={options.EventsPerSecondTotal}/s total " +
                   $"clients={options.ClientsPerSession} duration={options.DurationSeconds}s");
 
@@ -27,12 +27,7 @@ var ingress = new IngressDriver(httpClient, options.BaseUrl, options.Platform, o
 var profiles = (options.AckMix.Length == 0 ? "fast,normal,slow" : options.AckMix)
     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-var wsUrl = options.BaseUrl.TrimEnd('/') switch
-{
-    var u when u.StartsWith("https:", StringComparison.OrdinalIgnoreCase) => "wss://" + u[8..] + "/ws",
-    var u when u.StartsWith("http:", StringComparison.OrdinalIgnoreCase) => "ws://" + u[7..] + "/ws",
-    var u => "ws://" + u + "/ws",
-};
+var wsUrl = options.EffectiveWsUrl;
 
 var simulations = new List<ClientSimulation>();
 var clientTasks = new List<Task>();

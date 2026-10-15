@@ -22,9 +22,37 @@ public sealed record LoadToolOptions(
     string? SignSecret = null,
     string? Token = null,
     string? EngineMetricsUrl = null,
-    int ReportEverySeconds = 5
+    int ReportEverySeconds = 5,
+    string? WsUrl = null
 )
 {
+    /// <summary>
+    /// Resolves the streamer WS endpoint. Split-role topology puts the ingress face
+    /// and the /ws face on different processes (Gateway:Roles=platform vs =streamer),
+    /// so the WS URL cannot always be derived from the ingress base URL — pass it
+    /// explicitly (WsUrl) in that case. Default keeps the historical single-host
+    /// behaviour: http→ws, https→wss, bare host→ws.
+    /// </summary>
+    public string EffectiveWsUrl => string.IsNullOrWhiteSpace(WsUrl)
+        ? WsEndpoint(BaseUrl)
+        : WsUrl.TrimEnd('/');
+
+    public static string WsEndpoint(string baseUrl, string? explicitUrl = null)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitUrl))
+        {
+            return explicitUrl.TrimEnd('/');
+        }
+
+        var u = baseUrl.TrimEnd('/');
+        return u switch
+        {
+            var x when x.StartsWith("https:", StringComparison.OrdinalIgnoreCase) => "wss://" + x[8..] + "/ws",
+            var x when x.StartsWith("http:", StringComparison.OrdinalIgnoreCase) => "ws://" + x[7..] + "/ws",
+            _ => "ws://" + u + "/ws",
+        };
+    }
+
     public static LoadToolOptions Parse(string[] args)
     {
         static string? Env(string name) => Environment.GetEnvironmentVariable(name);
@@ -61,6 +89,7 @@ public sealed record LoadToolOptions(
                 case "--token": o = o with { Token = Next() }; break;
                 case "--engine-metrics": o = o with { EngineMetricsUrl = Next() }; break;
                 case "--report-every": o = o with { ReportEverySeconds = int.Parse(Next()) }; break;
+                case "--ws-url": o = o with { WsUrl = Next() }; break;
                 case "--help":
                 case "-h":
                 case "-?":
@@ -79,6 +108,7 @@ public sealed record LoadToolOptions(
             SignSecret = Env("CHORUS_LOAD_SIGN_SECRET") ?? Env("CHORUS_LOAD_DOUYIN_SECRET") ?? o.SignSecret,
             Token = Env("CHORUS_WS_TOKEN") ?? o.Token,
             EngineMetricsUrl = Env("CHORUS_LOAD_ENGINE_METRICS") ?? o.EngineMetricsUrl,
+            WsUrl = Env("CHORUS_LOAD_WS_URL") ?? o.WsUrl,
         };
     }
 
@@ -115,6 +145,11 @@ public sealed record LoadToolOptions(
               --engine-metrics <url>       Engine /metrics URL: scraped at the end, and
                                            every --report-every interval to report run peaks
               --report-every <sec>         Progress report interval (default 5)
+              --ws-url <ws://host:port/ws> Streamer WS endpoint, when the /ws face
+                                           sits on a different process than /ingress
+                                           (split-role topology). Env:
+                                           CHORUS_LOAD_WS_URL. Default: derived from
+                                           --url (http→ws, https→wss, + "/ws")
             """);
     }
 }
