@@ -70,6 +70,8 @@ public sealed class BilibiliOpenLiveClientTests
         public HttpStatusCode EndStatus { get; set; } = HttpStatusCode.OK;
         public HttpStatusCode IngressStatus { get; set; } = HttpStatusCode.OK;
         public bool IngressThrow { get; set; }
+        public bool HeartbeatThrow { get; set; }
+        public bool EndThrow { get; set; }
 
         public FakeOpenLiveHttp(string appStartJson)
             : base(new HttpClientHandler())
@@ -96,6 +98,16 @@ public sealed class BilibiliOpenLiveClientTests
                 throw new HttpRequestException("stub ingress down");
             }
 
+            if (request.RequestUri.AbsolutePath.EndsWith("app/heartbeat") && HeartbeatThrow)
+            {
+                throw new HttpRequestException("stub heartbeat down");
+            }
+
+            if (request.RequestUri.AbsolutePath.EndsWith("app/end") && EndThrow)
+            {
+                throw new HttpRequestException("stub end down");
+            }
+
             var (response, status) = request.RequestUri.AbsolutePath switch
             {
                 var p when p.EndsWith("app_start") => (_appStartJson, AppStartStatus),
@@ -118,6 +130,9 @@ public sealed class BilibiliOpenLiveClientTests
         private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public List<byte[]> SentByClient { get; } = new();
 
+        /// <summary>0 = 永不失败；&gt;0 时第 N 包起的发送抛传输层异常（桩故障）。</summary>
+        public int SendFailsAfter;
+
         public override WebSocketCloseStatus? CloseStatus => null;
         public override string? CloseStatusDescription => null;
         public override WebSocketState State => _closed.Task.IsCompleted ? WebSocketState.Closed : WebSocketState.Open;
@@ -138,6 +153,10 @@ public sealed class BilibiliOpenLiveClientTests
             lock (SentByClient)
             {
                 SentByClient.Add(buffer.ToArray());
+                if (SendFailsAfter > 0 && SentByClient.Count >= SendFailsAfter)
+                {
+                    throw new InvalidOperationException("stub transport down");
+                }
             }
 
             return Task.CompletedTask;
@@ -537,5 +556,141 @@ public sealed class BilibiliOpenLiveClientTests
         // app/end 500 只记日志，关停不抛。
         await client.DisposeAsync();
         Assert.Contains(http.Requests, r => r.Path.EndsWith("app/end"));
+    }
+
+    [Fact]
+    public async Task Start_Twice_RunsOneLoop()
+    {
+        // 二次 Start 守卫：单循环 parked 在 connect 时，第二个循环若真启动会在
+        // 退避窗口内再次 app_start —— 计数必须钉死在 1。
+        var http = new FakeOpenLiveHttp(AppStartJson());
+        var gate = new TaskCompletionSource<WebSocket>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => gate.Task);
+        client.Start();
+        client.Start();
+
+        await WaitUntilAsync(() => Volatile.Read(ref client.AppStartCalls) >= 1);
+        await Task.Delay(120); // > 最大退避 50ms：双循环必然已再次 app_start
+
+        Assert.Equal(1, Volatile.Read(ref client.AppStartCalls));
+
+        // 收尾：放行 connect（空 socket），停机不留悬挂任务。
+        gate.SetResult(new ScriptedRemoteSocket());
+        await client.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ConnectCancelled_LoopEndsQuietly_OnStop()
+    {
+        // connect 在循环令牌上抛取消：OCE 必须走 RunAsync 的取消臂正常收尾
+        // （不是故障退避），且 StopAsync 等到循环退出后才算停干净。
+        var http = new FakeOpenLiveHttp(AppStartJson());
+        var gate = new TaskCompletionSource<WebSocket>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, ct) => ParkUntilCancelledAsync(gate, ct));
+        client.Start();
+
+        await WaitUntilAsync(() => Volatile.Read(ref client.AppStartCalls) >= 1);
+
+        await client.StopAsync();
+
+        Assert.Equal(0, Volatile.Read(ref client.Reconnects));
+        Assert.Equal(1, Volatile.Read(ref client.AppStartCalls));
+        // game_id 已在 app_start 拿到：走干净停机路径会补发 app/end。
+        Assert.Contains(http.Requests, r => r.Path.EndsWith("app/end"));
+    }
+
+    [Fact]
+    public async Task WsHeartbeatSendFault_StopsHeartbeat_ReceiveLoopSurvives()
+    {
+        // 传输层 Send 抛非取消异常：ws 心跳循环只记日志退出，接收循环不动
+        // （断连兜底交给接收循环的 null 帧路径，不靠心跳）。
+        var http = new FakeOpenLiveHttp(AppStartJson());
+        var remote = new ScriptedRemoteSocket { SendFailsAfter = 3 };
+        remote.Push(AuthReplyOkPacket());
+        await using var client = new BilibiliOpenLiveClient(
+            HeartbeatOptions(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        // auth(1) + 认证后立即心跳(2) 都成功，首个间隔心跳(3) 失败退出。
+        await WaitUntilAsync(() => remote.SentByClient.Count >= 3);
+
+        // 心跳循环已死：多个 30ms 间隔后不再有新包。
+        var frozen = remote.SentByClient.Count;
+        await Task.Delay(150);
+        Assert.Equal(frozen, remote.SentByClient.Count);
+
+        // 接收循环仍活着：后续事件照常转发。
+        remote.Push(MessagePacket(DanmuJson));
+        await WaitUntilAsync(() => Volatile.Read(ref client.EventsPosted) >= 1);
+    }
+
+    [Fact]
+    public async Task GameHeartbeatFault_StopsGameHeartbeat_SessionSurvives()
+    {
+        // 游戏心跳 HTTP 抛非取消异常：该循环记日志退出；ws 心跳与收流不受牵连。
+        var http = new FakeOpenLiveHttp(AppStartJson()) { HeartbeatThrow = true };
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        await using var client = new BilibiliOpenLiveClient(
+            HeartbeatOptions(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        // 第一拍就失败（间隔 30ms）：等多个间隔，心跳请求数必须钉死。
+        await WaitUntilAsync(() => http.Requests.Any(r => r.Path.EndsWith("app/heartbeat")));
+        var count = http.Requests.Count(r => r.Path.EndsWith("app/heartbeat"));
+        await Task.Delay(150);
+        Assert.Equal(count, http.Requests.Count(r => r.Path.EndsWith("app/heartbeat")));
+
+        // 会话本身还活着：收流继续。
+        remote.Push(MessagePacket(DanmuJson));
+        await WaitUntilAsync(() => Volatile.Read(ref client.EventsPosted) >= 1);
+    }
+
+    [Fact]
+    public async Task AppEndThrow_IsIgnoredOnStop()
+    {
+        // app/end 传输层抛异常（区别于 5xx）：一样只记日志，关停不抛。
+        var http = new FakeOpenLiveHttp(AppStartJson()) { EndThrow = true };
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+        await WaitUntilAsync(() => Volatile.Read(ref client.AppStartCalls) >= 1);
+
+        await client.DisposeAsync();
+
+        Assert.Contains(http.Requests, r => r.Path.EndsWith("app/end"));
+        Assert.Equal(0, Volatile.Read(ref client.Reconnects));
+    }
+
+    [Fact]
+    public async Task AppStartInvalidGameIdType_BacksoffWithoutGameId()
+    {
+        // game_id 非字符串/数字（fail-visible 守卫的最后一臂）：app_start 整轮
+        // 失败退避重试，game_id 永不落地（AppStartCalls==0），关停不打 app/end。
+        var http = new FakeOpenLiveHttp(
+            """{"code":0,"data":{"game_info":{"game_id":true},"websocket_info":{"wss_link":["ws://bilibili.test/live"],"auth_body":{"uid":1}}}}""");
+        var remote = new ScriptedRemoteSocket();
+        var client = new BilibiliOpenLiveClient(
+            Options(), http, connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+
+        await WaitUntilAsync(() => http.Requests.Count(r => r.Path.EndsWith("app_start")) >= 2);
+        Assert.Equal(0, Volatile.Read(ref client.AppStartCalls));
+        Assert.Empty(remote.SentByClient);
+
+        await client.DisposeAsync();
+        Assert.DoesNotContain(http.Requests, r => r.Path.EndsWith("app/end"));
+    }
+
+    private static async Task<WebSocket> ParkUntilCancelledAsync(
+        TaskCompletionSource<WebSocket> gate, CancellationToken ct)
+    {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.Token.Register(() => gate.TrySetCanceled(ct));
+        return await gate.Task.ConfigureAwait(false);
     }
 }

@@ -10,6 +10,7 @@ using Chorus.Messaging.Ipc;
 using Chorus.Messaging.Transports;
 using Chorus.Protocol;
 using Chorus.Protocol.Messages;
+using Chorus.Protocol.Models;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -483,6 +484,225 @@ public sealed class IpcAckResyncLoopTests
         }
     }
 
+    /// <summary>
+    /// Split-mode lazy sweep (EngineHost topology, runSweepLoop: false): at
+    /// the session cap the engine sweeps client-less idle sessions through the
+    /// gateway-owned client probe - the registry cannot see the gateway's
+    /// client table, so a probe that reported clients would pin the session
+    /// forever. Eviction is observable in the diagnostics surface.
+    /// </summary>
+    [Fact]
+    public async Task DisconnectThenNewSessionAtCap_SweepsClientlessSession()
+    {
+        var socketDir = $"/tmp/chorus-test-sweep-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(socketDir);
+        var engine = new EngineIpcService(
+            NullLogger<EngineIpcService>.Instance,
+            new HeadlessFactory(),
+            new SessionConfig { TickDurationMs = 10, SnapshotEveryTicks = 1, MaxSessions = 1, IdleEvictAfterMs = 100 },
+            Config(socketDir));
+
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await engine.StartAsync(cts.Token);
+        try
+        {
+            var outgoing = new UnixDomainSocketMessageBus(
+                Path.Combine(socketDir, "chorus_gw_to_eng.sock"));
+            await using (outgoing)
+            {
+                await ConnectAsync(outgoing, "s-sweep", "c-sweep", cts.Token);
+                await WaitForTickAsync(engine, "s-sweep", 1, cts.Token);
+
+                await outgoing.PublishAsync(
+                    EnvelopeFactory.Create(IpcMessageTypes.GatewayDisconnect, "s-sweep",
+                        new GatewayDisconnectCmd("s-sweep", "c-sweep")), cts.Token);
+
+                // Idle window passes, then the second session at cap triggers
+                // the amortized sweep that can see the empty client table.
+                await Task.Delay(200, cts.Token);
+
+                await ConnectAsync(outgoing, "s-next", "c-next", cts.Token);
+                await WaitUntilAsync(
+                    () => engine.GetDiagnostics().Any(d => d.SessionId == "s-next"), cts.Token);
+                await WaitUntilAsync(
+                    () => engine.GetDiagnostics().All(d => d.SessionId != "s-sweep"), cts.Token);
+
+                Assert.DoesNotContain(engine.GetDiagnostics(), d => d.SessionId == "s-sweep");
+            }
+        }
+        finally
+        {
+            cts.Cancel();
+            await engine.StopAsync(CancellationToken.None);
+            try { Directory.Delete(socketDir, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// A gateway disconnect for a live session must clear the per-client
+    /// slot (the ack/lag state of a gone client must not linger and drive
+    /// lag-driven resyncs for a client that no longer exists).
+    /// </summary>
+    [Fact]
+    public async Task GatewayDisconnect_RemovesClientSlotFromSession()
+    {
+        var socketDir = $"/tmp/chorus-test-disc-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(socketDir);
+        var engine = new EngineIpcService(
+            NullLogger<EngineIpcService>.Instance,
+            new HeadlessFactory(),
+            new SessionConfig { TickDurationMs = 10, SnapshotEveryTicks = 1 },
+            Config(socketDir));
+
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await engine.StartAsync(cts.Token);
+        try
+        {
+            var outgoing = new UnixDomainSocketMessageBus(
+                Path.Combine(socketDir, "chorus_gw_to_eng.sock"));
+            await using (outgoing)
+            {
+                await ConnectAsync(outgoing, "s-disc", "c-disc", cts.Token);
+                await WaitForTickAsync(engine, "s-disc", 1, cts.Token);
+                Assert.Single(engine.GetDiagnostics().Single(d => d.SessionId == "s-disc").Clients);
+
+                await outgoing.PublishAsync(
+                    EnvelopeFactory.Create(IpcMessageTypes.GatewayDisconnect, "s-disc",
+                        new GatewayDisconnectCmd("s-disc", "c-disc")), cts.Token);
+
+                await WaitUntilAsync(
+                    () => engine.GetDiagnostics().Single(d => d.SessionId == "s-disc").Clients.Count == 0,
+                    cts.Token);
+            }
+        }
+        finally
+        {
+            cts.Cancel();
+            await engine.StopAsync(CancellationToken.None);
+            try { Directory.Delete(socketDir, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// A correlation mismatch between the envelope's source event id and the
+    /// inner event id is logged, not fatal: the event must still be delivered
+    /// (the gateway already acked the platform).
+    /// </summary>
+    [Fact]
+    public async Task GatewayAudienceEvent_SourceEventIdMismatch_LogsButStillDelivers()
+    {
+        var socketDir = $"/tmp/chorus-test-mis-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(socketDir);
+        var engine = new EngineIpcService(
+            NullLogger<EngineIpcService>.Instance,
+            new HeadlessFactory(),
+            new SessionConfig { TickDurationMs = 10, SnapshotEveryTicks = 1 },
+            Config(socketDir));
+
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await engine.StartAsync(cts.Token);
+        try
+        {
+            var outgoing = new UnixDomainSocketMessageBus(
+                Path.Combine(socketDir, "chorus_gw_to_eng.sock"));
+            await using (outgoing)
+            {
+                await ConnectAsync(outgoing, "s-mis", "c-mis", cts.Token);
+                await WaitForTickAsync(engine, "s-mis", 1, cts.Token);
+
+                await outgoing.PublishAsync(
+                    EnvelopeFactory.Create(
+                        IpcMessageTypes.GatewayAudienceEvent, "s-mis",
+                        new AudienceEvent(
+                            EventId: "ev-1", Platform: "test", SessionId: "s-mis", UserId: "u1",
+                            Kind: AudienceEventKind.Comment,
+                            IngestTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()),
+                        sourceEventId: "wrong-id"),
+                    cts.Token);
+
+                await WaitUntilAsync(
+                    () => engine.GetDiagnostics().Single(d => d.SessionId == "s-mis").TotalAppliedEvents >= 1,
+                    cts.Token);
+            }
+        }
+        finally
+        {
+            cts.Cancel();
+            await engine.StopAsync(CancellationToken.None);
+            try { Directory.Delete(socketDir, recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// A full event lane at the engine boundary: the excess is dropped and
+    /// counted as overflow - never silently lost. The tick is held mid-apply
+    /// (a slow game module) so the bounded lane can actually fill; the drop
+    /// counter is published with the next diagnostics snapshot.
+    /// </summary>
+    [Fact]
+    public async Task GatewayAudienceEvent_LaneFull_CountsOverflow()
+    {
+        var socketDir = $"/tmp/chorus-test-full-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(socketDir);
+        var applyEntered = new SemaphoreSlim(0, 1);
+        var releaseApply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = new EngineIpcService(
+            NullLogger<EngineIpcService>.Instance,
+            new BlockingModuleFactory(applyEntered, releaseApply),
+            new SessionConfig { TickDurationMs = 10, MaxPendingEvents = 64 },
+            Config(socketDir));
+
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await engine.StartAsync(cts.Token);
+        try
+        {
+            var outgoing = new UnixDomainSocketMessageBus(
+                Path.Combine(socketDir, "chorus_gw_to_eng.sock"));
+            await using (outgoing)
+            {
+                await ConnectAsync(outgoing, "s-full", "c-full", cts.Token);
+
+                // First event: the actor drains it and enters the slow apply.
+                await outgoing.PublishAsync(
+                    EnvelopeFactory.Create(
+                        IpcMessageTypes.GatewayAudienceEvent, "s-full",
+                        new AudienceEvent(
+                            EventId: "ev-0", Platform: "test", SessionId: "s-full", UserId: "u1",
+                            Kind: AudienceEventKind.Comment, IngestTimeMs: 0)),
+                    cts.Token);
+                Assert.True(applyEntered.Wait(TimeSpan.FromSeconds(5)), "apply never entered");
+
+                // The tick is parked in apply: the bounded lane fills and the
+                // excess is rejected (counted, not lost).
+                for (var i = 1; i <= 400; i++)
+                {
+                    await outgoing.PublishAsync(
+                        EnvelopeFactory.Create(
+                            IpcMessageTypes.GatewayAudienceEvent, "s-full",
+                            new AudienceEvent(
+                                EventId: $"ev-{i}", Platform: "test", SessionId: "s-full", UserId: "u1",
+                                Kind: AudienceEventKind.Comment, IngestTimeMs: 0)),
+                        cts.Token);
+                }
+
+                releaseApply.SetResult();
+
+                var diag = await WaitForAsync(
+                    () => engine.GetDiagnostics().FirstOrDefault(d => d.SessionId == "s-full"),
+                    d => d is { TotalDroppedOverflow: >= 1 }, cts.Token);
+
+                Assert.True(diag!.TotalDroppedOverflow >= 1);
+                Assert.True(diag.TotalIngestedEvents > 0);
+            }
+        }
+        finally
+        {
+            cts.Cancel();
+            await engine.StopAsync(CancellationToken.None);
+            try { Directory.Delete(socketDir, recursive: true); } catch { }
+        }
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private static async Task ConnectAsync(IMessageBus outgoing, string sessionId, string clientId, CancellationToken ct)
@@ -612,6 +832,44 @@ public sealed class IpcAckResyncLoopTests
         public string Name => "headless-ipc";
         public object GetStateSnapshot() => new { };
         public void ApplyEvents(long tickId, IReadOnlyList<Chorus.Protocol.Models.AudienceEvent> events) { }
+        public void RestoreState(long version, System.Text.Json.JsonElement state) { }
+        public void Dispose() { }
+    }
+
+    /// <summary>Module whose first apply parks until released: holds the tick
+    /// mid-apply so a bounded event lane can fill behind it.</summary>
+    private sealed class BlockingModuleFactory : IGameModuleFactory
+    {
+        private readonly SemaphoreSlim _applyEntered;
+        private readonly TaskCompletionSource _releaseApply;
+
+        public BlockingModuleFactory(SemaphoreSlim applyEntered, TaskCompletionSource releaseApply)
+        {
+            _applyEntered = applyEntered;
+            _releaseApply = releaseApply;
+        }
+
+        public IGameModule Create(string sessionId) => new BlockingModule(_applyEntered, _releaseApply);
+    }
+
+    private sealed class BlockingModule : IGameModule
+    {
+        private readonly SemaphoreSlim _applyEntered;
+        private readonly TaskCompletionSource _releaseApply;
+
+        public BlockingModule(SemaphoreSlim applyEntered, TaskCompletionSource releaseApply)
+        {
+            _applyEntered = applyEntered;
+            _releaseApply = releaseApply;
+        }
+
+        public string Name => "blocking-ipc";
+        public object GetStateSnapshot() => new { };
+        public void ApplyEvents(long tickId, IReadOnlyList<Chorus.Protocol.Models.AudienceEvent> events)
+        {
+            _applyEntered.Release();
+            _releaseApply.Task.GetAwaiter().GetResult();
+        }
         public void RestoreState(long version, System.Text.Json.JsonElement state) { }
         public void Dispose() { }
     }

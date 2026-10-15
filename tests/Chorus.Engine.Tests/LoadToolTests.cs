@@ -239,4 +239,26 @@ public sealed class LoadToolTests
             Environment.SetEnvironmentVariable(name, previous);
         }
     }
+
+    [Fact]
+    public void PrintUsage_WritesOptionsToConsole()
+    {
+        var writer = new StringWriter();
+        var previous = Console.Out;
+        try
+        {
+            Console.SetOut(writer);
+            LoadToolOptions.PrintUsage();
+        }
+        finally
+        {
+            Console.SetOut(previous);
+        }
+
+        var text = writer.ToString();
+        Assert.Contains("Usage: dotnet run --project src/Chorus.LoadTool", text);
+        Assert.Contains("--url", text);
+        Assert.Contains("--sign", text);
+        Assert.Contains("--engine-metrics", text);
+    }
 }
