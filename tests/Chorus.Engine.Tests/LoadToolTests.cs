@@ -164,6 +164,48 @@ public sealed class LoadToolTests
     }
 
     [Fact]
+    public void RatePacer_SubMillisecondIntervalsSurvive()
+    {
+        // Regression for the 1000/producerRps integer truncation: at 30k rps
+        // over 8 producers each producer targets 3750/s (0.27ms per send) -
+        // the old math rounded that to 0 and pacing silently vanished.
+        var pacer = new RatePacer(3750);
+
+        for (var i = 0; i < 100; i++)
+        {
+            pacer.RecordSend();
+        }
+
+        // 100 sends are scheduled across ~26.7ms; even allowing a few ms of
+        // real time to pass while recording them, the delay must be positive.
+        var delay = pacer.NextDelay();
+        Assert.True(delay > TimeSpan.FromMilliseconds(1),
+            $"expected a positive delay, got {delay.TotalMilliseconds}ms");
+    }
+
+    [Fact]
+    public void RatePacer_FirstSendIsImmediate()
+    {
+        var pacer = new RatePacer(1);
+
+        var delay = pacer.NextDelay();
+
+        Assert.True(delay <= TimeSpan.FromMilliseconds(50),
+            $"first send should not wait, got {delay.TotalMilliseconds}ms");
+    }
+
+    [Fact]
+    public void RatePacer_BehindScheduleDegradesToZero()
+    {
+        var pacer = new RatePacer(1000); // 1ms per send
+
+        pacer.RecordSend();
+        Thread.Sleep(20); // far past the 1ms slot of the next send
+
+        Assert.Equal(TimeSpan.Zero, pacer.NextDelay());
+    }
+
+    [Fact]
     public void Options_HasDefaults()
     {
         var options = LoadToolOptions.Parse(Array.Empty<string>());

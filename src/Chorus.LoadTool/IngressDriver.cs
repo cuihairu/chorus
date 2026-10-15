@@ -60,7 +60,11 @@ public sealed class IngressDriver
 
         var totalRps = Math.Max(1, _options.EventsPerSecondTotal);
         var producerRps = Math.Max(1, (int)Math.Ceiling(totalRps / (double)Math.Max(1, _options.ProducerConnections)));
-        var intervalMs = 1000 / producerRps;
+        // Absolute-schedule pacing: integer ms division truncated to 0 above
+        // ~1000/s per producer and silently disabled pacing (RatePacer keeps
+        // the fractional schedule; a producer behind its schedule catches up
+        // instead of accumulating idle time).
+        var pacer = new RatePacer(producerRps);
         // Seed the session cursor by producer ordinal, not thread id: pool
         // threads are reused under load, and two producers starting on the
         // same thread would pace the same rooms at the same instants.
@@ -68,6 +72,12 @@ public sealed class IngressDriver
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            var sendDelay = pacer.NextDelay();
+            if (sendDelay > TimeSpan.Zero)
+            {
+                await Task.Delay(sendDelay, cancellationToken).ConfigureAwait(false);
+            }
+
             var sessionId = _sessions[index++ % _sessions.Length];
             var payload = factory.Create(sessionId);
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/ingress/{_platform}");
@@ -80,7 +90,6 @@ public sealed class IngressDriver
                 request.Headers.TryAddWithoutValidation(signature.Value.Name, signature.Value.Value);
             }
 
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -122,11 +131,7 @@ public sealed class IngressDriver
                 Interlocked.Increment(ref _sent);
             }
 
-            var elapsed = (int)stopwatch.ElapsedMilliseconds;
-            if (elapsed < intervalMs)
-            {
-                await Task.Delay(intervalMs - elapsed, cancellationToken).ConfigureAwait(false);
-            }
+            pacer.RecordSend();
         }
     }
 }
