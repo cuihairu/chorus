@@ -178,16 +178,20 @@ public sealed class SessionRegistry : IAsyncDisposable
                     _sessions.Remove(id);
                 }
             }
+
+            // Count at the decision point, matching EvictIdlestLocked: after
+            // the map removal but before the victims' disposal, the sessions
+            // gauge has already dropped while this counter would still lag -
+            // a scraper (or a Count-polling caller) sees an inconsistent pair.
+            if (victims.Count > 0)
+            {
+                Interlocked.Add(ref _idleEvictions, victims.Count);
+            }
         }
 
         foreach (var victim in victims)
         {
             await DisposeQuietlyAsync(victim).ConfigureAwait(false);
-        }
-
-        if (victims.Count > 0)
-        {
-            Interlocked.Add(ref _idleEvictions, victims.Count);
         }
 
         return victims.Count;

@@ -119,6 +119,83 @@ public sealed class SessionRegistryTests
     }
 
     [Fact]
+    public async Task SweepIdle_CountsEvictionBeforeVictimDisposalCompletes()
+    {
+        // The idle-eviction counter must not lag the registry count: the victim
+        // is removed from the map before its disposal is awaited, so counting
+        // after the await leaves a window where chorus_sessions has already
+        // dropped while chorus_session_idle_evictions_total still reads flat.
+        // Here the victim's disposal parks on a gated send, so with
+        // after-await counting the counter reads 0 while Count is already 0.
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pickedUp = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        SessionActor? actor = null;
+        var registry = new SessionRegistry(
+            new SessionConfig
+            {
+                TickDurationMs = 10,
+                SnapshotEveryTicks = 1,
+                IdleEvictAfterMs = 100,
+            },
+            sessionId =>
+            {
+                actor = new SessionActor(sessionId, new SessionConfig
+                {
+                    TickDurationMs = 10,
+                    SnapshotEveryTicks = 1,
+                }, new StubGameModule());
+                actor.AddClientAsync(new GatedSendClient(release, pickedUp));
+                actor.Start();
+                return actor;
+            },
+            _ => false,
+            runSweepLoop: false);
+
+        registry.GetOrCreate("s-gated", nowMs: 1);
+        // The outbound pump is now parked inside the gated send: the victim's
+        // disposal cannot complete until `release` fires.
+        await pickedUp.Task;
+
+        var sweep = registry.SweepIdleAsync(nowMs: 10_000);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (registry.Count > 0 && sw.ElapsedMilliseconds < 5_000)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.Equal(0, registry.Count);
+        Assert.Equal(1, registry.IdleEvictions);
+
+        release.TrySetResult();
+        Assert.Equal(1, await sweep);
+        await registry.DisposeAsync();
+    }
+
+    /// <summary>A client whose send parks until released (ignoring cancellation):
+    /// the outbound pump stuck inside a send is what parks the queue's DisposeAsync,
+    /// and through it the actor's - the inner client's own DisposeAsync is never
+    /// awaited by the actor.</summary>
+    private sealed class GatedSendClient : ISessionClient
+    {
+        private readonly TaskCompletionSource _release;
+        private readonly TaskCompletionSource _pickedUp;
+
+        public GatedSendClient(TaskCompletionSource release, TaskCompletionSource pickedUp)
+        {
+            _release = release;
+            _pickedUp = pickedUp;
+        }
+
+        public string ClientId => "gated-c1";
+
+        public async ValueTask SendSnapshotAsync(SessionSnapshot snapshot, CancellationToken cancellationToken)
+        {
+            _pickedUp.TrySetResult();
+            await _release.Task;
+        }
+    }
+
+    [Fact]
     public async Task SweepLoop_EvictsInBackground_AndEndsQuietlyOnDispose()
     {
         // Production shape (runSweepLoop: true): the periodic tick must actually
