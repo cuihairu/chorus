@@ -138,4 +138,53 @@ public sealed class KuaishouPlatformMapperTests
 
         Assert.Null(mapper.TryMap(PlatformNames.Douyin, envelope, IngestTimeMs));
     }
+
+    [Fact]
+    public void TryMap_BlankSessionId_ReturnsNull()
+    {
+        var mapper = new KuaishouPlatformEventMapper(Base64Key);
+        var (envelope, _) = BuildEnvelope("msg-7", """{"event":"comment","user_id":"u1"}""");
+
+        Assert.Null(mapper.TryMap(PlatformNames.Kuaishou, envelope, IngestTimeMs));
+    }
+
+    [Fact]
+    public void TryMap_BlankEncryptedMsg_ReturnsNull()
+    {
+        var mapper = new KuaishouPlatformEventMapper(Base64Key);
+
+        Assert.Null(mapper.TryMap(PlatformNames.Kuaishou, """{"msgId":"m8","encryptedMsg":""}""", IngestTimeMs));
+    }
+
+    [Fact]
+    public void TryMap_NonBase64Key_FailClosed()
+    {
+        // 信封用合法密钥加密，但映射器持有的密钥不是 base64：解码期 FormatException → null。
+        var (envelope, _) = BuildEnvelope("msg-9", """{"event":"comment","session_id":"s1"}""");
+        var mapper = new KuaishouPlatformEventMapper("!!!not-base64!!!");
+
+        Assert.Null(mapper.TryMap(PlatformNames.Kuaishou, envelope, IngestTimeMs));
+    }
+
+    [Fact]
+    public void TryMap_ShortKey_FailClosed()
+    {
+        // 密钥可解码但不足 16 字节（AES 最小密钥长度）：fail-closed。
+        var (envelope, _) = BuildEnvelope("msg-10", """{"event":"comment","session_id":"s1"}""");
+        var mapper = new KuaishouPlatformEventMapper("AAAAAAAAAAA=");
+
+        Assert.Null(mapper.TryMap(PlatformNames.Kuaishou, envelope, IngestTimeMs));
+    }
+
+    [Fact]
+    public void TryMap_BlankEventName_MapsUnknown()
+    {
+        var mapper = new KuaishouPlatformEventMapper(Base64Key);
+        var (envelope, _) = BuildEnvelope("msg-11", """{"event":"","session_id":"s1","user_id":"u1"}""");
+
+        var ev = mapper.TryMap(PlatformNames.Kuaishou, envelope, IngestTimeMs);
+
+        Assert.NotNull(ev);
+        Assert.Equal(AudienceEventKind.Unknown, ev!.Kind);
+    }
 }

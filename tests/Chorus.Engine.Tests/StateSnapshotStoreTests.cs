@@ -26,6 +26,44 @@ public sealed class StateSnapshotStoreTests
     private static SnapshotStore NewStore() => new(new InMemorySnapshotBackend());
 
     [Fact]
+    public void Compute_NullPayload_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(() => SnapshotIntegrity.Compute(null));
+    }
+
+    [Fact]
+    public void TrySave_NullSnapshot_Throws()
+    {
+        var store = NewStore();
+
+        Assert.Throws<ArgumentNullException>(() => store.TrySave(null!));
+    }
+
+    [Fact]
+    public void TrySave_BlankPayload_Throws()
+    {
+        var store = NewStore();
+
+        Assert.Throws<ArgumentException>(() => store.TrySave(NewSnapshot(payload: " ")));
+    }
+
+    [Fact]
+    public void Load_BlankRoomId_Throws()
+    {
+        var store = NewStore();
+
+        Assert.Throws<ArgumentException>(() => store.Load(" "));
+    }
+
+    [Fact]
+    public void Delete_BlankRoomId_Throws()
+    {
+        var store = NewStore();
+
+        Assert.Throws<ArgumentException>(() => store.Delete(""));
+    }
+
+    [Fact]
     public void Save_NewRoom_PersistsAndLoadReturnsIt()
     {
         var store = NewStore();

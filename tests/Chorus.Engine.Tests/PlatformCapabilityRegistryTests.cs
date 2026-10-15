@@ -98,6 +98,46 @@ public sealed class PlatformCapabilityRegistryTests
     }
 
     [Fact]
+    public void Count_TracksRegistrations()
+    {
+        var registry = NewRegistry();
+        Assert.Equal(0, registry.Count);
+
+        registry.Register(PlatformNames.Bilibili, PlatformCapabilities.Bilibili);
+        Assert.Equal(1, registry.Count);
+
+        registry.Register(PlatformNames.Douyin, PlatformCapabilities.Douyin);
+        Assert.Equal(2, registry.Count);
+
+        // 幂等整行替换不增加计数。
+        registry.Register(PlatformNames.Bilibili, PlatformCapabilities.Bilibili);
+        Assert.Equal(2, registry.Count);
+    }
+
+    [Fact]
+    public void TryGet_Registered_ReturnsSameCapabilities()
+    {
+        var registry = NewRegistry();
+        registry.Register(PlatformNames.Douyin, PlatformCapabilities.Douyin);
+
+        Assert.True(registry.TryGet(PlatformNames.Douyin, out var caps));
+        Assert.Same(PlatformCapabilities.Douyin, caps);
+
+        // 平台名大小写不敏感，与 Register 一致。
+        Assert.True(registry.TryGet("DOUYIN", out var capsUpper));
+        Assert.Same(PlatformCapabilities.Douyin, capsUpper);
+    }
+
+    [Fact]
+    public void TryGet_Unregistered_ReturnsFalse()
+    {
+        var registry = NewRegistry();
+
+        Assert.False(registry.TryGet("some-future-platform", out var caps));
+        Assert.Null(caps);
+    }
+
+    [Fact]
     public void Snapshot_ListsRegisteredPlatforms()
     {
         var registry = NewRegistry();
