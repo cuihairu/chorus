@@ -26,6 +26,10 @@ public sealed class EngineIpcService : BackgroundService
     /// event delivery to ~5%. O(1) probe, single-writer counts.</summary>
     private readonly ConcurrentDictionary<string, int> _clientCountBySession = new(StringComparer.Ordinal);
     private readonly SweepGate _sweepGate;
+    /// <summary>Welcomes are published off the receive loop: a stalled
+    /// eng-&gt;gw bus used to block the only receive thread behind the welcome
+    /// write and freeze the event path (2026-10-15 gate run, 800 rooms).</summary>
+    private readonly WelcomePublisher _welcomePublisher;
     private readonly BroadcastOwnerRegistry _broadcastOwners = new();
     private long _publishFailures;
 
@@ -56,6 +60,9 @@ public sealed class EngineIpcService : BackgroundService
             id => _clientCountBySession.ContainsKey(id),
             runSweepLoop: false);
         _sweepGate = new SweepGate(sessionConfig.MaxSessions);
+        _welcomePublisher = new WelcomePublisher(
+            async (env, ct) => await _outgoing!.PublishAsync(env, ct).ConfigureAwait(false),
+            onFailure: (env, ex) => RecordPublishFailure(env, ex));
 
         _ipcSettings = new IpcSettings(
             Transport: Enum.TryParse<IpcTransport>(config["Ipc:Transport"], ignoreCase: true, out var t) ? t : IpcTransport.Auto,
@@ -108,6 +115,9 @@ public sealed class EngineIpcService : BackgroundService
         // engine fans every message out to all of them (stage-2 transport
         // half). Empty list = legacy single-gateway channel, byte-identical.
         _outgoing = BuildOutgoing(endpoints);
+        // After the bus exists: it must not outlive it, so start here rather
+        // than in the constructor.
+        await _welcomePublisher.StartAsync(stoppingToken);
 
         _logger.LogInformation("EngineHost IPC started: transport={Transport} gw->eng={GwToEngUds} eng->gw={EngToGwUds} gatewayIds={GatewayIds} heartbeatMs={HeartbeatMs}",
             _ipcSettings.Transport, endpoints.GatewayToEngine.UnixSocketPath, endpoints.EngineToGateway.UnixSocketPath, string.Join(",", _gatewayIds), _heartbeatIntervalMs);
@@ -129,6 +139,7 @@ public sealed class EngineIpcService : BackgroundService
         }
 
         await heartbeatLoop;
+        await _welcomePublisher.DisposeAsync();
     }
 
     private async Task HeartbeatLoopAsync(CancellationToken stoppingToken)
@@ -222,9 +233,12 @@ public sealed class EngineIpcService : BackgroundService
                         ServerTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                         ProtocolVersion: Chorus.Protocol.ProtocolVersionPolicy.Current
                     );
-                    await PublishRequiredAsync(
-                        EnvelopeFactory.Create(IpcMessageTypes.EngineWelcome, cmd.SessionId, welcome),
-                        cancellationToken);
+                    // Off the receive loop: a stalled eng->gw bus must not
+                    // wedge the event path. A dropped or failed welcome shows
+                    // up as a publish failure, and the gateway's 2s welcome
+                    // budget then surfaces it as a reconnect.
+                    _welcomePublisher.TryEnqueue(
+                        EnvelopeFactory.Create(IpcMessageTypes.EngineWelcome, cmd.SessionId, welcome));
                 }
                 break;
 
@@ -313,24 +327,6 @@ public sealed class EngineIpcService : BackgroundService
     /// <summary>Cumulative sessions evicted to make room under MaxSessions.</summary>
     public long CapacityEvictions => _registry.CapacityEvictions;
 
-    /// <summary>
-    /// Engine→Gateway publish that must reach the gateway (the welcome). On
-    /// failure the count is recorded and the exception rethrown so the
-    /// connect handler aborts — the gateway's welcome budget then surfaces it.
-    /// </summary>
-    private async Task PublishRequiredAsync(Envelope env, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _outgoing!.PublishAsync(env, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            RecordPublishFailure(env, ex);
-            throw;
-        }
-    }
-
     private void RecordPublishFailure(Envelope env, Exception ex)
     {
         Interlocked.Increment(ref _publishFailures);
@@ -345,6 +341,10 @@ public sealed class EngineIpcService : BackgroundService
         await _registry.DisposeAsync();
         _clients.Clear();
         _clientCountBySession.Clear();
+
+        // The welcome publisher writes into the outgoing bus: it must stop
+        // before the bus is disposed.
+        await _welcomePublisher.DisposeAsync();
 
         if (_incoming != null) await _incoming.DisposeAsync();
         if (_outgoing != null) await _outgoing.DisposeAsync();
