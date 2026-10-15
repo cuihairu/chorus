@@ -350,6 +350,83 @@ public sealed class IpcAckResyncLoopTests
         try { Directory.Delete(socketDir, recursive: true); } catch { }
     }
 
+    [Fact]
+    public async Task Gateway_WelcomeWaiter_Cancelled_FailsVisible_AndReleasesKey()
+    {
+        // 取消的等待必须对 awaiter 抛 OCE，且释放 map 槽位：同一连接 key 之后
+        // 还能重新等待（否则一次超时就把该连接的 welcome 永久堵死）。
+        var socketDir = $"/tmp/chorus-test-gwcancel-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(socketDir);
+        var gateway = new GatewayIpcService(NullLogger<GatewayIpcService>.Instance, Config(socketDir));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var waiter = gateway.CreateWelcomeWaiter("s-cx", "c-cx", cts.Token);
+
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await waiter);
+
+        var second = gateway.CreateWelcomeWaiter("s-cx", "c-cx", CancellationToken.None);
+        Assert.False(second.IsCompleted);
+
+        try { Directory.Delete(socketDir, recursive: true); } catch { }
+    }
+
+    /// <summary>
+    /// Malformed control envelopes (undecodable welcome / snapshot bodies) must
+    /// be logged and skipped without killing the eng->gw dispatch loop: the next
+    /// valid snapshot still fans out to the session's client.
+    /// </summary>
+    [Fact]
+    public async Task Gateway_MalformedControlEnvelopes_DoNotKillDispatchLoop()
+    {
+        var socketDir = $"/tmp/chorus-test-gwbad-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(socketDir);
+        // Same topology as the targeted-snapshot test: the gateway hosts the
+        // eng->gw listener itself, engineSide is a plain on-demand client.
+        var engineSide = new UnixDomainSocketMessageBus(Path.Combine(socketDir, "chorus_eng_to_gw.sock"));
+        var engineIngress = new UnixDomainSocketMessageBus(Path.Combine(socketDir, "chorus_gw_to_eng.sock"));
+        engineIngress.StartServer();
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var gateway = new GatewayIpcService(NullLogger<GatewayIpcService>.Instance, Config(socketDir));
+
+        var target = new RecordingConnection("s-bad", "c-target");
+        try
+        {
+            await gateway.StartAsync(cts.Token);
+            await WarmUpGatewayAsync(gateway, cts.Token);
+            await WarmUpAsync(engineSide, cts.Token);
+            await gateway.RegisterClientAsync(target.Inner, cts.Token);
+
+            var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            // Undecodable bodies: a number cannot be a welcome, a wrong-shape
+            // object cannot be a snapshot. Both must hit the per-envelope catch.
+            await engineSide.PublishAsync(new Envelope(
+                Type: IpcMessageTypes.EngineWelcome, MessageId: "m1", SessionId: "s-bad",
+                CreatedTimeMs: ts, Body: System.Text.Json.JsonSerializer.SerializeToElement(5)), cts.Token);
+            await engineSide.PublishAsync(new Envelope(
+                Type: IpcMessageTypes.EngineSnapshot, MessageId: "m2", SessionId: "s-bad",
+                CreatedTimeMs: ts, Body: System.Text.Json.JsonSerializer.SerializeToElement(new { wrong = "shape" })), cts.Token);
+
+            // The loop survived both: a valid targeted snapshot still dispatches.
+            await engineSide.PublishAsync(
+                EnvelopeFactory.Create(IpcMessageTypes.EngineSnapshot, "s-bad",
+                    new ServerSnapshot("snapshot", "s-bad", 9, 0, System.Text.Json.JsonSerializer.SerializeToElement(new { v = 1 }), TargetClientId: "c-target")),
+                cts.Token);
+
+            await target.WaitForAsync(c => c.TickId == 9, cts.Token);
+        }
+        finally
+        {
+            cts.Cancel();
+            await gateway.StopAsync(CancellationToken.None);
+            await target.DisposeAsync();
+            await engineSide.DisposeAsync();
+            await engineIngress.DisposeAsync();
+            try { Directory.Delete(socketDir, recursive: true); } catch { }
+        }
+    }
+
     /// <summary>
     /// Targeted (forced resync) snapshots must reach only the named client;
     /// an untargeted one fans out to every client of the session.

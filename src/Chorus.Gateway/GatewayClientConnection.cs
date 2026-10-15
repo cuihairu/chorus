@@ -26,6 +26,7 @@ public sealed class GatewayClientConnection : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private int _pumpStarted;
     private Task? _pump;
+    private int _disposed;
     private long _dropped;
 
     public GatewayClientConnection(string sessionId, string clientId, WebSocket ws)
@@ -96,6 +97,11 @@ public sealed class GatewayClientConnection : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _outbound.Writer.TryComplete();
         _cts.Cancel();
         if (_pump != null)

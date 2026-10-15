@@ -117,4 +117,38 @@ public sealed class SessionRegistryTests
         Assert.True(registry.TryGet("s", out var again));
         Assert.Same(first, again);
     }
+
+    [Fact]
+    public async Task SweepLoop_EvictsInBackground_AndEndsQuietlyOnDispose()
+    {
+        // Production shape (runSweepLoop: true): the periodic tick must actually
+        // sweep (clientless already-idle session evicted) and the loop must end
+        // quietly on dispose - cancellation is swallowed, not rethrown.
+        var registry = new SessionRegistry(
+            new SessionConfig
+            {
+                TickDurationMs = 10,
+                SnapshotEveryTicks = 0,
+                // Tick interval clamps to 1s minimum.
+                IdleEvictAfterMs = 4_000,
+            },
+            sessionId => CreateStartedActor(sessionId),
+            _ => false,
+            runSweepLoop: true);
+
+        // LastSeen=1 (synthetic clock): idle long before the first 1s tick.
+        var actor = registry.GetOrCreate("s-loop", nowMs: 1);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (registry.Count > 0 && sw.ElapsedMilliseconds < 10_000)
+        {
+            await Task.Delay(50);
+        }
+
+        Assert.Equal(0, registry.Count);
+        Assert.Equal(1, registry.IdleEvictions);
+
+        await actor.DisposeAsync();
+        await registry.DisposeAsync();
+    }
 }
