@@ -65,3 +65,37 @@
     `Faces:StreamerWs:AllowAnonymous=true` 并注明仅开发用；生产配置不带这两项，启动日志对两者打醒目告警。
 - **影响**：直接 `dotnet run`（Development）demo 行为不变；生产/测试环境默认全拒绝，需配 token 或回调验签密钥。
   回滚面：恢复无条件注册 AllowAll + 去掉 hello 校验即可。
+
+## 2026-10-16
+
+### D7 UDS socket 文件生命周期自管（已代决）
+
+- **背景**：滚动重启竞态——.NET 6 起 `Socket.Dispose` 无条件 unlink 用 `UnixDomainSocketEndPoint`
+  绑定的路径（dotnet/runtime#52103，无 opt-out），旧进程 dispose 时新进程若已删-绑抢走同名路径，
+  被 unlink 的是新进程 socket 的文件入口：内核 socket 未死但路径没了，后续连接全 ENOENT
+  （压测曾靠手工 `rm -f /tmp/chorus/*.sock` 绕过）。
+- **决策**：服务端 bind 改用自定义 `RawUnixEndPoint`（sockaddr 布局照抄 BCL，不进入其删除跟踪），
+  路径删除权回归总线；关闭时按 bind 身份守卫删除（Unix `CreationTimeUtc` = st_ctime，bind 后不再变化），
+  身份未知或文件已换主一律不删，异常退出的残留由下次 `StartServer` 删-绑兜底。删除动作挂 `DisposeAsync`
+  而非 accept 循环尾部（带取消 token 的 `Task.Run` 可能从未被调度，循环尾部守卫会整体跳过）。
+  设计细节见 [docs/design/ipc.md](./design/ipc.md)「socket 文件生命周期」。
+- **影响**：线协议、通道名、配置全部不变；客户端 `ConnectAsync` 仍用 BCL 端点（从不 bind，不进跟踪）。
+  回滚面：bind 端点改回 `UnixDomainSocketEndPoint` 并恢复原 `File.Delete` 即回到 BCL 管理（竞态重现）。
+
+### D8 帧层流水线读 + 合并写（已代决）
+
+- **背景**：拆分模式 eng→gw 单 socket 在 800 房 churn 下打满 21.5k msg/s 上限、发布失败 ~3.7%
+  （todo.md §10 复核）。瓶颈是每消息的 I/O 次数而非带宽：写侧 `WriteFrameAsync` 分两次
+  `WriteAsync`（header + payload）+ `Flush`，读侧每帧两次独立 `ReadAsync`（header + payload），
+  且 JSON 序列化压在 `_clientLock` 临界区内，所有发布者排队。快照路径已做广播去重（每 session
+  每 tick 一条），无更粗的合并点。
+- **决策**：
+  - 读侧新增 `FrameReader`（带缓冲、按帧边界解析）：一次 `ReadAsync` 可解出多条帧；帧超过缓冲时
+    payload 直接读入目标数组，缓冲不随帧大小增长。三个流传输（UDS/TCP/NamedPipe）共用；
+  - 写侧小帧（≤16KiB）header+payload 合并单次 `WriteAsync`（接收端是字节流，看不到写边界，不影响分帧）；
+    大帧保持两次写，避免为省一次 syscall 复制整份 payload；
+  - UDS 发布侧把 `JsonEnvelopeCodec.Serialize` 移出 `_clientLock` 临界区。
+- **影响**：线协议字节不变、失败语义不变（干净 EOF 返 null、截断 header/payload 抛 IOException、
+  非法长度拒绝），对端零感知；TCP/NamedPipe 的「锁内序列化」未动（本轮只优化实测瓶颈的 UDS 路径，
+  无实测需求不扩散改动面）。回滚面：三个传输的 `FrameReader` 换回 `LengthPrefixedStream.ReadFrameAsync`、
+  合并写回退为两次写。多 socket 分片与写合并泵（帧批写入队列）留待门控复测后再定。
