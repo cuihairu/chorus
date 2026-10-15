@@ -61,16 +61,17 @@ Secure defaults are **off**; the dev config (`appsettings.Development.json`) tur
 See the [config reference](docs/reference/config.md) and [protocol reference](docs/reference/protocol.md).
 
 
-## 本地测试口径
+## Local Test Scope
 
-CI 与本地开发按改动面三路分流——改一行文档不该全量编译。
+CI and local development are split three ways by change surface — a one-line doc change must not
+trigger a full build.
 
-1. **文档改动**（`*.md`、`docs/**`、图片）：不编译。主 CI workflow 的
-   `paths-ignore` 已跳过这些路径。
-2. **代码改动**：只跑改动子集，不全量。
-   - `dotnet test <改动 csproj>`
-3. **全量**（`dotnet test Chorus.sln -c Release`）：仅以下情形触发——*.csproj / *.sln / global.json、
-   `.github/**`、Docker/Compose 配置、发布前。
+1. **Docs only** (`*.md`, `docs/**`, images): no build. The main CI workflow's `paths-ignore`
+   already skips those paths.
+2. **Code**: run only the changed subset, never the full suite.
+   - `dotnet test <changed csproj>`
+3. **Full** (`dotnet test Chorus.sln -c Release`): only for these — `*.csproj` / `*.sln` /
+   `global.json`, `.github/**`, Docker/Compose config, pre-release.
 
 ## Split Mode (Gateway + EngineHost)
 
