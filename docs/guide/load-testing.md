@@ -32,7 +32,7 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 | `--url` | `http://127.0.0.1:5168` | Gateway 地址（Server 亦可） |
 | `--platform` | `douyin` | ingress 平台名（`test` 走未签名演示链路） |
 | `--sessions` | 4 | 并发 Session 数 |
-| `--rate` | 50 | 每 Session 事件/秒 |
+| `--rate` | 50 | 事件/秒，**全部 Session 合计**（跨 producer 摊分，round-robin 覆盖所有 Session）。要实际打到目标速率，producer 数需 ≥ 目标速率 × 单请求平均延迟 |
 | `--clients` | 3 | 每 Session WS 客户端数 |
 | `--producers` | 4 | 并行 HTTP 生产者连接数 |
 | `--ack-mix` | `fast,normal,slow` | ACK 档位混合（fast≈实时 / normal≈几 tick / slow≈十几 tick 滞后） |
@@ -58,9 +58,9 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 [loadtool] t=5s ingress(sent=1500,ok=1468,dup=29,429=3,503=0,err=0) ws(snaps=4123,acks=980,maxLag=8,reconnects=2)
 ```
 
-- `ingress.ok` / `dup` / `401` / `429` / `503` / `err`：入口受理、判重、签名拒绝、限流、事件道满、其他错误——对应 `chorus_ingress_*`。
+- `ingress.ok` / `dup` / `401` / `429` / `503` / `err`：入口受理、判重、签名拒绝、限流、事件道满、其他错误——对应 `chorus_ingress_*`。健康运行下 `dup` 应约等于配置的 `--dup-rate` 占比；`dup` 远高于它说明 eventId 在客户端侧互撞（2026-10-15 修复的缺陷：producer 各自编号导致大量事件被判重吞掉，事件根本没进引擎——此时 CPU 测量毫无意义）。
 - `ws.snaps` / `acks` / `maxLag` / `reconnects`：客户端收到快照、发出 ACK、最大滞后 tick、断连次数。
-- 结束时汇总；若给了 `--engine-metrics`，另打印引擎侧三个峰值（`engine peaks: sessions=… tickMs=… cpuPercent=…`，对应阶段三触发条件「单 worker 峰值 CPU > 60%」「单机房间数达数百量级」），并可（`PrintEngineMetricsAsync`）打印一次 `/metrics` 原文。
+- 结束时汇总；若给了 `--engine-metrics`，另打印引擎侧三个峰值（`engine peaks: sessions=… tickMs=… cpuPercent=…`，对应阶段三触发条件「单 worker 峰值 CPU > 60%」「单机房间数达数百量级」），并可（`PrintEngineMetricsAsync`）打印一次 `/metrics` 原文。注意：`cpuPercent` 依赖 `chorus_process_cpu_percent`，**只有拆分模式的 EngineHost `/metrics` 发该指标**（`RenderEngine`）——指向单体 Server 的 `/metrics` 时恒为 `-`；阶段三门控测量必须跑 Gateway+EngineHost 并把 `--engine-metrics` 指向 EngineHost。
 
 典型用法：先低速率跑通（`--rate 10 --duration 30`），再逐步加到目标速率；观察 `503`（事件道满，说明速率超过引擎消费能力）、`429`（ingress 限流）与 `maxLag`（慢客户端是否靠 resync 追回）。
 
@@ -69,7 +69,7 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 ## 测试覆盖
 
 - 纯逻辑（payload 形状、重复 id 行为、CLI 旗标/环境变量/错误路径解析）由 `LoadToolTests` 覆盖。
-- `IngressDriver` 的状态分桶（200/判重/429/503/其他）与并行 producer 下的计数精确性由 `IngressDriverTests` 覆盖（stub handler，计数器为 Interlocked）。
+- `IngressDriver` 的状态分桶（200/判重/429/503/其他）、并行 producer 下的计数精确性与「多 producer eventId 绝不互撞」（共享全局序号，dedup 键不被客户端自撞）由 `IngressDriverTests` 覆盖（stub handler，计数器为 Interlocked）。
 - Douyin 占位签名（`--sign`/`CHORUS_LOAD_SIGN_SECRET`，kuaishou 亦同）由 `IngressSignerTests`（独立硬编码向量 + 与网关验签器验签通过）与 `IngressDriverTests` 的签名头/401 分桶用例覆盖；零受理告警与退出码由 `IngressDiagnosticsTests` 覆盖。
 - `ClientSimulation` 经传输缝（`connect` 委托，同 `ChorusClient` 惯例）注入测试服务器内存 WS 通道，覆盖 hello/welcome/快照回放/ACK 与断连重连完整握手循环（`ClientSimulationTests`）。
 - 对真实 Gateway/Server 的运行验证（冒烟：`--platform test` 下 ingress 受理/判重、WS 快照/ACK/重连、引擎侧 `chorus_events_applied_total` 与 `chorus_snapshots_sent_total` 均按预期增长）。

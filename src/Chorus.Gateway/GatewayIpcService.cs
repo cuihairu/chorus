@@ -88,6 +88,21 @@ public sealed class GatewayIpcService : BackgroundService
         return tcs.Task;
     }
 
+    /// <summary>
+    /// Releases a parked welcome waiter when the registration window closes
+    /// without a welcome (timeout / failed register). Deterministic: the
+    /// cancel-registration alone races the caller's CTS disposal and can be
+    /// skipped, and a parked waiter would reject every later reconnect of the
+    /// same (session, client) - 2026-10-15 gate run reconnect storm.
+    /// </summary>
+    public void TryCancelWelcomeWaiter(string sessionId, string clientId)
+    {
+        if (_pendingWelcomes.TryRemove($"{sessionId}|{clientId}", out var tcs))
+        {
+            tcs.TrySetCanceled();
+        }
+    }
+
     public async ValueTask RegisterClientAsync(GatewayClientConnection conn, CancellationToken cancellationToken)
     {
         var map = _clientsBySession.GetOrAdd(conn.SessionId, _ => new ConcurrentDictionary<string, GatewayClientConnection>(StringComparer.Ordinal));

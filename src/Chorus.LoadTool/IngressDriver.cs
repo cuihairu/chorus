@@ -3,10 +3,10 @@ using System.Net.Http.Headers;
 namespace Chorus.LoadTool;
 
 /// <summary>
-/// Sends audience events to /ingress/{platform} at a fixed rate per session
-/// across several parallel producers. Counts by HTTP status: 200 (accepted),
-/// 200+duplicated, 401 (unverified signature), 429 (rate limited),
-/// 503 (event lane full).
+/// Sends audience events to /ingress/{platform} at a fixed total rate
+/// (spread across parallel producers and round-robined over all sessions).
+/// Counts by HTTP status: 200 (accepted), 200+duplicated, 401 (unverified
+/// signature), 429 (rate limited), 503 (event lane full).
 /// </summary>
 public sealed class IngressDriver
 {
@@ -26,6 +26,10 @@ public sealed class IngressDriver
 
     private long _sent, _accepted, _duplicated, _rateLimited, _laneFull, _unauthorized, _other;
 
+    /// <summary>Event ids are the dedup key: all producers draw from one
+    /// sequence so no two producers can mint the same id.</summary>
+    private long _sequence;
+
     public IngressDriver(HttpClient http, string baseUrl, string platform, LoadToolOptions options)
     {
         _http = http;
@@ -39,23 +43,28 @@ public sealed class IngressDriver
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        var producers = Enumerable.Range(1, Math.Max(1, _options.ProducerConnections))
-            .Select(n => Task.Run(() => ProduceAsync(cancellationToken), cancellationToken))
+        var producers = Enumerable.Range(0, Math.Max(1, _options.ProducerConnections))
+            .Select(n => Task.Run(() => ProduceAsync(n, cancellationToken), cancellationToken))
             .ToArray();
 
         await Task.WhenAll(producers);
     }
 
-    private async Task ProduceAsync(CancellationToken cancellationToken)
+    private async Task ProduceAsync(int ordinal, CancellationToken cancellationToken)
     {
-        // Each producer owns its factory: Random is not shared across threads.
+        // Each producer owns its factory (Random is not shared across threads)
+        // but draws event ids from the driver-wide sequence.
         var factory = new EventPayloadFactory(
-            _platform, _options.UserPoolSize, _options.GiftRate, _options.DuplicateRate, _options.MatchId);
+            _platform, _options.UserPoolSize, _options.GiftRate, _options.DuplicateRate, _options.MatchId,
+            sequenceProvider: () => Interlocked.Increment(ref _sequence));
 
-        var perSessionRps = Math.Max(1, _options.EventsPerSecondPerSession);
-        var producerRps = Math.Max(1, (int)Math.Ceiling(perSessionRps / (double)Math.Max(1, _options.ProducerConnections)));
+        var totalRps = Math.Max(1, _options.EventsPerSecondTotal);
+        var producerRps = Math.Max(1, (int)Math.Ceiling(totalRps / (double)Math.Max(1, _options.ProducerConnections)));
         var intervalMs = 1000 / producerRps;
-        var index = Environment.CurrentManagedThreadId % Math.Max(1, _sessions.Length);
+        // Seed the session cursor by producer ordinal, not thread id: pool
+        // threads are reused under load, and two producers starting on the
+        // same thread would pace the same rooms at the same instants.
+        var index = ordinal % Math.Max(1, _sessions.Length);
 
         while (!cancellationToken.IsCancellationRequested)
         {

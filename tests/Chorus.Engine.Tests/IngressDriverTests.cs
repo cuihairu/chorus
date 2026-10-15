@@ -20,13 +20,19 @@ public sealed class IngressDriverTests
     {
         // Producers hit the stub concurrently: the record must be thread-safe.
         private readonly ConcurrentQueue<string> _sessionIds = new();
+        private readonly ConcurrentQueue<string> _eventIds = new();
         public string[] SessionIds => _sessionIds.ToArray();
+        public string[] EventIds => _eventIds.ToArray();
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var body = request.Content!.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult();
             using var doc = JsonDocument.Parse(body);
             _sessionIds.Enqueue(doc.RootElement.GetProperty("sessionId").GetString()!);
+            if (doc.RootElement.TryGetProperty("eventId", out var eventId))
+            {
+                _eventIds.Enqueue(eventId.GetString()!);
+            }
 
             var (status, content) = respond(Interlocked.Increment(ref _cursor));
             return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(content) });
@@ -63,7 +69,7 @@ public sealed class IngressDriverTests
 
     private static LoadToolOptions Options(int sessions = 1, int producers = 1, int rate = 200)
         => new(BaseUrl: "http://stub", Platform: "test", Sessions: sessions,
-            EventsPerSecondPerSession: rate, ProducerConnections: producers);
+            EventsPerSecondTotal: rate, ProducerConnections: producers);
 
     private static async Task RunUntilAsync(IngressDriver driver, Func<bool> done, CancellationTokenSource cts)
     {
@@ -213,5 +219,28 @@ public sealed class IngressDriverTests
         Assert.Equal(0, driver.Accepted);
         Assert.Equal(0, driver.Other);
         Assert.Equal(0, driver.RateLimited);
+    }
+
+    [Fact]
+    public async Task ParallelProducers_NeverCollideEventIds()
+    {
+        // 2026-10-15 gate reproduction run: 97% of sent events came back
+        // "duplicated" because each producer seeded its session cursor from
+        // Environment.CurrentManagedThreadId and numbered its event ids from
+        // its own per-factory counter - two producers starting on the same
+        // pool thread (routine under the WS-client load the tool itself
+        // generates) emit identical (room, seq) streams and the dedup face
+        // swallows them as platform retries. Event ids are the dedup key:
+        // with dup-rate 0 they must be globally unique across producers even
+        // in the worst case of a single shared session.
+        var handler = new StubHandler(_ => (HttpStatusCode.OK, Plain));
+        var driver = new IngressDriver(new HttpClient(handler), "http://stub", "test",
+            Options(sessions: 1, producers: 8, rate: 200) with { DuplicateRate = 0 });
+
+        using var cts = new CancellationTokenSource();
+        await RunUntilAsync(driver, () => driver.EventsSent >= 40, cts);
+
+        Assert.True(handler.EventIds.Length >= 40, $"only {handler.EventIds.Length} reached the stub");
+        Assert.Equal(handler.EventIds.Length, handler.EventIds.Distinct().Count());
     }
 }

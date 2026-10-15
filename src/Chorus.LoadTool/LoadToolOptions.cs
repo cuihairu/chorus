@@ -8,7 +8,7 @@ public sealed record LoadToolOptions(
     string BaseUrl = "http://127.0.0.1:5168",
     string Platform = "douyin",
     int Sessions = 4,
-    int EventsPerSecondPerSession = 50,
+    int EventsPerSecondTotal = 50,
     int ClientsPerSession = 3,
     int ProducerConnections = 4,
     string AckMix = "fast,normal,slow",
@@ -46,7 +46,7 @@ public sealed record LoadToolOptions(
                 case "--url": o = o with { BaseUrl = Next() }; break;
                 case "--platform": o = o with { Platform = Next() }; break;
                 case "--sessions": o = o with { Sessions = int.Parse(Next()) }; break;
-                case "--rate": o = o with { EventsPerSecondPerSession = int.Parse(Next()) }; break;
+                case "--rate": o = o with { EventsPerSecondTotal = int.Parse(Next()) }; break;
                 case "--clients": o = o with { ClientsPerSession = int.Parse(Next()) }; break;
                 case "--producers": o = o with { ProducerConnections = int.Parse(Next()) }; break;
                 case "--ack-mix": o = o with { AckMix = Next() }; break;
@@ -95,7 +95,8 @@ public sealed record LoadToolOptions(
               --url <http://host:port>     Gateway base URL (default http://127.0.0.1:5168)
               --platform <name>            Ingress platform name (default douyin)
               --sessions <n>               Concurrent sessions (default 4)
-              --rate <rps>                 Events/sec per session (default 50)
+              --rate <rps>                 Events/sec total across all sessions,
+                                           split across producers (default 50)
               --clients <n>                WS clients per session (default 3)
               --producers <n>              Parallel HTTP producer connections (default 4)
               --ack-mix <fast,normal,slow> Ack cadence mix for simulated clients

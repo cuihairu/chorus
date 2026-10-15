@@ -5,8 +5,8 @@ namespace Chorus.LoadTool;
 /// <summary>
 /// Produces raw Douyin-shaped payloads that the Douyin mapper accepts
 /// (session_id / event_id / user_id / event / gift_*). Event ids are
-/// per-session unique (or duplicated by the dup-rate) so dedup is exercised
-/// exactly like a retrying platform.
+/// globally unique across the driver (or duplicated by the dup-rate) so
+/// dedup is exercised exactly like a retrying platform.
 /// </summary>
 public sealed class EventPayloadFactory
 {
@@ -17,20 +17,26 @@ public sealed class EventPayloadFactory
     private readonly double _duplicateRate;
     private readonly string? _matchId;
     private readonly string _platform;
+    private readonly Func<long>? _sequenceProvider;
     private long _sequence;
 
-    public EventPayloadFactory(string platform, int userPoolSize, double giftRate, double duplicateRate, string? matchId)
+    public EventPayloadFactory(string platform, int userPoolSize, double giftRate, double duplicateRate,
+        string? matchId, Func<long>? sequenceProvider = null)
     {
         _platform = platform;
         _userPoolSize = Math.Max(1, userPoolSize);
         _giftRate = Math.Clamp(giftRate, 0, 1);
         _duplicateRate = Math.Clamp(duplicateRate, 0, 1);
         _matchId = matchId;
+        _sequenceProvider = sequenceProvider;
     }
 
     public string Create(string sessionId)
     {
-        var seq = Interlocked.Increment(ref _sequence);
+        // Event ids are the gateway's dedup key: parallel producers must draw
+        // from one shared sequence or two producers can mint the same id and
+        // the face swallows the event as a platform retry.
+        var seq = _sequenceProvider is { } provide ? provide() : Interlocked.Increment(ref _sequence);
         var userId = "u_" + _random.Next(_userPoolSize);
         var isGift = _random.NextDouble() < _giftRate;
 

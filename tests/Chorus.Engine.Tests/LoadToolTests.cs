@@ -88,7 +88,7 @@ public sealed class LoadToolTests
 
         Assert.Equal("http://127.0.0.1:5168", options.BaseUrl);
         Assert.Equal(7, options.Sessions);
-        Assert.Equal(10, options.EventsPerSecondPerSession);
+        Assert.Equal(10, options.EventsPerSecondTotal);
         Assert.Equal(2, options.ClientsPerSession);
         Assert.Equal(30, options.DurationSeconds);
         Assert.Equal("slow", options.AckMix);
@@ -132,7 +132,7 @@ public sealed class LoadToolTests
         Assert.Equal("http://127.0.0.1:5168", options.BaseUrl);
         Assert.Equal("douyin", options.Platform);
         Assert.Equal(4, options.Sessions);
-        Assert.Equal(50, options.EventsPerSecondPerSession);
+        Assert.Equal(50, options.EventsPerSecondTotal);
         Assert.Equal(3, options.ClientsPerSession);
         Assert.Equal(4, options.ProducerConnections);
         Assert.Equal("fast,normal,slow", options.AckMix);

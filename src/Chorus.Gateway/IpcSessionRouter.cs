@@ -29,6 +29,11 @@ public sealed class IpcSessionRouter : IStreamerSessionRouter
         var conn = new GatewayClientConnection(sessionId, clientId, ws);
         var binding = new IpcSessionBinding(_ipc, sessionId, clientId, conn);
 
+        // The waiter must die with the welcome window: a timed-out registration
+        // that left its waiter parked would reject every later reconnect of the
+        // same (session, client) with "Welcome waiter already exists" and
+        // self-sustain a reconnect storm (2026-10-15 gate run: 185k failed
+        // connects in one 120s run, gw->eng lane drowned in the churn).
         var welcomeTask = _ipc.CreateWelcomeWaiter(sessionId, clientId, cancellationToken);
         try
         {
@@ -51,6 +56,12 @@ public sealed class IpcSessionRouter : IStreamerSessionRouter
         {
             await WebSocketHelpers.SendJsonAsync(ws, new ServerError(ProtocolTypes.Error, "Engine welcome timeout"), cancellationToken);
             return new StreamerWsConnection(null, binding);
+        }
+        finally
+        {
+            // Deterministic cleanup: on the success path the welcome already
+            // consumed the waiter and this is a no-op.
+            _ipc.TryCancelWelcomeWaiter(sessionId, clientId);
         }
     }
 

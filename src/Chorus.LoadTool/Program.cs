@@ -12,7 +12,7 @@ Console.CancelKeyPress += (_, e) =>
 };
 
 Console.WriteLine($"[loadtool] target={options.BaseUrl} platform={options.Platform} " +
-                  $"sessions={options.Sessions} rate={options.EventsPerSecondPerSession}/s/session " +
+                  $"sessions={options.Sessions} rate={options.EventsPerSecondTotal}/s total " +
                   $"clients={options.ClientsPerSession} duration={options.DurationSeconds}s");
 
 if (string.IsNullOrWhiteSpace(options.SignSecret))

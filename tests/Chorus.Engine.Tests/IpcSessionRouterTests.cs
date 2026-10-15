@@ -83,6 +83,46 @@ public sealed class IpcSessionRouterTests
         }
     }
 
+    [Fact]
+    public async Task ConnectAsync_WelcomeTimeout_ReleasesWaiterForReconnect()
+    {
+        // 2026-10-15 gate run: a timed-out registration parked its pending
+        // welcome waiter forever, so EVERY later reconnect of that
+        // (session, client) threw "Welcome waiter already exists", killing the
+        // socket and self-sustaining a reconnect storm (185k failed connects
+        // in one 120s run) while the gw->eng lane drowned in registration
+        // churn. The timeout must release the waiter: the next registration
+        // attempt for the same key must be accepted.
+        var socketDir = $"/tmp/chorus-test-router3-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(socketDir);
+        var engineIngress = new UnixDomainSocketMessageBus(Path.Combine(socketDir, "chorus_gw_to_eng.sock"));
+        engineIngress.StartServer();
+        var gateway = new GatewayIpcService(NullLogger<GatewayIpcService>.Instance, Config(socketDir));
+        var ws = new ErrorRecordingSocket();
+        try
+        {
+            await gateway.StartAsync(CancellationToken.None);
+            await WarmUpGatewayAsync(gateway, CancellationToken.None);
+            var router = new IpcSessionRouter(gateway);
+
+            var conn = await router.ConnectAsync("s-r3", "c-r3", ws, CancellationToken.None);
+            Assert.Null(conn.Welcome); // timed out after 2s
+
+            // The reconnect of the same (session, client) must not collide
+            // with the timed-out waiter.
+            using var reconnectedCts = new CancellationTokenSource();
+            var reconnected = gateway.CreateWelcomeWaiter("s-r3", "c-r3", reconnectedCts.Token);
+            reconnectedCts.Cancel();
+            Assert.True(reconnected.IsCanceled);
+        }
+        finally
+        {
+            await gateway.StopAsync(CancellationToken.None);
+            await engineIngress.DisposeAsync();
+            try { Directory.Delete(socketDir, recursive: true); } catch { }
+        }
+    }
+
     private static IConfiguration Config(string socketDir) =>
         new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
