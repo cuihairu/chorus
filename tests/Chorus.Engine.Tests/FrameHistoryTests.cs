@@ -31,6 +31,19 @@ public sealed class FrameHistoryTests
     }
 
     [Fact]
+    public void WindowStart_AfterNewest_IsAMiss()
+    {
+        // Gap-fill requested from beyond the newest stored frame: the window
+        // is empty (the client is caught up or ahead), not the whole history.
+        var history = new FrameHistory(1_000_000);
+        history.Add(Wire(5, 200));
+        history.Add(Wire(6, 200));
+
+        Assert.False(history.TryGetWindow(7, out var frames));
+        Assert.Empty(frames);
+    }
+
+    [Fact]
     public void Add_ThenWindowFromOldest_ReturnsAllFramesInOrder()
     {
         var history = new FrameHistory(1_000_000);

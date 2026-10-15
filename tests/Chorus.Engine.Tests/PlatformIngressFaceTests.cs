@@ -69,13 +69,36 @@ public sealed class PlatformIngressFaceTests
         }
     }
 
-    private sealed class ScriptedRouter(ScriptedActorRef actorRef) : ISessionActorRouter
+    private sealed class ScriptedRouter(ISessionActorRef actorRef) : ISessionActorRouter
     {
         public ISessionActorRef Resolve(string sessionId) => actorRef;
     }
 
+    /// <summary>Script steps are SessionTellOutcome values or Exceptions.</summary>
+    private sealed class ScriptedFaultyActorRef(string sessionId, params object[] script) : ISessionActorRef
+    {
+        private readonly Queue<object> _script = new(script);
+
+        public string SessionId { get; } = sessionId;
+
+        public long? TickId => null;
+
+        public int Tells { get; private set; }
+
+        public ValueTask<SessionTellOutcome> TellAsync(AudienceEvent e, CancellationToken cancellationToken)
+        {
+            Tells++;
+            return _script.Dequeue() switch
+            {
+                Exception ex => ValueTask.FromException<SessionTellOutcome>(ex),
+                SessionTellOutcome outcome => ValueTask.FromResult(outcome),
+                _ => throw new InvalidOperationException("script step must be outcome or exception"),
+            };
+        }
+    }
+
     private static PlatformIngressFace CreateFace(
-        ScriptedActorRef actorRef,
+        ISessionActorRef actorRef,
         MatchRegistry? matches = null,
         bool verifierOk = true,
         bool mapEvent = true)
@@ -233,5 +256,39 @@ public sealed class PlatformIngressFaceTests
 
         Assert.Equal(401, status);
         Assert.Equal(0, actor.Tells);
+    }
+
+    [Fact]
+    public async Task TellTimesOut_Returns504_RollsBackDedupClaim()
+    {
+        // Tell cancelled by the engine (not by this HTTP request): the face
+        // must answer 504 so the platform retries fresh, and the retry is a
+        // new delivery rather than a remembered duplicate.
+        var actor = new ScriptedFaultyActorRef("s-face", new TaskCanceledException(), SessionTellOutcome.Accepted);
+        var face = CreateFace(actor);
+
+        var (first, _) = await SendAsync(face);
+        var (retry, retryBody) = await SendAsync(face);
+
+        Assert.Equal(504, first);
+        Assert.Equal(2, actor.Tells);
+        Assert.Equal(200, retry);
+        Assert.DoesNotContain("duplicated", retryBody);
+    }
+
+    [Fact]
+    public async Task TellFaults_Returns503_RollsBackDedupClaim()
+    {
+        // Router/tell blew up outright: 503 + rollback, same retry contract.
+        var actor = new ScriptedFaultyActorRef("s-face", new InvalidOperationException("router broke"), SessionTellOutcome.Accepted);
+        var face = CreateFace(actor);
+
+        var (first, _) = await SendAsync(face);
+        var (retry, retryBody) = await SendAsync(face);
+
+        Assert.Equal(503, first);
+        Assert.Equal(2, actor.Tells);
+        Assert.Equal(200, retry);
+        Assert.DoesNotContain("duplicated", retryBody);
     }
 }

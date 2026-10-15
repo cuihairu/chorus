@@ -195,6 +195,22 @@ public sealed class ModuleRestoreTests
         Assert.Throws<InvalidOperationException>(() => module.RestoreState(version: 1, doc.RootElement));
     }
 
+    [Fact]
+    public void Restorer_VersionBelowOne_FailsVisible_NeverTouchesModule()
+    {
+        // The restorer's own version gate (below the module's say): version 0
+        // must fail closed with the session id on the exception, and the
+        // module's RestoreState must never run.
+        var module = new RecordingModule();
+        var source = new MemoryRecoverySource("s-ver", 0, new { calls = 0 });
+
+        var ex = Assert.Throws<SnapshotRestoreException>(
+            () => GameModuleRestorer.Restore(module, "s-ver", source, Config()));
+
+        Assert.Equal("s-ver", ex.SessionId);
+        Assert.Equal(0, module.RestoreCalls);
+    }
+
     // ---- §7.2 恢复完成前 ApplyEvents 不被调用 ----
 
     [Fact]

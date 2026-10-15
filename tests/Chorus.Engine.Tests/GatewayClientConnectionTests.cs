@@ -87,6 +87,36 @@ public sealed class GatewayClientConnectionTests
         Assert.Equal(0, ws.Sent.Count);
     }
 
+    [Fact]
+    public async Task Dispose_CancelsPumpWaitingOnChannel_SwallowingOce()
+    {
+        // Pump sitting on the empty channel when the connection closes: the
+        // cancellation must be swallowed, not escaped as an unobserved fault.
+        var ws = new RecordingSocket();
+        await using var conn = new GatewayClientConnection("s1", "c1", ws);
+
+        await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
+        await WaitForAsync(() => ws.Sent.Count == 1, TimeSpan.FromSeconds(5));
+
+        await conn.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Dispose_AwaitingFaultingPump_SwallowingPumpException()
+    {
+        // Transport dies mid-send: dispose must join a faulted pump and not
+        // surface the transport exception to the caller.
+        var ws = new RecordingSocket(new WebSocketException("connection reset"));
+        await using var conn = new GatewayClientConnection("s1", "c1", ws);
+
+        await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
+        await WaitForAsync(() => ws.SendAttempts == 1, TimeSpan.FromSeconds(5));
+
+        await conn.DisposeAsync();
+
+        Assert.Equal(0, ws.Sent.Count);
+    }
+
     private static async Task WaitForAsync(Func<bool> condition, TimeSpan timeout)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();

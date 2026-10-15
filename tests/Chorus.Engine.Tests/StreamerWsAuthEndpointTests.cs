@@ -79,6 +79,26 @@ public sealed class StreamerWsAuthEndpointTests
         }
     }
 
+    public sealed class ResyncLimitFactory : WebApplicationFactory<Chorus.Server.Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseSetting("Faces:StreamerWs:AuthTokens", "tok-good");
+            builder.UseSetting("Faces:StreamerWs:AllowAnonymous", "false");
+            builder.UseSetting("Faces:StreamerWs:ResyncPerMinute", "2");
+        }
+    }
+
+    public sealed class BodyCapAnonFactory : WebApplicationFactory<Chorus.Server.Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseSetting("Faces:StreamerWs:AuthTokens", "");
+            builder.UseSetting("Faces:StreamerWs:AllowAnonymous", "true");
+            builder.UseSetting("Faces:StreamerWs:MaxMessageBytes", "64");
+        }
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static async Task<(WebSocket Ws, string? Text, WebSocketCloseStatus? CloseStatus)> ConnectAndHelloAsync(
@@ -130,6 +150,30 @@ public sealed class StreamerWsAuthEndpointTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var result = await ws.ReceiveAsync(buffer, cts.Token);
         return result.MessageType == WebSocketMessageType.Close ? result.CloseStatus : null;
+    }
+
+    private static Task SendTextAsync(WebSocket ws, string text)
+        => ws.SendAsync(Encoding.UTF8.GetBytes(text), WebSocketMessageType.Text, true, CancellationToken.None);
+
+    /// <summary>Drain frames until one matches; snapshot broadcasts interleave.</summary>
+    private static async Task<string> ReadUntilAsync(WebSocket ws, Func<string, bool> match)
+    {
+        var buffer = new byte[8192];
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (true)
+        {
+            var result = await ws.ReceiveAsync(buffer, cts.Token);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                throw new InvalidOperationException($"closed while waiting: {result.CloseStatus}");
+            }
+
+            var text = Encoding.UTF8.GetString(buffer, 0, result.Count);
+            if (match(text))
+            {
+                return text;
+            }
+        }
     }
 
     private static async Task<JsonElement> GetFacesAsync(WebApplicationFactory<Chorus.Server.Program> factory)
@@ -299,6 +343,100 @@ public sealed class StreamerWsAuthEndpointTests
         var facesAfter = await GetFacesAsync(factory);
         Assert.Equal(facesBefore.GetProperty("ackAccepted").GetInt64() + 2, facesAfter.GetProperty("ackAccepted").GetInt64());
         Assert.Equal(facesBefore.GetProperty("ackDropped").GetInt64() + 3, facesAfter.GetProperty("ackDropped").GetInt64());
+        ws.Dispose();
+    }
+
+    // ---------------------------------------------------------------- more loop bounds
+
+    [Fact]
+    public async Task MalformedJsonHello_RejectedWithFirstMustBeHello()
+    {
+        using var factory = new AnonymousFactory();
+        var wsClient = factory.Server.CreateWebSocketClient();
+        var ws = await wsClient.ConnectAsync(new Uri(factory.Server.BaseAddress, BaseUri), CancellationToken.None);
+
+        await SendTextAsync(ws, "{ not json");
+
+        var text = await ReadUntilAsync(ws, t => t.Contains("First message must be hello"));
+        Assert.Contains("error", text);
+        Assert.Equal(WebSocketCloseStatus.NormalClosure, await ReadCloseAsync(ws));
+        ws.Dispose();
+    }
+
+    [Fact]
+    public async Task ClientClosesBeforeHello_ServerEndsQuietly()
+    {
+        // Close frame instead of a hello: the receive fails (non-size error)
+        // and the rejection must complete without hanging the connection.
+        using var factory = new AnonymousFactory();
+        var wsClient = factory.Server.CreateWebSocketClient();
+        var ws = await wsClient.ConnectAsync(new Uri(factory.Server.BaseAddress, BaseUri), CancellationToken.None);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", cts.Token);
+
+        // The server finishes the close handshake; nothing left to assert
+        // beyond "it ended" - a regression here hangs the CloseAsync above.
+        ws.Dispose();
+    }
+
+    [Fact]
+    public async Task OversizedMessage_AfterHandshake_ClosedWithMessageTooBig()
+    {
+        // The hello itself must fit the 64-byte cap; the junk frame below will not.
+        using var factory = new BodyCapAnonFactory();
+        var wsClient = factory.Server.CreateWebSocketClient();
+        var ws = await wsClient.ConnectAsync(new Uri(factory.Server.BaseAddress, BaseUri), CancellationToken.None);
+        await SendTextAsync(ws, """{"type":"hello","sessionId":"s-cap","clientId":"c"}""");
+
+        await ReadUntilAsync(ws, t => t.Contains("welcome"));
+
+        await SendTextAsync(ws, new string('x', 200));
+
+        Assert.Equal(WebSocketCloseStatus.MessageTooBig, await ReadCloseAsync(ws));
+        ws.Dispose();
+    }
+
+    [Fact]
+    public async Task ResyncFlood_ExcessResyncDropped_AndCounted()
+    {
+        using var factory = new ResyncLimitFactory();
+
+        var (ws, welcome, _) = await ConnectAndHelloAsync(factory, "tok-good", sessionId: "s-ws-rsc");
+        Assert.Contains("welcome", welcome);
+
+        var facesBefore = await GetFacesAsync(factory);
+
+        for (var i = 0; i < 5; i++)
+        {
+            await SendTextAsync(ws, $$"""{"type":"resync","sessionId":"s-ws-rsc","clientId":"c-ws","fromFrameId":{{i}}}""");
+        }
+
+        // FIFO proof like the ack-flood test: the pong means the loop drained
+        // every resync above, so the drop counter has settled.
+        await SendTextAsync(ws, "{\"type\":\"ping\"}");
+        await ReadUntilAsync(ws, t => t.Contains("\"type\":\"pong\""));
+
+        var facesAfter = await GetFacesAsync(factory);
+        Assert.Equal(facesBefore.GetProperty("resyncDropped").GetInt64() + 3, facesAfter.GetProperty("resyncDropped").GetInt64());
+        ws.Dispose();
+    }
+
+    [Fact]
+    public async Task ClientAbort_AfterHandshake_EndsQuietly()
+    {
+        // Abrupt disconnect mid-serve: the loop's cancellation arm must end
+        // the connection quietly (no unobserved fault, no leaked binding).
+        using var factory = new AnonymousFactory();
+        var (ws, welcome, _) = await ConnectAndHelloAsync(factory, token: null, sessionId: "s-ws-abort");
+        Assert.Contains("welcome", welcome);
+
+        var faces = await GetFacesAsync(factory);
+        Assert.Equal(1, faces.GetProperty("connections").GetInt64());
+
+        ws.Abort();
+        await Task.Delay(300); // let the server loop observe the abort
+
         ws.Dispose();
     }
 }

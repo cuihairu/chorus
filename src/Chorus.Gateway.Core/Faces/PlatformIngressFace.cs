@@ -104,7 +104,21 @@ public sealed class PlatformIngressFace
             _matches?.Track(ev);
 
             var actorRef = _actors.Resolve(ev.SessionId);
-            var outcome = await actorRef.TellAsync(ev, requestCts.Token);
+            SessionTellOutcome outcome;
+            try
+            {
+                outcome = await actorRef.TellAsync(ev, requestCts.Token);
+            }
+            catch
+            {
+                // The tell blew up (engine fault / cancellation): the event was
+                // not delivered, so the same rollback contract as the outcome
+                // lanes applies - a platform retry must be a fresh delivery,
+                // never answered "duplicated" while the event was lost.
+                _dedup.Rollback(lease);
+                throw;
+            }
+
             if (outcome != SessionTellOutcome.Accepted)
             {
                 // Not delivered: release the claim so the platform retry is
