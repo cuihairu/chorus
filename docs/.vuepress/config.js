@@ -41,7 +41,8 @@ module.exports = {
         "/design/snapshot-restore.md",
         "/design/bilibili-danmaku-adapter.md",
         "/design/overall-architecture.md",
-        "/审计-文档一致性.md"
+        "/audit-doc-consistency.md",
+        "/audit-doc-consistency.zh.md"
       ],
       "/reference/": [
         "/reference/protocol.md",

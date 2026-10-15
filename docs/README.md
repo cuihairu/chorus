@@ -3,38 +3,42 @@ home: true
 title: Chorus
 heroImage: /logo.svg
 heroText: Chorus
-tagline: 面向直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）
+tagline: An interactive battle game framework driven by live-stream danmaku/gifts (server-authoritative tick + state snapshots)
 actions:
-  - text: 快速开始
+  - text: Getting Started
     link: /guide/getting-started.html
     type: primary
-  - text: 架构设计
+  - text: Architecture
     link: /design/architecture.html
     type: secondary
 features:
-  - title: 服务器权威 Tick
-    details: 服务器持续推进逻辑帧，不再“等最慢端”，客户端以快照对齐。
-  - title: 弹幕/礼物输入缓冲
-    details: 通过 inputDelayTicks 抵抗平台事件抖动/乱序，并提供降采样与合并策略。
-  - title: 可观测性
-    details: 内置会话与客户端 lag/ack 指标，定位“不同步”问题可解释、可复现。
+  - title: Server-authoritative tick
+    details: The server keeps advancing logic frames instead of "waiting for the slowest peer"; clients align to snapshots.
+  - title: Danmaku/gift input buffering
+    details: inputDelayTicks absorbs platform event jitter/reordering, with downsampling and merge strategies.
+  - title: Observability
+    details: Built-in session and client lag/ack metrics make "out of sync" issues explainable and reproducible.
 footer: Apache-2.0 License
 ---
 
-## 文档入口
+<p align="center">
+  English | <a href="README.zh.md">简体中文</a>
+</p>
 
-- 新接入项目：从 [快速开始](./guide/getting-started.md) 开始
-- 先理解架构与取舍（为什么这么设计）：看 [架构说明](./architecture.md)
-- 用对战 / 匹配 / 排行榜三类能力：看 [对战](./guide/battle.md) /
-  [匹配](./guide/matchmaking.md) / [排行榜](./guide/leaderboard.md)
-- 理解当前架构（进程拓扑 + 组件索引）：看 [当前架构总览](./design/architecture-overview.md)
-- 理解整体设计：看 [整体架构](./design/architecture.md) 和 [规格草案](./design/spec.md)
-- 关注帧同步：看 [帧同步设计](./design/frame-sync.md)
-- 处理“追同步两边都追不上”：看 [帧同步最佳实践](./design/frame-sync-best-practices.md)
-- 设计客户端恢复：看 [客户端追同步状态机](./design/client-resync-state-machine.md)
-- 调整线上参数：看 [参数调优](./reference/tuning.md)
-- 线上排障定位：看 [故障排查](./reference/troubleshooting.md)
-- 对照消息字段实现：看 [协议参考](./reference/protocol.md)
-- 接入直播平台：看 [平台对接参考：抖音](./reference/platform-douyin.md) /
-  [平台对接参考：快手](./reference/platform-kuaishou.md)
-- 复核代理决策：看 [决策记录](./decisions.md)
+## Documentation index
+
+- New to the project: start with [Getting Started](./guide/getting-started.md)
+- Understand the architecture and the trade-offs (why it is designed this way): read [Architecture](./architecture.md)
+- Use the three capability areas — battle / matchmaking / leaderboard: read [Battle](./guide/battle.md) /
+  [Matchmaking](./guide/matchmaking.md) / [Leaderboard](./guide/leaderboard.md)
+- Understand the current architecture (process topology + component index): read [Current architecture overview](./design/architecture-overview.md)
+- Understand the overall design: read [Overall architecture](./design/architecture.md) and the [Spec draft](./design/spec.md)
+- Care about frame sync: read [Frame sync design](./design/frame-sync.md)
+- Dealing with "neither side can catch up during resync": read [Frame sync best practices](./design/frame-sync-best-practices.md)
+- Designing client recovery: read [Client resync state machine](./design/client-resync-state-machine.md)
+- Tuning production parameters: read [Parameter tuning](./reference/tuning.md)
+- Production troubleshooting: read [Troubleshooting](./reference/troubleshooting.md)
+- Checking message fields against the implementation: read [Protocol reference](./reference/protocol.md)
+- Integrating live-stream platforms: read [Platform integration: Douyin](./reference/platform-douyin.md) /
+  [Platform integration: Kuaishou](./reference/platform-kuaishou.md)
+- Reviewing proxy decisions: read [Decision log](./decisions.md)

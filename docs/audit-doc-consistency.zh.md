@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="./audit-doc-consistency.md">English</a> | 简体中文
+</p>
+
 # 文档-代码一致性审计（2026-10-13）
 
 审计范围：README.md、README.zh.md、docs/ 全部 30 页 + .vuepress/config.js + 公开门面（GitHub About / homepageUrl / topics）。
