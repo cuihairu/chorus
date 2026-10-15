@@ -29,10 +29,11 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 
 | 参数 | 默认 | 含义 |
 | --- | --- | --- |
-| `--url` | `http://127.0.0.1:5168` | Gateway 地址（Server 亦可） |
+| `--url` | `http://127.0.0.1:5168` | ingress 面地址（Gateway / Server 亦可） |
+| `--ws-url` | 由 `--url` 派生 | `/ws` 面地址。默认从 `--url` 派生（http→ws、https→wss、补 `/ws` 路径）；拆分角色拓扑（`Gateway:Roles=platform` 与 `=streamer` 分进程）下两面不在同一端口，用此参数显式指定 `/ws` 所在进程 |
 | `--platform` | `douyin` | ingress 平台名（`test` 走未签名演示链路） |
 | `--sessions` | 4 | 并发 Session 数 |
-| `--rate` | 50 | 事件/秒，**全部 Session 合计**（跨 producer 摊分，round-robin 覆盖所有 Session）。要实际打到目标速率，producer 数需 ≥ 目标速率 × 单请求平均延迟 |
+| `--rate` | 50 | 事件/秒，**全部 Session 合计**（跨 producer 摊分，round-robin 覆盖所有 Session）。`RatePacer` 按绝对时刻表对齐每个 producer 的发送节奏（2026-10-16 前是整除间隔，≥1000/s/producer 时截断为 0、`--rate` 静默失效）；producer 跟不上目标节奏时按实际响应速度发送，长程速率趋近于目标。要实际打到目标速率，producer 数需 ≥ 目标速率 × 单请求平均延迟 |
 | `--clients` | 3 | 每 Session WS 客户端数 |
 | `--producers` | 4 | 并行 HTTP 生产者连接数 |
 | `--ack-mix` | `fast,normal,slow` | ACK 档位混合（fast≈实时 / normal≈几 tick / slow≈十几 tick 滞后） |
@@ -48,7 +49,14 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 | `--engine-metrics` | 空 | Engine `/metrics` URL；运行期每 `--report-every` 采样并取峰值 |
 | `--report-every` | 5 | 进度报告间隔（秒） |
 
-也可以用环境变量：`CHORUS_LOAD_URL`、`CHORUS_LOAD_PLATFORM`、`CHORUS_LOAD_SIGN_SECRET`（别名 `CHORUS_LOAD_DOUYIN_SECRET`）、`CHORUS_WS_TOKEN`、`CHORUS_LOAD_ENGINE_METRICS`。
+也可以用环境变量：`CHORUS_LOAD_URL`、`CHORUS_LOAD_WS_URL`、`CHORUS_LOAD_PLATFORM`、`CHORUS_LOAD_SIGN_SECRET`（别名 `CHORUS_LOAD_DOUYIN_SECRET`）、`CHORUS_WS_TOKEN`、`CHORUS_LOAD_ENGINE_METRICS`。
+
+拆分角色拓扑示例（两网关共用一个 EngineHost，见 [拆分模式](./split-mode.md) 的 `Gateway:Roles`/`Gateway:Id`/`Ipc:GatewayIds`）：
+
+```bash
+dotnet run --project src/Chorus.LoadTool -- --url http://127.0.0.1:5168 \
+  --ws-url ws://127.0.0.1:5178/ws --duration 60
+```
 
 ## 观察什么
 
