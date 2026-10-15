@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Chorus.Engine.Abstractions;
 using Chorus.Engine.Session;
 using Chorus.Messaging;
@@ -17,8 +18,15 @@ public sealed class EngineIpcService : BackgroundService
 
     private readonly SessionRegistry _registry;
     private readonly Dictionary<(string SessionId, string ClientId), EngineBusSessionClient> _clients = new();
+    /// <summary>Per-session connected-client counts: the registry's sweep
+    /// probe reads this from the sweep task on the thread pool while the
+    /// receive loop mutates it, and the old probe (scan every client key per
+    /// session) was O(N²) per sweep - at the 2026-10-15 gate scale (800
+    /// sessions) sweeps also fired per message once at the cap and starved
+    /// event delivery to ~5%. O(1) probe, single-writer counts.</summary>
+    private readonly ConcurrentDictionary<string, int> _clientCountBySession = new(StringComparer.Ordinal);
+    private readonly SweepGate _sweepGate;
     private readonly BroadcastOwnerRegistry _broadcastOwners = new();
-    private long _lastSweepMs;
     private long _publishFailures;
 
     private IMessageBus? _incoming;
@@ -45,8 +53,9 @@ public sealed class EngineIpcService : BackgroundService
         _registry = new SessionRegistry(
             sessionConfig,
             CreateActor,
-            id => _clients.Keys.Any(k => k.SessionId == id),
+            id => _clientCountBySession.ContainsKey(id),
             runSweepLoop: false);
+        _sweepGate = new SweepGate(sessionConfig.MaxSessions);
 
         _ipcSettings = new IpcSettings(
             Transport: Enum.TryParse<IpcTransport>(config["Ipc:Transport"], ignoreCase: true, out var t) ? t : IpcTransport.Auto,
@@ -169,11 +178,12 @@ public sealed class EngineIpcService : BackgroundService
 
         // Amortized lazy sweep for client-less sessions (review stage-2,
         // EngineHost topology): runs on the receive loop thread so registry
-        // mutations stay single-threaded with the handlers. Cap eviction with
-        // idlest-first victims happens inside the registry's GetOrCreate.
-        if (now - _lastSweepMs >= 30_000 || _registry.Count >= Math.Max(1, _sessionConfig.MaxSessions))
+        // mutations stay single-threaded with the handlers. The gate holds the
+        // cadence — 30s idle, 1s while at the session cap — so a busy stream
+        // never fires a sweep per message. Cap eviction with idlest-first
+        // victims happens inside the registry's GetOrCreate.
+        if (_sweepGate.ShouldSweep(now, _registry.Count))
         {
-            _lastSweepMs = now;
             _ = _registry.SweepIdleAsync(now);
         }
 
@@ -199,6 +209,7 @@ public sealed class EngineIpcService : BackgroundService
                         () => _broadcastOwners.IsOwner(cmd.SessionId, cmd.ClientId),
                         RecordPublishFailure);
                     _clients[(cmd.SessionId, cmd.ClientId)] = client;
+                    _clientCountBySession.AddOrUpdate(cmd.SessionId, 1, static (_, c) => c + 1);
                     await session.AddClientAsync(client);
 
                     var welcome = new ServerWelcome(
@@ -225,6 +236,20 @@ public sealed class EngineIpcService : BackgroundService
                         await session!.RemoveClientAsync(cmd.ClientId);
                     }
                     _clients.Remove((cmd.SessionId, cmd.ClientId));
+                    // Only the receive loop mutates the count map, so the
+                    // read-modify-write here cannot interleave.
+                    if (_clientCountBySession.TryGetValue(cmd.SessionId, out var count))
+                    {
+                        if (count <= 1)
+                        {
+                            _clientCountBySession.TryRemove(cmd.SessionId, out _);
+                        }
+                        else
+                        {
+                            _clientCountBySession[cmd.SessionId] = count - 1;
+                        }
+                    }
+
                     _broadcastOwners.OnDisconnect(
                         cmd.SessionId,
                         cmd.ClientId,
@@ -319,6 +344,7 @@ public sealed class EngineIpcService : BackgroundService
     {
         await _registry.DisposeAsync();
         _clients.Clear();
+        _clientCountBySession.Clear();
 
         if (_incoming != null) await _incoming.DisposeAsync();
         if (_outgoing != null) await _outgoing.DisposeAsync();
