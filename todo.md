@@ -175,8 +175,8 @@
 ## 13. 文档一致性
 
 - [x] 文档-代码一致性审计（2026-10-13，41 条修复，见 docs/audit-doc-consistency.zh.md）
-- [ ] 文档站双语配对（2026-10-16 执行单：根目录 4/4 完成，子目录顺延下一轮）：docs/ 根目录 4 篇实质文档全部配对（architecture / decisions / audit-doc-consistency / README 首页），`X.md`=英文、`X.zh.md`=中文、两份顶部切换器；子目录登记——docs/design/ 14 篇（overall-architecture.md 1478 行、review-2026-10-12-chatgpt.md 546 行、client-resync-state-machine.md 363 行等）、docs/guide/ 8 篇、docs/reference/ 15 篇，共 37 篇均中文单语无配对。剩余缺口：子目录 37 篇双语配对。（注：docs/design/spec.md:157 的 `[整体架构](./architecture.md)` 是相对 spec.md 自身目录的链接，解析为 docs/design/architecture.md，与根目录英文版无关，本轮不受影响、无需处理）
-- [x] 总体架构与 Code Agent 实施规范（2026-10-13，80 项审计，见 docs/design/overall-architecture.md）
+- [x] 文档站双语配对（2026-10-16 执行单：根目录轮 `acf9664` + 子目录轮 R1016E）：docs/ 41 对全部配对——根目录 4 篇（architecture / decisions / audit-doc-consistency / README 首页）+ 子目录 37 篇（design 14 / guide 8 / reference 15）。口径 `X.md`=英文、`X.zh.md`=中文，两份顶部均有语言切换器；子目录中文原文全部 `git mv` 转入 `.zh.md`（历史保留），英文版为新写真实译本（命令/路径/代码块/专有名词原样保留）；`.vuepress/config.js` 侧栏 39 条目无需改动（英文页占原路径），连带重写 37 篇内文互链与根目录 4 篇指向子目录的链接。例外（按执行单「1000 行以上不硬翻」红线）：`docs/design/overall-architecture.md`（1478 行）只做英文桩页——章节索引 + 「暂无译版」标注 + 回链中文原文。连带修复既有死链：`docs/design/snapshot-restore.md` 的 `./versioning.md` 原指向同目录不存在文件、应为 `../reference/versioning.md`（HEAD 上即死链，两语言版同修）；7 处 frontmatter 标题含未加引号的冒号导致 VuePress 构建失败（`YAMLException: incomplete explicit mapping pair`），已加引号。门禁：`npm run docs:build` 通过（server 37.71s / client 46.49s + 静态渲染成功），82 个 docs 文件 0 死链。剩余缺口：overall-architecture 英文全译（1478 行豁免，待有真实翻译产能再做）；todo.md 内文其余 doc 引用仍写 `.md`（现解析为英文版，内容等价、非死链，未逐条改写以免 `file:line` 类引用行号漂移）
+- [x] 总体架构与 Code Agent 实施规范（2026-10-13，80 项审计，见 docs/design/overall-architecture.zh.md；`.md` 为「暂无译版」英文桩页）
 - [x] 架构图进文档（`89d2275`）
 - [x] API 参考文档（`67daedc`）
 - [x] README 双语互链（`f692034`）
