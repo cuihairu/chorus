@@ -8,9 +8,12 @@ public static class IpcEndpointBuilder
         var prefix = string.IsNullOrWhiteSpace(settings.NamedPipePrefix) ? "chorus" : settings.NamedPipePrefix;
         var tcpHost = string.IsNullOrWhiteSpace(settings.TcpHost) ? "127.0.0.1" : settings.TcpHost;
 
+        var workerId = ValidatedWorkerId(settings.WorkerId);
+        var workerSocketSuffix = workerId.Length == 0 ? "" : $"_{workerId}";
+        var workerPipeSuffix = workerId.Length == 0 ? "" : $".{workerId}";
         var gwToEng = new IpcEndpoint(
-            UnixSocketPath: Path.Combine(dir, $"{prefix}_gw_to_eng.sock"),
-            NamedPipeName: $"{prefix}.gw_to_eng",
+            UnixSocketPath: Path.Combine(dir, $"{prefix}_gw_to_eng{workerSocketSuffix}.sock"),
+            NamedPipeName: $"{prefix}.gw_to_eng{workerPipeSuffix}",
             TcpHost: tcpHost,
             TcpPort: settings.TcpGatewayToEnginePort,
             HttpUrl: NormalizeHttpUrl(settings.HttpGatewayToEngineUrl, "http://127.0.0.1:27600/gw-to-eng/")
@@ -34,20 +37,26 @@ public static class IpcEndpointBuilder
     }
 
     private static string ValidatedGatewayId(string gatewayId)
+        => ValidateEndpointId(gatewayId, nameof(IpcSettings.GatewayId));
+
+    private static string ValidatedWorkerId(string workerId)
+        => ValidateEndpointId(workerId, nameof(IpcSettings.WorkerId));
+
+    private static string ValidateEndpointId(string id, string propertyName)
     {
-        if (string.IsNullOrWhiteSpace(gatewayId))
+        if (string.IsNullOrWhiteSpace(id))
         {
             return "";
         }
 
-        var id = gatewayId.Trim();
+        id = id.Trim();
         foreach (var ch in id)
         {
             if (!char.IsAsciiLetterOrDigit(ch) && ch != '-')
             {
                 throw new ArgumentException(
-                    $"Ipc GatewayId must contain only ASCII letters, digits and dashes: '{gatewayId}'",
-                    nameof(IpcSettings.GatewayId));
+                    $"Ipc {propertyName} must contain only ASCII letters, digits and dashes: '{id}'",
+                    propertyName);
             }
         }
 

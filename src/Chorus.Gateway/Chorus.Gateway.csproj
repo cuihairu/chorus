@@ -9,6 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Chorus.Adapters.Abstractions\Chorus.Adapters.Abstractions.csproj" />
     <ProjectReference Include="..\Chorus.Adapters.Platforms\Chorus.Adapters.Platforms.csproj" />
+    <ProjectReference Include="..\Chorus.Engine\Chorus.Engine.csproj" />
     <ProjectReference Include="..\Chorus.Gateway.Core\Chorus.Gateway.Core.csproj" />
     <ProjectReference Include="..\Chorus.Messaging\Chorus.Messaging.csproj" />
     <ProjectReference Include="..\Chorus.Protocol\Chorus.Protocol.csproj" />

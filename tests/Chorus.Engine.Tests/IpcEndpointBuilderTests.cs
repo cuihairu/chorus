@@ -12,7 +12,8 @@ namespace Chorus.Engine.Tests;
 /// </summary>
 public sealed class IpcEndpointBuilderTests
 {
-    private static IpcSettings Settings(string gatewayId = "") => new(Transport: IpcTransport.UnixDomainSocket, GatewayId: gatewayId);
+    private static IpcSettings Settings(string gatewayId = "", string workerId = "") =>
+        new(Transport: IpcTransport.UnixDomainSocket, GatewayId: gatewayId, WorkerId: workerId);
 
     [Fact]
     public void EmptyGatewayId_KeepsLegacyNames()
@@ -33,6 +34,26 @@ public sealed class IpcEndpointBuilderTests
         Assert.EndsWith("chorus_gw_to_eng.sock", eps.GatewayToEngine.UnixSocketPath, StringComparison.Ordinal);
         Assert.EndsWith("chorus_eng_to_gw_streamer-gw.sock", eps.EngineToGateway.UnixSocketPath, StringComparison.Ordinal);
         Assert.Equal("chorus.eng_to_gw.streamer-gw", eps.EngineToGateway.NamedPipeName);
+    }
+
+    [Fact]
+    public void WorkerId_SuffixesOnlyGatewayToEngine()
+    {
+        var eps = IpcEndpointBuilder.Build(Settings(workerId: "worker-a"));
+
+        Assert.EndsWith("chorus_gw_to_eng_worker-a.sock", eps.GatewayToEngine.UnixSocketPath, StringComparison.Ordinal);
+        Assert.EndsWith("chorus_eng_to_gw.sock", eps.EngineToGateway.UnixSocketPath, StringComparison.Ordinal);
+        Assert.Equal("chorus.gw_to_eng.worker-a", eps.GatewayToEngine.NamedPipeName);
+    }
+
+    [Theory]
+    [InlineData("bad_id")]
+    [InlineData("bad/slash")]
+    [InlineData("bad.dot")]
+    [InlineData("bad space")]
+    public void InvalidWorkerId_FailsFast(string workerId)
+    {
+        Assert.Throws<ArgumentException>(() => IpcEndpointBuilder.Build(Settings(workerId: workerId)));
     }
 
     [Theory]

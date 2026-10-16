@@ -11,5 +11,8 @@ public sealed record IpcSettings(
     string HttpEngineToGatewayUrl = "http://127.0.0.1:27601/eng-to-gw/",
     /// <summary>The hosting gateway's own id; suffixes its eng-to-gw endpoint so
     /// several gateways can share one worker (empty = legacy single-gateway name).</summary>
-    string GatewayId = ""
+    string GatewayId = "",
+    /// <summary>The hosting worker's id; suffixes gw-to-eng so one gateway can
+    /// route rooms to several workers (empty = legacy single-worker name).</summary>
+    string WorkerId = ""
 );

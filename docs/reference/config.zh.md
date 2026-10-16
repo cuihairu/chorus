@@ -273,6 +273,8 @@ maxResyncReplayTicks = 128
 | `Ipc:HeartbeatIntervalMs`（EngineHost） | `5000` | 引擎在 eng→gw 通道发 `eng.heartbeat` 的间隔；`0` 关闭 |
 | `Ipc:ReadinessMaxSilenceMs`（Gateway） | `15000` | Gateway `GET /ready` 判 200 的最大静默窗口，超窗 503（fail-closed） |
 | `Ipc:GatewayIds`（EngineHost） | 空 | 逗号分隔的网关标识列表（如 `platform-gw,streamer-gw`）；引擎对每个 id 各建一条 eng→gw 客户端并逐条扇出发布。空 = 旧单网关通道 |
+| `Ipc:WorkerId`（EngineHost） | 空 | 本 worker 标识（仅 ASCII 字母/数字/`-`）：后缀 gw→eng 通道名，使多个 worker 可被同一 Gateway 路由。空 = 旧单 worker 通道名。非法字符在端点构造时抛出 |
+| `Ipc:WorkerIds`（Gateway） | 空 | 逗号分隔的 worker 标识列表；Gateway 为每个 id 各建一条 gw→eng 客户端，并按稳定 `RoomAffinity` 路由每个 session。空 = 旧单 worker 通道 |
 
 详见 [部署与安全](./deployment.zh.md) 的「拆分模式就绪探针」。
 

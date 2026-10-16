@@ -46,6 +46,26 @@ public sealed class SessionActorLifecycleTests
     }
 
     [Fact]
+    public async Task DisposeAsync_RacingCallers_OnlyOneRunsShutdown()
+    {
+        for (var iteration = 0; iteration < 25; iteration++)
+        {
+            var actor = new SessionActor($"s-life-dispose-{iteration}", Config(), new CountingGameModule());
+            actor.Start();
+            await Task.Delay(5);
+
+            var barrier = new Barrier(8);
+            var disposals = Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
+            {
+                barrier.SignalAndWait();
+                await actor.DisposeAsync();
+            })).ToArray();
+
+            await Task.WhenAll(disposals);
+        }
+    }
+
+    [Fact]
     public async Task ReAddClient_ReplacesPreviousConnection()
     {
         var oldReceived = new List<SessionSnapshot>();

@@ -77,3 +77,12 @@ A single EngineHost can host multiple Gateway processes (platform-gw / streamer-
 - EngineHost configures `Ipc:GatewayIds=platform-gw,streamer-gw` (comma-separated); the engine fans out publishes on each channel
 - The two gateways can share the same `Ipc:UnixSocketDir`; channel names are distinguished by id and do not overwrite each other
 - When `Gateway:Id` / `Ipc:GatewayIds` are not configured, behavior matches the old version (single-gateway channel names)
+
+## Multiple Workers
+
+One Gateway can route sessions across multiple EngineHost workers:
+
+- Each EngineHost configures a unique `Ipc:WorkerId` (for example `worker-a` / `worker-b`); its gateway-to-engine channel name automatically carries the worker suffix.
+- The Gateway configures `Ipc:WorkerIds=worker-a,worker-b`; every connect, audience-event, ACK, resync, and disconnect envelope is routed by stable `RoomAffinity` for the session.
+- All processes must share one UDS or named-pipe directory. TCP and HTTP use fixed endpoints, so multi-worker on one machine currently requires UDS or named pipes.
+- Empty `Ipc:WorkerIds` / `Ipc:WorkerId` keeps the legacy single-worker channel and routing behavior.

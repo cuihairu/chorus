@@ -78,3 +78,12 @@ curl -X POST http://localhost:5168/ingress/test \
 - EngineHost 配 `Ipc:GatewayIds=platform-gw,streamer-gw`（逗号分隔），引擎对每条通道扇出发布
 - 两个网关可共用同一 `Ipc:UnixSocketDir`，通道名按 id 区分，互不覆盖
 - 不配 `Gateway:Id` / `Ipc:GatewayIds` 时行为与旧版一致（单网关通道名）
+
+## 多 Worker
+
+一个 Gateway 可以把房间路由到多个 EngineHost worker：
+
+- 每个 EngineHost 配置唯一 `Ipc:WorkerId`（如 `worker-a` / `worker-b`），gw→eng 通道名自动携带 worker 后缀。
+- Gateway 配置 `Ipc:WorkerIds=worker-a,worker-b`；连接、观众事件、ACK、resync、断开信封都按稳定的 `RoomAffinity` 固定到同一 session 所属 worker。
+- 所有进程必须共享同一 UDS 或 NamedPipe 目录。TCP/HTTP 目前是固定端点，同机多 worker 只能用 UDS 或 NamedPipe。
+- `Ipc:WorkerIds` / `Ipc:WorkerId` 为空时保持旧单 worker 通道与行为。

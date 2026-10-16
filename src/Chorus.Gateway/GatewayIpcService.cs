@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Chorus.Engine.Routing;
 using Chorus.Messaging;
 using Chorus.Messaging.Ipc;
 using Chorus.Protocol.Messages;
@@ -13,8 +14,10 @@ public sealed class GatewayIpcService : BackgroundService
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, GatewayClientConnection>> _clientsBySession = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ServerWelcome>> _pendingWelcomes = new(StringComparer.Ordinal);
 
+    private readonly string[] _workerIds;
     private IMessageBus? _incoming;
     private IMessageBus? _outgoing;
+    private IReadOnlyDictionary<string, IMessageBus> _outgoingByWorker = new Dictionary<string, IMessageBus>(StringComparer.Ordinal);
     private IpcSettings _ipcSettings;
     private long _publishFailures;
     private long _lastEngineMessageMs;
@@ -63,6 +66,11 @@ public sealed class GatewayIpcService : BackgroundService
             // several gateways can share one worker (stage-2 transport half).
             GatewayId: _config["Gateway:Id"] ?? ""
         );
+
+        _workerIds = (_config["Ipc:WorkerIds"] ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
 
         // Recommend >= 3x the engine heartbeat (default 5000) - see deployment.md.
         _readinessMaxSilenceMs = int.TryParse(_config["Ipc:ReadinessMaxSilenceMs"], out var w) ? Math.Max(1, w) : 15000;
@@ -142,21 +150,38 @@ public sealed class GatewayIpcService : BackgroundService
     public ValueTask PublishAudienceEventAsync(Envelope env, CancellationToken cancellationToken)
         => PublishAsync(env, cancellationToken);
 
+    public string? RouteWorker(string sessionId)
+        => _workerIds.Length == 0 ? null : RoomAffinity.Assign(sessionId, _workerIds);
+
     private ValueTask PublishAsync(Envelope env, CancellationToken cancellationToken)
     {
-        if (_outgoing == null)
+        if (_workerIds.Length == 0)
         {
-            throw new InvalidOperationException("Outgoing bus not ready.");
+            if (_outgoing == null)
+            {
+                throw new InvalidOperationException("Outgoing bus not ready.");
+            }
+
+            return SafePublishAsync(env, cancellationToken);
         }
 
-        return SafePublishAsync(env, cancellationToken);
+        var workerId = RouteWorker(env.SessionId);
+        if (workerId is null || !_outgoingByWorker.TryGetValue(workerId, out var outgoing))
+        {
+            throw new InvalidOperationException($"No engine channel for session '{env.SessionId}'.");
+        }
+
+        return SafePublishToAsync(outgoing, env, cancellationToken);
     }
 
     private async ValueTask SafePublishAsync(Envelope env, CancellationToken cancellationToken)
+        => await SafePublishToAsync(_outgoing!, env, cancellationToken);
+
+    private async ValueTask SafePublishToAsync(IMessageBus outgoing, Envelope env, CancellationToken cancellationToken)
     {
         try
         {
-            await _outgoing!.PublishAsync(env, cancellationToken);
+            await outgoing.PublishAsync(env, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -170,10 +195,31 @@ public sealed class GatewayIpcService : BackgroundService
     {
         var endpoints = IpcEndpointBuilder.Build(_ipcSettings);
         _incoming = IpcMessageBusFactory.CreateServer(_ipcSettings.Transport, endpoints.EngineToGateway);
-        _outgoing = IpcMessageBusFactory.CreateClient(_ipcSettings.Transport, endpoints.GatewayToEngine);
 
-        _logger.LogInformation("Gateway IPC started: transport={Transport} eng->gw={EngToGwUds} gw->eng={GwToEngUds}",
-            _ipcSettings.Transport, endpoints.EngineToGateway.UnixSocketPath, endpoints.GatewayToEngine.UnixSocketPath);
+        if (_workerIds.Length == 0)
+        {
+            _outgoing = IpcMessageBusFactory.CreateClient(_ipcSettings.Transport, endpoints.GatewayToEngine);
+        }
+        else
+        {
+            var outgoingByWorker = new Dictionary<string, IMessageBus>(StringComparer.Ordinal);
+            foreach (var workerId in _workerIds)
+            {
+                var workerEndpoints = IpcEndpointBuilder.Build(_ipcSettings with { WorkerId = workerId });
+                outgoingByWorker[workerId] = IpcMessageBusFactory.CreateClient(
+                    _ipcSettings.Transport,
+                    workerEndpoints.GatewayToEngine);
+            }
+
+            _outgoingByWorker = outgoingByWorker;
+        }
+
+        _logger.LogInformation(
+            "Gateway IPC started: transport={Transport} eng->gw={EngToGwUds} gw->eng={GwToEngUds} workerIds={WorkerIds}",
+            _ipcSettings.Transport,
+            endpoints.EngineToGateway.UnixSocketPath,
+            endpoints.GatewayToEngine.UnixSocketPath,
+            string.Join(",", _workerIds));
 
         await foreach (var env in _incoming.SubscribeAsync(stoppingToken))
         {
@@ -243,7 +289,17 @@ public sealed class GatewayIpcService : BackgroundService
         }
 
         if (_incoming != null) await _incoming.DisposeAsync();
-        if (_outgoing != null) await _outgoing.DisposeAsync();
+        if (_outgoing != null)
+        {
+            await _outgoing.DisposeAsync();
+        }
+
+        foreach (var outgoing in _outgoingByWorker.Values)
+        {
+            await outgoing.DisposeAsync();
+        }
+
+        _outgoingByWorker = new Dictionary<string, IMessageBus>(StringComparer.Ordinal);
         await base.StopAsync(cancellationToken);
     }
 }

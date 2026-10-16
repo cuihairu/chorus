@@ -61,6 +61,7 @@ public sealed class SessionActor : IAsyncDisposable
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _runCts;
     private Task? _runTask;
+    private int _disposed;
 
     public string SessionId { get; }
     public long TickId { get; private set; }
@@ -802,6 +803,11 @@ public sealed class SessionActor : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         await StopAsync().ConfigureAwait(false);
         _game.Dispose();
     }
