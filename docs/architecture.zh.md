@@ -7,11 +7,11 @@
 这篇回答三个问题：Chorus 怎么分层、**为什么这么选择**（以及放弃了什么替代方案）、这些选择在什么约束下成立。
 细节文档各管一段，这里只做地图与决策理由：
 
-- 进程拓扑与组件索引：[当前架构总览](./design/architecture-overview.md)
-- 组件图与深挖设计：[架构设计](./design/architecture.md)、[帧同步设计](./design/frame-sync.md)、
-  [IPC 设计](./design/ipc.md)、[进程拓扑](./design/process-topology.md)
-- 逐条决策记录（供复核）：[决策记录](./decisions.md)
-- 能力使用说明：[对战](./guide/battle.md)、[匹配](./guide/matchmaking.md)、[排行榜](./guide/leaderboard.md)
+- 进程拓扑与组件索引：[当前架构总览](./design/architecture-overview.zh.md)
+- 组件图与深挖设计：[架构设计](./design/architecture.zh.md)、[帧同步设计](./design/frame-sync.zh.md)、
+  [IPC 设计](./design/ipc.zh.md)、[进程拓扑](./design/process-topology.zh.md)
+- 逐条决策记录（供复核）：[决策记录](./decisions.zh.md)
+- 能力使用说明：[对战](./guide/battle.zh.md)、[匹配](./guide/matchmaking.zh.md)、[排行榜](./guide/leaderboard.zh.md)
 
 ## 分层与模块划分
 
@@ -47,7 +47,7 @@ flowchart LR
 
 > 为什么先做单进程：运维面最小（一个进程、无 IPC），压测表明数百房间量级单 worker 足够
 > （todo.md:156：800 房间 + 30k rps 签名事件，`ingested==applied==45287`，峰值 CPU 27.6）。
-> 拆分的触发条件与路线见 [进程拓扑](./design/process-topology.md) §4。
+> 拆分的触发条件与路线见 [进程拓扑](./design/process-topology.zh.md) §4。
 
 ## 数据流（一条事件的一生）
 
@@ -78,7 +78,7 @@ flowchart LR
 - **理由**：观众互动（弹幕/礼物）是低频、可乱序、可丢的社交信号，不是竞技输入；锁帧（等最慢端）
   会让一个卡顿观众的客户端拖慢全场，而直播场景本来就要容忍秒级互动延迟。
 - **被放弃的替代**：帧锁定 / lockstep（对输入频率敏感、要求全员在线语义）；客户端权威 + 服务器转发
-  （无法做排行、反作弊等权威判定）。详见 [帧同步设计](./design/frame-sync.md)。
+  （无法做排行、反作弊等权威判定）。详见 [帧同步设计](./design/frame-sync.zh.md)。
 - **成立约束**：互动延迟可容忍 ≥ 一个 tick + 投递时间；单房间不是竞技级（毫秒级）判定需求。
 
 ### 2. 会话状态只在引擎，网关无状态
@@ -95,7 +95,7 @@ flowchart LR
 
 - **决策**：listener 代码沉到共享库（face），进程边界后置；现在两种形态都可用。
 - **理由**：进程拆分是运维成本，不是功能；先切逻辑边界（face），物理拆分等负载证据。
-  触发条件与决策记录见 [进程拓扑](./design/process-topology.md) §4、[决策记录](./decisions.md) D5。
+  触发条件与决策记录见 [进程拓扑](./design/process-topology.zh.md) §4、[决策记录](./decisions.zh.md) D5。
 - **被放弃的替代**：day-1 三进程（多两跳延迟与运维面，压测前无收益）；
   永远单进程（单点容量上限，无法水平扩接入面）。
 
@@ -106,9 +106,9 @@ flowchart LR
 - **理由**：同机拆分的主路径是 UDS（内核直连，无序列化框架开销面）；JSON 信封让协议 record
   直接复用（`Chorus.Protocol` 一套消息定义走 WS 和 IPC 两张网）；长度前缀自描述、无框架依赖。
 - **被放弃的替代**：gRPC（多一层代码生成与版本耦合，消息体已有 record 契约）；
-  共享内存环形缓冲（延迟最优但复杂度高，评估后暂不实现，见 [共享内存评估](./design/shared-memory-transport.md)）。
+  共享内存环形缓冲（延迟最优但复杂度高，评估后暂不实现，见 [共享内存评估](./design/shared-memory-transport.zh.md)）。
 - **成立约束**：单机/同 pod 部署；跨机部署走 TCP/HTTP 传输（延迟与吞吐预算需自行评估）。
-  通道细节见 [IPC 设计](./design/ipc.md)。
+  通道细节见 [IPC 设计](./design/ipc.zh.md)。
 
 ### 5. 无数据库：内存态 + 快照恢复缝（而不是持久化存储）
 
@@ -117,8 +117,8 @@ flowchart LR
 - **理由**：直播互动局的生存期 ≈ 直播场次的生存期，跨重启续局不是当前需求；去掉存储依赖后
   部署面、故障模式、延迟都显著简化。
 - **被放弃的替代**：内置 SQLite/Redis 持久化（每次 tick 的写放大与恢复复杂度，
-  换来当前不需要的续局能力）。方案对比见 [快照恢复](./design/snapshot-restore.md)（方案 A 已落地）。
-- **成立约束**：进程重启 = 局终止（房间榜可由模块恢复路径重建，见 [排行榜](./guide/leaderboard.md)）；
+  换来当前不需要的续局能力）。方案对比见 [快照恢复](./design/snapshot-restore.zh.md)（方案 A 已落地）。
+- **成立约束**：进程重启 = 局终止（房间榜可由模块恢复路径重建，见 [排行榜](./guide/leaderboard.zh.md)）；
   需要跨重启结算的产品要在外部自行落地。
 
 ### 6. 平台接入 fail-closed 验签路由（而不是宽松接入）
@@ -128,7 +128,7 @@ flowchart LR
 - **理由**：ingress 是公网回调面，伪造事件的代价（刷分/刷排行）直接落到游戏经济上。
 - **被放弃的替代**：无验签直接收（任何人都可写事件）；统一网关验签（平台签名算法各不相同，
   强行归一会逼出共享密钥反模式）。决策记录 D2–D4。
-- **成立约束**：新增平台必须自带验证器与映射器（模板见 [平台适配器契约](./reference/adapter-contract.md)）。
+- **成立约束**：新增平台必须自带验证器与映射器（模板见 [平台适配器契约](./reference/adapter-contract.zh.md)）。
 
 ### 7. 游戏规则收敛到 IGameModule（而不是写死在引擎）
 
@@ -138,13 +138,13 @@ flowchart LR
   （模块可以无引擎单测，参考 `Chorus.SampleGame`）。
 - **被放弃的替代**：引擎内 switch 玩法类型（每次新玩法改引擎核心）；
   脚本化玩法（热更灵活但失去编译期契约与 fail-closed 恢复语义）。
-- 写法与边界见 [游戏模块](./guide/game-module.md)。
+- 写法与边界见 [游戏模块](./guide/game-module.zh.md)。
 
 ### 8. 排行榜：替换式投影 + 查询分离（而不是实时聚合）
 
 - **决策**：房间/单局榜由引擎侧模块以**替换**语义投影权威分（`UpsertScore`，天然幂等）；
   全局/周期榜走**幂等增量**（`AddDelta`，sourceId 台账去重），留给异步聚合方；查询独立快照、
-  冻结即封榜。存储在 `src/Chorus.Data/Leaderboard.cs:40`，读写路径见 [排行榜](./guide/leaderboard.md)。
+  冻结即封榜。存储在 `src/Chorus.Data/Leaderboard.cs:40`，读写路径见 [排行榜](./guide/leaderboard.zh.md)。
 - **理由**：实时分本来就在会话权威状态里，重复投影不会重复加分；增量台账则保证重放安全。
 - **被放弃的替代**：单一累加 API（房间榜重复投影会翻倍，增量榜无去重）；
   每次查询实时重算（查询代价随参与者数线性涨，且名次会因并发事件抖动）。
@@ -170,13 +170,13 @@ flowchart LR
 - **网关快照分发并发化**：eng→gw 单 socket + 单锁串行分发，2.65M 快照下丢帧由 resync 补齐（架构级待办）。
 - **resync 重放限界**：重放总量无请求级上限，与快照洪流互相放大（架构级待办）。
 - **排行榜 `AddDelta` 台账无界**：每榜每 sourceId 一条去重记录，长周期高频源会增长内存；
-  实时投影一律用 `UpsertScore`（见 [排行榜](./guide/leaderboard.md) 边界）。
-- **匹配无宿主接线**：`Matchmaker` 是库级能力，join/开局的产品语义未定（见 [匹配](./guide/matchmaking.md) 边界）。
+  实时投影一律用 `UpsertScore`（见 [排行榜](./guide/leaderboard.zh.md) 边界）。
+- **匹配无宿主接线**：`Matchmaker` 是库级能力，join/开局的产品语义未定（见 [匹配](./guide/matchmaking.zh.md) 边界）。
 
 ## 相关页面
 
-- [当前架构总览](./design/architecture-overview.md)（进程拓扑与组件索引）
-- [架构设计](./design/architecture.md) / [帧同步设计](./design/frame-sync.md) / [IPC 设计](./design/ipc.md)
-- [对战](./guide/battle.md) / [匹配](./guide/matchmaking.md) / [排行榜](./guide/leaderboard.md)
-- [决策记录](./decisions.md) / [接口参考](./reference/api.md)
+- [当前架构总览](./design/architecture-overview.zh.md)（进程拓扑与组件索引）
+- [架构设计](./design/architecture.zh.md) / [帧同步设计](./design/frame-sync.zh.md) / [IPC 设计](./design/ipc.zh.md)
+- [对战](./guide/battle.zh.md) / [匹配](./guide/matchmaking.zh.md) / [排行榜](./guide/leaderboard.zh.md)
+- [决策记录](./decisions.zh.md) / [接口参考](./reference/api.zh.md)
 

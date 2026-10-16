@@ -1,376 +1,380 @@
-# Chorus（原 Cohort）项目分析与改进建议 —— 外部评审归档
+<p align="center">
+  English | <a href="review-2026-10-12-chatgpt.zh.md">简体中文</a>
+</p>
 
-> 来源：https://chatgpt.com/s/t_6acc63665e7c81919b2d3f5e416c6d0b
-> 抓取日期：2026-10-12（分享页 HTML flight 流提取，已去重与解转义）
-> 性质：**外部建议，非本仓事实**。逐条落地情况见本文末尾「落地跟踪」；实现以本仓测试与门禁为准。
-> 处置：先更新文档（本文件 + README 边界章节 + todo.md），再按阶段一→四执行。
+# Chorus (formerly Cohort) Project Analysis and Improvement Suggestions — External Review Archive
+
+> Source: https://chatgpt.com/s/t_6acc63665e7c81919b2d3f5e416c6d0b
+> Scrape date: 2026-10-12 (extracted from the share page HTML flight stream, deduplicated and unescaped)
+> Nature: **external suggestions, not facts of this repo**. For the landing status of each item, see "Landing Tracking" at the end of this document; implementation is governed by this repo's tests and gates.
+> Disposition: first update the docs (this file + README boundaries section + todo.md), then execute in the order phase one → four.
 >
-> **时效说明（2026-10-13 审计）**：本文正文中的问题断言是**评审时（2026-10-12）的状态**，多条已被阶段一/二修复（如去重原子化 78f2597、反压有界邮箱 5592d62、ACK 安全 499f01c、Tick 去阻塞发送 df71d26、协议版本化 a5f23b8、空闲回收 362b435、默认值 66、AllowAll fail-closed def21d2 等）。正文保留评审时原貌不改写，**以「落地跟踪」表与代码为准**。
+> **Timeliness Note (2026-10-13 Audit)**: the problem assertions in the main body of this document are the **state at review time (2026-10-12)**; many have already been fixed by phases one/two (e.g. deduplication atomicity 78f2597, backpressure bounded mailbox 5592d62, ACK safety 499f01c, Tick de-blocking send df71d26, protocol versioning a5f23b8, idle reclamation 362b435, default value 66, AllowAll fail-closed def21d2, etc.). The main body keeps the original review-time appearance without rewriting; **the "Landing Tracking" table and the code prevail**.
 
 ---
 
 
 **Chorus — Live Interactive Game Framework**
 
-面向直播互动游戏的实时服务端框架
+A real-time server framework for live interactive games
 
-将弹幕、礼物、点赞、关注等外部事件统一转换成游戏输入，由服务器执行权威逻辑，再将状态同步给主播端或直播伴侣客户端。
+It uniformly converts external events such as danmaku, gifts, likes, and follows into game inputs, has the server execute authoritative logic, and then synchronizes the state to the streamer client or the streaming companion client.
 
-### 1.1 Chorus 解决的核心问题
+### 1.1 The Core Problem Chorus Solves
 
-直播互动游戏与传统多人在线游戏不同。
+Live interactive games differ from traditional multiplayer online games.
 
-传统多人游戏主要处理玩家主动输入，例如移动、攻击、技能释放。直播互动游戏则有大量来自外部平台的事件：
+Traditional multiplayer games mainly handle active player input, such as movement, attacks, and skill casts. Live interactive games, on the other hand, have a large number of events coming from external platforms:
 
-- 观众发送弹幕或特定口令。
-- 观众赠送礼物，可能触发数值或技能。
-- 点赞、关注等高频事件影响游戏进度。
-- 多位主播或多个直播间可能组成同一场对抗。
-- 外部事件可能突发、重复、延迟或乱序到达。
+- Viewers send danmaku or specific command phrases.
+- Viewers send gifts, which may trigger stats or skills.
+- High-frequency events such as likes and follows affect game progress.
+- Multiple streamers or multiple live rooms may form the same battle.
+- External events may arrive in bursts, duplicated, delayed, or out of order.
 
-因此，Chorus 的核心价值不是 WebSocket 本身，也不是普通的游戏循环，而是把这类不稳定的外部事件转化成**有顺序、有边界、可观测、可恢复的游戏输入**。
+Therefore, the core value of Chorus is not WebSocket itself, nor an ordinary game loop, but converting such unstable external events into **ordered, bounded, observable, and recoverable game inputs**.
 
-### 1.2 产品边界
+### 1.2 Product Boundaries
 
-| 应该属于 Chorus | 不应该成为 Chorus 的核心职责 |
+| Should belong to Chorus | Should not become a core responsibility of Chorus |
 |--------|--------|
-| 直播平台事件适配接口 | 完整直播平台业务后台 |
-| 事件归一化、去重与背压 | 礼物支付、分成、商业结算 |
-| Session 与 Match 的运行机制 | 具体游戏玩法和美术内容 |
-| 服务端权威 Tick 和状态快照 | 通用 MMO 世界服务器 |
-| 客户端连接、ACK、重同步 | 完整直播伴侣客户端 |
-| 游戏模块扩展接口 | 强制依赖某个游戏引擎 |
+| Live platform event adapter interface | Full live platform business backend |
+| Event normalization, deduplication, and backpressure | Gift payment, revenue share, commercial settlement |
+| Session and Match runtime mechanics | Specific gameplay and art content |
+| Server-authoritative Tick and state snapshots | General-purpose MMO world server |
+| Client connections, ACK, resync | Full streaming companion client |
+| Game module extension interface | Forced dependency on a specific game engine |
 
-建议继续保持轻量框架定位，不要把 Chorus 扩展成包含账号、运营、支付、游戏编辑器和直播管理的综合平台。
+It is recommended to keep the lightweight framework positioning and not expand Chorus into a comprehensive platform covering accounts, operations, payments, a game editor, and live management.
 
-## 二、当前架构：已经搭出了什么？
+## 2. Current Architecture: What Has Been Built?
 
-从源码看，Chorus 已经有单体运行和拆分运行两条路径。
+Judging from the source code, Chorus already has two paths: monolith operation and split operation.
 
-### 默认单体模式
+### Default Monolith Mode
 
 **Platform Ingress**
 
-接收事件、验证、归一化、去重、阵营规则
+Receives events, validation, normalization, deduplication, faction rules
 
 **SessionManager → SessionActor**
 
-事件队列、Tick、客户端 ACK、状态同步
+Event queue, Tick, client ACK, state synchronization
 
 **GameModule**
 
-游戏规则、权威状态、快照生成
+Game rules, authoritative state, snapshot generation
 
 **WebSocket Client**
 
-Welcome、Snapshot、ACK、重连后的状态恢复
+Welcome, Snapshot, ACK, state recovery after reconnect
 
-依据：、。
+Basis: , .
 
-### 可选拆分模式
+### Optional Split Mode
 
 **Chorus.Gateway**
 
-公网 WebSocket、Ingress、客户端连接
+Public WebSocket, Ingress, client connections
 
 **Chorus.EngineHost**
 
-SessionActor、权威 Tick、GameModule
+SessionActor, authoritative Tick, GameModule
 
 **Chorus.Messaging**
 
-IPC Envelope、消息总线、UDS / Named Pipe / TCP / HTTP 传输
+IPC Envelope, message bus, UDS / Named Pipe / TCP / HTTP transports
 
-依据：、、。
+Basis: , , .
 
-### 架构评价
+### Architecture Assessment
 
-当前分层方向合理，尤其是：
+The current layering direction is reasonable, especially:
 
-- `IGameModule` 和 `IGameModuleFactory` 将玩法与运行框架分开。
-- `SessionActor` 以单消费者邮箱串行处理会话命令，降低会话内部的并发复杂度。
-- `IAudienceEventReducer` 为高峰事件合并提供了扩展点。
-- IPC 使用独立的 `Envelope`，允许后续替换进程通信方式。
-- 测试已经覆盖事件归并、Match 聚合、消息总线和 IPC 传输的一部分行为。
+- `IGameModule` and `IGameModuleFactory` separate gameplay from the runtime framework.
+- `SessionActor` serially processes session commands with a single-consumer mailbox, reducing intra-session concurrency complexity.
+- `IAudienceEventReducer` provides an extension point for merging peak events.
+- IPC uses an independent `Envelope`, allowing the process communication method to be replaced later.
+- Tests already cover part of the behaviors of event merging, Match aggregation, message bus, and IPC transport.
 
-但要注意：**有 Actor 不等于整个系统已经实现了可靠的 Tick；有 MatchStateStore 也不等于已经实现了权威 Match 引擎。** 这两个区别是当前架构审查的重点。
+But note: **having Actors does not mean the whole system has achieved reliable Tick; having MatchStateStore does not mean an authoritative Match engine has been achieved.** These two distinctions are the focus of the current architecture review.
 
-## 三、需要优先处理的源码问题
+## 3. Source Code Problems That Need Priority Handling
 
-以下问题是根据当前仓库公开源码检查得出的，不是单纯根据设计文档推测。
+The following problems are derived from inspecting the current repository's public source code, not merely inferred from design documents.
 
-### P0：应该优先修复
+### P0: Should Be Fixed First
 
-(P0) **1\. 慢客户端可能拖慢整个 Session**
+(P0) **1\. Slow clients may drag down the entire Session**
 
-在 `SessionActor.OnTickAsync()` 中，服务端逐个调用客户端的 `SendSnapshotAsync()`，并使用 `await` 等待发送完成。`WsSessionClient` 的发送路径包含 WebSocket 网络 I/O。
+In `SessionActor.OnTickAsync()`, the server calls each client's `SendSnapshotAsync()` one by one and uses `await` to wait for the send to complete. The send path of `WsSessionClient` includes WebSocket network I/O.
 
-这意味着，某个客户端网络阻塞、发送锁长时间未获得或写入速度极慢时，Actor 可能无法按预期推进下一次 Tick。设计文档中的“慢端不拖累全局”原则还没有通过发送路径彻底落实。
+This means that when a client's network is blocked, its send lock is not acquired for a long time, or its write speed is extremely slow, the Actor may fail to advance the next Tick as expected. The "slow end does not drag down the whole" principle in the design document has not been thoroughly implemented through the send path.
 
-**建议改法：**
+**Suggested fixes:**
 
-- Actor 只负责生成权威快照和更新状态，不直接等待每个客户端的网络发送。
-- 为每个客户端建立有界出站队列，或者等效的最新快照投递机制。
-- 对慢客户端合并或覆盖过期快照，保留最新的权威状态。
-- 单客户端的发送失败、断连和超时，不得阻塞其他客户端。
-- Gateway 拆分模式也需要检查 `DispatchSnapshotAsync()` 的逐个 `await` 发送逻辑。
+- The Actor is only responsible for generating authoritative snapshots and updating state, and does not directly wait for each client's network send.
+- Establish a bounded outbound queue per client, or an equivalent latest-snapshot delivery mechanism.
+- Merge or overwrite stale snapshots for slow clients, keeping the latest authoritative state.
+- A single client's send failure, disconnect, or timeout must not block other clients.
+- The Gateway split mode also needs to check the per-client `await` send logic in `DispatchSnapshotAsync()`.
 
-验收条件：人为制造一个持续慢写的客户端，其他客户端和服务端 Tick 仍能保持预定运行节奏。
+Acceptance criteria: artificially create a continuously slow-writing client; the other clients and the server-side Tick can still maintain the intended operating cadence.
 
-源码：、、。
+Source code: , , .
 
-(P0) **2\. Actor 邮箱与待调度事件队列都是无界的**
+(P0) **2\. Both the Actor mailbox and the scheduled event queue are unbounded**
 
-`SessionActor` 使用 `Channel.CreateUnbounded<ICommand>()`，而事件又按 Tick 累积在 `_scheduledByTick` 中。`MaxEventsPerTick` 只限制归并后的单 Tick 输出，不能限制邮箱中等待处理的命令总数，也不能限制单次调度前的原始事件数量。
+`SessionActor` uses `Channel.CreateUnbounded<ICommand>()`, while events accumulate by Tick in `_scheduledByTick`. `MaxEventsPerTick` only limits the merged single-Tick output; it cannot limit the total number of commands waiting in the mailbox, nor the number of raw events before a single scheduling.
 
-在突发事件量长期高于处理能力时，内存可能持续增长；等到执行 Tick 时，归并本身也可能消耗大量 CPU 和内存。
+When the burst event volume stays above the processing capacity for a long time, memory may keep growing; and by the time the Tick executes, the merging itself may also consume large amounts of CPU and memory.
 
-**建议改法：**
+**Suggested fixes:**
 
-- 使用有界邮箱，明确满载时的处理语义。
-- 区分普通控制命令和高频观众事件，避免事件洪峰挤压断连等控制操作。
-- 对事件缓冲设置每 Session 总容量、每 Tick 容量和最大等待时长。
-- 只对业务允许的事件执行合并、降采样或丢弃；礼物等有业务价值的事件不能无声丢弃。
-- 记录队列深度、拒绝数、丢弃数、合并数和最老事件等待时间。
+- Use a bounded mailbox and define the semantics when it is full.
+- Distinguish ordinary control commands from high-frequency audience events, so event floods do not crowd out control operations such as disconnects.
+- Set a per-Session total capacity, a per-Tick capacity, and a maximum wait duration for the event buffer.
+- Only perform merging, downsampling, or dropping on events the business allows; events with business value such as gifts must not be dropped silently.
+- Record queue depth, rejected count, dropped count, merged count, and the oldest event's wait time.
 
-验收条件：持续输入速率超过消费能力时，内存和队列深度仍有硬上限，并且过载行为可以从日志和指标中解释。
+Acceptance criteria: when the sustained input rate exceeds the consumption capacity, memory and queue depth still have a hard upper bound, and the overload behavior can be explained from logs and metrics.
 
-源码：、。
+Source code: , .
 
-(P0) **3\. 事件归并可能把事件算到错误阵营**
+(P0) **3\. Event merging may count events into the wrong faction**
 
-这是当前代码中一个具体的数据正确性问题。
+This is a concrete data correctness problem in the current code.
 
-`DefaultAudienceEventReducer` 在归并点赞时按 `UserId` 分组，归并礼物时按 `(UserId, GiftId)` 分组；生成归并事件时，却把整个输入列表中第一个事件的 `MatchId` 和 `FactionId` 用作归并结果的上下文。
+`DefaultAudienceEventReducer` groups by `UserId` when merging likes, and by `(UserId, GiftId)` when merging gifts; but when generating the merged event, it uses the first event's `MatchId` and `FactionId` from the entire input list as the context of the merged result.
 
-如果同一个 Tick 中存在不同阵营的事件，或者用户的事件上下文发生变化，归并结果可能把原本属于不同阵营的数量合并后全部记入第一个事件的阵营。
+If events of different factions exist in the same Tick, or a user's event context changes, the merged result may merge counts that originally belonged to different factions and record them all into the first event's faction.
 
-**建议改法：**
+**Suggested fixes:**
 
-- 点赞至少按 `(SessionId, MatchId, FactionId, UserId)` 分组。
-- 礼物至少按 `(SessionId, MatchId, FactionId, UserId, GiftId)` 分组。
-- 如果同一组中还可能存在不同的业务规则或平台语义，则继续将相关字段纳入分组键。
-- 为合并后的事件明确记录来源事件数量及计数口径。
-- 为超过预算时未能输出的归并组正确统计丢弃量。
+- Group likes at least by `(SessionId, MatchId, FactionId, UserId)`.
+- Group gifts at least by `(SessionId, MatchId, FactionId, UserId, GiftId)`.
+- If different business rules or platform semantics may still exist within the same group, continue incorporating the relevant fields into the grouping key.
+- Explicitly record the number of source events and the counting caliber for merged events.
+- Correctly count the dropped amount for merged groups that could not be output when exceeding the budget.
 
-验收条件：一个 Tick 内混合 red/blue 两个阵营的点赞和礼物，归并前后的各阵营计数必须分别守恒。
+Acceptance criteria: within one Tick mixing likes and gifts of the red/blue two factions, the per-faction counts must be conserved separately before and after merging.
 
-源码：。
+Source code: .
 
-(P0) **4\. 平台事件验证器默认允许所有事件通过**
+(P0) **4\. The platform event verifier allows all events through by default**
 
-单体服务和 Gateway 当前都注册了 `AllowAllPlatformEventVerifier`。这适合作为本地开发桩，但不适合直接承担生产环境的公网事件验证职责。
+Both the monolith service and the Gateway currently register `AllowAllPlatformEventVerifier`. This is suitable as a local development stub, but not suitable for directly undertaking the public-network event verification responsibility of the production environment.
 
-**建议改法：**
+**Suggested fixes:**
 
-- 生产环境没有真实验证器时，默认拒绝外部 Ingress，而不是默认放行。
-- 为每个平台定义签名、时间戳、重放保护和必要的来源校验。
-- 将开发用 `test` 适配器与生产适配器分开注册。
-- 为 Ingress 请求体大小、请求频率和处理超时设置限制。
-- 不要把“接口存在”当成“平台接入安全已经完成”。
+- When the production environment has no real verifier, reject external Ingress by default, rather than allowing it through by default.
+- Define signatures, timestamps, replay protection, and necessary origin validation for each platform.
+- Register the development `test` adapter separately from the production adapter.
+- Set limits on Ingress request body size, request frequency, and processing timeout.
+- Do not treat "the interface exists" as "platform integration security is complete".
 
-验收条件：生产配置缺少验证器或密钥时，外部 Ingress 不能接收未验证事件。
+Acceptance criteria: when the production configuration lacks a verifier or keys, external Ingress cannot receive unverified events.
 
-源码：、、。
+Source code: , , .
 
-(P0) **5\. ACK 没有验证单调性和服务端 Tick 上界**
+(P0) **5\. ACK does not validate monotonicity and the server-side Tick upper bound**
 
-当前 `SessionActor` 收到 ACK 后直接更新 `LastAckTickId`，没有在这一入口拒绝超出当前 `TickId` 的 ACK，也没有要求 ACK 不低于已记录的进度。
+Currently, after receiving an ACK, `SessionActor` directly updates `LastAckTickId`; it neither rejects ACKs beyond the current `TickId` at this entry point, nor requires the ACK to be no lower than the recorded progress.
 
-如果客户端意外发错数据，或者恶意客户端提交未来 Tick，服务端可能错误地认为它已追上，从而影响落后判定和重同步。
+If the client accidentally sends wrong data, or a malicious client submits a future Tick, the server may mistakenly believe it has caught up, thereby affecting lag determination and resync.
 
-**建议改法：**
+**Suggested fixes:**
 
-- 拒绝负数或大于服务端当前 Tick 的 ACK。
-- 不允许 ACK 进度倒退。
-- ACK 必须绑定当前有效的 Session 和 Client 身份。
-- 区分非法 ACK、重复 ACK、过期 ACK 和正常 ACK，并计入指标。
+- Reject negative ACKs or ACKs greater than the server's current Tick.
+- Do not allow ACK progress to go backwards.
+- ACK must be bound to the currently valid Session and Client identity.
+- Distinguish illegal ACKs, duplicate ACKs, stale ACKs, and normal ACKs, and count them into metrics.
 
-验收条件：提交未来 Tick、倒退 Tick、其他客户端身份的 ACK 均不能让服务端错误更新同步进度。
+Acceptance criteria: submitting future Ticks, backwards Ticks, or ACKs with another client's identity must all fail to make the server erroneously update synchronization progress.
 
-源码：、。
+Source code: , .
 
-### P1：下一轮应解决的运行机制问题
+### P1: Runtime Mechanics Problems to Solve in the Next Round
 
-**6\. Tick 调度不能只依赖 PeriodicTimer 的触发**
+**6\. Tick scheduling cannot rely solely on PeriodicTimer triggering**
 
-当前 `SessionActor` 使用 `PeriodicTimer` 驱动 Tick。由于 Tick 处理中包含事件归并、游戏逻辑、快照生成和网络发送，一旦处理时间超过配置周期，实际逻辑推进就可能落后于墙钟。
+Currently `SessionActor` uses `PeriodicTimer` to drive Tick. Since Tick processing includes event merging, game logic, snapshot generation, and network sending, once the processing time exceeds the configured period, the actual logic advancement may fall behind the wall clock.
 
-`TickId` 仍然递增，并不意味着每个 Tick 都准时发生。
+`TickId` still incrementing does not mean every Tick happens on time.
 
-建议明确使用单调时钟计算 Tick 截止时间，并定义超时策略：记录超时、限制过载工作、必要时降级或暂停该 Session 的接收，而不是无限补跑 Tick。不要为了追赶时间而无上限地连续执行逻辑。
+It is recommended to explicitly use a monotonic clock to compute Tick deadlines and define a timeout policy: record timeouts, limit overload work, and downgrade or pause that Session's intake when necessary, rather than endlessly catching up on Ticks. Do not execute logic continuously without upper bound in order to catch up with time.
 
-另外，`SessionConfig` 默认 `TickDurationMs = 100`，即每秒 10 次逻辑推进；文档中推荐的 50–66ms 是另一组起始建议。应统一文档与默认配置，并通过压测确定最终参数。
+In addition, `SessionConfig` defaults `TickDurationMs = 100`, i.e. 10 logic advancements per second; the 50–66ms recommended in the docs is another set of starting suggestions. The docs and the default configuration should be unified, and the final parameters should be determined through load testing.
 
-源码：、。
+Source code: , .
 
-**7\. Match 状态虽然有锁保护，但还没有统一的 Match 执行语义**
+**7\. Match state is lock-protected, but there is no unified Match execution semantics yet**
 
-`SampleGameModuleFactory` 为多个 Session 共享一个 `MatchStateStore`，并使用锁保护聚合数据。因此，不能简单说它存在无保护的并发写入。
+`SampleGameModuleFactory` shares one `MatchStateStore` across multiple Sessions and uses locks to protect the aggregated data. Therefore, one cannot simply say it has unprotected concurrent writes.
 
-真正的问题是：每个 Session 有自己的 `SessionActor` 和 `TickId`，共享 Match 状态却会被这些 Session 在不同时间推进。当前快照可能反映某些 Session 已处理的事件，而其他 Session 对应 Tick 的事件尚未处理。
+The real problem is: each Session has its own `SessionActor` and `TickId`, and the shared Match state is advanced by these Sessions at different times. The current snapshot may reflect events already processed by some Sessions, while events of the corresponding Tick for other Sessions have not yet been processed.
 
-对纯展示型的点赞总数，这可能可以接受；但如果 Match 状态决定胜负、阵营技能、结算或公平性，就需要更明确的权威顺序。
+For purely display-type total likes, this may be acceptable; but if Match state determines win/loss, faction skills, settlement, or fairness, a more explicit authoritative ordering is needed.
 
-建议区分两种需求：
+It is recommended to distinguish two requirements:
 
-- **弱一致的展示聚合**：保留共享状态仓库，定义它只用于统计展示，并明确其不是同一 Match Tick 的原子快照。
-- **权威对抗状态**：增加 `MatchActor` 或等效的唯一权威执行者，由它排序并处理跨 Session 的 Match 事件。
+- **Weakly consistent display aggregation**: keep the shared state store, define it as only for statistical display, and make clear it is not an atomic snapshot of the same Match Tick.
+- **Authoritative battle state**: add a `MatchActor` or an equivalent unique authoritative executor, which orders and processes cross-Session Match events.
 
-不建议现在就将所有 Session 都改造成 MatchActor；先明确游戏玩法对跨房间一致性的实际要求。
+It is not recommended to convert all Sessions into MatchActors now; first clarify the actual requirements of the gameplay for cross-room consistency.
 
-源码：、。
+Source code: , .
 
-**8\. 去重检查不是原子操作，且发生在事件成功投递之前**
+**8\. The deduplication check is not atomic, and it happens before the event is successfully delivered**
 
-`EventDeduplicator.TryMark()` 先查询缓存，再写入缓存。两个并发请求携带相同事件 ID 时，存在同时通过查询的可能。
+`EventDeduplicator.TryMark()` first queries the cache, then writes to the cache. When two concurrent requests carry the same event ID, there is a possibility that both pass the query simultaneously.
 
-此外，Gateway 先标记去重，再发布 IPC 消息。如果发布失败，后续重试仍可能被判定为重复，导致事件没有真正进入 Engine，却无法通过相同事件 ID 重试。
+In addition, the Gateway marks deduplication first, then publishes the IPC message. If publishing fails, subsequent retries may still be judged as duplicates, causing the event to never actually enter the Engine while it cannot be retried with the same event ID.
 
-建议分阶段处理：
+It is recommended to handle this in phases:
 
-1. 将本地去重改为原子占位操作，消除并发重复进入。
-2. 为事件处理状态明确区分 `Received`、`Accepted`、`Applied` 和 `Failed`。
-3. 对需要可靠投递的事件，引入有界重试队列或持久化 Inbox；不要仅依靠内存缓存。
-4. 为事件定义平台级唯一 ID、去重范围和 TTL。
-5. 明确业务语义：接收成功不等于游戏逻辑已经应用。
+1. Change local deduplication to an atomic reservation operation to eliminate concurrent duplicate entry.
+2. Explicitly distinguish the event processing states `Received`, `Accepted`, `Applied`, and `Failed`.
+3. For events requiring reliable delivery, introduce a bounded retry queue or a persistent Inbox; do not rely solely on an in-memory cache.
+4. Define a platform-level unique ID, deduplication scope, and TTL for events.
+5. Clarify the business semantics: successful receipt does not mean the game logic has been applied.
 
-可靠投递和持久化不必一开始就做成复杂的消息平台，但接口语义应先设计正确。
+Reliable delivery and persistence do not have to be built as a complex messaging platform from the start, but the interface semantics should be designed correctly first.
 
-源码：、。
+Source code: , .
 
-**9\. MatchRegistry 当前输出的部分统计值是固定零值**
+**9\. Some statistics values currently output by MatchRegistry are fixed zeros**
 
-`MatchRegistry` 的 `GetDiagnostics()` 对 `UserCount`、`Likes`、`Gifts`、`Comments` 直接返回零。当前它实际追踪的是 Match 对应的 Session、Faction、事件总数和最后事件时间，而不是完整的玩法聚合统计。
+`MatchRegistry`'s `GetDiagnostics()` returns zero directly for `UserCount`, `Likes`, `Gifts`, `Comments`. What it currently actually tracks are the Sessions and Factions corresponding to the Match, the total event count, and the last event time, rather than complete gameplay aggregated statistics.
 
-这不是并发 Bug，但接口容易让使用者误以为这些字段是实时统计结果。
+This is not a concurrency bug, but the interface easily makes users mistakenly think these fields are real-time statistical results.
 
-建议二选一：
+It is recommended to choose one of two options:
 
-- 如果它只负责登记和诊断，就删除未实现的统计字段，或明确标记为不可用。
-- 如果需要展示真实统计，就让它读取真正的聚合状态，并统一去重、合并后的计数口径。
+- If it is only responsible for registration and diagnostics, delete the unimplemented statistical fields, or explicitly mark them as unavailable.
+- If real statistics need to be displayed, have it read the true aggregated state and unify the counting caliber after deduplication and merging.
 
-源码：。
+Source code: .
 
-**10\. Session 生命周期和客户端消息边界需要补齐**
+**10\. Session lifecycle and client message boundaries need to be completed**
 
-当前 `SessionManager` 提供创建和获取 Session 的机制，但没有看到完整的空闲 Session 回收策略。WebSocket 接入也没有在该入口中体现完整的客户端授权流程；接收消息的辅助代码没有设置明确的最大消息体大小。
+Currently `SessionManager` provides mechanisms for creating and getting Sessions, but no complete idle Session reclamation strategy is seen. The WebSocket access also does not reflect a complete client authorization flow at this entry point; the helper code for receiving messages does not set an explicit maximum message body size.
 
-建议增加：
+It is recommended to add:
 
-- Session 创建、启动、结束、销毁的明确状态。
-- 空闲超时、最大 Session 数量及回收策略。
-- WebSocket 消息体大小限制、ACK 频率限制和协议错误处理。
-- 生产环境的 Session 访问授权，防止未授权客户端加入任意会话。
-- 游戏模块抛出异常时的隔离、失败状态和恢复策略，避免单个异常让 Actor 任务无声退出。
+- Explicit states for Session creation, startup, termination, and destruction.
+- Idle timeout, maximum Session count, and reclamation strategy.
+- WebSocket message body size limits, ACK rate limiting, and protocol error handling.
+- Production-environment Session access authorization, to prevent unauthorized clients from joining arbitrary sessions.
+- Isolation, failure state, and recovery strategy when the game module throws exceptions, to avoid a single exception silently exiting the Actor task.
 
-源码：、。
+Source code: , .
 
-**11\. IPC 自动回退的行为需要验证**
+**11\. The IPC auto-fallback behavior needs verification**
 
-`IpcMessageBusFactory` 的服务端在自动模式下尝试 UDS 失败后可以回退到 Named Pipe，但客户端自动选择传输的逻辑主要根据操作系统是否支持 UDS 来决定。若服务端实际回退到了 Named Pipe，客户端仍可能尝试连接 UDS。
+In `IpcMessageBusFactory`, the server side in auto mode can fall back to Named Pipe after a UDS attempt fails, but the client-side transport auto-selection logic mainly decides based on whether the operating system supports UDS. If the server actually falls back to Named Pipe, the client may still try to connect via UDS.
 
-建议让双方协商或确定实际选中的传输方式，而不是各自独立推断。并补充 UDS 路径权限、遗留 Socket 文件、连接重试、断连恢复和消息体大小测试。
+It is recommended that both sides negotiate or determine the actually selected transport, rather than each inferring independently. Also add tests for UDS path permissions, legacy socket files, connection retry, disconnect recovery, and message body size.
 
-这是拆分模式的可靠性问题，优先级低于核心事件正确性，但在正式支持拆分部署前应修复。
+This is a reliability problem of the split mode, with priority lower than core event correctness, but it should be fixed before split deployment is formally supported.
 
-源码：。
+Source code: .
 
-## 四、事件处理模型应该怎样重新定义？
+## 4. How Should the Event Processing Model Be Redefined?
 
-这是 Chorus 最重要的领域模型。建议先明确每个事件的生命周期，再决定是否引入更多组件。
+This is the most important domain model of Chorus. It is recommended to first clarify the lifecycle of each event, and then decide whether to introduce more components.
 
-**1\. 接收 Received**
+**1\. Received**
 
-保留平台、原始事件 ID、接收时间和来源信息
+Retain the platform, raw event ID, receipt time, and source information
 
-**2\. 验证 Validated**
+**2\. Validated**
 
-签名、格式、来源、字段范围与事件类型校验
+Signature, format, origin, field range, and event type validation
 
-**3\. 去重与归一化 Accepted**
+**3\. Deduplication and Normalization Accepted**
 
-确定 Session、Match、Faction 和业务语义
+Determine the Session, Match, Faction, and business semantics
 
-**4\. 调度 Scheduled**
+**4\. Scheduled**
 
-根据明确的排序规则进入指定 Tick
+Enter the specified Tick according to explicit ordering rules
 
-**5\. 应用 Applied**
+**5\. Applied**
 
-游戏逻辑实际消费，产生权威状态变化
+The game logic actually consumes it, producing authoritative state changes
 
-**6\. 发布状态 Published**
+**6\. Published**
 
-生成快照、发送状态，并记录同步结果
+Generate snapshots, send state, and record synchronization results
 
-### 4.1 必须明确的事件字段
+### 4.1 Event Fields That Must Be Clarified
 
-建议在现有 `AudienceEvent` 基础上，逐步明确以下语义，不必一次性把所有字段都加入公共模型。
+It is recommended to gradually clarify the following semantics on top of the existing `AudienceEvent`; there is no need to add all fields to the public model at once.
 
-| 字段或概念 | 作用 |
+| Field or Concept | Purpose |
 |--------|--------|
-| `EventId` | 平台或适配器提供的稳定事件 ID |
-| `Platform` | 事件来源，用于去重和审计 |
-| `IngestTimeMs` | Chorus 收到事件的时间 |
-| `PlatformEventTime` | 可选，平台声明的事件时间 |
-| `SessionId` | 事件影响的游戏会话 |
-| `MatchId` / `FactionId` | 事件影响的对战与阵营 |
-| `ScheduledTickId` | 事件预计在哪个 Tick 生效 |
-| `AppliedTickId` | 事件实际被应用在哪个 Tick |
-| `ProcessingStatus` | 事件当前处理状态或结果 |
+| `EventId` | Stable event ID provided by the platform or adapter |
+| `Platform` | Event source, used for deduplication and audit |
+| `IngestTimeMs` | The time Chorus received the event |
+| `PlatformEventTime` | Optional; the event time declared by the platform |
+| `SessionId` | The game session the event affects |
+| `MatchId` / `FactionId` | The battle and faction the event affects |
+| `ScheduledTickId` | The Tick the event is expected to take effect in |
+| `AppliedTickId` | The Tick the event was actually applied in |
+| `ProcessingStatus` | The event's current processing status or result |
 
-`ScheduledTickId` 和 `AppliedTickId` 可以先作为内部调度记录，而不是立即暴露给所有平台适配器。
+`ScheduledTickId` and `AppliedTickId` can first serve as internal scheduling records, rather than being immediately exposed to all platform adapters.
 
-### 4.2 不要将所有事件都当作可合并事件
+### 4.2 Do Not Treat All Events as Mergable Events
 
-建议按语义区分：
+It is recommended to distinguish by semantics:
 
-- **可累计事件**：点赞次数、可叠加的礼物数量。
-- **不可随意丢弃的业务事件**：付费礼物、触发一次性的业务效果、需要审计的事件。
-- **表现型事件**：聊天弹幕展示、提示动画、短期通知。
-- **控制事件**：会话开始、结束、阵营变化、重连等。
+- **Accumulable events**: like counts, stackable gift quantities.
+- **Business events that must not be dropped casually**: paid gifts, one-shot business effects, events that need auditing.
+- **Presentational events**: chat danmaku display, notification animations, short-term notices.
+- **Control events**: session start, end, faction change, reconnect, etc.
 
-背压策略必须尊重业务语义。比如，点赞可以累计后一次结算，但两个不同用户触发的特殊技能不能简单当作相同事件合并。
+Backpressure strategies must respect business semantics. For example, likes can be accumulated and settled once, but special skills triggered by two different users cannot simply be merged as the same event.
 
-同时，归并后的事件需要有稳定的计数规则，否则服务端的总数、阵营分数和客户端展示可能出现不一致。
+At the same time, merged events need stable counting rules; otherwise the server's totals, faction scores, and client display may become inconsistent.
 
-## 五、同步架构：保留权威快照，但补齐恢复闭环
+## 5. Synchronization Architecture: Keep Authoritative Snapshots, but Close the Recovery Loop
 
-目前 Chorus 的同步模型是正确方向：服务器持续推进权威状态，客户端通过 ACK 汇报已应用进度，落后过多时接收强制快照。
+Chorus's current synchronization model is the right direction: the server keeps advancing the authoritative state, clients report applied progress via ACK, and receive forced snapshots when they fall too far behind.
 
-不过，快照本身不能替代完整的运行时恢复机制。
+However, snapshots by themselves cannot replace a complete runtime recovery mechanism.
 
-建议补充四项能力：
+It is recommended to add four capabilities:
 
-1. **快照版本**：包含协议版本、状态 Schema 版本和必要的游戏模块版本信息。
-2. **快照完整性**：限制快照大小，校验必要字段，并定义无法应用时的处理方式。
-3. **客户端重同步闭环**：客户端应用快照失败时必须能重新请求或重新连接，不能只依赖服务器不断重复推送。
-4. **状态发布隔离**：网络发送不阻塞权威逻辑；慢客户端可以跳过旧快照，但必须知道自己需要以最新权威状态重新对齐。
+1. **Snapshot version**: includes protocol version, state Schema version, and necessary game module version information.
+2. **Snapshot integrity**: limit snapshot size, validate necessary fields, and define the handling when it cannot be applied.
+3. **Client resync loop**: when a client fails to apply a snapshot it must be able to re-request or reconnect; it cannot rely solely on the server repeatedly pushing.
+4. **State publication isolation**: network sending does not block authoritative logic; slow clients may skip old snapshots, but must know they need to re-align to the latest authoritative state.
 
-这里有一个值得强调的区别：如果快照代表完整权威状态，那么慢客户端通常不需要收到每一个历史快照。可以合并旧快照，只保留最新的一份。但如果某些消息具有一次性业务语义，就必须通过独立的可靠事件通道处理，不能将其塞进可覆盖的快照队列。
+There is a distinction worth emphasizing here: if a snapshot represents complete authoritative state, then slow clients usually do not need to receive every historical snapshot. Old snapshots can be merged, keeping only the latest one. But if certain messages carry one-shot business semantics, they must be handled through an independent reliable event channel and cannot be stuffed into the overwritable snapshot queue.
 
-参考：、。
+Reference: , .
 
-## 六、项目更名：Cohort → Chorus 还没有彻底完成
+## 6. Project Rename: Cohort → Chorus Is Not Fully Complete
 
-我在新仓库的当前文件中确认，内部仍有多个 Cohort 标识，包括项目目录、程序集、解决方案、CI 工作流和文档。仓库改名和产品改名不是同一件事，建议先决定是否要做全量内部重命名。
+I confirmed in the current files of the new repo that there are still multiple Cohort identifiers internally, including the project directory, assemblies, solution, CI workflows, and documentation. Renaming the repository and renaming the product are not the same thing; it is recommended to first decide whether a full internal rename is needed.
 
-### 建议的处理清单
+### Suggested Handling Checklist
 
-### 更名收尾清单
+### Rename Wrap-Up Checklist
 
 /
 
-[复制检查清单]
+[Copy Checklist]
 
-### 是否要把所有 `Chorus.*` 也改成 `Chorus.*`？
+### Should all `Chorus.*` also be renamed to `Chorus.*`?
 
-我的建议是：**如果 Chorus 是已经确定的长期项目品牌，就趁现在尚未广泛发布时统一更名。**
+My suggestion is: **if Chorus is an already-determined long-term project brand, unify the rename now while it has not been widely released.**
 
-建议目标如下：
+The suggested targets are as follows:
 
-| 当前标识 | 建议目标 |
+| Current identifier | Suggested target |
 |--------|--------|
 | `Chorus.sln` | `Chorus.sln` |
 | `Chorus.Protocol` | `Chorus.Protocol` |
@@ -382,165 +386,163 @@ IPC Envelope、消息总线、UDS / Named Pipe / TCP / HTTP 传输
 | `Chorus.SampleGame` | `Chorus.SampleGame` |
 | `Chorus.Engine.Tests` | `Chorus.Engine.Tests` |
 
-但有一个例外：如果你已经发布了公开 NuGet 包、外部程序集依赖或对外承诺的协议名称，就需要考虑兼容策略。当前只是 GitHub 仓库名称更改的话，程序集重命名的成本相对可控。
+But there is one exception: if you have already released public NuGet packages, external assembly dependencies, or externally committed protocol names, a compatibility strategy needs to be considered. If currently it is only a GitHub repository name change, the cost of assembly renaming is relatively controllable.
 
-注意不要只用文本替换完成这件事。应同步修改目录、`.csproj`、项目引用、命名空间、解决方案、CI、文档站点和启动命令，再执行全量构建与测试。
+Note that this must not be done with text replacement alone. Directories, `.csproj`, project references, namespaces, the solution, CI, the documentation site, and startup commands should be modified in sync, followed by a full build and test.
 
-## 七、测试体系：从单元测试走向故障验证
+## 7. Test System: From Unit Tests to Fault Verification
 
-当前仓库已有测试覆盖事件归并、MatchRegistry、SampleGameModule、IPC 消息总线和若干传输实现。这是不错的基础，但测试重点仍需要从“功能能运行”转向“系统在异常情况下仍正确”。
+The current repository already has tests covering event merging, MatchRegistry, SampleGameModule, the IPC message bus, and several transport implementations. This is a good foundation, but the focus of testing still needs to shift from "the feature runs" to "the system is still correct under abnormal conditions".
 
-建议补齐以下测试：
+It is recommended to complete the following tests:
 
-| 测试类型 | 必须验证的行为 |
+| Test Type | Behavior That Must Be Verified |
 |--------|--------|
-| 事件归并 | 混合阵营、混合 Match、超限时计数不丢失、不串阵营 |
-| 去重并发 | 相同事件并发提交只允许一次有效处理 |
-| 可靠投递 | IPC 发布失败后重试不会被错误去重 |
-| Tick 过载 | 游戏逻辑超过 Tick 预算时不会无限积压 |
-| 慢客户端 | 一个客户端阻塞发送，不影响其他客户端和服务端 Tick |
-| ACK 安全 | 未来 Tick、倒退 Tick、无效 Client 的 ACK 被拒绝 |
-| Match 并发 | 多个 Session 同时输入时，权威状态顺序明确 |
-| 生命周期 | Session 超时回收、断连、重连和关闭时没有资源泄漏 |
-| 快照恢复 | 快照过大、损坏、版本不匹配时有明确错误路径 |
-| 安全 | 未验证平台事件、过大请求体、非法 WebSocket 消息被拒绝 |
-| IPC 故障 | 断连、重启、传输回退、半包与超大包处理正确 |
+| Event merging | Mixed factions, mixed Matches, no count loss when over limit, no faction mixing |
+| Deduplication concurrency | Concurrent submission of the same event allows only one effective processing |
+| Reliable delivery | Retry after IPC publish failure is not erroneously deduplicated |
+| Tick overload | Game logic exceeding the Tick budget does not accumulate without bound |
+| Slow client | One client blocking sends does not affect other clients and the server Tick |
+| ACK safety | ACKs with future Ticks, backwards Ticks, invalid Clients are rejected |
+| Match concurrency | When multiple Sessions input simultaneously, the authoritative state order is explicit |
+| Lifecycle | No resource leaks on Session timeout reclamation, disconnect, reconnect, and close |
+| Snapshot recovery | Clear error paths for oversized, corrupted, version-mismatched snapshots |
+| Security | Unverified platform events, oversized request bodies, and illegal WebSocket messages are rejected |
+| IPC fault | Disconnect, restart, transport fallback, half-packet and oversized-packet handling are correct |
 
-其中最重要的是建立一套**端到端压力测试**：同时模拟大量观众事件、多个 Session、不同速度的客户端以及随机断连，然后观测 Tick 耗时、内存、队列深度和事件计数。
+The most important among these is establishing an **end-to-end load test**: simulate a large number of audience events, multiple Sessions, clients of different speeds, and random disconnects simultaneously, then observe Tick duration, memory, queue depth, and event counts.
 
-建议把压力测试作为独立工具或测试项目，不要把高负载测试塞进每一次普通单元测试中。
+It is recommended to make the load test an independent tool or test project, and not stuff high-load tests into every ordinary unit test.
 
-## 八、可观测性：需要从“有几个接口”升级为运行诊断
+## 8. Observability: Needs to Upgrade from "How Many Interfaces" to Runtime Diagnostics
 
-当前 `/sessions` 和 `/matches` 能提供一些诊断数据，但还不足以定位生产问题。
+Currently `/sessions` and `/matches` can provide some diagnostic data, but it is not enough to locate production problems.
 
-建议至少建立以下指标：
+It is recommended to establish at least the following metrics:
 
-- `chorus_tick_duration_ms`：每次 Tick 的实际处理耗时。
-- `chorus_tick_lag_ms`：实际 Tick 与计划截止时间之间的偏差。
-- `chorus_ingress_events_total`：接收事件总数。
-- `chorus_events_applied_total`：实际应用的事件数。
-- `chorus_events_merged_total`、`chorus_events_dropped_total`：归并和丢弃数量。
-- `chorus_ingress_duplicates_total`：重复事件数量。
-- `chorus_mailbox_depth`、`chorus_scheduled_events`：队列和待调度事件数量。
-- `chorus_client_ack_lag_ticks`：各客户端 ACK 落后程度。
-- `chorus_snapshot_send_duration_ms`：快照发送耗时。
-- `chorus_snapshot_resync_total`：强制快照次数。
-- `chorus_ipc_publish_failures_total`：IPC 发布失败次数。
+- `chorus_tick_duration_ms`: the actual processing duration of each Tick.
+- `chorus_tick_lag_ms`: the deviation between the actual Tick and the planned deadline.
+- `chorus_ingress_events_total`: total number of received events.
+- `chorus_events_applied_total`: number of events actually applied.
+- `chorus_events_merged_total`, `chorus_events_dropped_total`: merged and dropped counts.
+- `chorus_ingress_duplicates_total`: number of duplicate events.
+- `chorus_mailbox_depth`, `chorus_scheduled_events`: queue and pending-event counts.
+- `chorus_client_ack_lag_ticks`: how far behind each client's ACK is.
+- `chorus_snapshot_send_duration_ms`: snapshot send duration.
+- `chorus_snapshot_resync_total`: number of forced snapshots.
+- `chorus_ipc_publish_failures_total`: number of IPC publish failures.
 
-同时建议为事件处理链路建立关联 ID，使日志能够回答：
+It is also recommended to establish correlation IDs for the event processing chain, so that logs can answer:
 
-> 这个礼物事件什么时候收到、被调度到哪个 Tick、什么时候应用、改变了什么状态，以及客户端什么时候收到对应快照？
+> When was this gift event received, which Tick was it scheduled to, when was it applied, what state did it change, and when did the client receive the corresponding snapshot?
 
-不必为了实现这些能力立即引入复杂的分布式追踪平台。可以先使用 .NET 原生日志、Metrics 和 OpenTelemetry 兼容接口，保留接入外部监控系统的能力。
+There is no need to immediately introduce a complex distributed tracing platform to implement these capabilities. You can start with .NET native logging, Metrics, and OpenTelemetry-compatible interfaces, retaining the ability to connect to external monitoring systems.
 
-## 九、建议的实施路线
+## 9. Recommended Implementation Route
 
-我建议把改进分为四个阶段。顺序上，先保证数据正确，再保证过载时稳定，之后才是生产化与扩展。
+I suggest dividing the improvements into four phases. In order: first ensure data correctness, then ensure stability under overload, and only after that productionization and extension.
 
-### 阶段一：正确性与安全边界
+### Phase One: Correctness and Security Boundaries
 
-(最高优先级)
+(Highest priority)
 
-目标：避免错误计数、错误同步和未授权输入。
+Goal: avoid wrong counting, wrong synchronization, and unauthorized input.
 
-- 修复事件归并跨阵营问题。
-- 修复 ACK 单调性与 Tick 上界验证。
-- 生产环境默认拒绝未经验证的平台事件。
-- 修复并发去重与 IPC 失败后重试语义。
-- 明确 Match 级状态是否要求权威顺序。
-
----
-
-### 阶段二：稳定性与过载保护
-
-目标：高峰期不无限增长、不被慢客户端拖垮。
-
-- 将 Actor 邮箱与事件缓冲改为有界机制。
-- 从权威 Tick 中移除阻塞式网络发送。
-- 明确 Tick 超时、过载和恢复策略。
-- 为 Session 增加生命周期与资源回收。
-- 补充混合阵营、慢客户端、事件洪峰和故障注入测试。
+- Fix the cross-faction event merging problem.
+- Fix ACK monotonicity and Tick upper bound validation.
+- Production rejects unverified platform events by default.
+- Fix concurrent deduplication and IPC post-failure retry semantics.
+- Clarify whether Match-level state requires authoritative ordering.
 
 ---
 
-### 阶段三：可观测性与恢复
+### Phase Two: Stability and Overload Protection
 
-目标：出问题时可以定位原因，而不是盲目调参。
+Goal: no unlimited growth during peak periods, and no being dragged down by slow clients.
 
-- 建立 Tick、队列、事件和快照指标。
-- 定义快照版本、大小限制与应用失败路径。
-- 明确事件处理状态及可靠投递边界。
-- 验证 IPC 断连、重启与传输回退。
-- 建立可重复运行的压力测试。
+- Change the Actor mailbox and event buffer to bounded mechanisms.
+- Remove blocking network sends from the authoritative Tick.
+- Clarify Tick timeout, overload, and recovery strategies.
+- Add lifecycle and resource reclamation for Sessions.
+- Add tests for mixed factions, slow clients, event floods, and fault injection.
 
 ---
 
-### 阶段四：发布与生态完善
+### Phase Three: Observability and Recovery
 
-目标：让其他开发者能够理解、接入和部署 Chorus。
+Goal: when problems occur, the cause can be located, rather than blindly tuning parameters.
 
-- 完成 Cohort → Chorus 的内部命名收尾。
-- 提供清晰的最小游戏模块示例。
-- 提供平台适配器模板与接入契约。
-- 补齐部署配置、安全配置和故障排查文档。
-- 明确版本策略、兼容性和发布流程。
+- Establish Tick, queue, event, and snapshot metrics.
+- Define snapshot version, size limits, and application failure paths.
+- Clarify event processing states and reliable delivery boundaries.
+- Verify IPC disconnect, restart, and transport fallback.
+- Establish a repeatable load test.
 
-## 十、哪些事情暂时不值得做？
+---
 
-为了保持 Chorus 小巧，我不建议当前阶段增加以下复杂度：
+### Phase Four: Release and Ecosystem Completion
 
-- 不要为了支持多 Session，就立即引入完整分布式 Match 集群。
-- 不要为了可靠投递，就直接引入 Kafka、RabbitMQ 等外部消息平台。先定义可靠性需求，再选择实现。
-- 不要过早支持增量快照、复杂压缩、回滚网络同步和确定性重放。先把现有快照机制做正确。
-- 不要把所有直播平台的私有适配逻辑直接放入核心项目。
-- 不要把 Chorus 发展成账号、商业运营、直播管理和游戏编辑器的综合平台。
-- 不要仅为追求抽象而拆出大量独立服务。单体应当继续是最简单、最容易调试的默认部署方式。
+Goal: enable other developers to understand, integrate, and deploy Chorus.
 
-**当前最需要的是边界清楚、故障可控、结果正确，而不是更多组件。**
+- Complete the internal naming wrap-up of Cohort → Chorus.
+- Provide a clear minimal game module example.
+- Provide platform adapter templates and integration contracts.
+- Complete the deployment configuration, security configuration, and troubleshooting documentation.
+- Clarify the versioning policy, compatibility, and release process.
 
-## 十一、最终结论
+## 10. What Is Not Worth Doing for Now?
 
-## 总体评价
+To keep Chorus small, I do not recommend adding the following complexity at the current stage:
 
-产品定位 (成立)
+- Do not immediately introduce a full distributed Match cluster just to support multiple Sessions.
+- Do not directly introduce external messaging platforms such as Kafka or RabbitMQ just for reliable delivery. Define the reliability requirements first, then choose the implementation.
+- Do not support incremental snapshots, complex compression, rollback netcode, and deterministic replay too early. First get the existing snapshot mechanism right.
+- Do not put the private adapter logic of all live platforms directly into the core project.
+- Do not develop Chorus into a comprehensive platform covering accounts, commercial operations, live management, and a game editor.
+- Do not split out a large number of independent services just for the sake of abstraction. The monolith should continue to be the simplest, easiest-to-debug default deployment form.
 
-基础架构分层 (方向合理)
+**What is needed most right now is clear boundaries, controllable faults, and correct results, not more components.**
 
-事件与状态正确性 (需要优先修复)
+## 11. Final Conclusion
 
-高负载与慢端隔离 (需要补强)
+### Overall Assessment
 
-生产环境安全与可靠性 (尚需完善)
+| Dimension | Assessment |
+|------|------|
+| Product positioning | Holds |
+| Basic architecture layering | Reasonable direction |
+| Event and state correctness | Needs priority fix |
+| High-load and slow-end isolation | Needs strengthening |
+| Production security and reliability | Still needs improvement |
 
-我认为 Chorus 值得继续做。它的核心定位比较明确：**不是通用游戏引擎，而是让直播平台的群体互动能够可靠地驱动实时游戏的服务端框架。**
+I believe Chorus is worth continuing. Its core positioning is quite clear: **not a general-purpose game engine, but a server framework that lets the group interaction of live platforms reliably drive real-time games.**
 
-下一步最值得做的不是重写架构，而是以现有代码为基础，集中修复五件事：
+What is most worth doing next is not rewriting the architecture, but based on the existing code, concentrating on fixing five things:
 
-1. 事件归并不能跨阵营串数据。
-2. 慢客户端不能阻塞权威 Tick。
-3. 所有事件队列必须有容量边界。
-4. ACK、去重和投递语义必须正确。
-5. 生产环境必须具备真正的平台验证与客户端访问边界。
+1. Event merging must not mix data across factions.
+2. Slow clients must not block the authoritative Tick.
+3. All event queues must have capacity bounds.
+4. ACK, deduplication, and delivery semantics must be correct.
+5. Production must have real platform validation and client access boundaries.
 
-这五项完成并经过测试之后，再决定是否需要权威 MatchActor、持久化事件 Inbox 或更复杂的部署方式。
+After these five items are completed and tested, then decide whether an authoritative MatchActor, a persistent event Inbox, or a more complex deployment form is needed.
 
-最后，更名方面建议尽早统一为 Chorus，避免仓库、程序集、文档和 CI 长期出现两个名字。项目品牌既然已经确定，就让代码和文档也围绕同一个名称形成完整的一致性。
+Finally, regarding the rename, it is recommended to unify on Chorus as early as possible, to avoid the repo, assemblies, documents, and CI carrying two names for a long time. Since the project brand is already determined, let the code and documentation also form complete consistency around the same name.
 
 ---
 
 If you want, I can:
 
-- 分析慢客户端对系统的影响及改进方案
-- 探讨事件归并错误阵营的问题及修正
+- Analyze the impact of slow clients on the system and improvement options
+- Discuss the problem of event merging into wrong factions and its correction
 
 ---
 
-## 落地跟踪（本仓执行记录，随做随勾）
+## Landing Tracking (this repo's execution record, checked off as done)
 
-- [x] **阶段一（正确性与安全边界）**：① 归并跨阵营串数据（✅ 2026-10-12，组合键 (S,M,F,U)/(S,M,F,U,GiftId)，验收测试 `DefaultAudienceEventReducerTests.Reduce_MixedFactions_ConservesPerFactionCounts`，commit 9ad322d） ② ACK 单调性与 Tick 上界（✅ 2026-10-12，invalid/duplicate/stale/accepted 四类计数 + 客户端绑定，验收测试 `SessionActorAckTests` 6 例；顺带修复 run loop 命令驱动后静默死亡的调度 bug，commit 499f01c） ③ 生产默认拒绝未验证 Ingress（✅ 2026-10-12，`Ingress:AllowAll` 默认 false + fail-closed 路由，验收测试 `IngressAllowAllEndpointTests`，commit def21d2） ④ 去重原子化与投递失败语义（✅ 2026-10-12，reserve/commit/rollback 原子协议，发布失败 Rollback 可重试，验收 `EventDeduplicatorTests` 并发恰一赢家，commit 78f2597；事件生命周期与四态落 spec.md §3.6） ⑤ Match 权威语义定性（✅ 2026-10-12，spec.md §2.3：展示聚合非权威，权威化条件=单 Match 定序点，结论先行不实现 MatchActor）
-- [x] **阶段二（稳定性与过载保护）**：有界邮箱与事件缓冲（✅ 5592d62，控制/事件分道 + 礼物有界等待 Failed 可重试）、权威 Tick 去阻塞发送（✅ df71d26，Engine+Gateway 每客户端最新覆盖出站队列）、Tick 超时策略（✅ 362b435，`TickTimeoutMs` 检测 + 默认 66ms 统一）、Session 生命周期回收（✅ 362b435，上限驱逐 + 空闲回收 + GameModule 异常隔离）、故障注入测试（✅ 5592d62/df71d26 验收：洪峰丢弃计数、慢客户端 tick 不停、模块抛异常 actor 存活）
-- [x] **阶段三（可观测性与恢复）**：tick/队列/事件/快照指标（`chorus_*` 命名，✅ b86f5a8 三端 `/metrics` + `chorus_ipc_publish_failures_total`）、快照版本与大小上限（✅ 768e668 `V=1` + `MaxSnapshotBytes` 跳过计数、验收 `SessionActorSnapshotTests`）、IPC 断连回退验证（✅ d5d2d64 重启后惰性重连恢复 / 宕机显式失败 / Auto UDS↔NamedPipe 回退，验收 `IpcResilienceTests` 3 例）、事件关联 ID（✅ 68f29a9 `Envelope.SourceEventId` + `docs/reference/observability.md`，验收 `CorrelationTests` 3 例）、可重复压测（✅ 578415b `src/Chorus.LoadTool`：多 Session × 观众事件 × 变速客户端 × 随机断连，验收 `LoadToolTests` 6 例 + 真实 Server 冒烟；文档 `docs/guide/load-testing.md`）、快照恢复闭环（✅ 8226727 `SessionActorResyncTests`）、Match 并发无丢失（✅ 8226727 `MatchConcurrencyTests`；并发顺序不保证的定性见 spec §2.3）。附：同批次修复 IPC bus 双重 Dispose 抛 `ObjectDisposedException`（生产路径可复现，加幂等守卫 + 4 个回归测试）
-- [x] **阶段四（发布与生态）**：Cohort → Chorus 内部命名收尾（✅ 提前执行，见 todo.md §9）、最小游戏模块示例与平台适配器契约（✅ 8a49c1b `docs/guide/game-module.md` + `docs/reference/adapter-contract.md`，契约与代码逐字核对，验收点=接口签名/处理顺序/状态码/模板可编译）、部署安全与版本策略（✅ 8a49c1b `docs/reference/deployment.md` + `docs/reference/versioning.md`，端口与端点经 `launchSettings.json` 与各 host `Program.cs` 核实，并修正一处事实错误：`/sessions`、`/matches` 仅单进程形态暴露）
-- [x] 测试补齐（十一类）：归并混合阵营 ✅ / 去重并发 ✅ / 投递失败重试 ✅ / Tick 过载 ✅ / 慢客户端 ✅ / ACK 安全 ✅ / Match 并发 ✅（8226727）/ 生命周期 ✅ / 快照恢复 ✅（8226727）/ 安全 ✅ / IPC 故障 ✅（d5d2d64）
-- [x] 事件生命周期模型（Received→Validated→Accepted→Scheduled→Applied→Published）与事件四分类（可累计 / 不可丢 / 表现型 / 控制）落进 `docs/design/spec.md`（✅ 78f2597，§3.6 六阶段 + 投递四态 + reserve/commit/rollback + 事件四分类表；本条为阶段一④的重复登记，已核对内容存在后补勾）
+- [x] **Phase 1 (Correctness and Security Boundaries)**: ① merge cross-faction data mixing (✅ 2026-10-12, composite key (S,M,F,U)/(S,M,F,U,GiftId), acceptance test `DefaultAudienceEventReducerTests.Reduce_MixedFactions_ConservesPerFactionCounts`, commit 9ad322d) ② ACK monotonicity and Tick upper bound (✅ 2026-10-12, invalid/duplicate/stale/accepted four-category counts + client binding, acceptance test `SessionActorAckTests` 6 cases; also fixed the scheduling bug where the run loop silently died after switching to command-driven, commit 499f01c) ③ production rejects unverified Ingress by default (✅ 2026-10-12, `Ingress:AllowAll` defaults to false + fail-closed routing, acceptance test `IngressAllowAllEndpointTests`, commit def21d2) ④ deduplication atomicity and delivery failure semantics (✅ 2026-10-12, reserve/commit/rollback atomic protocol, publish failure Rollback is retryable, acceptance `EventDeduplicatorTests` concurrent exactly-one-winner, commit 78f2597; event lifecycle and four states landed in spec.md §3.6) ⑤ Match authoritative semantics qualification (✅ 2026-10-12, spec.md §2.3: display aggregation is not authoritative, authorization condition = single Match ordering point, conclusion first without implementing MatchActor)
+- [x] **Phase 2 (Stability and Overload Protection)**: bounded mailbox and event buffer (✅ 5592d62, control/event separate lanes + gift bounded wait Failed retryable), authoritative Tick de-blocking send (✅ df71d26, Engine+Gateway per-client latest-overwrite outbound queue), Tick timeout policy (✅ 362b435, `TickTimeoutMs` detection + default 66ms unified), Session lifecycle reclamation (✅ 362b435, cap eviction + idle reclamation + GameModule exception isolation), fault injection tests (✅ 5592d62/df71d26 acceptance: flood drop count, slow client tick doesn't stop, module throws exception actor survives)
+- [x] **Phase 3 (Observability and Recovery)**: tick/queue/event/snapshot metrics (`chorus_*` naming, ✅ b86f5a8 three-side `/metrics` + `chorus_ipc_publish_failures_total`), snapshot version and size cap (✅ 768e668 `V=1` + `MaxSnapshotBytes` skip count, acceptance `SessionActorSnapshotTests`), IPC disconnect fallback verification (✅ d5d2d64 lazy reconnect recovery after restart / explicit failure when down / Auto UDS↔NamedPipe fallback, acceptance `IpcResilienceTests` 3 cases), event correlation ID (✅ 68f29a9 `Envelope.SourceEventId` + `docs/reference/observability.md`, acceptance `CorrelationTests` 3 cases), repeatable load test (✅ 578415b `src/Chorus.LoadTool`: multi Session × audience events × variable-speed clients × random disconnects, acceptance `LoadToolTests` 6 cases + real Server smoke; doc `docs/guide/load-testing.md`), snapshot recovery loop (✅ 8226727 `SessionActorResyncTests`), Match concurrency without loss (✅ 8226727 `MatchConcurrencyTests`; the qualification that concurrent order is not guaranteed, see spec §2.3). Also: fixed in the same batch the IPC bus double Dispose throwing `ObjectDisposedException` (reproducible in production path, added idempotent guard + 4 regression tests)
+- [x] **Phase 4 (Release and Ecosystem)**: Cohort → Chorus internal naming wrap-up (✅ executed early, see todo.md §9), minimal game module example and platform adapter contract (✅ 8a49c1b `docs/guide/game-module.md` + `docs/reference/adapter-contract.md`, contract and code checked word by word, acceptance points = interface signature/processing order/status codes/template compilable), deployment security and versioning policy (✅ 8a49c1b `docs/reference/deployment.md` + `docs/reference/versioning.md`, ports and endpoints verified via `launchSettings.json` and each host `Program.cs`, and one factual error corrected: `/sessions` and `/matches` are only exposed in single-process form)
+- [x] Test completion (eleven categories): merge mixed factions ✅ / deduplication concurrency ✅ / delivery failure retry ✅ / Tick overload ✅ / slow client ✅ / ACK safety ✅ / Match concurrency ✅ (8226727) / lifecycle ✅ / snapshot recovery ✅ (8226727) / security ✅ / IPC fault ✅ (d5d2d64)
+- [x] Event lifecycle model (Received→Validated→Accepted→Scheduled→Applied→Published) and the four event categories (accumulable / non-droppable / presentational / control) landed in `docs/design/spec.md` (✅ 78f2597, §3.6 six stages + four delivery states + reserve/commit/rollback + four-category event table; this item is a duplicate registration of phase 1 ④, checked off after verifying the content exists)

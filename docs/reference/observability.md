@@ -1,20 +1,24 @@
 ---
-title: 可观测性
+title: Observability
 ---
 
-# 可观测性
+<p align="center">
+  English | <a href="observability.zh.md">简体中文</a>
+</p>
 
-Chorus 的可观测面由三部分组成：**Prometheus 文本指标**（`chorus_*`）、**JSON 诊断端点**（`/sessions`、`/matches`）、**结构化日志**（含关联 ID）。
+# Observability
 
-相关文档：
+Chorus's observability surface consists of three parts: **Prometheus text metrics** (`chorus_*`), **JSON diagnostic endpoints** (`/sessions`, `/matches`), and **structured logs** (with correlation IDs).
 
-- [运维与观测](./operations.md)
-- [配置参考](./config.md)
-- [故障排查](./troubleshooting.md)
+Related docs:
 
-## 指标端点
+- [Operations and Observability](./operations.md)
+- [Configuration Reference](./config.md)
+- [Troubleshooting](./troubleshooting.md)
 
-三个进程都暴露 `GET /metrics`，返回 Prometheus 文本格式（`text/plain; version=0.0.4; charset=utf-8`），可直接被 Prometheus 抓取：
+## Metrics Endpoint
+
+All three processes expose `GET /metrics`, returning Prometheus text format (`text/plain; version=0.0.4; charset=utf-8`), which Prometheus can scrape directly:
 
 ```yaml
 # prometheus.yml 示例
@@ -30,125 +34,125 @@ scrape_configs:
       - targets: ["localhost:5300"]        # Chorus.Gateway
 ```
 
-单进程模式（Chorus.Server）没有 IPC 跳，`chorus_ipc_publish_failures_total` 恒为 0。拆分模式下两侧各自输出本方向的发布失败：Gateway 面计数 Gateway→Engine 事件（`src/Chorus.Gateway/GatewayIpcService.cs`），EngineHost 面计数 Engine→Gateway 快照与欢迎（`src/Chorus.EngineHost/EngineIpcService.cs`，由 `RenderEngine` 输出）。引擎侧快照发布是 best-effort（发布失败不杀 tick，见 `EngineBusSessionClient.SafePublishAsync`），但失败会计数并告警，不再静默吞掉（`8e87a47`）。
+The single-process mode (Chorus.Server) has no IPC hop, so `chorus_ipc_publish_failures_total` is always 0. In split mode, each side outputs the publish failures of its own direction: the Gateway side counts Gateway→Engine events (`src/Chorus.Gateway/GatewayIpcService.cs`), and the EngineHost side counts Engine→Gateway snapshots and welcomes (`src/Chorus.EngineHost/EngineIpcService.cs`, rendered by `RenderEngine`). The engine-side snapshot publishing is best-effort (a publish failure does not kill the tick, see `EngineBusSessionClient.SafePublishAsync`), but failures are counted and alerted on, no longer silently swallowed (`8e87a47`).
 
-## 指标清单
+## Metric Inventory
 
-### 会话与事件（Engine 侧聚合）
+### Sessions and Events (Engine-side aggregate)
 
-| 指标 | 类型 | 含义 |
+| Metric | Type | Meaning |
 | --- | --- | --- |
-| `chorus_sessions` | gauge | 当前存活 Session 数 |
-| `chorus_session_start_failures_total` | counter | 拒绝启动的 Session 数（快照恢复 fail-closed / 模块构造抛异常）。这类失败没有 actor 诊断可读，`/sessions` 看不到——本计数是唯一暴露面（Server 与 EngineHost 均输出） |
-| `chorus_session_idle_evictions_total` | counter | 空闲清扫累计驱逐数（无客户端且超过 `IdleEvictAfterMs`）。`chorus_sessions` gauge 下降无法区分正常结束与被驱逐，本计数给出驱逐侧真值；异常升高说明空闲阈值过激或客户端批量流失 |
-| `chorus_session_capacity_evictions_total` | counter | 达到 `MaxSessions` 上限驱逐最旧会话累计数（被逐客户端按新 session id 重连）。异常升高说明容量配小了或遭遇会话风暴 |
-| `chorus_events_ingested_total` | counter | 进入 Session 事件道的事件数（去重后、调度前） |
-| `chorus_events_applied_total` | counter | 在 tick 中结算进权威状态的事件数 |
-| `chorus_events_merged_total` | counter | 被归并合并的事件数（归并不丢计数，见 [帧同步设计](../design/frame-sync.md)） |
-| `chorus_events_dropped_total` | counter | 因背压丢弃的事件总数 |
-| `chorus_events_dropped_overflow_total` | counter | 事件道溢出丢弃（非礼物） |
-| `chorus_events_dropped_gifts_total` | counter | 礼物事件等待入队超时丢弃（可重试语义，见 [规格 §3.6](../design/spec.md)） |
-| `chorus_tick_overruns_total` | counter | tick 处理超时（超过 `TickTimeoutMs`）次数，只检测不取消 |
-| `chorus_tick_errors_total` | counter | GameModule 抛异常的 tick 数（actor 存活，诊断照常推进） |
-| `chorus_tick_duration_ms` | gauge | 最近 tick 处理耗时（取所有 Session 最大值） |
-| `chorus_mailbox_depth` | gauge | 邮箱深度（控制道 + 事件道，取最大值） |
-| `chorus_ack_lag_ticks` | gauge | 客户端 ACK 滞后 tick 数（取所有客户端最大值） |
-| `chorus_process_cpu_percent` | gauge | worker 进程 CPU 占机器总容量百分比（自上次抓取以来的均值，全核忙=100；仅 EngineHost /metrics 输出，首抓无前值时省略该行）。峰值测量仪器（todo §4）：配合 LoadTool `--engine-metrics` 周期采样，进程拓扑阶段三触发条件「单 worker 高峰 CPU > 60%」由此可数 |
+| `chorus_sessions` | gauge | Current live Session count |
+| `chorus_session_start_failures_total` | counter | Sessions refused to start (snapshot restoration fail-closed / module construction threw). These failures have no actor diagnostics to read and are invisible in `/sessions` — this counter is the only exposed surface (output by both Server and EngineHost) |
+| `chorus_session_idle_evictions_total` | counter | Cumulative evictions by the idle sweeper (no clients and exceeds `IdleEvictAfterMs`). A drop in the `chorus_sessions` gauge cannot distinguish normal endings from evictions; this counter gives the eviction-side ground truth; an abnormal rise means the idle threshold is too aggressive or clients are churning in bulk |
+| `chorus_session_capacity_evictions_total` | counter | Cumulative count of oldest sessions evicted after reaching the `MaxSessions` limit (evicted clients reconnect with a new session id). An abnormal rise means capacity is undersized or a session storm |
+| `chorus_events_ingested_total` | counter | Events entering the Session event lane (after dedup, before scheduling) |
+| `chorus_events_applied_total` | counter | Events settled into authoritative state within a tick |
+| `chorus_events_merged_total` | counter | Events merged by coalescing (merging does not lose counts, see [Frame Sync Design](../design/frame-sync.md)) |
+| `chorus_events_dropped_total` | counter | Total events dropped due to backpressure |
+| `chorus_events_dropped_overflow_total` | counter | Event lane overflow drops (non-gift) |
+| `chorus_events_dropped_gifts_total` | counter | Gift events dropped when the enqueue wait timed out (retryable semantics, see [Spec §3.6](../design/spec.md)) |
+| `chorus_tick_overruns_total` | counter | Count of ticks whose processing timed out (exceeds `TickTimeoutMs`); detection only, no cancellation |
+| `chorus_tick_errors_total` | counter | Ticks where GameModule threw (the actor stays alive; diagnostics keep advancing as usual) |
+| `chorus_tick_duration_ms` | gauge | Most recent tick processing duration (max over all Sessions) |
+| `chorus_mailbox_depth` | gauge | Mailbox depth (control lane + event lane, max) |
+| `chorus_ack_lag_ticks` | gauge | Client ACK lag in ticks (max over all clients) |
+| `chorus_process_cpu_percent` | gauge | Worker process CPU as a percentage of total machine capacity (average since the last scrape; all cores busy = 100; output only on EngineHost /metrics, line omitted on first scrape with no previous value). Peak measurement instrument (todo §4): sampled periodically together with LoadTool `--engine-metrics`, the process-topology phase 3 trigger condition "single worker peak CPU > 60%" becomes countable via this |
 
-### 快照
+### Snapshots
 
-| 指标 | 类型 | 含义 |
+| Metric | Type | Meaning |
 | --- | --- | --- |
-| `chorus_snapshots_sent_total` | counter | 下发快照数 |
-| `chorus_snapshots_resync_total` | counter | 强制 resync 快照数（客户端 lag 超 `MaxLagTicks`） |
-| `chorus_snapshots_oversize_total` | counter | 序列化后超过 `MaxSnapshotBytes` 被跳过的快照数 |
-| `chorus_snapshot_bytes` | gauge | 最近一次下发的快照线字节数（取所有 Session 最大值；无快照时为 0）。调优信号：快照体积漂移无需 profiler 即可观察（`f301aa3`），`/sessions` 的 `lastSnapshotBytes` 为同值的每 session 明细 |
-| `chorus_client_queue_dropped_total` | counter | 客户端出站 latest-wins 槽被替换掉的快照数（跨 Session 累加）。单客户端积压信号：容量为 1 的槽只在发送落后超过一拍时丢弃，`/sessions` 的每客户端 `clientQueueDropped` 为明细（`6d738b7`） |
+| `chorus_snapshots_sent_total` | counter | Snapshots delivered |
+| `chorus_snapshots_resync_total` | counter | Forced resync snapshots (client lag exceeds `MaxLagTicks`) |
+| `chorus_snapshots_oversize_total` | counter | Snapshots skipped for exceeding `MaxSnapshotBytes` after serialization |
+| `chorus_snapshot_bytes` | gauge | Bytes of the most recently delivered wire snapshot (max over all Sessions; 0 with no snapshots). Tuning signal: snapshot size drift is observable without a profiler (`f301aa3`); `lastSnapshotBytes` in `/sessions` is the per-session detail of the same value |
+| `chorus_client_queue_dropped_total` | counter | Snapshots replaced out of the client outbound latest-wins slot (accumulated across Sessions). Per-client backlog signal: the capacity-1 slot only drops when sending falls behind by more than one beat; the per-client `clientQueueDropped` in `/sessions` is the detail (`6d738b7`) |
 
-### 帧同步 / resync（Engine 侧聚合）
+### Frame Sync / resync (Engine-side aggregate)
 
-frame-sync P2 的 resync 路径计数此前只在 `/sessions` 可见，现同步导出到 `/metrics`：
+The resync path counters from frame-sync P2 were previously only visible in `/sessions`; they are now also exported to `/metrics`:
 
-| 指标 | 类型 | 含义 |
+| Metric | Type | Meaning |
 | --- | --- | --- |
-| `chorus_resync_requests_total` | counter | 客户端发起的 resync 请求数（冷却过滤前） |
-| `chorus_resync_replays_total` | counter | 从帧历史窗口答复的 resync 请求数 |
-| `chorus_resync_window_misses_total` | counter | 窗口起点缺失（以最新快照 + 强制回复）的 resync 请求数。调优信号：持续增长说明帧历史窗口过小 |
-| `chorus_resync_throttled_total` | counter | 被 per-client 冷却拒绝的 resync 请求数 |
-| `chorus_resync_replay_capped_total` | counter | 窗口超过 `Session:MaxResyncReplayTicks`、以单条强制快照对齐的 resync 请求数（2026-10-15 重放限界）。调优信号：占比高说明大量客户端落后超过重放上限（重连风暴/长断线），应结合 `chorus_ws_resync_dropped_total` 看客户端是否在打转 |
-| `chorus_frame_history_bytes` | gauge | 当前帧历史编码字节占用（取所有 Session 最大值） |
+| `chorus_resync_requests_total` | counter | Resync requests initiated by clients (before cooldown filtering) |
+| `chorus_resync_replays_total` | counter | Resync requests answered from the frame history window |
+| `chorus_resync_window_misses_total` | counter | Resync requests whose window start was missing (answered with the latest snapshot + forced). Tuning signal: sustained growth means the frame history window is too small |
+| `chorus_resync_throttled_total` | counter | Resync requests rejected by the per-client cooldown |
+| `chorus_resync_replay_capped_total` | counter | Resync requests whose window exceeded `Session:MaxResyncReplayTicks` and were aligned with a single forced snapshot (2026-10-15 replay bound). Tuning signal: a high proportion means many clients are behind beyond the replay cap (reconnect storm / long disconnect); check `chorus_ws_resync_dropped_total` to see whether clients are spinning |
+| `chorus_frame_history_bytes` | gauge | Current frame history encoded byte usage (max over all Sessions) |
 
-### ACK（Engine 侧分类计数）
+### ACK (Engine-side classified counts)
 
-| 指标 | 类型 | 含义 |
+| Metric | Type | Meaning |
 | --- | --- | --- |
-| `chorus_acks_accepted_total` | counter | 被接受（推进水位）的 ACK 数 |
-| `chorus_acks_duplicate_total` | counter | 重复 ACK 数 |
-| `chorus_acks_stale_total` | counter | 落后于当前水位的 ACK 数 |
-| `chorus_acks_invalid_total` | counter | 非法 ACK（客户端绑定校验失败等） |
+| `chorus_acks_accepted_total` | counter | ACKs accepted (advancing the watermark) |
+| `chorus_acks_duplicate_total` | counter | Duplicate ACKs |
+| `chorus_acks_stale_total` | counter | ACKs behind the current watermark |
+| `chorus_acks_invalid_total` | counter | Invalid ACKs (client binding validation failure, etc.) |
 
-### Ingress（平台入口面，Server 与 Gateway 都有）
+### Ingress (platform entry face, on both Server and Gateway)
 
-| 指标 | 类型 | 含义 |
+| Metric | Type | Meaning |
 | --- | --- | --- |
-| `chorus_ingress_accepted_total` | counter | 验签+映射+去重通过、进入调度的事件数 |
-| `chorus_ingress_duplicates_total` | counter | 去重命中的重复事件数（幂等返回 `duplicated=true`） |
-| `chorus_ingress_unverified_total` | counter | 验签未通过被拒的事件数（生产默认 fail-closed） |
-| `chorus_ingress_unmapped_total` | counter | 无法映射到 Session 的事件数 |
-| `chorus_ingress_rate_limited_total` | counter | 触发限流的事件数 |
-| `chorus_ingress_too_large_total` | counter | 请求体超限被拒的事件数 |
-| `chorus_ingress_timed_out_total` | counter | 事件道满回滚去重的次数（503）与单请求超时（504） |
+| `chorus_ingress_accepted_total` | counter | Events that passed signature verification + mapping + dedup and entered scheduling |
+| `chorus_ingress_duplicates_total` | counter | Duplicate events hit by dedup (idempotent return `duplicated=true`) |
+| `chorus_ingress_unverified_total` | counter | Events rejected for failing signature verification (production default is fail-closed) |
+| `chorus_ingress_unmapped_total` | counter | Events that could not be mapped to a Session |
+| `chorus_ingress_rate_limited_total` | counter | Events that triggered rate limiting |
+| `chorus_ingress_too_large_total` | counter | Events rejected for exceeding the request body limit |
+| `chorus_ingress_timed_out_total` | counter | Times dedup was rolled back because the event lane was full (503) and single-request timeouts (504) |
 
-### WebSocket（Gateway 主播/观众连接面）
+### WebSocket (Gateway streamer/viewer connection face)
 
-| 指标 | 类型 | 含义 |
+| Metric | Type | Meaning |
 | --- | --- | --- |
-| `chorus_ws_connections_total` | counter | WS 连接建立数 |
-| `chorus_ws_unauthorized_total` | counter | hello 鉴权失败被关闭的连接数 |
-| `chorus_ws_protocol_mismatch_total` | counter | hello 协议版本不匹配被拒绝的连接数（`protocolVersion` 非空且 ≠ 服务端当前版本） |
-| `chorus_ws_message_too_large_total` | counter | 消息体超限被拒的次数 |
-| `chorus_ws_acks_accepted_total` | counter | 被接受（未触发限流）的 WS ACK 数 |
-| `chorus_ws_acks_dropped_total` | counter | 触发限流被丢弃的 WS ACK 数 |
-| `chorus_ws_resync_dropped_total` | counter | 网关 `/ws` resync 固定窗口限流（`Faces:StreamerWs:ResyncPerMinute`）丢弃的请求数（`c896855`）。与引擎侧 `chorus_resync_throttled_total` 互补：该计数发生在请求到达引擎之前，异常升高说明客户端在打转（频繁重连/全量 resync） |
-| `chorus_ws_snapshot_dropped_total` | counter | 网关 slow-client 丢弃策略计数（2026-10-16，todo §10 阻塞②）：逐连接 latest-wins 出站槽（容量 1）被新快照替换掉的旧快照数，累加进进程级 `FaceCounters`，跨连接重连不丢历史。仅拆分模式有意义——单进程形态没有这一跳，恒为 0（其丢弃计 `chorus_client_queue_dropped_total`）。配对读：与 `chorus_ws_resync_dropped_total` 一起看——drop 上升说明客户端跟不上快照速率，丢弃帧由客户端 resync 补齐 |
+| `chorus_ws_connections_total` | counter | WS connections established |
+| `chorus_ws_unauthorized_total` | counter | Connections closed for failing hello authentication |
+| `chorus_ws_protocol_mismatch_total` | counter | Connections rejected for hello protocol version mismatch (`protocolVersion` non-empty and ≠ the server's current version) |
+| `chorus_ws_message_too_large_total` | counter | Times a message body was rejected for exceeding the limit |
+| `chorus_ws_acks_accepted_total` | counter | WS ACKs accepted (without triggering rate limiting) |
+| `chorus_ws_acks_dropped_total` | counter | WS ACKs dropped for triggering rate limiting |
+| `chorus_ws_resync_dropped_total` | counter | Requests dropped by the gateway `/ws` resync fixed-window rate limiting (`Faces:StreamerWs:ResyncPerMinute`) (`c896855`). Complementary to the engine-side `chorus_resync_throttled_total`: this count happens before the request reaches the engine; an abnormal rise means clients are spinning (frequent reconnects / full resyncs) |
+| `chorus_ws_snapshot_dropped_total` | counter | Gateway slow-client drop policy counter (2026-10-16, todo §10 blocker ②): the count of old snapshots replaced by newer ones in the per-connection latest-wins outbound slot (capacity 1), accumulated into the process-level `FaceCounters`, so history is not lost across connection reconnects. Only meaningful in split mode — the single-process form has no such hop and it is always 0 (its drops count as `chorus_client_queue_dropped_total`). Paired reading: read together with `chorus_ws_resync_dropped_total` — a rising drop count means the client cannot keep up with the snapshot rate; dropped frames are refilled by the client resync |
 
 ### IPC
 
-| 指标 | 类型 | 含义 |
+| Metric | Type | Meaning |
 | --- | --- | --- |
-| `chorus_ipc_publish_failures_total` | counter | IPC 发布失败次数。Gateway 面计 Gateway→Engine 事件，EngineHost 面计 Engine→Gateway 快照/欢迎（`8e87a47`） |
-| `chorus_ipc_engine_silence_ms` | gauge | Gateway 距最近一次收到 EngineHost 消息（心跳/欢迎/快照）的毫秒数；从未收到为 `-1`。`/ready` 依此判定（阈值 `Ipc:ReadinessMaxSilenceMs`） |
+| `chorus_ipc_publish_failures_total` | counter | IPC publish failure count. The Gateway side counts Gateway→Engine events, the EngineHost side counts Engine→Gateway snapshots/welcomes (`8e87a47`) |
+| `chorus_ipc_engine_silence_ms` | gauge | Milliseconds since the Gateway last received an EngineHost message (heartbeat/welcome/snapshot); `-1` if never received. `/ready` decides based on this (threshold `Ipc:ReadinessMaxSilenceMs`) |
 
-## 关联 ID（correlation）
+## Correlation IDs
 
-一次平台事件在系统内的追踪链：
+The tracking chain of one platform event inside the system:
 
 ```
 平台 EventId ──ingress──> Envelope.SourceEventId ──IPC──> Engine 结算 ──tick──> 快照(sessionId+tickId) ──WS──> 客户端
 ```
 
-- **`AudienceEvent.EventId`**：平台事件 id（去重键的一部分），ingress 响应与 `duplicated=true` 都带它。
-- **`Envelope.SourceEventId`**：IPC 信封上可选的源事件 id。Gateway 的 `/ingress/{platform}` 发布观众事件时写入 `ev.EventId`；Engine 收到后校验一致性，不一致打 warning 日志（`Correlation mismatch`）。
-- **`Envelope.MessageId`**：一次投递的唯一 id（`m_<guid>`），用于定位「这一跳」的发布失败（`chorus_ipc_publish_failures_total` 的日志都带 `message=`）。
-- **快照关联**：快照带 `sessionId` + `tickId` + `serverTimeMs`；客户端 ACK 回带 `lastAppliedTickId`，即完成「哪个事件 → 哪个 tick → 哪个客户端确认」的闭环。
-- **ACK 关联**：WS ACK 按 `sessionId|clientId` 绑定连接，`GatewayAckCmd` 携带 `lastAppliedTickId` 与 `ClientTimeMs`（客户端测漂移）。
+- **`AudienceEvent.EventId`**: the platform event id (part of the dedup key); both the ingress response and `duplicated=true` carry it.
+- **`Envelope.SourceEventId`**: the optional source event id on the IPC envelope. The Gateway's `/ingress/{platform}` writes `ev.EventId` when publishing audience events; the Engine validates consistency upon receipt and logs a warning on mismatch (`Correlation mismatch`).
+- **`Envelope.MessageId`**: the unique id of one delivery (`m_<guid>`), used to locate the publish failure of "this hop" (the logs of `chorus_ipc_publish_failures_total` all carry `message=`).
+- **Snapshot correlation**: the snapshot carries `sessionId` + `tickId` + `serverTimeMs`; the client ACK returns `lastAppliedTickId`, completing the closed loop of "which event → which tick → confirmed by which client".
+- **ACK correlation**: WS ACKs bind the connection by `sessionId|clientId`; `GatewayAckCmd` carries `lastAppliedTickId` and `ClientTimeMs` (client-measured drift).
 
-排障时：先在 ingress 面按 `eventId` 找到是否被接受/判重/拒绝；再用 `SourceEventId` 追 IPC 是否发布失败；最后在 Engine 侧看 `applied/merged/dropped` 与 `tickId` 水位。
+When troubleshooting: first check on the ingress face by `eventId` whether it was accepted / deduplicated / rejected; then use `SourceEventId` to trace whether the IPC publish failed; finally look at `applied/merged/dropped` and the `tickId` watermark on the Engine side.
 
-## JSON 诊断端点
+## JSON Diagnostic Endpoints
 
-- `GET /sessions`：`SessionDiagnostics` 列表（tick、事件计数、lag、ack 分类计数、邮箱深度、快照计数等）。
-- `GET /matches`：match 级聚合视图（session 列表、阵营、累计事件数、最后事件时间）。
-- `GET /health`：存活探针（三进程都有）。
+- `GET /sessions`: list of `SessionDiagnostics` (tick, event counts, lag, ack classified counts, mailbox depth, snapshot counts, etc.).
+- `GET /matches`: match-level aggregate view (session list, factions, cumulative event counts, last event time).
+- `GET /health`: liveness probe (all three processes have it).
 
-## 日志关键字段
+## Log Key Fields
 
-| 字段 | 出现位置 | 含义 |
+| Field | Where it appears | Meaning |
 | --- | --- | --- |
-| `eventId` / `SourceEventId` | ingress、engine 事件道 | 平台事件关联 |
-| `messageId` | IPC 发布失败、engine 收包 | 投递关联 |
-| `sessionId` / `clientId` | 全链路（WS 拒绝、回路错误、快照发送失败均携带） | 会话与客户端 |
-| `tickId` | tick 过载、快照发送失败、dispatch 失败路径 | 权威 tick 水位 |
+| `eventId` / `SourceEventId` | ingress, engine event lane | Platform event correlation |
+| `messageId` | IPC publish failure, engine packet reception | Delivery correlation |
+| `sessionId` / `clientId` | Whole chain (WS rejection, loop errors, snapshot send failures all carry them) | Session and client |
+| `tickId` | tick overrun, snapshot send failure, dispatch failure paths | Authoritative tick watermark |
 
-WS 回路与快照发送的失败日志（`WebSocket loop error`、`Failed to send snapshot`）均带
-`session=` / `clientId=` / `tick=` 结构化字段，可与 `/sessions` 诊断的 lag/ack 字段对齐排查。
+The failure logs of the WS loop and snapshot sending (`WebSocket loop error`, `Failed to send snapshot`) all carry
+`session=` / `clientId=` / `tick=` structured fields, which can be aligned with the lag/ack fields of the `/sessions` diagnostics for troubleshooting.

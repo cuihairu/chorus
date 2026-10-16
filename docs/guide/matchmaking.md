@@ -1,17 +1,21 @@
 ---
-title: 匹配（Matchmaker）
+title: Matchmaking (Matchmaker)
 ---
 
-# 匹配（Matchmaker）
+<p align="center">
+  English | <a href="matchmaking.zh.md">简体中文</a>
+</p>
 
-封装状态：**库级已封装**（`Chorus.Engine.Matchmaking`），**宿主接线未内置**——
-本仓没有 join 端点、没有开局路由，调用方需要自己驱动。边界与原因见
-[本文末「边界」](#边界不做什么)。
+# Matchmaking (Matchmaker)
 
-能力定位：把"谁排进队列、够不够人数、要不要机器人补齐"这一段从玩法代码里剥出来，
-时间由调用方注入（不读墙钟），所以整段逻辑可以确定性单测。
+Encapsulation status: **encapsulated at the library level** (`Chorus.Engine.Matchmaking`), **host wiring not built in** —
+this repo has no join endpoint and no match-start routing; the caller must drive it. For boundaries and reasons see
+[Boundaries at the end of this page](#boundaries-what-it-doesnt-do).
 
-## 最小示例
+Capability positioning: it carves the "who queues up, is there enough headcount, should bots fill the gap" segment out of gameplay code,
+with time injected by the caller (no wall clock reads), so the entire segment of logic can be deterministically unit-tested.
+
+## Minimal Example
 
 ```csharp
 using Chorus.Engine.Matchmaking;
@@ -63,60 +67,60 @@ internal sealed class CountingBotFactory : IBotParticipantFactory
 }
 ```
 
-## 参数与返回
+## Parameters and Returns
 
-| 类型 / 成员 | 签名要点 | 出处 |
+| Type / Member | Signature Highlights | Source |
 |---|---|---|
-| `MatchmakingPolicy` | `(mode, minParticipants, maxParticipants, fillMode, waitTimeoutMs)`；构造期校验，不合规直接 `ArgumentException` | `Matchmaker.cs:17-65` |
-| `MatchmakingFillMode` | `WaitForRealPlayers`（等真人，超时后机器人补齐）/ `FillWithBotsImmediately`（有人即补机器人开局） | `Matchmaker.cs:4-11` |
-| `Matchmaker.Join` | `(requestId, playerId, nowMs) → bool`；已在队列则返回 false（不静默去重） | `Matchmaker.cs:147` |
-| `Matchmaker.Leave` | `(playerId) → bool`；不在队列返回 false | `Matchmaker.cs:172` |
-| `Matchmaker.TryFormMatch` | `(nowMs) → MatchmakingResult`；真实人数 FIFO 至多 `maxParticipants`，不足按 fill mode 决策 | `Matchmaker.cs:191` |
-| `Matchmaker.PendingCount` | 当前排队真人数 | `Matchmaker.cs:132` |
+| `MatchmakingPolicy` | `(mode, minParticipants, maxParticipants, fillMode, waitTimeoutMs)`; validated at construction, invalid input throws `ArgumentException` directly | `Matchmaker.cs:17-65` |
+| `MatchmakingFillMode` | `WaitForRealPlayers` (wait for real players, bots fill after timeout) / `FillWithBotsImmediately` (fill with bots and start as soon as anyone is there) | `Matchmaker.cs:4-11` |
+| `Matchmaker.Join` | `(requestId, playerId, nowMs) → bool`; returns false if already in the queue (no silent deduplication) | `Matchmaker.cs:147` |
+| `Matchmaker.Leave` | `(playerId) → bool`; returns false if not in the queue | `Matchmaker.cs:172` |
+| `Matchmaker.TryFormMatch` | `(nowMs) → MatchmakingResult`; real players FIFO up to `maxParticipants`, insufficient headcount decided per fill mode | `Matchmaker.cs:191` |
+| `Matchmaker.PendingCount` | current number of real players queued | `Matchmaker.cs:132` |
 | `IBotParticipantFactory` | `Create(count, requestId, nowMs) → MatchParticipant[]` | `Matchmaker.cs:95-99` |
-| `MatchParticipant` | `(ParticipantId, IsBot, PlayerId?, BotId?)`；真人与机器人同一 ParticipantId 命名空间 | `Matchmaker.cs:75-79` |
-| `MatchmakingResult` | `(Started, FilledWithBots, Participants)`；未开局复用 `NotStarted`（`Participants` 为空） | `Matchmaker.cs:82-88` |
+| `MatchParticipant` | `(ParticipantId, IsBot, PlayerId?, BotId?)`; real players and bots share the same ParticipantId namespace | `Matchmaker.cs:75-79` |
+| `MatchmakingResult` | `(Started, FilledWithBots, Participants)`; no-start reuses `NotStarted` (`Participants` empty) | `Matchmaker.cs:82-88` |
 
-## 错误与异常
+## Errors and Exceptions
 
-| 情况 | 行为 | 出处 |
+| Case | Behavior | Source |
 |---|---|---|
-| `mode` 空白 / `min<1` / `max<min` / 等待真人模式缺 `waitTimeoutMs` | `ArgumentException`（构造期） | `Matchmaker.cs:26-45` |
-| `Join`/`Leave` 空 id | `ArgumentException` | `Matchmaker.cs:150`、`:175` |
-| 同一 `playerId` 重复排队 | `Join` 返回 `false` | `Matchmaker.cs:161-163` |
-| 人数不足且未触发机器人填充 | 返回 `MatchmakingResult.NotStarted` | `Matchmaker.cs:217-219` |
-| 机器人工厂产出数量不符 / 缺 `ParticipantId` 或 `BotId` / `ParticipantId` 与真人重复 | `InvalidOperationException`（拒绝组局，不拿残缺参与者开局） | `Matchmaker.cs:237-257` |
+| `mode` blank / `min<1` / `max<min` / wait-for-real-players mode missing `waitTimeoutMs` | `ArgumentException` (at construction) | `Matchmaker.cs:26-45` |
+| `Join`/`Leave` empty id | `ArgumentException` | `Matchmaker.cs:150`、`:175` |
+| same `playerId` queued twice | `Join` returns `false` | `Matchmaker.cs:161-163` |
+| insufficient headcount and bot fill not triggered | returns `MatchmakingResult.NotStarted` | `Matchmaker.cs:217-219` |
+| bot factory produces wrong count / missing `ParticipantId` or `BotId` / `ParticipantId` duplicates a real player | `InvalidOperationException` (refuses to form the match; won't start with incomplete participants) | `Matchmaker.cs:237-257` |
 
-组局规则细节：真人 FIFO、一局最多 `maxParticipants`、超额者留队列等下一局
-（`Matchmaker.cs:200-211`）；机器人只补到 `minParticipants`，不是 `max`（`:222`）。
+Match-forming rule details: real players FIFO, at most `maxParticipants` per match, the overflow stays in the queue for the next match
+(`Matchmaker.cs:200-211`); bots only fill up to `minParticipants`, not `max` (`:222`).
 
-## 机器人怎么动起来
+## How Bots Get Moving
 
-`Matchmaker` 只负责组局。让机器人在游戏里行动是另外两个类型：
+`Matchmaker` is only responsible for forming matches. Making bots act in the game is the job of two other types:
 
-- `IBotStrategy` / `BotWorldView` / `BotStrategyConfig`（`src/Chorus.Engine/BotStrategy.cs:66-78`、`:56`、`:6`）
-  ——按 tick 从世界视图算出 `BotAction`。
-- `BotRuntime`（`src/Chorus.Engine/BotRuntime.cs:158`）——按 tick 拉取策略输出、经有界队列
-  `BotActionQueue`（`:61`）提交给会话，`Drain`/`DrainUpTo` 控制消费节奏（`:166`、`:180`）；
-  内置工厂 `DefaultBotParticipantFactory` 在 `:8`。
+- `IBotStrategy` / `BotWorldView` / `BotStrategyConfig` (`src/Chorus.Engine/BotStrategy.cs:66-78`, `:56`, `:6`)
+  — computes a `BotAction` from the world view each tick.
+- `BotRuntime` (`src/Chorus.Engine/BotRuntime.cs:158`) — pulls strategy output each tick, submits it to the session via the bounded queue
+  `BotActionQueue` (`:61`), with `Drain`/`DrainUpTo` controlling the consumption pace (`:166`, `:180`);
+  the built-in factory `DefaultBotParticipantFactory` is at `:8`.
 
-## 边界（不做什么）
+## Boundaries (What It Doesn't Do)
 
-- **没有 join / 开局端点，也没有开局路由**：本仓宿主（Server/Gateway/EngineHost）都不注册
-  `Matchmaker`，没有 DI 绑定，也没有"队列 → 会话创建"的接线。原因是这部分需要产品语义
-  （谁能入队、开局用什么模式、开局后房间归属哪个会话/平台绑定），而这些语义与阶段三
-  多 worker 路由一起待定（`todo.md:156`），仓库内设计文档同样把匹配与机器人标为后续项
-  （[总体架构](../design/overall-architecture.md) §6）。库可以先定型，宿主接线等语义明确。
-- **不做技能评估**：没有 elo/MMR/分段，只有"人数 + 模式 + 等待策略"。
-- **不创建会话/房间**：拿到 `MatchmakingResult` 之后如何把参与者映射到会话，由调用方负责
-  （类注释同样明确此职责在外部，`Matchmaker.cs:113-114`）。
-- **时间不自管**：所有 `nowMs` 由调用方传入，`Matchmaker` 不读墙钟。
-- **`GET /matches` 不是匹配队列**：`MatchRegistry` 只是 match 级**诊断聚合**
-  （`src/Chorus.Server/Program.cs:21` 注册、`:144` 暴露），阵营计数恒为 0，且只在单进程形态存在
-  （拆分形态无此端点），与排队/组局无关。
+- **No join / match-start endpoint, and no match-start routing**: none of this repo's hosts (Server/Gateway/EngineHost) register a
+  `Matchmaker`, there are no DI bindings, and there is no "queue → session creation" wiring. The reason is that this part needs product semantics
+  (who can enqueue, which mode a match starts with, which session/platform binding owns the room after the match starts), and these semantics are
+  pending along with phase-three multi-worker routing (`todo.md:156`); the in-repo design documents likewise mark matchmaking and bots as follow-up items
+  ([Overall Architecture](../design/overall-architecture.md) §6). The library can be finalized first; host wiring waits for the semantics to be settled.
+- **No skill rating**: no elo/MMR/divisions, only "headcount + mode + wait strategy".
+- **Does not create sessions/rooms**: how to map participants to a session after obtaining a `MatchmakingResult` is the caller's responsibility
+  (the class comment likewise makes clear this responsibility is external, `Matchmaker.cs:113-114`).
+- **Does not manage its own time**: all `nowMs` values are passed in by the caller; `Matchmaker` reads no wall clock.
+- **`GET /matches` is not the matchmaking queue**: `MatchRegistry` is only a match-level **diagnostic aggregate**
+  (registered at `src/Chorus.Server/Program.cs:21`, exposed at `:144`), faction counts are always 0, and it only exists in the single-process mode
+  (the split mode has no such endpoint); it has nothing to do with queuing/match-forming.
 
-## 相关页面
+## Related Pages
 
-- [总体架构](../design/overall-architecture.md) §6 匹配与机器人
-- [对战](./battle.md)（开局后会话与快照怎么走）
-- [架构说明](../architecture.md)（会话权威与多 worker 边界）
+- [Overall Architecture](../design/overall-architecture.md) §6 Matchmaking and Bots
+- [Battle](./battle.md) (how sessions and snapshots go after a match starts)
+- [Architecture Overview](../architecture.md) (session authority and multi-worker boundaries)

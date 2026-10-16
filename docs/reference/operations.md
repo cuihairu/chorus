@@ -1,23 +1,27 @@
 ---
-title: 运维与观测
+title: Operations and Observability
 ---
 
-# 运维与观测
+<p align="center">
+  English | <a href="operations.zh.md">简体中文</a>
+</p>
 
-相关文档：
+# Operations and Observability
 
-- [可观测性](./observability.md)
-- [参数调优](./tuning.md)
-- [故障排查](./troubleshooting.md)
-- [帧同步最佳实践](../design/frame-sync-best-practices.md)
-- [客户端追同步状态机](../design/client-resync-state-machine.md)
+Related docs:
 
-## 指标端点
+- [Observability](./observability.md)
+- [Parameter Tuning](./tuning.md)
+- [Troubleshooting](./troubleshooting.md)
+- [Frame Sync Best Practices](../design/frame-sync-best-practices.md)
+- [Client Resync State Machine](../design/client-resync-state-machine.md)
 
-- `GET /sessions`：返回会话与客户端指标（tick、事件计数、lag、ack age、resync 次数）
-- `GET /matches`：返回 match 级聚合视图（当前包含 match 下的 session 列表、阵营列表、累计事件数、最后事件时间）
+## Metrics Endpoints
 
-关键字段对应当前 `SessionDiagnostics` / `SessionClientDiagnostics`：
+- `GET /sessions`: returns session and client metrics (tick, event counts, lag, ack age, resync count)
+- `GET /matches`: returns a match-level aggregate view (currently includes the session list under a match, faction list, cumulative event count, last event time)
+
+Key fields correspond to the current `SessionDiagnostics` / `SessionClientDiagnostics`:
 
 - `sessionId`
 - `tickId`
@@ -29,11 +33,11 @@ title: 运维与观测
 - `totalDroppedEvents`
 - `totalSnapshotsSent`
 - `totalResyncSnapshotsSent`
-- `totalResyncRequests`（2026-10-13 起，客户端主动 `resync` 拉取总数）
-- `totalResyncReplays`（补帧窗口命中、已回放）
-- `totalResyncWindowMisses`（窗口起点已被驱逐，回吐最新帧 + `resync-gap`）
-- `totalResyncThrottled`（冷却内被拒）
-- `frameHistoryBytes`（该 session 帧历史当前占用字节）
+- `totalResyncRequests` (since 2026-10-13, total of client-initiated `resync` pulls)
+- `totalResyncReplays` (refill window hit and replayed)
+- `totalResyncWindowMisses` (window start already evicted; latest frame returned + `resync-gap`)
+- `totalResyncThrottled` (rejected within the cooldown)
+- `frameHistoryBytes` (bytes currently used by this session's frame history)
 - `lastTickProcessMs`
 - `clients[].clientId`
 - `clients[].connectedTickId`
@@ -43,15 +47,15 @@ title: 运维与观测
 - `clients[].resyncCount`
 - `clients[].lastResyncAgeMs`
 
-排障时优先关注：
+When troubleshooting, prioritize:
 
-- `lastTickProcessMs` 是否逼近 `tickDurationMs`
-- `clients[].lagTicks` 是否持续增长
-- `clients[].lastAckAgeMs` 是否异常升高
-- `totalMergedEvents` 是否在高峰期显著升高
-- `totalDroppedEvents` 是否在高峰期快速增加
+- whether `lastTickProcessMs` is approaching `tickDurationMs`
+- whether `clients[].lagTicks` keeps growing
+- whether `clients[].lastAckAgeMs` rises abnormally
+- whether `totalMergedEvents` rises significantly at peak
+- whether `totalDroppedEvents` increases rapidly at peak
 
-当需要确认“多个主播/多个 session 是否实际落在同一局”时，可额外检查 `GET /matches`：
+When you need to confirm "whether multiple streamers/multiple sessions actually landed in the same match", additionally check `GET /matches`:
 
 - `match.matchId`
 - `match.sessionIds[]`
@@ -60,27 +64,27 @@ title: 运维与观测
 - `totalEvents`
 - `lastEventTimeMs`
 
-## Ingress（平台事件入口）
+## Ingress (Platform Event Entry)
 
-- `POST /ingress/{platform}`：统一平台事件入口（当前提供 `test` 示例 mapper）
-- 默认示例规则支持在 `Ingress:FactionRules` 中配置“弹幕口令 -> 阵营”和“礼物 ID -> 阵营”映射；当事件未显式带 `factionId` 时，会按规则自动补全
+- `POST /ingress/{platform}`: the unified platform event entry (currently provides the `test` sample mapper)
+- The default sample rules support configuring "danmaku keyword → faction" and "gift ID → faction" mappings in `Ingress:FactionRules`; when an event does not explicitly carry a `factionId`, it is completed automatically per the rules
 
-## CI / 覆盖率
+## CI / Coverage
 
-- GitHub Actions：`.github/workflows/ci.yml`
-- 覆盖率：CI 生成 `coverage.cobertura.xml` 并上传到 Codecov（README badge 展示）
+- GitHub Actions: `.github/workflows/ci.yml`
+- Coverage: CI generates `coverage.cobertura.xml` and uploads it to Codecov (shown in the README badge)
 
-## 发布（Tag）
+## Release (Tag)
 
-推送 `v*` tag 会触发自动创建 GitHub Release：
+Pushing a `v*` tag triggers automatic creation of a GitHub Release:
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-## 关联文档
+## Related Docs
 
-- [故障排查](./troubleshooting.md)
-- [参数调优](./tuning.md)
-- [协议参考](./protocol.md)
+- [Troubleshooting](./troubleshooting.md)
+- [Parameter Tuning](./tuning.md)
+- [Protocol Reference](./protocol.md)

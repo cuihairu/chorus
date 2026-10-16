@@ -1,44 +1,48 @@
 ---
-title: 拆分模式（Gateway + EngineHost）
+title: Split Mode (Gateway + EngineHost)
 ---
 
-# 拆分模式（Gateway + EngineHost）
+<p align="center">
+  English | <a href="split-mode.zh.md">简体中文</a>
+</p>
 
-本模式用于验证“单进程/拆分兼容”的架构：
+# Split Mode (Gateway + EngineHost)
 
-- `Chorus.Gateway`：对外提供 WebSocket `/ws` 与平台入口 `/ingress/{platform}`
-- `Chorus.EngineHost`：运行权威 tick + 状态快照（SessionActor + GameModule），并提供 `GET /health` 与 `GET /metrics`（本机 `http://localhost:5067`）
-- 两者通过本机 IPC 通信（默认：优先 UDS，失败时降级 NamedPipe；可选：TCP）
+This mode is used to verify the "single-process / split compatibility" architecture:
 
-## 1) 启动 EngineHost
+- `Chorus.Gateway`: exposes WebSocket `/ws` and the platform entry point `/ingress/{platform}` externally
+- `Chorus.EngineHost`: runs the authoritative tick + state snapshots (SessionActor + GameModule), and provides `GET /health` and `GET /metrics` (local `http://localhost:5067`)
+- The two communicate over local IPC (default: prefer UDS, fall back to NamedPipe on failure; optional: TCP)
+
+## 1) Start EngineHost
 
 ```bash
 dotnet run --project src/Chorus.EngineHost
 ```
 
-默认会启动 IPC server：`Gateway -> Engine`（命令通道），并作为 IPC client 连接 `Engine -> Gateway`（事件通道）。
+By default it starts the IPC server: `Gateway -> Engine` (command channel), and connects as an IPC client to `Engine -> Gateway` (event channel).
 
-## 2) 启动 Gateway
+## 2) Start Gateway
 
 ```bash
 dotnet run --project src/Chorus.Gateway
 ```
 
-Gateway 会启动 IPC server：`Engine -> Gateway`（事件通道），并作为 IPC client 连接 `Gateway -> Engine`（命令通道）。
+Gateway starts the IPC server: `Engine -> Gateway` (event channel), and connects as an IPC client to `Gateway -> Engine` (command channel).
 
-## 3) WebSocket 连接
+## 3) WebSocket Connection
 
-连接端口取决于 `src/Chorus.Gateway/Properties/launchSettings.json`（默认类似 `ws://localhost:5168/ws`）。
+The connection port depends on `src/Chorus.Gateway/Properties/launchSettings.json` (by default something like `ws://localhost:5168/ws`).
 
-第一条消息发送：
+Send the first message:
 
 ```json
 {"type":"hello"}
 ```
 
-之后会收到 `welcome`（由 EngineHost 下发的权威 tick 参数），并持续收到 `snapshot`。
+After that you will receive `welcome` (the authoritative tick parameters sent down by EngineHost), and continuously receive `snapshot`.
 
-## 4) 注入测试事件（模拟平台）
+## 4) Inject Test Events (Simulating a Platform)
 
 ```bash
 curl -X POST http://localhost:5168/ingress/test \
@@ -46,30 +50,30 @@ curl -X POST http://localhost:5168/ingress/test \
   -d '{"sessionId":"<sessionId>","userId":"u1","kind":"Like"}'
 ```
 
-## IPC 配置
+## IPC Configuration
 
-两边都支持以下配置（见各自 `appsettings.json`）：
+Both sides support the following configuration (see each side's `appsettings.json`):
 
 - `Ipc:Transport`: `Auto|UnixDomainSocket|NamedPipe|Tcp|Http`
-- `Ipc:UnixSocketDir`: 默认 `/tmp/chorus`
-- `Ipc:NamedPipePrefix`: 默认 `chorus`
-- `Ipc:TcpHost`: 默认 `127.0.0.1`
-- `Ipc:TcpGatewayToEnginePort`: 默认 `27500`
-- `Ipc:TcpEngineToGatewayPort`: 默认 `27501`
-- `Ipc:HttpGatewayToEngineUrl`: 默认 `http://127.0.0.1:27600/gw-to-eng/`
-- `Ipc:HttpEngineToGatewayUrl`: 默认 `http://127.0.0.1:27601/eng-to-gw/`
-- `Ipc:GatewayIds`: 默认 `gateway`（引擎侧；多网关时逗号分隔，见 [进程拓扑](../design/process-topology.md) §4）
-- `Ipc:GatewayId`: 默认 `gateway`（Gateway 侧；多网关时区分身份）
-- `Ipc:HeartbeatIntervalMs`: 默认 `5000`（引擎→网关心跳；`0` 关闭）
-- `Ipc:ReadinessMaxSilenceMs`: 默认 `15000`（Gateway `/ready` 判定窗口；见 [部署](../reference/deployment.md)）
+- `Ipc:UnixSocketDir`: default `/tmp/chorus`
+- `Ipc:NamedPipePrefix`: default `chorus`
+- `Ipc:TcpHost`: default `127.0.0.1`
+- `Ipc:TcpGatewayToEnginePort`: default `27500`
+- `Ipc:TcpEngineToGatewayPort`: default `27501`
+- `Ipc:HttpGatewayToEngineUrl`: default `http://127.0.0.1:27600/gw-to-eng/`
+- `Ipc:HttpEngineToGatewayUrl`: default `http://127.0.0.1:27601/eng-to-gw/`
+- `Ipc:GatewayIds`: default `gateway` (engine side; comma-separated for multiple gateways, see [Process Topology](../design/process-topology.md) §4)
+- `Ipc:GatewayId`: default `gateway` (Gateway side; distinguishes identity with multiple gateways)
+- `Ipc:HeartbeatIntervalMs`: default `5000` (engine→gateway heartbeat; `0` disables it)
+- `Ipc:ReadinessMaxSilenceMs`: default `15000` (Gateway `/ready` decision window; see [Deployment](../reference/deployment.md))
 
-如果要把 Gateway/EngineHost 拆到两个容器里，通常会把 `Ipc:Transport` 设为 `Tcp`，并为上述两个端口做容器端口映射。
+If you want to split Gateway/EngineHost into two containers, you typically set `Ipc:Transport` to `Tcp` and map those two ports in the container port mapping.
 
-## 多网关（三进程形态）
+## Multiple Gateways (Three-Process Mode)
 
-同一 EngineHost 可挂多个 Gateway 进程（platform-gw / streamer-gw，见 [进程拓扑](../design/process-topology.md) §4）：
+A single EngineHost can host multiple Gateway processes (platform-gw / streamer-gw, see [Process Topology](../design/process-topology.md) §4):
 
-- 每个 Gateway 配 `Gateway:Id`（如 `platform-gw` / `streamer-gw`），自己的 eng→gw 通道名自动带 id 后缀
-- EngineHost 配 `Ipc:GatewayIds=platform-gw,streamer-gw`（逗号分隔），引擎对每条通道扇出发布
-- 两个网关可共用同一 `Ipc:UnixSocketDir`，通道名按 id 区分，互不覆盖
-- 不配 `Gateway:Id` / `Ipc:GatewayIds` 时行为与旧版一致（单网关通道名）
+- Each Gateway configures `Gateway:Id` (e.g. `platform-gw` / `streamer-gw`); its own eng→gw channel name automatically carries the id suffix
+- EngineHost configures `Ipc:GatewayIds=platform-gw,streamer-gw` (comma-separated); the engine fans out publishes on each channel
+- The two gateways can share the same `Ipc:UnixSocketDir`; channel names are distinguished by id and do not overwrite each other
+- When `Gateway:Id` / `Ipc:GatewayIds` are not configured, behavior matches the old version (single-gateway channel names)

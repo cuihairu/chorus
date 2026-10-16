@@ -1,308 +1,310 @@
 ---
-title: 参数调优
+title: Parameter Tuning
 ---
 
-# 参数调优
+<p align="center">
+  English | <a href="tuning.zh.md">简体中文</a>
+</p>
 
-本文给出帧同步相关核心参数的调优方法，目标不是追求“绝对最低延迟”，而是在稳定性、恢复速度和观感之间取得可控平衡。
+# Parameter Tuning
 
-建议结合以下文档一起看：
+This document gives the tuning methods for the core frame sync parameters. The goal is not to pursue "absolutely lowest latency", but to achieve a controllable balance among stability, recovery speed, and perceived smoothness.
 
-- [帧同步最佳实践](../design/frame-sync-best-practices.md)
-- [帧同步设计](../design/frame-sync.md)
-- [运维与观测](./operations.md)
+It is recommended to read it together with:
 
-## 调参原则
+- [Frame Sync Best Practices](../design/frame-sync-best-practices.md)
+- [Frame Sync Design](../design/frame-sync.md)
+- [Operations and Observability](./operations.md)
 
-调参顺序不要反。
+## Tuning Principles
 
-正确顺序通常是：
+Do not reverse the tuning order.
 
-1. 先确认架构正确：服务器权威 tick、ACK、快照、背压已经齐全。
-2. 再确认系统不过载：`lastTickProcessMs` 不能长期逼近 tick 周期。
-3. 最后才微调延迟、追赶和快照频率。
+The correct order is usually:
 
-如果系统已经过载，再怎么调 `maxLagTicks` 或追帧阈值都只是延后爆炸时间。
+1. First confirm the architecture is correct: server-authoritative tick, ACK, snapshot, and backpressure are all in place.
+2. Then confirm the system is not overloaded: `lastTickProcessMs` must not stay close to the tick period for a long time.
+3. Only then fine-tune latency, catch-up, and snapshot frequency.
 
-## 推荐起始值
+If the system is already overloaded, tuning `maxLagTicks` or catch-up thresholds no matter how much only delays the time of explosion.
 
-适合直播互动、礼物/弹幕驱动玩法的建议起始区间：
+## Recommended Starting Values
 
-- `tickDurationMs`: `50` 或 `66`
+Suggested starting ranges for live-stream interaction and gift/danmaku-driven gameplay:
+
+- `tickDurationMs`: `50` or `66`
 - `inputDelayTicks`: `2~4`
 - `snapshotEveryTicks`: `2~5`
 - `maxLagTicks`: `6~10`
 - `resyncCooldownMs`: `1000~3000`
-- `maxEventsPerTick`: 按压测结果硬限制
+- `maxEventsPerTick`: hard-limited according to load test results
 
-这不是最终值，但足够作为第一版上线参数。
+These are not final values, but they are sufficient as first-version launch parameters.
 
-## 参数说明
+## Parameter Descriptions
 
 ### `tickDurationMs`
 
-含义：
+Meaning:
 
-- 服务器权威逻辑 tick 周期
+- The server-authoritative logic tick period
 
-调大后的效果：
+Effect of increasing:
 
-- 服务端压力下降
-- 每秒同步次数减少
-- 输入到生效的最小时间变长
+- Server pressure decreases
+- Number of syncs per second decreases
+- The minimum time from input to taking effect becomes longer
 
-调小后的效果：
+Effect of decreasing:
 
-- 同步更细
-- 恢复更平滑
-- 服务端和客户端压力明显上升
+- Sync is finer
+- Recovery is smoother
+- Server and client pressure rises noticeably
 
-建议：
+Suggestions:
 
-- 直播互动优先从 `66ms` 开始
-- 节奏更快的玩法可以尝试 `50ms`
-- 没有充分压测前，不建议盲目压到 `33ms`
+- For live-stream interaction, prefer starting from `66ms`
+- Faster-paced gameplay can try `50ms`
+- Before sufficient load testing, it is not recommended to blindly push it down to `33ms`
 
-危险信号：
+Danger signal:
 
-- `lastTickProcessMs` 经常超过 `tickDurationMs` 的 `60%~80%`
+- `lastTickProcessMs` frequently exceeds `60%~80%` of `tickDurationMs`
 
-出现这种情况时，不要继续缩小 tick，先解决过载。
+When this happens, do not keep shrinking the tick; solve the overload first.
 
 ### `inputDelayTicks`
 
-含义：
+Meaning:
 
-- 输入被调度到未来多少个 tick 后统一结算
+- How many ticks into the future input is scheduled before being settled in bulk
 
-作用：
+Role:
 
-- 吸收网络抖动
-- 吸收平台事件乱序
-- 减少“刚到就过期”的边界问题
+- Absorbs network jitter
+- Absorbs out-of-order platform events
+- Reduces "arrived just in time but already expired" boundary problems
 
-调大后的效果：
+Effect of increasing:
 
-- 稳定性上升
-- 操作到生效的体感延迟上升
+- Stability increases
+- The felt latency from operation to taking effect increases
 
-调小后的效果：
+Effect of decreasing:
 
-- 响应更快
-- 更容易受抖动影响
+- Response is faster
+- More easily affected by jitter
 
-建议：
+Suggestions:
 
-- 网络波动明显时，优先从 `2` 调到 `3` 或 `4`
-- 如果事件来源本来就不是玩家精确操作，而是直播平台事件，宁可稍大也不要过小
+- When network fluctuation is obvious, prefer tuning from `2` up to `3` or `4`
+- If the event source is not precise player input but live-stream platform events, it is better to be slightly larger than too small
 
-危险信号：
+Danger signal:
 
-- 轻微抖动就频繁出现 late event 或 ack 波动
+- Slight jitter frequently causes late events or ACK fluctuation
 
 ### `snapshotEveryTicks`
 
-含义：
+Meaning:
 
-- 周期快照的发送频率
+- The send frequency of periodic snapshots
 
-调大后的效果：
+Effect of increasing:
 
-- 带宽和序列化开销下降
-- 慢端恢复会更慢
+- Bandwidth and serialization overhead decrease
+- Slow clients recover more slowly
 
-调小后的效果：
+Effect of decreasing:
 
-- 慢端更快恢复
-- 带宽和服务端快照成本上升
+- Slow clients recover faster
+- Bandwidth and server-side snapshot cost increase
 
-建议：
+Suggestions:
 
-- 第一版先保守一点，取 `2~5`
-- 如果快照很轻，可以更频繁
-- 如果快照很重，先优化快照体积，不要简单降低恢复频率
+- For the first version, be conservative and take `2~5`
+- If snapshots are light, they can be sent more frequently
+- If snapshots are heavy, optimize snapshot size first; do not simply lower the recovery frequency
 
-### 快照序列化成本（2026-10-12 起）
+### Snapshot Serialization Cost (Since 2026-10-12)
 
-单进程形态的周期广播快照**每 tick 只序列化一次**（`WireSnapshot.Encode`，序列化即
-线协议 `snapshot` 消息的 UTF-8 字节），所有客户端复用同一份字节——客户端数增加不再线性
-放大 JSON 序列化开销。强制 resync 快照（带目标客户端元数据）仍按客户端单独编码（罕见路径）。
+Periodic broadcast snapshots in the single-process form are **serialized only once per tick** (`WireSnapshot.Encode`, where serialization produces the UTF-8 bytes of the wire protocol `snapshot` message); all clients reuse the same bytes — adding more clients no longer linearly amplifies JSON serialization overhead. Forced resync snapshots (with target client metadata) are still encoded per client (rare path).
 
-二进制格式（MessagePack/FlatBuffers）**评估结论：暂不引入**——
+Binary formats (MessagePack/FlatBuffers) — **evaluation conclusion: not introducing for now**:
 
-- 收益：进一步省 CPU/带宽（约 30–60%），但需要客户端同步换解码库；
-- 成本：新增依赖 + 线协议破坏性变更（0.x 允许，但两个平台生态的 JS/TS 客户端都要跟）；
-- 决定：先把 JSON 路径的「序列化一次复用」吃满，观察 `chorus_tick_duration_ms` 与
-  快照体积（`/sessions` 的 `lastSnapshotBytes` 与 `/metrics` 的 `chorus_snapshot_bytes` 已暴露每 session 最近一次快照的线字节数，`8e87a47` 同批 `f301aa3`；超限另见 `chorus_snapshots_oversize_total`）再议；引入时机放在 1.0 的线协议
-  版本 bump 上（见 [版本策略](./versioning.md)），不单独发破坏性变更。
+- Benefit: further saves CPU/bandwidth (about 30–60%), but requires clients to switch decoding libraries in sync;
+- Cost: new dependency + wire protocol breaking change (allowed in 0.x, but the JS/TS clients on both platform ecosystems must follow);
+- Decision: first fully exploit the "serialize once, reuse" JSON path, observe `chorus_tick_duration_ms` and
+  snapshot size (`/sessions`'s `lastSnapshotBytes` and `/metrics`'s `chorus_snapshot_bytes` already expose the wire byte count of each session's most recent snapshot, `8e87a47` and same batch `f301aa3`; oversize see `chorus_snapshots_oversize_total` separately) before deciding again; the introduction timing is placed on the wire protocol
+  version bump for 1.0 (see [versioning policy](./versioning.md)), not as a standalone breaking change.
 
-危险信号：
+Danger signal:
 
-- 强制快照触发后，客户端仍需等待很久才能重新收敛
+- After a forced snapshot triggers, the client still has to wait a long time before reconverging
 
 ### `maxLagTicks`
 
-含义：
+Meaning:
 
-- 客户端落后多少 tick 后，触发强制快照恢复
+- After how many ticks a client is behind, forced snapshot recovery is triggered
 
-调大后的效果：
+Effect of increasing:
 
-- 系统对短期波动更宽容
-- 慢端可能在错误状态停留更久
+- The system is more tolerant of short-term fluctuation
+- Slow clients may stay in the wrong state longer
 
-调小后的效果：
+Effect of decreasing:
 
-- 恢复更积极
-- 更容易频繁触发 resync
+- Recovery is more aggressive
+- resync is triggered more frequently
 
-建议：
+Suggestions:
 
-- 一般从 `6~10` 开始
-- tick 越短，阈值可以略大
-- tick 越长，阈值不宜过大，否则体感会明显错位
+- Generally start from `6~10`
+- The shorter the tick, the slightly larger the threshold can be
+- The longer the tick, the threshold should not be too large, otherwise the felt timing will be noticeably off
 
-危险信号：
+Danger signal:
 
-- 某些客户端 `lagTicks` 已经很高，但还在尝试本地补追，不进入快照恢复
+- Some clients' `lagTicks` are already high, but they are still trying local catch-up instead of entering snapshot recovery
 
 ### `resyncCooldownMs`
 
-含义：
+Meaning:
 
-- 同一客户端两次强制快照之间的最小间隔
+- The minimum interval between two forced snapshots for the same client
 
-作用：
+Role:
 
-- 防止系统在短时间内反复强制快照，形成抖动
+- Prevents the system from repeatedly forcing snapshots in a short time, forming oscillation
 
-建议：
+Suggestions:
 
-- 一般从 `1000~3000ms` 开始
-- 如果客户端应用快照本身较重，可以适度调大
+- Generally start from `1000~3000ms`
+- If the client's snapshot application itself is heavy, it can be moderately increased
 
-危险信号：
+Danger signal:
 
-- 某个客户端在几秒内连续收到多次强制快照，说明不是阈值太低，而是它根本没有恢复能力
+- A client receiving multiple forced snapshots within a few seconds indicates the threshold is not too low, but that it has no recovery capability at all
 
 ### `maxEventsPerTick`
 
-含义：
+Meaning:
 
-- 单 tick 最大可进入权威逻辑的事件数
+- The maximum number of events allowed to enter the authoritative logic per tick
 
-这是最重要的安全阀之一。
+This is one of the most important safety valves.
 
-建议：
+Suggestions:
 
-- 必须配置
-- 必须配合事件合并或降采样策略
-- 必须通过压测验证，不要靠拍脑袋
+- Must be configured
+- Must be paired with an event merging or downsampling strategy
+- Must be verified by load test; do not decide by guesswork
 
-危险信号：
+Danger signal:
 
-- 高峰期单帧事件数无限增长
-- 服务端 tick 时间随活动峰值线性上升
+- Single-frame event count grows without bound during peaks
+- Server tick time rises linearly with activity peaks
 
-## 典型调参场景
+## Typical Tuning Scenarios
 
-### 场景 1：轻微抖动时经常误判 lag
+### Scenario 1: Frequently Misjudged as Lagging During Slight Jitter
 
-表现：
+Presentation:
 
-- 客户端偶尔卡一下就被认为落后
-- 强制快照过于频繁
+- A client stutters briefly and is judged as behind
+- Forced snapshots are too frequent
 
-优先处理：
+Handle first:
 
-1. 适度增大 `inputDelayTicks`
-2. 视情况略增 `maxLagTicks`
-3. 检查 ACK 是否在客户端真正应用快照后才发送
+1. Moderately increase `inputDelayTicks`
+2. Slightly increase `maxLagTicks` as appropriate
+3. Check whether ACK is sent only after the client has truly applied the snapshot
 
-不要先做的事：
+Do not do first:
 
-- 一味提高客户端追帧速度
+- Only raising the client's frame catch-up speed
 
-### 场景 2：客户端恢复很慢
+### Scenario 2: The Client Recovers Very Slowly
 
-表现：
+Presentation:
 
-- `lagTicks` 一旦拉开就很难收敛
+- Once `lagTicks` opens up, it is hard to converge
 
-优先处理：
+Handle first:
 
-1. 提高快照频率
-2. 缩小快照体积
-3. 确保重度落后时直接快照跳转，而不是长链路回放
+1. Raise snapshot frequency
+2. Shrink snapshot size
+3. Ensure that for severe lag it jumps directly by snapshot, rather than replaying a long chain
 
-不要先做的事：
+Do not do first:
 
-- 让客户端在一帧里补很多逻辑帧
+- Making the client backfill many logic frames within one rendered frame
 
-### 场景 3：高峰期大家一起 lag
+### Scenario 3: Everyone Lags Together During Peak Hours
 
-表现：
+Presentation:
 
-- 不只是一个客户端慢，而是整房间指标都变差
+- It is not just one client that is slow; the whole room's metrics degrade
 
-优先处理：
+Handle first:
 
-1. 检查 `lastTickProcessMs`
-2. 限制 `maxEventsPerTick`
-3. 增加合并和降采样
-4. 缩减快照大小
+1. Check `lastTickProcessMs`
+2. Limit `maxEventsPerTick`
+3. Increase merging and downsampling
+4. Reduce snapshot size
 
-这说明问题多半在服务端 tick 过载，不在追同步策略。
+This indicates the problem is most likely server tick overload, not the resync strategy.
 
-### 场景 4：单个客户端反复 resync
+### Scenario 4: A Single Client Resyncs Repeatedly
 
-表现：
+Presentation:
 
-- 某个客户端 `resyncCount` 持续增长
+- A client's `resyncCount` keeps growing
 
-优先处理：
+Handle first:
 
-1. 看该客户端 `lastAckAgeMs`
-2. 看它是否存在主线程卡顿或应用快照过慢
-3. 检查是否有过重的本地回放或渲染阻塞
+1. Look at that client's `lastAckAgeMs`
+2. See whether it has main-thread stutter or overly slow snapshot application
+3. Check whether there is heavy local replay or render blocking
 
-这通常是端侧性能问题，不能靠让服务器停下来解决。
+This is usually a client-side performance problem; it cannot be solved by making the server stop.
 
-## 压测时必须看什么
+## What Must Be Watched During Load Testing
 
-至少要看这些指标的联动关系：
+At minimum, watch the correlation among these metrics:
 
 - `lastTickProcessMs`
 - `lagTicks`
 - `lastAckAgeMs`
 - `resyncCount`
-- 每 tick 事件数
-- 丢弃/合并事件数
+- Events per tick
+- Dropped/merged event count
 
-推荐的判断方法：
+Recommended judgment method:
 
-- 如果只有个别客户端 `lagTicks` 高，优先查客户端
-- 如果所有客户端一起变差，优先查服务端 tick 过载
-- 如果 `resyncCount` 高但 `lagTicks` 仍不收敛，说明恢复路径本身太重
+- If only individual clients have high `lagTicks`, prioritize checking the client
+- If all clients degrade together, prioritize checking server tick overload
+- If `resyncCount` is high but `lagTicks` still does not converge, the recovery path itself is too heavy
 
-## 一个实用判断法
+## A Practical Judgment Method
 
-调参时，优先回答这三个问题：
+When tuning parameters, prioritize answering these three questions:
 
-1. 系统是在“局部慢端”还是“全局过载”？
-2. 当前恢复主要靠“温和追赶”还是“快照跳转”？
-3. 你是在调“恢复策略”，还是在掩盖“tick 过载”？
+1. Is the system in a "locally slow client" situation or "globally overloaded"?
+2. Does current recovery mainly rely on "gentle catch-up" or "snapshot jump"?
+3. Are you tuning the "recovery strategy", or are you masking "tick overload"?
 
-只要第三个问题答不清，就先别动参数。
+As long as the third question cannot be answered, do not touch the parameters yet.
 
-## 总结
+## Summary
 
-参数调优的核心不是追求某个固定数值，而是建立下面这条稳定链路：
+The core of parameter tuning is not pursuing some fixed value, but establishing this stable chain:
 
-- tick 不过载
-- 输入有缓冲
-- 单帧有背压
-- 慢端能快照恢复
-- 指标能解释问题
+- Tick is not overloaded
+- Input has buffering
+- Single frames have backpressure
+- Slow clients can recover by snapshot
+- Metrics can explain the problem
 
-做到这几点之后，参数只是精调；做不到这几点之前，参数只是错觉。
+Once these points are done, parameters are only fine-tuning; before these points are done, parameters are only an illusion.

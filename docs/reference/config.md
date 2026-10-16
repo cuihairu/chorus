@@ -1,12 +1,16 @@
 ---
-title: 配置参考
+title: Configuration Reference
 ---
 
-# 配置参考
+<p align="center">
+  English | <a href="config.zh.md">简体中文</a>
+</p>
 
-配置来源：appsettings.json 的 `Session` 段映射到 `Chorus.Engine.Session.SessionConfig`（未配置时使用下述默认值）。
+# Configuration Reference
 
-当前默认值：
+Configuration source: the `Session` section of appsettings.json maps to `Chorus.Engine.Session.SessionConfig` (the defaults below are used when not configured).
+
+Current defaults:
 
 ```text
 tickDurationMs = 66
@@ -26,7 +30,7 @@ resyncRequestCooldownMs = 1000
 maxResyncReplayTicks = 128
 ```
 
-关键参数：
+Key parameters:
 
 - `tickDurationMs`
 - `inputDelayTicks`
@@ -34,251 +38,251 @@ maxResyncReplayTicks = 128
 - `maxEventsPerTick`
 - `maxLagTicks`
 - `resyncCooldownMs`
-- `maxPendingEvents` / `eventEnqueueMaxWaitMs`（阶段二过载保护）
-- `tickTimeoutMs`（阶段二超时检测）
-- `maxSessions` / `idleEvictAfterMs`（阶段二会话生命周期）
-- `maxSnapshotBytes`（阶段三快照体积上限）
+- `maxPendingEvents` / `eventEnqueueMaxWaitMs` (phase 2 overload protection)
+- `tickTimeoutMs` (phase 2 timeout detection)
+- `maxSessions` / `idleEvictAfterMs` (phase 2 session lifecycle)
+- `maxSnapshotBytes` (phase 3 snapshot size limit)
 
-## 参数说明
+## Parameter Descriptions
 
 ### `tickDurationMs`
 
-含义：
+Meaning:
 
-- 服务器权威逻辑 tick 周期，单位毫秒
+- Server-authoritative logic tick period, in milliseconds
 
-默认值：
+Default:
 
-- `66`（约 15fps 逻辑推进；2026-10-12 与 frame-sync-best-practices 建议统一，最终值以压测为准）
+- `66` (~15fps logic progression; unified with the frame-sync-best-practices recommendation on 2026-10-12, final value governed by load test)
 
-影响：
+Impact:
 
-- 值越小，同步越细，但服务端和客户端压力越大
-- 值越大，系统更稳，但输入生效和恢复粒度更粗
+- Smaller values give finer sync, but put more pressure on the server and clients
+- Larger values make the system more stable, but input application and recovery granularity are coarser
 
-建议：
+Recommendation:
 
-- 直播互动场景通常建议落在 `50~66`，当前默认值 `66` 已与之统一，最终值以压测为准
-- 结合 `tickTimeoutMs`（默认 250）观察 `lastTickProcessMs` 是否超限
+- Live-streaming interactive scenarios usually recommend landing at `50~66`; the current default `66` is already unified with that, final value governed by load test
+- Combine with `tickTimeoutMs` (default 250) and watch whether `lastTickProcessMs` exceeds the limit
 
 ### `inputDelayTicks`
 
-含义：
+Meaning:
 
-- 输入被调度到未来多少 tick 后统一结算
+- How many ticks in the future input is scheduled before unified settlement
 
-默认值：
+Default:
 
 - `2`
 
-影响：
+Impact:
 
-- 值越大，越能吸收抖动和乱序
-- 值越小，体感更快，但更容易受网络波动影响
+- Larger values absorb jitter and out-of-order better
+- Smaller values feel faster, but are more susceptible to network fluctuation
 
 ### `snapshotEveryTicks`
 
-含义：
+Meaning:
 
-- 周期快照发送频率
+- Periodic snapshot send frequency
 
-默认值：
+Default:
 
 - `1`
 
-影响：
+Impact:
 
-- `1` 表示每 tick 都会发送快照
-- 值越大，带宽和序列化成本越低，但恢复会变慢
+- `1` means a snapshot is sent every tick
+- Larger values lower bandwidth and serialization costs, but recovery becomes slower
 
-建议：
+Recommendation:
 
-- 当前默认值适合开发期快速验证
-- 线上通常需要结合快照体积和带宽成本调整到 `2~5`
+- The current default suits fast validation during development
+- In production, usually adjust to `2~5` based on snapshot size and bandwidth cost
 
 ### `maxEventsPerTick`
 
-含义：
+Meaning:
 
-- 单 tick 最大进入权威逻辑的事件数
+- Maximum number of events entering authoritative logic per tick
 
-默认值：
+Default:
 
 - `200`
 
-影响：
+Impact:
 
-- 是防止“单帧爆炸”的安全阀
-- 超限后会触发 reducer 的裁剪、合并或降采样效果
+- Acts as a safety valve against "single-frame explosions"
+- Beyond the limit triggers the reducer's trimming, merging, or downsampling effects
 
 ### `maxLagTicks`
 
-含义：
+Meaning:
 
-- 客户端落后多少 tick 后触发强制快照恢复
+- How many ticks a client falls behind before forced snapshot recovery is triggered
 
-默认值：
+Default:
 
 - `50`
 
-影响：
+Impact:
 
-- 值越大，系统对短期抖动更宽容
-- 值越大，也意味着慢端会在错误状态停留更久
+- Larger values make the system more tolerant of short-term jitter
+- Larger values also mean slow clients stay in a wrong state longer
 
-建议：
+Recommendation:
 
-- 当前默认值偏保守，适合避免开发环境频繁 resync
-- 线上通常要明显收紧，否则恢复不够积极
+- The current default is conservative, suitable for avoiding frequent resync in the development environment
+- In production it usually needs to be significantly tighter, otherwise recovery is not aggressive enough
 
 ### `resyncCooldownMs`
 
-含义：
+Meaning:
 
-- 同一客户端两次**服务端推送**强制快照之间的最小间隔（引擎按 ACK 水位判定客户端落后后主动推送）
+- Minimum interval between two **server-pushed** forced snapshots for the same client (the engine decides the client is behind based on the ACK watermark and pushes proactively)
 
-默认值：
+Default:
 
 - `2000`
 
-影响：
+Impact:
 
-- 防止短时间内反复 resync
-- 值太小会导致抖动式恢复
-- 值太大又会让问题客户端长时间无法重新对齐
-- **与 `resyncRequestCooldownMs`（客户端主动拉）互不复用**，见下
+- Prevents repeated resync within a short time
+- Too small causes jittery recovery
+- Too large leaves problem clients unable to re-align for a long time
+- **Not shared with `resyncRequestCooldownMs` (client-initiated pull)**, see below
 
 ### `frameHistoryBytes`
 
-2026-10-13 起（帧同步 P2）。
+Since 2026-10-13 (frame sync P2).
 
-含义：
+Meaning:
 
-- per-session 帧历史 ring buffer 的字节上限，保存最近的 wire 快照供客户端 `resync` 按帧号补帧
+- Byte limit of the per-session frame history ring buffer, storing recent wire snapshots for the client `resync` to refill by frame number
 
-默认值：
+Default:
 
-- `8388608`（8 MiB/session）
+- `8388608` (8 MiB/session)
 
-影响：
+Impact:
 
-- 按字节封顶、驱逐最旧帧；刚加入的帧不会被驱逐（单帧超整容量时保留为唯一帧）
-- 补帧窗口起点早于最旧保留帧 → 视为未命中（回吐最新快照 + `forced=true`/`reason="resync-gap"`），不做部分回放
-- 内存上界 = 该值 × `maxSessions`（200）≈ 最坏 1.6 GiB，生产压测后按实测快照字节调整
-- `0` 关闭帧历史：所有 `resync` 请求走 `resync-gap` 对齐路径
+- Capped by bytes, evicting the oldest frames; a just-added frame is not evicted (when a single frame exceeds the entire capacity, it is kept as the only frame)
+- If the refill window start is earlier than the oldest retained frame → treated as a miss (return the latest snapshot + `forced=true`/`reason="resync-gap"`), no partial replay
+- Memory upper bound = this value × `maxSessions` (200) ≈ worst case 1.6 GiB; adjust per measured snapshot bytes after the production load test
+- `0` disables frame history: all `resync` requests go through the `resync-gap` alignment path
 
 ### `resyncRequestCooldownMs`
 
-2026-10-13 起（帧同步 P2）。
+Since 2026-10-13 (frame sync P2).
 
-含义：
+Meaning:
 
-- 同一客户端两次**主动拉取**（`resync` 消息）之间的最小间隔，引擎层 per-client 冷却
+- Minimum interval between two **active pulls** (`resync` message) by the same client, engine-layer per-client cooldown
 
-默认值：
+Default:
 
 - `1000`
 
-影响：
+Impact:
 
-- 冷却内重复请求计入 `TotalResyncThrottled` 后直接返回
-- 另有传输层固定窗口 `Faces:StreamerWs:ResyncPerMinute`，两层独立生效
+- Repeated requests within the cooldown count into `TotalResyncThrottled` and return directly
+- Additionally there is a transport-layer fixed window `Faces:StreamerWs:ResyncPerMinute`; the two layers take effect independently
 
 ### `maxResyncReplayTicks`
 
-2026-10-15 起（churn 修复 ③，重放限界）。
+Since 2026-10-15 (churn fix ③, replay bound).
 
-含义：
+Meaning:
 
-- 单次客户端 `resync` 请求最多重放的帧数；快照携带全量状态，窗口超过该值时直接回吐一条
-  `forced=true`（`reason="resync-gap"`）最新快照对齐，不做逐帧重放
+- Maximum number of frames replayed for a single client `resync` request; the snapshot carries the full state, and when the window exceeds this value, a single
+  `forced=true` (`reason="resync-gap"`) latest snapshot is returned directly for alignment, without frame-by-frame replay
 
-默认值：
+Default:
 
-- `128`（约 8.4 秒的 66ms 帧）
+- `128` (about 8.4 seconds of 66ms frames)
 
-影响：
+Impact:
 
-- 每次重放的 eng→gw 消息量封顶（2026-10-15 门控压测：重放洪流 × 快照分发曾把接收循环压死，见 `todo.md:156`）
-- 超限计入 `chorus_resync_replay_capped_total`（与窗口未命中 `chorus_resync_window_misses_total` 分开计数）
-- `0` 完全关闭重放：所有 `resync` 请求都走 `resync-gap` 单帧对齐
+- Caps the eng→gw message volume per replay (2026-10-15 gate load test: replay flood × snapshot distribution once killed the receive loop, see `todo.md:156`)
+- Exceeding the limit counts into `chorus_resync_replay_capped_total` (counted separately from the window miss `chorus_resync_window_misses_total`)
+- `0` completely disables replay: all `resync` requests go through the `resync-gap` single-frame alignment
 
 ### `maxSnapshotBytes`
 
-含义：
+Meaning:
 
-- 单条快照序列化后的体积上限，单位字节
+- Size limit of a single serialized snapshot, in bytes
 
-默认值：
+Default:
 
-- `1048576`（1 MiB）
+- `1048576` (1 MiB)
 
-影响：
+Impact:
 
-- 序列化后超限的快照**跳过发送**，并计入 `chorus_snapshots_oversize_total`
-- 跳过后不会断开客户端；客户端侧的 ACK 水位与重连 resync 机制负责兜底
-- 反复超限说明状态有界失控（如 `Dictionary<userId,...>` 只增不减），应先修状态体积而不是调大该值
+- Snapshots that exceed the limit after serialization **skip sending** and count into `chorus_snapshots_oversize_total`
+- Skipping does not disconnect the client; the client-side ACK watermark and reconnect resync mechanism are responsible for the fallback
+- Repeatedly exceeding the limit means state boundedness is out of control (e.g. `Dictionary<userId,...>` only grows); fix the state size first rather than increasing this value
 
-建议：
+Recommendation:
 
-- 结合 `snapshotEveryTicks` 与在线客户端数估算带宽：单客户端约 `snapshotBytes × 客户端数 / snapshotEveryTicks / tickDurationMs` 的持续下行
-## Ingress 与 listener face（2026-10-12 起）
+- Estimate bandwidth with `snapshotEveryTicks` and the number of online clients: per client about `snapshotBytes × clientCount / snapshotEveryTicks / tickDurationMs` of sustained downstream
 
-单体与 Gateway 同构。两类 listener face 配置分道（见 `docs/design/process-topology.md`），
-计数器经 `GET /faces` 暴露。
+## Ingress and Listener Face (since 2026-10-12)
 
-| 键 | 默认 | 说明 |
+Monolith and Gateway are isomorphic. The two types of listener face configuration run on separate paths (see `docs/design/process-topology.md`),
+counters are exposed via `GET /faces`.
+
+| Key | Default | Description |
 |---|---|---|
-| `Ingress:AllowAll` | `false` | **开发开关**：`true` 时注册未签名验签兜底（无真实验证器的平台回调被放行）。开启时启动日志打 ERROR 告警；仅建议在 appsettings.Development.json 显式打开，生产配置不带 |
-| `Ingress:DedupTtlSeconds` | `600` | 事件去重 TTL（platformEventId） |
-| `Ingress:FactionRules:CommentKeywords` | 空 | 弹幕口令 → 阵营映射 |
-| `Ingress:FactionRules:GiftIds` | 空 | 礼物 ID → 阵营映射 |
-| `Ingress:Douyin:AppSecret` | 无 | 抖音回调验签密钥；缺失时 `/ingress/douyin` 全部拒绝（fail-closed） |
-| `Ingress:Douyin:SignatureHeader` | `X-Douyin-Signature` | 签名 header 名（待联调确认，见平台参考文档） |
-| `Ingress:Kuaishou:VerifyToken` | 无 | 快手「消息验证Token」；缺失时 `/ingress/kuaishou` 全部拒绝（fail-closed） |
-| `Ingress:Kuaishou:MsgEncryptKey` | 无 | 快手「消息加密解密KEY」（base64，32 字节）；缺失时事件无法解密（400） |
-| `Ingress:Kuaishou:SignatureHeader` | `kwaisign` | 官方签名 header 名 |
-| `Ingress:Bilibili:AccessKeyId` / `AccessKeySecret` | 无 | B 站 open-live 签名凭据（主播本人授权，不进仓不进日志）；缺失时 `/ingress/bilibili` 全部拒绝（fail-closed） |
-| `Ingress:Bilibili:AppId` | 无 | open-live 项目 app_id；桥启动前置 |
-| `Ingress:Bilibili:RoomOwnerAuthCode` | 无 | 主播身份鉴别码（app_start 用）；桥启动前置 |
-| `Ingress:Bilibili:SessionId` | 无 | 房间 → chorus 会话绑定（P1 单绑定，多房间属控制面 todo §14）；缺失时事件映射失败（400） |
-| `Ingress:Bilibili:IngressUrl` | 无 | 桥转发目标（如 `http://127.0.0.1:5083/ingress/bilibili`）；四件套+此键齐全才启动桥（`BilibiliIngressBridgeHostedService`） |
-| `Faces:PlatformIngress:MaxBodyBytes` | `65536` | platform-ingress 面请求体上限，超限 413 |
-| `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | platform-ingress 面每来源每分钟上限，超限 429 |
-| `Faces:PlatformIngress:TimeoutMs` | `5000` | platform-ingress 面单请求预算，超时 504 |
-| `Faces:StreamerWs:AuthTokens` | 无 | 主播 WS 接入 token 列表，`;` 分隔，每项 `token` 或 `token@unixMs过期时间`。**未配置且未开 AllowAnonymous → 所有 WS 连接拒绝（fail-closed）** |
-| `Faces:StreamerWs:AllowAnonymous` | `false` | 开发开关：允许无 token 连接。开启时启动日志打 WARN；仅建议在 appsettings.Development.json 显式打开 |
-| `Faces:StreamerWs:MaxMessageBytes` | `65536` | 单条 WS 消息上限，超限以 `MessageTooBig` 关闭连接 |
-| `Faces:StreamerWs:AckPerMinute` | `600` | 每连接每分钟 ACK 上限，超限静默丢弃（计数 `/faces` → `streamerWs.ackDropped`） |
-| `Faces:StreamerWs:ResyncPerMinute` | `30` | 每连接每分钟 `resync` 补帧请求上限，超限丢弃（计数 `/faces` → `streamerWs.resyncDropped`；2026-10-13 帧同步 P2） |
+| `Ingress:AllowAll` | `false` | **Development switch**: when `true`, registers an unsigned signature verification fallback (platform callbacks without a real verifier are allowed through). When enabled, the startup log prints an ERROR warning; it is only recommended to explicitly enable it in appsettings.Development.json, and production configuration does not include it |
+| `Ingress:DedupTtlSeconds` | `600` | Event dedup TTL (platformEventId) |
+| `Ingress:FactionRules:CommentKeywords` | empty | Danmaku keywords → faction mapping |
+| `Ingress:FactionRules:GiftIds` | empty | Gift ID → faction mapping |
+| `Ingress:Douyin:AppSecret` | none | Douyin callback signature verification secret; when missing, `/ingress/douyin` rejects everything (fail-closed) |
+| `Ingress:Douyin:SignatureHeader` | `X-Douyin-Signature` | Signature header name (pending joint debugging confirmation, see platform reference docs) |
+| `Ingress:Kuaishou:VerifyToken` | none | Kuaishou "消息验证Token"; when missing, `/ingress/kuaishou` rejects everything (fail-closed) |
+| `Ingress:Kuaishou:MsgEncryptKey` | none | Kuaishou "消息加密解密KEY" (base64, 32 bytes); when missing, events cannot be decrypted (400) |
+| `Ingress:Kuaishou:SignatureHeader` | `kwaisign` | Official signature header name |
+| `Ingress:Bilibili:AccessKeyId` / `AccessKeySecret` | none | Bilibili open-live signature credentials (authorized by the streamer personally, never in the repo or logs); when missing, `/ingress/bilibili` rejects everything (fail-closed) |
+| `Ingress:Bilibili:AppId` | none | open-live project app_id; prerequisite for bridge startup |
+| `Ingress:Bilibili:RoomOwnerAuthCode` | none | Streamer identity authentication code (used by app_start); prerequisite for bridge startup |
+| `Ingress:Bilibili:SessionId` | none | Room → chorus session binding (P1 single binding; multiple rooms belong to control-plane todo §14); when missing, event mapping fails (400) |
+| `Ingress:Bilibili:IngressUrl` | none | Bridge forwarding target (e.g. `http://127.0.0.1:5083/ingress/bilibili`); the bridge only starts when the four-piece set plus this key are complete (`BilibiliIngressBridgeHostedService`) |
+| `Faces:PlatformIngress:MaxBodyBytes` | `65536` | platform-ingress face request body limit; 413 when exceeded |
+| `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | platform-ingress face per-source per-minute limit; 429 when exceeded |
+| `Faces:PlatformIngress:TimeoutMs` | `5000` | platform-ingress face single-request budget; 504 on timeout |
+| `Faces:StreamerWs:AuthTokens` | none | Streamer WS onboarding token list, `;`-separated, each entry is `token` or `token@unixMs expiration time`. **When not configured and AllowAnonymous is not enabled → all WS connections rejected (fail-closed)** |
+| `Faces:StreamerWs:AllowAnonymous` | `false` | Development switch: allow connections without a token. When enabled, the startup log prints a WARN; it is only recommended to explicitly enable it in appsettings.Development.json |
+| `Faces:StreamerWs:MaxMessageBytes` | `65536` | Single WS message limit; on exceed the connection is closed with `MessageTooBig` |
+| `Faces:StreamerWs:AckPerMinute` | `600` | Per-connection per-minute ACK limit; on exceed silently dropped (counted via `/faces` → `streamerWs.ackDropped`) |
+| `Faces:StreamerWs:ResyncPerMinute` | `30` | Per-connection per-minute `resync` refill request limit; on exceed dropped (counted via `/faces` → `streamerWs.resyncDropped`; 2026-10-13 frame sync P2) |
 
-## Gateway 角色打包（拆分模式，三进程形态）
+## Gateway Role Packaging (split mode, three-process form)
 
-| 键 | 默认 | 说明 |
+| Key | Default | Description |
 |---|---|---|
-| `Gateway:Roles`（Gateway） | `all` | 该 Gateway 进程承载的 listener 角色：`all`（一个进程两个 listener，默认）、`platform`（只映射 `/ingress`，即 platform-gw）、`streamer`（只映射 `/ws`，即 streamer-gw）。未选中角色的端点不注册（404），两个 listener 的门面实现共用一份（`PlatformIngressFace` / `StreamerWsFace`），无代码分叉；`/health`、`/faces`、`/metrics`、`/ready` 不受角色影响。非法值启动即抛（fail-fast）。单体形态不受此键影响。见 [进程拓扑](../design/process-topology.md) §4 |
-| `Gateway:Id`（Gateway） | 空 | 本网关标识（仅 ASCII 字母/数字/`-`）：后缀本进程的 eng→gw 通道名，使多个网关可共享同一 EngineHost 与同一 socket 目录。空 = 旧单网关通道名（向后兼容）。非法字符启动即抛。见 [拆分模式](../guide/split-mode.md) 多网关一节 |
+| `Gateway:Roles` (Gateway) | `all` | The listener roles this Gateway process carries: `all` (one process, two listeners, default), `platform` (only maps `/ingress`, i.e. platform-gw), `streamer` (only maps `/ws`, i.e. streamer-gw). Endpoints of unselected roles are not registered (404); the two listeners' face implementations share one copy (`PlatformIngressFace` / `StreamerWsFace`), no code divergence; `/health`, `/faces`, `/metrics`, `/ready` are not affected by roles. Illegal values throw at startup (fail-fast). The monolith form is not affected by this key. See [Process Topology](../design/process-topology.md) §4 |
+| `Gateway:Id` (Gateway) | empty | This gateway's identifier (ASCII letters/digits/`-` only): suffixes this process's eng→gw channel name, so multiple gateways can share the same EngineHost and the same socket directory. Empty = old single-gateway channel name (backward compatible). Illegal characters throw at startup. See the multi-gateway section in [Split Mode](../guide/split-mode.md) |
 
-## IPC 与就绪（拆分模式）
+## IPC and Readiness (split mode)
 
-`Ipc` 段映射到 `Chorus.Messaging.Ipc.IpcSettings`（端口/传输），心跳/就绪/扇出另有三个键：
+The `Ipc` section maps to `Chorus.Messaging.Ipc.IpcSettings` (port/transport); heartbeat/readiness/fanout have three additional keys:
 
-| 键 | 默认 | 说明 |
+| Key | Default | Description |
 |---|---|---|
-| `Ipc:HeartbeatIntervalMs`（EngineHost） | `5000` | 引擎在 eng→gw 通道发 `eng.heartbeat` 的间隔；`0` 关闭 |
-| `Ipc:ReadinessMaxSilenceMs`（Gateway） | `15000` | Gateway `GET /ready` 判 200 的最大静默窗口，超窗 503（fail-closed） |
-| `Ipc:GatewayIds`（EngineHost） | 空 | 逗号分隔的网关标识列表（如 `platform-gw,streamer-gw`）；引擎对每个 id 各建一条 eng→gw 客户端并逐条扇出发布。空 = 旧单网关通道 |
+| `Ipc:HeartbeatIntervalMs` (EngineHost) | `5000` | Interval at which the engine sends `eng.heartbeat` on the eng→gw channel; `0` disables |
+| `Ipc:ReadinessMaxSilenceMs` (Gateway) | `15000` | Maximum silence window for Gateway `GET /ready` to decide 200; beyond the window 503 (fail-closed) |
+| `Ipc:GatewayIds` (EngineHost) | empty | Comma-separated list of gateway identifiers (e.g. `platform-gw,streamer-gw`); the engine creates one eng→gw client per id and fans out publishing per id. Empty = old single-gateway channel |
 
-详见 [部署与安全](./deployment.md) 的「拆分模式就绪探针」。
+See the "Split Mode Readiness Probe" section in [Deployment and Security](./deployment.md) for details.
 
-## 推荐阅读
+## Recommended Reading
 
-- [参数调优](./tuning.md)
-- [故障排查](./troubleshooting.md)
-- [帧同步最佳实践](../design/frame-sync-best-practices.md)
-- [平台对接参考：抖音](./platform-douyin.md)
-- [平台对接参考：快手](./platform-kuaishou.md)
-- [平台适配器契约](./adapter-contract.md)
-- [部署与安全](./deployment.md)
-- [版本策略与兼容性](./versioning.md)
-
+- [Parameter Tuning](./tuning.md)
+- [Troubleshooting](./troubleshooting.md)
+- [Frame Sync Best Practices](../design/frame-sync-best-practices.md)
+- [Platform Integration Reference: Douyin](./platform-douyin.md)
+- [Platform Integration Reference: Kuaishou](./platform-kuaishou.md)
+- [Platform Adapter Contract](./adapter-contract.md)
+- [Deployment and Security](./deployment.md)
+- [Versioning Strategy and Compatibility](./versioning.md)

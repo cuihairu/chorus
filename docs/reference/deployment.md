@@ -1,29 +1,33 @@
 ---
-title: 部署与安全
+title: Deployment and Security
 ---
 
-# 部署与安全配置
+<p align="center">
+  English | <a href="deployment.zh.md">简体中文</a>
+</p>
 
-Chorus 有两种部署形态，共用同一套配置模型与安全语义。
+# Deployment and Security Configuration
 
-相关文档：
+Chorus has two deployment forms, sharing the same configuration model and security semantics.
 
-- [拆分模式](../guide/split-mode.md)
-- [配置参考](./config.md)
-- [可观测性](./observability.md)
-- [故障排查](./troubleshooting.md)
+Related docs:
 
-## 形态
+- [Split Mode](../guide/split-mode.md)
+- [Configuration Reference](./config.md)
+- [Observability](./observability.md)
+- [Troubleshooting](./troubleshooting.md)
 
-| 形态 | 进程 | 适用 |
+## Forms
+
+| Form | Processes | Applicable |
 | --- | --- | --- |
-| 单进程 | `Chorus.Server` | 默认、调试、小规模；ingress/WS/引擎同一进程 |
-| 拆分（单网关进程） | `Chorus.Gateway` + `Chorus.EngineHost` | 网关与权威逻辑分机/分容器；走 IPC |
-| 三进程 | `Chorus.Gateway`（`Gateway:Roles=platform`）+ `Chorus.Gateway`（`Gateway:Roles=streamer`）+ `Chorus.EngineHost` | platform-gw / streamer-gw 两个网关角色分机部署，room-worker 承载多房间；门面共用无复制，见 [进程拓扑](../design/process-topology.md) §4 |
+| Single-process | `Chorus.Server` | Default, debugging, small scale; ingress/WS/engine in the same process |
+| Split (single-gateway process) | `Chorus.Gateway` + `Chorus.EngineHost` | Gateway and authoritative logic on separate machines/containers; goes over IPC |
+| Three-process | `Chorus.Gateway` (`Gateway:Roles=platform`) + `Chorus.Gateway` (`Gateway:Roles=streamer`) + `Chorus.EngineHost` | platform-gw / streamer-gw gateway roles deployed on separate machines, room-worker carries multiple rooms; faces are shared with no duplication, see [Process Topology](../design/process-topology.md) §4 |
 
-两种形态的 `/ingress`、`/ws`、`/faces`、`/metrics` 完全一致；`/sessions`、`/matches` 只在单进程形态暴露。
+The `/ingress`, `/ws`, `/faces`, `/metrics` of both forms are completely identical; `/sessions` and `/matches` are only exposed in the single-process form.
 
-## 构建与运行
+## Build and Run
 
 ```bash
 # 发布（Release）
@@ -37,61 +41,61 @@ ASPNETCORE_URLS="http://0.0.0.0:5083" dotnet ./publish/Chorus.Server.dll
 DOTNET_ENVIRONMENT=Production dotnet ./publish/Chorus.Server.dll
 ```
 
-配置优先级：`appsettings.json` → `appsettings.{Environment}.json` → 环境变量（`__` 作为分隔符，如 `Session__MaxSessions`）→ 命令行。
+Configuration priority: `appsettings.json` → `appsettings.{Environment}.json` → environment variables (`__` as separator, e.g. `Session__MaxSessions`) → command line.
 
-## 端点与端口
+## Endpoints and Ports
 
-| 端点 | 用途 | 单进程 | 拆分 |
+| Endpoint | Purpose | Single-process | Split |
 | --- | --- | --- | --- |
-| `GET /health` | 存活探针 | ✅ | ✅（Gateway / EngineHost 各自） |
-| `GET /ready` | **就绪探针（仅拆分 Gateway）**：任意引擎消息（心跳/欢迎/快照）在 `Ipc:ReadinessMaxSilenceMs` 内收到 → 200，否则 503 | ❌ | ✅（Gateway） |
-| `GET /sessions` | 会话/客户端指标 JSON（每客户端 lag/ack 明细） | ✅ | ✅（EngineHost；`c7846a6` 补齐——引擎是拆分模式的会话权威，此前未暴露） |
-| `GET /matches` | match 级聚合视图 JSON | ✅ | ❌ 权威 `MatchRegistry` 仅在单进程；用 `/metrics` |
-| `GET /faces` | listener face 计数器 JSON | ✅ | ✅（Gateway） |
-| `GET /metrics` | Prometheus 文本（`chorus_*`） | ✅ | ✅（三端各自） |
-| `POST /ingress/{platform}` | 平台事件入口 | ✅ | ✅（Gateway） |
-| `WS /ws` | 主播/观众客户端 | ✅ | ✅（Gateway） |
+| `GET /health` | Liveness probe | ✅ | ✅ (Gateway / EngineHost each) |
+| `GET /ready` | **Readiness probe (split Gateway only)**: any engine message (heartbeat/welcome/snapshot) received within `Ipc:ReadinessMaxSilenceMs` → 200, otherwise 503 | ❌ | ✅ (Gateway) |
+| `GET /sessions` | Session/client metrics JSON (per-client lag/ack detail) | ✅ | ✅ (EngineHost; completed in `c7846a6` — the engine is the session authority in split mode, previously not exposed) |
+| `GET /matches` | Match-level aggregate view JSON | ✅ | ❌ The authoritative `MatchRegistry` is only in single-process; use `/metrics` |
+| `GET /faces` | Listener face counter JSON | ✅ | ✅ (Gateway) |
+| `GET /metrics` | Prometheus text (`chorus_*`) | ✅ | ✅ (all three processes each) |
+| `POST /ingress/{platform}` | Platform event entry | ✅ | ✅ (Gateway) |
+| `WS /ws` | Streamer/viewer client | ✅ | ✅ (Gateway) |
 
-默认端口见各自 `Properties/launchSettings.json`：Server `5083`、Gateway `5168`、EngineHost `5067`。
+Default ports are in each one's `Properties/launchSettings.json`: Server `5083`, Gateway `5168`, EngineHost `5067`.
 
-拆分模式 IPC 端口（`Ipc:TcpGatewayToEnginePort=27500`、`Ipc:TcpEngineToGatewayPort=27501`，HTTP 传输用 `27600/27601`）。
+Split mode IPC ports (`Ipc:TcpGatewayToEnginePort=27500`, `Ipc:TcpEngineToGatewayPort=27501`, HTTP transport uses `27600/27601`).
 
-### 拆分模式就绪探针（2026-10-12 起）
+### Split Mode Readiness Probe (since 2026-10-12)
 
-EngineHost 每 `Ipc:HeartbeatIntervalMs`（默认 5000，`0` 关闭）在 eng→gw 通道发一条
-`eng.heartbeat`；Gateway 收到任何引擎消息（心跳/欢迎/快照）都刷新静默计时。
-Gateway 的 `GET /ready`：
+EngineHost sends one `eng.heartbeat` on the eng→gw channel every `Ipc:HeartbeatIntervalMs` (default 5000, `0` disables);
+the Gateway refreshes its silence timer whenever it receives any engine message (heartbeat/welcome/snapshot).
+Gateway's `GET /ready`:
 
-- 从未收到引擎消息，或静默超过 `Ipc:ReadinessMaxSilenceMs`（默认 15000）→ **503**（fail-closed，
-  编排器不把流量切过来）；返回体带 `engineSilenceMs` 便于诊断；
-- 心跳在窗口内 → 200。
+- Never received an engine message, or silence exceeds `Ipc:ReadinessMaxSilenceMs` (default 15000) → **503** (fail-closed,
+  the orchestrator does not switch traffic over); the response body carries `engineSilenceMs` for diagnosis;
+- Heartbeat within the window → 200.
 
-| 配置 | 默认 | 说明 |
+| Configuration | Default | Description |
 |---|---|---|
-| `Ipc:HeartbeatIntervalMs`（EngineHost） | `5000` | 引擎心跳间隔；`0` 关闭（关闭后 Gateway 只有在有客户端连接产生欢迎/快照时才能判就绪） |
-| `Ipc:ReadinessMaxSilenceMs`（Gateway） | `15000` | 就绪判定的最大静默窗口，建议 ≥ 3× 心跳间隔 |
+| `Ipc:HeartbeatIntervalMs` (EngineHost) | `5000` | Engine heartbeat interval; `0` disables (after disabling, the Gateway can only decide readiness when client connections produce welcome/snapshot) |
+| `Ipc:ReadinessMaxSilenceMs` (Gateway) | `15000` | Maximum silence window for the readiness decision, recommended ≥ 3× heartbeat interval |
 
-单进程形态没有 IPC 跳，不暴露 `/ready`（`/health` 即足够）。
+The single-process form has no IPC hop and does not expose `/ready` (`/health` is sufficient).
 
-## 安全配置（fail-closed）
+## Security Configuration (fail-closed)
 
-| 配置 | 默认 | 生产要求 |
+| Configuration | Default | Production requirement |
 | --- | --- | --- |
-| `Ingress:AllowAll` | `false` | **必须保持 false**。true 时所有平台事件免验签，仅开发演示 |
-| `Ingress:Douyin:AppSecret` / `SignatureHeader` | 空 | 空则全部 Douyin 回调 401 |
-| `Ingress:Kuaishou:VerifyToken` / `SignatureHeader` | 空 | 空则全部快手回调 401 |
-| `Ingress:DedupTtlSeconds` | `600` | 按平台重试窗口设置，勿小于平台最大重试间隔 |
-| `Faces:PlatformIngress:MaxBodyBytes` | `65536` | 按平台回调最大 body 调大；超限 413 |
-| `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | 按平台 QPS 设置；超限 429 |
-| `Faces:PlatformIngress:TimeoutMs` | `5000` | 客户端超时预算；超时 504 |
-| `Faces:StreamerWs:AuthTokens` | 空 | **必须配置**；空且非匿名则所有 WS 被拒 |
-| `Faces:StreamerWs:AllowAnonymous` | `false` | **必须保持 false**。true 则免 token，仅开发演示 |
-| `Faces:StreamerWs:MaxMessageBytes` | `65536` | 客户端消息上限；超限关闭连接 |
-| `Faces:StreamerWs:AckPerMinute` | `600` | 单连接 ACK 限流；超限丢弃（`chorus_ws_acks_dropped_total`） |
+| `Ingress:AllowAll` | `false` | **Must stay false**. When true all platform events skip signature verification, development demo only |
+| `Ingress:Douyin:AppSecret` / `SignatureHeader` | empty | Empty → all Douyin callbacks 401 |
+| `Ingress:Kuaishou:VerifyToken` / `SignatureHeader` | empty | Empty → all Kuaishou callbacks 401 |
+| `Ingress:DedupTtlSeconds` | `600` | Set per platform retry window; do not be smaller than the platform's maximum retry interval |
+| `Faces:PlatformIngress:MaxBodyBytes` | `65536` | Increase per platform callback max body; 413 when exceeded |
+| `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | Set per platform QPS; 429 when exceeded |
+| `Faces:PlatformIngress:TimeoutMs` | `5000` | Client timeout budget; 504 on timeout |
+| `Faces:StreamerWs:AuthTokens` | empty | **Must be configured**; empty and non-anonymous → all WS rejected |
+| `Faces:StreamerWs:AllowAnonymous` | `false` | **Must stay false**. When true, token is not required, development demo only |
+| `Faces:StreamerWs:MaxMessageBytes` | `65536` | Client message limit; close connection when exceeded |
+| `Faces:StreamerWs:AckPerMinute` | `600` | Per-connection ACK rate limiting; dropped when exceeded (`chorus_ws_acks_dropped_total`) |
 
-### WS token 格式
+### WS Token Format
 
-`Faces:StreamerWs:AuthTokens` 支持多个 token，分号分隔，可带过期时间（unix 毫秒）：
+`Faces:StreamerWs:AuthTokens` supports multiple tokens, semicolon-separated, with optional expiration (unix milliseconds):
 
 ```json
 {
@@ -103,47 +107,47 @@ Gateway 的 `GET /ready`：
 }
 ```
 
-`dev-token-1` 永不过期；`prod-token` 在 `1893456000000` 之后过期（过期判 `token_expired`）。拒绝原因：`missing_token` / `invalid_token` / `token_expired`。
+`dev-token-1` never expires; `prod-token` expires after `1893456000000` (expiration is judged as `token_expired`). Rejection reasons: `missing_token` / `invalid_token` / `token_expired`.
 
-### fail-closed 矩阵
+### fail-closed Matrix
 
-| 场景 | 行为 |
+| Scenario | Behavior |
 | --- | --- |
-| 未配密钥 + 匿名关 | ingress 401、WS 全部关闭 |
-| 未配密钥 + `AllowAll=true` | 免验签放行（**告警**，勿在生产开启） |
-| 配错 secret/verifyToken | 401 |
-| token 过期 | 连接关闭（`token_expired`） |
-| 平台无对应具名验证器 | 401（即使 `AllowAll=true`，具名验证器优先） |
+| Secret not configured + anonymous off | ingress 401, all WS closed |
+| Secret not configured + `AllowAll=true` | Allowed through without signature verification (**warning**, do not enable in production) |
+| Wrong secret/verifyToken configured | 401 |
+| Token expired | Connection closed (`token_expired`) |
+| Platform has no corresponding named verifier | 401 (even with `AllowAll=true`, the named verifier takes precedence) |
 
-### 反向代理
+### Reverse Proxy
 
-- 开 WS 长连接：`proxy_http_version 1.1`、`Upgrade`、`Connection` 头；`proxy_read_timeout` 远大于 `Session:TickDurationMs`（建议 ≥ 1 小时）。
-- 回源 body 上限 ≥ `MaxBodyBytes` + 头部余量（如 64KB + 8KB）。
-- `/ingress` 只允许平台回调来源 IP 白名单，或前置签名校验网关。
-- `/metrics`、`/sessions`、`/matches` 不含敏感状态，但建议仅内网可取。
-- 真实 TLS 在代理层终止；Chorus 本身不监听 HTTPS。
+- Enable WS long connections: `proxy_http_version 1.1`, `Upgrade`, `Connection` headers; `proxy_read_timeout` much larger than `Session:TickDurationMs` (recommended ≥ 1 hour).
+- Body limit for forwarding to the origin ≥ `MaxBodyBytes` + header headroom (e.g. 64KB + 8KB).
+- `/ingress` only allows the platform callback source IP whitelist, or put a signature-verification gateway in front.
+- `/metrics`, `/sessions`, `/matches` contain no sensitive state, but internal-network-only access is recommended.
+- Real TLS terminates at the proxy layer; Chorus itself does not listen on HTTPS.
 
-## 资源与生命周期
+## Resources and Lifecycle
 
-- `Session:MaxSessions=200`：超限按最久未见驱逐，被驱逐的 Session 直接消失（客户端需重连 resync）。
-- `Session:IdleEvictAfterMs=600000`：客户端全部断开后空闲 10 分钟回收。
-- `Session:MaxPendingEvents=8000` / `EventEnqueueMaxWaitMs=50`：事件道容量与礼物有界等待，超限 503 可重试。
-- `Session:MaxSnapshotBytes=1048576`：快照超限跳过发送并计 `chorus_snapshots_oversize_total`，客户端 resync 兜底。
+- `Session:MaxSessions=200`: beyond the limit, evict the least recently seen; the evicted Session disappears directly (the client must reconnect and resync).
+- `Session:IdleEvictAfterMs=600000`: reclaimed after 10 minutes idle once all clients disconnect.
+- `Session:MaxPendingEvents=8000` / `EventEnqueueMaxWaitMs=50`: event lane capacity and bounded gift wait, 503 retryable when exceeded.
+- `Session:MaxSnapshotBytes=1048576`: snapshots exceeding the limit skip sending and count `chorus_snapshots_oversize_total`; the client resync is the fallback.
 
-## 日志与关联
+## Logs and Correlation
 
-日志为结构化模板，关键字段：`sessionId`、`clientId`、`tickId`、`eventId`、`messageId`（IPC 投递）、`SourceEventId`（事件关联）。IPC 失败、ACK 异常、客户端重连都会打这些字段。跨进程串联见 [可观测性](./observability.md) 的「关联 ID」。
+Logs use structured templates; key fields: `sessionId`, `clientId`, `tickId`, `eventId`, `messageId` (IPC delivery), `SourceEventId` (event correlation). IPC failures, ACK anomalies, and client reconnects all log these fields. For cross-process correlation see "Correlation IDs" in [Observability](./observability.md).
 
-## 状态与重启
+## State and Restart
 
-- 会话状态纯内存，无持久化（明确非目标）。重启即全量丢失：所有客户端断开并重新 hello。
-- 无跨进程状态共享：单进程与拆分两种形态各自独立，勿混用同一 `Ipc:UnixSocketDir` 前缀跑多组 Gateway/EngineHost。
-- 优雅停机：进程退出即终止会话；上游应做好重连。
+- Session state is purely in-memory, no persistence (explicitly a non-goal). Restart means total loss: all clients disconnect and re-hello.
+- No cross-process state sharing: the single-process and split forms are each independent; do not run multiple Gateway/EngineHost groups sharing the same `Ipc:UnixSocketDir` prefix.
+- Graceful shutdown: process exit terminates sessions immediately; the upstream should handle reconnection.
 
-## 拆分模式容器化
+## Split Mode Containerization
 
-- 三进程形态：两个 Gateway 容器各配 `Gateway:Roles=platform` / `Gateway:Roles=streamer`（未选中角色的 listener 端点不注册，返回 404）。两个网关可共享同一 EngineHost 与同一 socket 目录：各 Gateway 配不同 `Gateway:Id`（如 `platform-gw` / `streamer-gw`），EngineHost 配 `Ipc:GatewayIds=platform-gw,streamer-gw`，引擎对两条 eng→gw 通道扇出发布（`FanOutMessageBus`，5c5d25c；守卫 `ThreeProcessEndToEndTests`）。UDS/NamedPipe 通道名按 id 后缀区分；TCP/HTTP 的端口/URL 不按 id 区分，同机多网关用 UDS/NamedPipe。
-- 两台容器：Gateway 与 EngineHost；`Ipc:Transport=Tcp`，映射 `27500/27501`（HTTP 则 `27600/27601`）。
-- 健康检查分别探 `/health`（存活）；**Gateway 就绪探 `/ready`**（200 = 任意引擎消息在窗口内到达），
-  EngineHost 侧用 `/metrics` 的 `chorus_snapshots_sent_total` 判断引擎是否在出快照。
-- 顺序无强制：Gateway 启动时 EngineHost 未就绪，事件发布会失败并计入 `chorus_ipc_publish_failures_total`（客户端侧幂等重试），EngineHost 就绪后自动恢复。
+- Three-process form: two Gateway containers configured with `Gateway:Roles=platform` / `Gateway:Roles=streamer` respectively (listener endpoints of unselected roles are not registered, returning 404). The two gateways can share the same EngineHost and the same socket directory: each Gateway is configured with a different `Gateway:Id` (e.g. `platform-gw` / `streamer-gw`), EngineHost is configured with `Ipc:GatewayIds=platform-gw,streamer-gw`, and the engine fans out publishing to the two eng→gw channels (`FanOutMessageBus`, 5c5d25c; guard `ThreeProcessEndToEndTests`). UDS/NamedPipe channel names are distinguished by id suffix; TCP/HTTP ports/URLs are not distinguished by id, so multiple gateways on the same machine use UDS/NamedPipe.
+- Two containers: Gateway and EngineHost; `Ipc:Transport=Tcp`, map `27500/27501` (HTTP then `27600/27601`).
+- Health checks probe `/health` separately (liveness); **Gateway readiness probes `/ready`** (200 = any engine message arrived within the window),
+  on the EngineHost side use `chorus_snapshots_sent_total` in `/metrics` to determine whether the engine is producing snapshots.
+- Order is not mandatory: if EngineHost is not ready when Gateway starts, event publishing fails and counts into `chorus_ipc_publish_failures_total` (idempotent retry on the client side), and it recovers automatically once EngineHost is ready.

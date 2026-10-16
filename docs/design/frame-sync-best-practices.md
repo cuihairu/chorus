@@ -1,292 +1,296 @@
 ---
-title: 帧同步最佳实践
+title: Frame Sync Best Practices
 ---
 
-# 帧同步最佳实践
+<p align="center">
+  English | <a href="frame-sync-best-practices.zh.md">简体中文</a>
+</p>
 
-本文聚焦两个目标：
+# Frame Sync Best Practices
 
-- 给出一套适合直播互动/轻对战场景的可落地帧同步方案
-- 解释为什么旧式“追帧/暂停”方案容易出现“两边都追不上”
+This document focuses on two goals:
 
-相关背景可结合阅读：
+- Provide an implementable frame sync solution suitable for live-stream interaction / light battle scenarios
+- Explain why the old-style "chase frames / pause" approach easily falls into "neither side catches up"
 
-- [帧同步设计](./frame-sync.md)
-- [整体架构](./architecture.md)
-- [旧服问题分析](./legacy-real-server-analysis.md)
+Related background, worth reading alongside:
 
-## 先给结论
+- [Frame Sync Design](./frame-sync.md)
+- [Overall Architecture](./architecture.md)
+- [Legacy Server Analysis](./legacy-real-server-analysis.md)
 
-如果项目已经出现“追同步时两边都追不上”，通常不是追帧算法不够激进，而是同步架构本身选错了。
+## Conclusion First
 
-更稳的做法不是：
+If a project has already fallen into "neither side catching up" during resync, it is usually not because the frame-chasing algorithm isn't aggressive enough, but because the sync architecture itself was chosen wrong.
 
-- 服务器等待最慢端
-- 客户端长期依赖补帧回放追赶
+The more stable approach is not:
 
-而是：
+- The server waiting for the slowest endpoint
+- The client relying on frame backfill/replay to catch up long-term
 
-- 服务器持续推进权威 tick
-- 输入按统一 tick 结算
-- 慢端超过阈值后直接吃快照对齐
-- 表现层用插值/过渡掩盖跳变
+but rather:
 
-一句话概括：
+- The server keeps advancing the authoritative tick
+- Input settles on a unified tick
+- The slow endpoint, once it exceeds the threshold, directly takes a snapshot to align
+- The presentation layer masks the jump with interpolation/transitions
 
-> 不要让全局逻辑等慢端；让慢端单独重同步。
+In one sentence:
 
-## 为什么会出现“两边都追不上”
+> Don't let the global logic wait for the slow endpoint; let the slow endpoint resync on its own.
 
-这是旧式事件锁步/输入帧广播实现里最常见的失控路径：
+## Why "Neither Side Catches Up" Happens
 
-1. 服务器按时间尽力发帧，而不是严格固定 tick。
-2. 某个客户端因为卡顿、GC、渲染阻塞或网络抖动开始落后。
-3. 服务器为了“等它”，暂停或减慢新帧推进。
-4. 快端也被迫停住，双方体验一起变差。
-5. 一旦恢复，服务器和客户端又尝试连续补很多帧。
-6. 连续补帧导致网络包变大、单帧事件堆积、客户端主线程更卡。
-7. 系统进入“越追越落后”的正反馈。
+This is the most common runaway path in old-style event lockstep / input-frame broadcast implementations:
 
-这类问题不是局部 bug，而是策略错误：把“全局推进”与“慢端恢复”耦合在了一起。
+1. The server sends frames best-effort by time, instead of a strictly fixed tick.
+2. Some client starts lagging because of stuttering, GC, render blocking, or network jitter.
+3. The server, in order to "wait for it", pauses or slows down new frame advancement.
+4. The fast endpoints are also forced to stop, and both sides' experience degrades together.
+5. Once recovered, the server and client attempt to continuously backfill many frames.
+6. Continuous backfill makes network packets larger, events pile up in a single frame, and the client main thread gets more stuck.
+7. The system enters a positive feedback loop of "the more you chase, the more you fall behind".
 
-## 推荐架构
+This kind of problem is not a local bug, but a strategy error: it couples "global advancement" with "slow endpoint recovery" together.
 
-推荐采用“服务器权威 Tick + 状态快照”的模式：
+## Recommended Architecture
 
-- 服务器维护唯一权威 `tickId`
-- 服务器按固定 `tickDurationMs` 推进逻辑
-- 输入先进入缓冲，再调度到 `tick + inputDelayTicks` 统一结算
-- 客户端通过 `ack.lastAppliedTickId` 上报自己已应用到的进度
-- 服务器发现客户端落后过多时，只对该客户端下发强制快照
+The recommended mode is "server-authoritative Tick + state snapshots":
 
-这也是本项目当前文档和引擎实现所采用的方向。
+- The server maintains a single authoritative `tickId`
+- The server advances logic on a fixed `tickDurationMs`
+- Input first enters a buffer, then is scheduled to `tick + inputDelayTicks` for unified settlement
+- The client reports the progress it has applied via `ack.lastAppliedTickId`
+- When the server detects a client is too far behind, it sends a forced snapshot only to that client
 
-## 最重要的原则
+This is also the direction adopted by this project's current documentation and engine implementation.
 
-### 1. 服务器绝不能因为慢端而暂停全局逻辑
+## The Most Important Principles
 
-服务器必须持续推进权威 tick。
+### 1. The Server Must Never Pause Global Logic for a Slow Endpoint
 
-原因很简单：
+The server must keep advancing the authoritative tick.
 
-- 慢端问题通常是局部问题，不应拖死全局
-- 直播互动场景更强调“整体流畅”和“房间持续运转”
-- 一旦全局暂停，快端也会被拖入追帧和爆帧
+The reasons are simple:
 
-正确做法是：
+- Slow endpoint problems are usually local problems and should not drag the whole thing to death
+- Live-stream interaction scenarios emphasize "overall smoothness" and "the room keeps running"
+- Once the whole thing pauses, the fast endpoints also get dragged into frame-chasing and frame explosions
 
-- 慢端轻度落后时，允许它本地温和追赶
-- 慢端重度落后时，直接发快照让它跳到最新权威状态
+The correct approach is:
 
-### 2. 输入和状态不要混为一谈
+- When the slow endpoint is lightly behind, allow it to gently catch up locally
+- When the slow endpoint is heavily behind, directly send a snapshot so it jumps to the latest authoritative state
 
-输入同步只负责“事件在什么 tick 生效”，状态同步负责“客户端如何恢复到权威状态”。
+### 2. Don't Conflate Input and State
 
-不要试图只靠补输入帧解决所有问题。因为：
+Input sync is only responsible for "on which tick an event takes effect"; state sync is responsible for "how the client recovers to the authoritative state".
 
-- 输入回放链路长，恢复慢
-- 回放期间客户端仍然要承担逻辑计算和渲染压力
-- 一旦缺帧跨度大，恢复成本会指数变坏
+Don't try to solve all problems by backfilling input frames only. Because:
 
-推荐组合是：
+- The input replay chain is long and recovery is slow
+- During replay the client still has to bear logic computation and render load
+- Once the missing-frame span is large, recovery cost degrades exponentially
 
-- 日常：输入按 tick 结算
-- 恢复：快照为主，必要时只回放少量增量
+The recommended combination is:
 
-### 3. 逻辑层和表现层必须拆开
+- Day-to-day: input settles on tick
+- Recovery: snapshot first, replay only a small amount of deltas when necessary
 
-逻辑层只认权威 tick，不做花哨补偿。
+### 3. The Logic Layer and the Presentation Layer Must Be Separated
 
-表现层负责：
+The logic layer only recognizes the authoritative tick and does no fancy compensation.
 
-- 插值
-- 过渡动画
-- 镜头与 UI 平滑
+The presentation layer is responsible for:
 
-如果把逻辑追帧和视觉补偿混在一起，最终会同时损害公平性和稳定性。
+- Interpolation
+- Transition animations
+- Camera and UI smoothing
 
-### 4. 每 tick 必须有背压
+If logic frame-chasing and visual compensation are mixed together, fairness and stability will ultimately both be harmed.
 
-每个 tick 处理的事件数必须有硬上限，例如 `maxEventsPerTick`。
+### 4. Every Tick Must Have Backpressure
 
-超过上限时，必须执行以下一种或多种策略：
+The number of events processed per tick must have a hard upper limit, e.g. `maxEventsPerTick`.
 
-- 合并同类事件
-- 对高频低价值事件降采样
-- 丢弃过时事件
-- 将非关键表现型事件异步化，不进入权威逻辑
+When the limit is exceeded, one or more of the following strategies must be executed:
 
-否则高峰期很容易出现“单帧爆炸”：
+- Merge events of the same kind
+- Downsample high-frequency, low-value events
+- Drop stale events
+- Make non-critical presentation events asynchronous, so they don't enter the authoritative logic
 
-- 单帧包体过大
-- 序列化/反序列化时间过长
-- 客户端一帧处理过多事件
-- 结果是更严重的 lag
+Otherwise during peak periods "single frame explosion" easily occurs:
 
-## 推荐的追同步策略
+- Single frame packet too large
+- Serialization/deserialization time too long
+- The client processes too many events in one frame
+- The result is more severe lag
 
-追同步不要只靠一种手段，应该分档处理。
+## Recommended Resync Strategy
 
-### 轻度落后
+Resync should not rely on a single mechanism; it should be handled in tiers.
 
-条件示例：
+### Lightly Behind
+
+Example conditions:
 
 - `lagTicks <= 3~5`
 
-策略：
+Strategy:
 
-- 客户端允许短时间内略高于正常速度推进
-- 每个渲染帧最多额外执行少量逻辑 tick
-- 必须设置追赶上限，避免把主线程打爆
+- The client may advance slightly faster than normal speed for a short time
+- Each render frame executes at most a small number of extra logic ticks
+- A catch-up upper limit must be set, to avoid blowing up the main thread
 
-适用场景：
+Applicable scenarios:
 
-- 短暂网络抖动
-- 一次性渲染卡顿
-- 轻微的时钟漂移
+- Brief network jitter
+- A one-off render stutter
+- Slight clock drift
 
-### 中度落后
+### Moderately Behind
 
-条件示例：
+Example conditions:
 
 - `lagTicks > 5~10`
 
-策略：
+Strategy:
 
-- 服务器向该客户端单独发送 `forced snapshot`
-- 客户端直接切换到 `snapshot.tickId`
-- 视觉层自己做平滑收敛，不要求逻辑层补完所有中间帧
+- The server sends a `forced snapshot` to that client separately
+- The client directly switches to `snapshot.tickId`
+- The visual layer does its own smooth convergence, without requiring the logic layer to backfill all intermediate frames
 
-适用场景：
+Applicable scenarios:
 
-- 客户端几百毫秒以上的停顿
-- 网络波动导致 ack 明显滞后
-- 本地补追已经无法在短时间内收敛
+- The client stalls for several hundred milliseconds or more
+- Network fluctuation causes ack to lag noticeably
+- Local backfill catch-up can no longer converge in a short time
 
-### 重度落后或长时间无 ACK
+### Heavily Behind or Long Without ACK
 
-条件示例：
+Example conditions:
 
-- `lastAckAgeMs` 持续过大
-- `lagTicks` 长时间超过阈值
-- 同一客户端频繁 resync 仍无法稳定
+- `lastAckAgeMs` stays too large
+- `lagTicks` stays above the threshold for a long time
+- The same client resyncs frequently and still cannot stabilize
 
-策略：
+Strategy:
 
-- 丢弃过旧增量
-- 保留最新快照和有限窗口内的少量增量
-- 必要时重建本地状态
+- Drop deltas that are too stale
+- Keep the latest snapshot and a small number of deltas within a limited window
+- Rebuild the local state when necessary
 
-这时不要执着于“从历史帧一帧不差地补回来”，那通常只会继续恶化。
+At this point, don't insist on "backfilling frame by frame from history without missing one"; that will usually only make things worse.
 
-## 推荐参数区间
+## Recommended Parameter Ranges
 
-以下建议更适合直播互动、礼物/弹幕驱动玩法，作为初始参数比盲调更稳：
+The following suggestions are better suited to live-stream interaction and gift/danmaku-driven gameplay, and are more stable as initial parameters than blind tuning:
 
-- `tickDurationMs`: `50` 或 `66`
+- `tickDurationMs`: `50` or `66`
 - `inputDelayTicks`: `2~4`
-- `snapshotEveryTicks`: `2~5`（注：本仓代码默认 `1`，即每 tick 都发——`src/Chorus.Engine/Session/SessionConfig.cs:6`）
-- `maxLagTicks`: `6~10`（注：本仓代码默认 `50`——`src/Chorus.Engine/Session/SessionConfig.cs:8`，远高于本推荐区间；调优时以观测为准）
+- `snapshotEveryTicks`: `2~5` (note: this repo's code defaults to `1`, i.e. sends every tick — `src/Chorus.Engine/Session/SessionConfig.cs:6`)
+- `maxLagTicks`: `6~10` (note: this repo's code defaults to `50` — `src/Chorus.Engine/Session/SessionConfig.cs:8`, far higher than this recommended range; base tuning on observation)
 - `resyncCooldownMs`: `1000~3000`
-- `maxEventsPerTick`: 必须按压测结果配置
+- `maxEventsPerTick`: must be configured according to load-test results
 
-调参时的基本原则：
+Basic principles when tuning:
 
-- 如果网络抖动明显，优先适度增大 `inputDelayTicks`
-- 如果恢复太慢，优先提升快照频率，而不是提高追帧强度
-- 如果服务端 tick 耗时逼近 tick 周期，先削峰和背压，不要继续提频
+- If network jitter is noticeable, prioritize moderately increasing `inputDelayTicks`
+- If recovery is too slow, prioritize raising snapshot frequency rather than increasing frame-chasing intensity
+- If the server's tick time approaches the tick period, do peak shaving and backpressure first; don't keep raising frequency
 
-## 什么时候该用纯锁步
+## When to Use Pure Lockstep
 
-纯输入锁步或 rollback 并不是不能用，但前提比直播互动场景苛刻得多。
+Pure input lockstep or rollback is not unusable, but the prerequisites are much more demanding than in live-stream interaction scenarios.
 
-更适合纯锁步/rollback 的条件：
+Conditions better suited to pure lockstep/rollback:
 
-- 玩家数量少
-- 输入频率高且公平性要求极强
-- 逻辑可严格确定性复现
-- 客户端性能与平台差异可控
+- Few players
+- High input frequency with very strong fairness requirements
+- Logic can be strictly deterministically reproduced
+- Client performance and platform differences are controllable
 
-如果你的场景是：
+If your scenario is:
 
-- 观众弹幕/礼物驱动
-- 事件量波动大
-- 客户端设备差异大
-- 更看重整体稳定性和观感
+- Audience danmaku/gift driven
+- Large event volume fluctuation
+- Large client device differences
+- Emphasizes overall stability and feel more
 
-那么“服务器权威状态同步”通常比“纯输入锁步”更合适。
+then "server-authoritative state sync" is usually more appropriate than "pure input lockstep".
 
-## 最容易犯的错误
+## The Most Common Mistakes
 
-以下做法最容易把系统带进失控状态：
+The following practices most easily drag the system into a runaway state:
 
-- 用暂停服务器的方式等待慢端
-- 用长时间连续补帧的方式处理大跨度落后
-- 客户端主要按本地时钟跑，服务器只做外环纠偏
-- 单帧事件数量没有上限
-- 只保存历史帧，不保存快照
-- 没有按客户端维度做 ack、lag、resync 观测
+- Waiting for slow endpoints by pausing the server
+- Handling large-span lag with long continuous frame backfill
+- The client mainly runs on the local clock, and the server only does outer-loop correction
+- No upper limit on the number of events per frame
+- Only saving history frames, not saving snapshots
+- No ack/lag/resync observation per client
 
-## 必须具备的可观测性
+## Required Observability
 
-没有指标，排查“不同步”基本靠猜。
+Without metrics, diagnosing "out of sync" is basically guesswork.
 
-建议至少记录以下指标：
+At least the following metrics should be recorded:
 
 - `serverTick`
 - `clientLastAckTick`
 - `lagTicks`
 - `lastAckAgeMs`
 - `lastTickProcessMs`
-- 每 tick 事件数
-- 每 tick 丢弃/合并事件数
-- 强制快照次数
-- 单客户端出站队列积压：`OutboundClientQueue.Dropped`（每客户端 latest-wins 槽被替换掉的快照数）已导出到 `/sessions` 的每客户端 `clientQueueDropped` 与 session 汇总 `totalClientQueueDropped`，指标 `chorus_client_queue_dropped_total`（`6d738b7`）。容量为 1 的槽只有「丢弃」这一种积压信号，槽深度无意义
+- Events per tick
+- Dropped/merged events per tick
+- Forced snapshot count
+- Per-client outbound queue backlog: `OutboundClientQueue.Dropped` (the number of snapshots replaced in each client's latest-wins slot) is exported to `/sessions`'s per-client `clientQueueDropped` and the session aggregate `totalClientQueueDropped`, metric `chorus_client_queue_dropped_total` (`6d738b7`). A capacity-1 slot has only one kind of backlog signal — "drop"; slot depth is meaningless
 
-重点看三个危险信号：
+Watch three danger signals closely:
 
-- `lagTicks` 持续增长
-- `lastTickProcessMs` 接近或超过 `tickDurationMs`
-- 单 tick 事件数在高峰期暴涨
+- `lagTicks` keeps growing
+- `lastTickProcessMs` approaches or exceeds `tickDurationMs`
+- Events per tick spike sharply during peaks
 
-如果这三个信号同时出现，通常说明问题根源不是“追帧逻辑不够聪明”，而是系统已经过载，必须先处理背压和恢复策略。
+If all three signals appear at the same time, it usually means the root cause is not "frame-chasing logic isn't smart enough", but that the system is already overloaded, and backpressure and recovery strategy must be addressed first.
 
-## 一套落地判断标准
+## A Practical Set of Judgment Criteria
 
-如果要快速判断当前方案是不是健康，可以用下面这几个标准：
+To quickly judge whether the current approach is healthy, these criteria can be used:
 
-- 单个客户端掉线或卡顿时，其他客户端是否还能继续正常看到房间推进
-- 某客户端落后后，是否能在有限时间内通过快照恢复，而不是无限补帧
-- 高峰输入时，系统是否会主动合并/丢弃低价值事件，而不是让单帧无限膨胀
-- 是否能通过指标直接看出 lag 来源：网络、客户端主线程、还是服务端 tick 过载
+- When a single client disconnects or stutters, can the other clients still see the room advancing normally?
+- When a client falls behind, can it recover via snapshot within a finite time, rather than backfilling infinitely?
+- During peak input, does the system actively merge/drop low-value events, rather than letting a single frame grow unboundedly?
+- Can the lag source be seen directly from metrics: network, client main thread, or server tick overload?
 
-只要其中两三项做不到，就不要继续微调追帧参数，应先回到同步架构本身重构。
+If two or three of these cannot be achieved, don't keep fine-tuning frame-chasing parameters; you should first go back and refactor the sync architecture itself.
 
-## 建议的实现顺序
+## Recommended Implementation Order
 
-如果项目正从旧式追帧逻辑迁移，建议按这个顺序推进：
+If the project is migrating from old-style frame-chasing logic, this order is recommended:
 
-1. 先建立服务器权威固定 tick。
-2. 增加 `inputDelayTicks`，让输入统一按 tick 结算。
-3. 为客户端建立 `ack.lastAppliedTickId` 机制。
-4. 引入周期快照与强制快照。
-5. 去掉“服务器等待慢端”的逻辑。
-6. 最后再细调客户端本地轻度追赶策略和表现层平滑。
+1. First establish the server-authoritative fixed tick.
+2. Add `inputDelayTicks` so input settles uniformly on tick.
+3. Establish the `ack.lastAppliedTickId` mechanism for the client.
+4. Introduce periodic snapshots and forced snapshots.
+5. Remove the "server waits for slow endpoints" logic.
+6. Finally fine-tune the client's local light catch-up strategy and presentation-layer smoothing.
 
-这个顺序的关键点是：先把恢复闭环建出来，再优化追赶体验。
+The key point of this order is: first build the recovery closed loop, then optimize the catch-up experience.
 
-## 总结
+## Summary
 
-帧同步要稳定，不靠“更凶猛地追帧”，而靠正确的职责分层：
+For frame sync to be stable, it doesn't rely on "chasing frames more fiercely", but on correct separation of duties:
 
-- 服务器负责权威推进
-- 同步层负责缓冲、ACK、快照和恢复
-- 客户端表现层负责平滑
+- The server is responsible for authoritative advancement
+- The sync layer is responsible for buffering, ACK, snapshots and recovery
+- The client presentation layer is responsible for smoothing
 
-当系统已经出现“两边都追不上”时，优先检查的不是追帧速度，而是这三个问题：
+When the system has already fallen into "neither side catching up", the priority is not to check the frame-chasing speed, but these three questions:
 
-- 服务器是否还在等慢端
-- 恢复是否还主要依赖长链路补帧
-- 单 tick 是否已经失去背压
+- Is the server still waiting for slow endpoints?
+- Does recovery still mainly rely on long-chain frame backfill?
+- Has a single tick already lost its backpressure?
 
-只要这三点改对，追同步问题一般会从“经常失控”变成“可观测、可恢复、可调优”。
+As long as these three points are fixed, resync problems will generally go from "frequently out of control" to "observable, recoverable, tunable".

@@ -1,252 +1,256 @@
 ---
-title: 故障排查
+title: Troubleshooting
 ---
 
-# 故障排查
+<p align="center">
+  English | <a href="troubleshooting.zh.md">简体中文</a>
+</p>
 
-本文面向最常见的线上问题：不同步、追帧失控、慢端恢复失败、整房间一起卡。
+# Troubleshooting
 
-建议结合以下文档一起使用：
+This document targets the most common production issues: desync, runaway frame catch-up, slow-client recovery failure, and the whole room freezing together.
 
-- [帧同步最佳实践](../design/frame-sync-best-practices.md)
-- [客户端追同步状态机](../design/client-resync-state-machine.md)
-- [参数调优](./tuning.md)
-- [运维与观测](./operations.md)
+It is recommended to use it together with the following documents:
 
-## 排查顺序
+- [Frame Sync Best Practices](../design/frame-sync-best-practices.md)
+- [Client Resync State Machine](../design/client-resync-state-machine.md)
+- [Parameter Tuning](./tuning.md)
+- [Operations and Observability](./operations.md)
 
-不要一上来就调参数，先判断问题属于哪一类：
+## Troubleshooting Order
 
-1. 单个客户端异常，还是整房间一起异常
-2. 是服务端 tick 过载，还是客户端应用/渲染过慢
-3. 是轻度 lag 没收敛，还是恢复路径本身失效
+Do not start by tuning parameters; first determine which category the problem falls into:
 
-如果这个分类都没做清楚，后面的处理大概率会误判。
+1. Is it a single client misbehaving, or the whole room misbehaving together
+2. Is it server tick overload, or client-side apply/render being too slow
+3. Is it mild lag not converging, or the recovery path itself being broken
 
-## 现象 1：追同步时两边都追不上
+If this classification is not done clearly, the handling afterwards will most likely misjudge.
 
-典型表现：
+## Symptom 1: Neither Side Can Catch Up During Resync
 
-- 一个端落后后，另一个端也开始卡
-- 双方帧差没有收敛，反而一起变大
-- 恢复时短时间出现大量补帧或大量消息堆积
+Typical presentation:
 
-优先检查：
+- After one side falls behind, the other side also starts freezing
+- The frame gap between the two sides does not converge, and instead grows together
+- During recovery, a large volume of backfill frames or message buildup appears briefly
 
-1. 服务器是否还存在“等待慢端”或“暂停全局推进”的逻辑
-2. 客户端是否在重度 lag 时仍试图长时间补帧
-3. 是否缺少快照跳转，只能按历史帧回放恢复
+Check first:
 
-最常见根因：
+1. Whether the server still has "wait for the slow client" or "pause global advancement" logic
+2. Whether the client still tries to backfill frames for a long time when heavily lagging
+3. Whether snapshot jumps are missing, leaving only historical frame replay for recovery
 
-- 全局推进与慢端恢复耦合
-- 恢复策略错误地依赖连续补帧
+Most common root cause:
 
-正确处理：
+- Global advancement coupled with slow-client recovery
+- Recovery strategy incorrectly relying on continuous backfill
 
-- 服务器持续推进
-- 慢端超阈值后直接快照恢复
-- 视觉层自己平滑，不要求逻辑层补完所有中间帧
+Correct handling:
 
-## 现象 2：只有一个客户端经常掉队
+- The server keeps advancing
+- Slow clients beyond the threshold recover directly by snapshot
+- The visual layer smooths on its own; do not require the logic layer to complete every intermediate frame
 
-典型表现：
+## Symptom 2: Only One Client Frequently Falls Behind
 
-- 单个客户端 `lagTicks` 持续偏高
-- `resyncCount` 明显高于其他客户端
-- 其他客户端基本正常
+Typical presentation:
 
-优先检查：
+- A single client's `lagTicks` stays continuously high
+- `resyncCount` is noticeably higher than for other clients
+- Other clients are basically normal
 
-1. 该客户端 `lastAckAgeMs`
-2. 该客户端快照应用耗时
-3. 是否存在主线程卡顿、重资源加载、渲染峰值
+Check first:
 
-判断方法：
+1. That client's `lastAckAgeMs`
+2. That client's snapshot application time
+3. Whether there is main-thread stutter, heavy resource loading, or rendering spikes
 
-- 如果只有它异常，优先看端侧性能
-- 不要先怀疑服务端 tick 策略
+How to judge:
 
-处理建议：
+- If only this client is abnormal, prioritize looking at client-side performance
+- Do not suspect the server tick strategy first
 
-- 缩减客户端快照应用成本
-- 降低本地追赶预算
-- 检查 ACK 是否在真正应用完成后才发送
+Handling suggestions:
 
-## 现象 3：高峰期大家一起 lag
+- Reduce the client's snapshot application cost
+- Lower the local catch-up budget
+- Check whether ACK is sent only after application has truly completed
 
-典型表现：
+## Symptom 3: Everyone Lags Together During Peak Hours
 
-- 多个客户端同时 `lagTicks` 上升
-- `lastTickProcessMs` 明显升高
-- 高峰输入时 resync 次数一起增加
+Typical presentation:
 
-优先检查：
+- Multiple clients' `lagTicks` rise at the same time
+- `lastTickProcessMs` rises noticeably
+- resync counts rise together during peak input
 
-1. 单 tick 事件数（相邻两次 `/sessions` 的 `totalAppliedEvents` 差值）
-2. `maxEventsPerTick` 是否生效
-3. 事件合并/降采样是否足够
-4. 快照体积是否过大
+Check first:
 
-最常见根因：
+1. Events per tick (the difference of `totalAppliedEvents` between two adjacent `/sessions` calls)
+2. Whether `maxEventsPerTick` is taking effect
+3. Whether event merging/downsampling is sufficient
+4. Whether snapshot size is too large
 
-- 服务端 tick 过载
-- 单帧事件爆炸
+Most common root cause:
 
-处理建议：
+- Server tick overload
+- Single-frame event explosion
 
-- 先做背压，再谈追同步
-- 必要时提高 `tickDurationMs`
-- 高频低价值事件从权威逻辑链路剥离
+Handling suggestions:
 
-## 现象 4：客户端频繁收到强制快照
+- Do backpressure first, then talk about resync
+- Raise `tickDurationMs` if necessary
+- Separate high-frequency low-value events out of the authoritative logic path
 
-典型表现：
+## Symptom 4: The Client Frequently Receives Forced Snapshots
 
-- `forced=true, reason=\"lag\"` 的快照很频繁
-- 客户端刚恢复又再次 lag
+Typical presentation:
 
-优先检查：
+- Snapshots with `forced=true, reason=\"lag\"` are very frequent
+- The client has just recovered and lags again
 
-1. `maxLagTicks` 是否过小
-2. `resyncCooldownMs` 是否过短
-3. 客户端应用快照后是否真的进入 `Following`
-4. ACK 语义是否正确
+Check first:
 
-常见误区：
+1. Whether `maxLagTicks` is too small
+2. Whether `resyncCooldownMs` is too short
+3. Whether the client actually enters `Following` after applying a snapshot
+4. Whether ACK semantics are correct
 
-- 以为是阈值太严格
+Common misconception:
 
-实际上很多时候是：
+- Assuming the threshold is too strict
 
-- 客户端恢复动作太重
-- ACK 发早了
-- 本地仍在做过量补帧
+In reality, many times it is:
 
-## 现象 5：客户端明明收到了快照，但服务器还是判定落后
+- The client's recovery action is too heavy
+- ACK is sent too early
+- The local client is still doing excessive backfill
 
-优先检查：
+## Symptom 5: The Client Clearly Received the Snapshot, but the Server Still Judges It as Behind
 
-1. ACK 是不是在“收到快照”时发送，而不是在“应用完成”时发送
-2. 客户端是否把快照放入队列后就提前 ACK
-3. `lastAppliedTickId` 是否真的更新到了快照对应 tick
+Check first:
 
-这类问题本质上是 ACK 语义错误。
+1. Is ACK sent at "snapshot received" rather than at "application complete"
+2. Does the client put the snapshot into a queue and then ACK early
+3. Has `lastAppliedTickId` actually been updated to the tick the snapshot corresponds to
 
-正确语义：
+This kind of problem is essentially an ACK semantics error.
 
-- `ack.lastAppliedTickId` 只表示已经完成权威状态应用
+Correct semantics:
 
-## 现象 6：轻度 lag 本来能追上，但一追就更卡
+- `ack.lastAppliedTickId` only means the authoritative state application has completed
 
-典型表现：
+## Symptom 6: Mild Lag Could Be Caught Up, but Catching Up Makes It Worse
 
-- 客户端一进入 `CatchingUp` 就掉帧更严重
-- 追赶期间主线程负载明显升高
+Typical presentation:
 
-优先检查：
+- The client drops frames more severely as soon as it enters `CatchingUp`
+- Main-thread load rises noticeably during catch-up
 
-1. 每帧额外补了多少逻辑 tick
-2. 追赶期间是否仍跑完整表现逻辑
-3. 是否缺少每秒追赶预算上限
+Check first:
 
-处理建议：
+1. How many extra logic ticks are backfilled per frame
+2. Whether the full presentation logic still runs during catch-up
+3. Whether a per-second catch-up budget cap is missing
 
-- 每渲染帧最多额外补少量 tick
-- 每秒总补追数必须封顶
-- 必要时在追赶期间降级部分表现层开销
+Handling suggestions:
 
-## 现象 7：重连后恢复很慢
+- Backfill at most a small number of extra ticks per rendered frame
+- The total per-second catch-up count must be capped
+- When necessary, downgrade part of the presentation-layer overhead during catch-up
 
-典型表现：
+## Symptom 7: Recovery After Reconnection Is Very Slow
 
-- 客户端重连后要等很久才能重新跟上
-- 服务器持续下发很多历史数据
+Typical presentation:
 
-优先检查：
+- After the client reconnects, it takes a long time to catch up again
+- The server keeps sending lots of historical data
 
-1. 是否有足够频率的周期快照
-2. 是否还主要依赖历史增量回放
-3. 快照体积是否过大
+Check first:
 
-正确方向：
+1. Whether there are periodic snapshots at a sufficient frequency
+2. Whether it still mainly relies on historical incremental replay
+3. Whether snapshot size is too large
 
-- 重连恢复应优先依赖“最新快照 + 有限增量”
-- 不应依赖无限历史回放
+Correct direction:
 
-## 快速判断矩阵
+- Reconnect recovery should rely on "latest snapshot + bounded increment" as a priority
+- It should not rely on unbounded historical replay
 
-### 只有一个客户端慢
+## Quick Judgment Matrix
 
-优先怀疑：
+### Only One Client Is Slow
 
-- 客户端主线程
-- 快照应用性能
-- 本地 ACK 逻辑
+Suspect first:
 
-### 大家一起慢
+- The client's main thread
+- Snapshot application performance
+- Local ACK logic
 
-优先怀疑：
+### Everyone Is Slow
 
-- 服务端 tick 过载
-- 单帧事件爆炸
-- 快照发送/序列化成本过高
+Suspect first:
 
-### 能收到数据但还是不同步
+- Server tick overload
+- Single-frame event explosion
+- Snapshot send/serialization cost being too high
 
-优先怀疑：
+### Data Is Received but Still Not in Sync
 
-- ACK 语义错误
-- 客户端状态机错误
-- 快照应用与渲染层耦合
+Suspect first:
 
-## 排查时必须拿到的指标
+- ACK semantics error
+- Client state machine error
+- Snapshot application coupled with the render layer
 
-至少需要拿到：
+## Metrics That Must Be Obtained When Troubleshooting
 
-- `tickId`（会话当前权威 tick）
-- 每客户端 `lastAckTickId`
-- 每客户端 `lagTicks`
-- 每客户端 `lastAckAgeMs`
+At minimum you need:
+
+- `tickId` (the session's current authoritative tick)
+- Each client's `lastAckTickId`
+- Each client's `lagTicks`
+- Each client's `lastAckAgeMs`
 - `lastTickProcessMs`
-- 每 tick 事件数（相邻两次 `/sessions` 的 `totalAppliedEvents` 差值）
-- 丢弃/合并事件数
-- 每客户端 `resyncCount`
+- Events per tick (the difference of `totalAppliedEvents` between two adjacent `/sessions` calls)
+- Dropped/merged event count
+- Each client's `resyncCount`
 
-如果没有这些指标，不建议在线上凭感觉调参数。
+Without these metrics, tuning parameters online by feel is not recommended.
 
-## 三个高频误判
+## Three High-Frequency Misjudgments
 
-### 误判 1：觉得是网络差
+### Misjudgment 1: Thinking the Network Is Bad
 
-如果所有客户端同时 lag，更可能是服务端过载，不是网络。
+If all clients lag at the same time, it is more likely server overload, not the network.
 
-### 误判 2：觉得是追帧太慢
+### Misjudgment 2: Thinking Frame Catch-Up Is Too Slow
 
-很多时候不是追帧太慢，而是根本不该继续追帧，应该快照跳转。
+Many times it is not that catch-up is too slow, but that frames should not be kept catching up at all — a snapshot jump should be used.
 
-### 误判 3：觉得是阈值太严格
+### Misjudgment 3: Thinking the Threshold Is Too Strict
 
-频繁 resync 往往说明恢复动作太重或 ACK 语义有问题，不一定是 `maxLagTicks` 配小了。
+Frequent resync often indicates that the recovery action is too heavy or that ACK semantics are wrong, not necessarily that `maxLagTicks` is set too low.
 
-## 建议的排查动作
+## Recommended Troubleshooting Actions
 
-遇到线上问题时，建议按下面顺序做：
+When encountering a production issue, it is recommended to proceed in this order:
 
-1. 先看是否是单客户端还是全局问题
-2. 再看 `lastTickProcessMs` 是否逼近 tick 周期
-3. 再看客户端 `lagTicks` 和 `lastAckAgeMs`
-4. 再确认是否频繁触发强制快照
-5. 最后才去调 `inputDelayTicks`、`maxLagTicks`、`snapshotEveryTicks`
+1. First see whether it is a single-client or global problem
+2. Then see whether `lastTickProcessMs` is approaching the tick period
+3. Then look at the client's `lagTicks` and `lastAckAgeMs`
+4. Then confirm whether forced snapshots are being triggered frequently
+5. Only then tune `inputDelayTicks`, `maxLagTicks`, `snapshotEveryTicks`
 
-## 总结
+## Summary
 
-故障排查最怕的是一边看现象一边乱调参数。
+The worst thing in troubleshooting is watching symptoms while randomly tuning parameters.
 
-更可靠的方法是：
+A more reliable method is:
 
-- 先区分问题类别
-- 再定位是推进链路、恢复链路还是端侧性能
-- 最后才做参数微调
+- First distinguish the problem category
+- Then locate whether it is the advancement path, the recovery path, or client-side performance
+- Only then do fine-grained parameter tuning
 
-只要你发现系统仍在依赖“长时间补帧恢复”，那就应该优先回到同步设计本身，而不是继续优化追帧细节。
+As long as you find that the system still relies on "long-duration frame backfill recovery", you should prioritize going back to the sync design itself, rather than continuing to optimize catch-up details.

@@ -1,44 +1,48 @@
 ---
-title: 接口参考（后台/管理端）
+title: API Reference (Backend/Admin Side)
 ---
 
-# 接口参考
+<p align="center">
+  English | <a href="api.zh.md">简体中文</a>
+</p>
 
-本服务暴露给后台/管理端的全部接口：HTTP 端点、WS 事件、拆分模式 IPC 信封、配置面。
-所有主张以源码为准，出处见各条 file:line。
+# API Reference
 
-## 鉴权
+All endpoints this service exposes to the backend/admin side: HTTP endpoints, WS events, split mode IPC envelopes, and the configuration surface.
+All claims are governed by the source code; see file:line references on each entry.
 
-- **HTTP 端点（/health、/ready、/sessions、/matches、/leaderboard、/faces、/metrics、/）无鉴权**，属内网假设；
-  生产部署应置于反向代理后并限制来源（见 [部署与安全](./deployment.md) 反向代理一节）。
-- 有鉴权的是两个接入面：`POST /ingress/{platform}`（平台回调验签，fail-closed）与 `WS /ws`
-  （hello token 鉴权，fail-closed）。配置见 [配置参考](./config.md)。
+## Authentication
 
-## 端口（launchSettings 默认）
+- **HTTP endpoints (/health, /ready, /sessions, /matches, /leaderboard, /faces, /metrics, /) have no authentication** and rely on the internal network assumption;
+  production deployments should place them behind a reverse proxy and restrict sources (see the reverse proxy section in [Deployment and Security](./deployment.md)).
+- The two surfaces with authentication are: `POST /ingress/{platform}` (platform callback signature verification, fail-closed) and `WS /ws`
+  (hello token authentication, fail-closed). See [Configuration Reference](./config.md) for configuration.
 
-| 宿主 | HTTP | 出处 |
+## Ports (launchSettings defaults)
+
+| Host | HTTP | Source |
 |---|---|---|
-| `Chorus.Server`（单进程） | `5083` | `src/Chorus.Server/Properties/launchSettings.json:8` |
+| `Chorus.Server` (single-process) | `5083` | `src/Chorus.Server/Properties/launchSettings.json:8` |
 | `Chorus.Gateway` | `5168` | `src/Chorus.Gateway/Properties/launchSettings.json:8` |
 | `Chorus.EngineHost` | `5067` | `src/Chorus.EngineHost/Properties/launchSettings.json:8` |
 
-## HTTP 端点
+## HTTP Endpoints
 
-### Chorus.Gateway（`src/Chorus.Gateway/Program.cs`）
+### Chorus.Gateway (`src/Chorus.Gateway/Program.cs`)
 
-| 方法 路径 | 用途 | 响应 | 出处 |
+| Method Path | Purpose | Response | Source |
 |---|---|---|---|
-| `GET /` | 自述 | `{"name":"Chorus.Gateway","ok":true}` | `Program.cs:123` |
-| `GET /health` | 存活探针 | 200 空 | `Program.cs:124` |
-| `GET /faces` | listener face 计数器 JSON（ingress/ws 两面） | `FaceCounters`，见下 | `Program.cs:125`，字段 `Faces/FaceCounters.cs:67`、`:76` |
-| `GET /metrics` | Prometheus 文本（`chorus_*`） | text | `Program.cs:126`，渲染 `Gateway.Core/Metrics/ChorusMetricsText.cs` |
-| `GET /ready` | 就绪探针（仅拆分 Gateway） | 200 `{"ready":true,"engineSilenceMs":n}`；静默超窗 503 `{"ready":false,"engineSilenceMs":n}` | `Program.cs:133`，判定 `Gateway/GatewayIpcService.cs:32` |
-| `POST /ingress/{platform}` | 平台事件入口（platform 角色） | 见「Ingress 错误码」 | `Program.cs:148`；`Gateway:Roles` 未选中该角色时端点不注册（404），`Program.cs:144` |
-| `WS /ws` | 主播客户端（streamer 角色） | 见「WS 协议」 | `Program.cs:156`；同上角色门禁 `Program.cs:151` |
+| `GET /` | Self-description | `{"name":"Chorus.Gateway","ok":true}` | `Program.cs:123` |
+| `GET /health` | Liveness probe | 200 empty | `Program.cs:124` |
+| `GET /faces` | Listener face counter JSON (ingress/ws both faces) | `FaceCounters`, see below | `Program.cs:125`, fields `Faces/FaceCounters.cs:67`, `:76` |
+| `GET /metrics` | Prometheus text (`chorus_*`) | text | `Program.cs:126`, rendering `Gateway.Core/Metrics/ChorusMetricsText.cs` |
+| `GET /ready` | Readiness probe (split Gateway only) | 200 `{"ready":true,"engineSilenceMs":n}`; silence beyond window 503 `{"ready":false,"engineSilenceMs":n}` | `Program.cs:133`, decision `Gateway/GatewayIpcService.cs:32` |
+| `POST /ingress/{platform}` | Platform event entry (platform role) | See "Ingress Error Codes" | `Program.cs:148`; endpoint not registered when `Gateway:Roles` does not select that role (404), `Program.cs:144` |
+| `WS /ws` | Streamer client (streamer role) | See "WS Protocol" | `Program.cs:156`; same role gate as above `Program.cs:151` |
 
-网关不持有会话状态，因此没有 `/sessions` 与 `/leaderboard`（后者见 EngineHost / Server）。
+The gateway holds no session state, so there is no `/sessions` or `/leaderboard` (the latter is on EngineHost / Server).
 
-curl 示例（Gateway 在 5168）：
+curl examples (Gateway on 5168):
 
 ```bash
 curl http://localhost:5168/health
@@ -49,15 +53,15 @@ curl -X POST http://localhost:5168/ingress/test -H 'content-type: application/js
   -d '{"sessionId":"s1","eventId":"e1","userId":"u1","kind":"comment","text":"hi"}'
 ```
 
-### Chorus.EngineHost（`src/Chorus.EngineHost/Program.cs`）
+### Chorus.EngineHost (`src/Chorus.EngineHost/Program.cs`)
 
-| 方法 路径 | 用途 | 响应 | 出处 |
+| Method Path | Purpose | Response | Source |
 |---|---|---|---|
-| `GET /` | 自述 | `{"name":"Chorus.EngineHost","ok":true}` | `Program.cs:46` |
-| `GET /health` | 存活探针 | 200 空 | `Program.cs:47` |
-| `GET /sessions` | 会话/客户端诊断 JSON（每客户端 lag/ack 明细；拆分模式下的会话权威） | JSON | `Program.cs:52`（`c7846a6` 补齐） |
-| `GET /leaderboard/{scope}/{scopeId}` | 排行榜只读查询（scope/错误码见 [排行榜](../guide/leaderboard.md)） | JSON | `Program.cs:53` |
-| `GET /metrics` | Prometheus 文本：会话诊断 + `chorus_ipc_publish_failures_total` + `chorus_snapshot_bytes` + `chorus_process_cpu_percent`（worker CPU，首抓省略） | text | `Program.cs:54`；CPU 刻度 `EngineHost/ProcessCpuGauge.cs` |
+| `GET /` | Self-description | `{"name":"Chorus.EngineHost","ok":true}` | `Program.cs:46` |
+| `GET /health` | Liveness probe | 200 empty | `Program.cs:47` |
+| `GET /sessions` | Session/client diagnostic JSON (per-client lag/ack detail; session authority in split mode) | JSON | `Program.cs:52` (`c7846a6` completed) |
+| `GET /leaderboard/{scope}/{scopeId}` | Leaderboard read-only query (scope/error codes see [Leaderboard](../guide/leaderboard.md)) | JSON | `Program.cs:53` |
+| `GET /metrics` | Prometheus text: session diagnostics + `chorus_ipc_publish_failures_total` + `chorus_snapshot_bytes` + `chorus_process_cpu_percent` (worker CPU, omitted on first capture) | text | `Program.cs:54`; CPU gauge `EngineHost/ProcessCpuGauge.cs` |
 
 ```bash
 curl http://localhost:5067/health
@@ -65,119 +69,118 @@ curl http://localhost:5067/sessions
 curl http://localhost:5067/metrics
 ```
 
-### Chorus.Server（单进程，`src/Chorus.Server/Program.cs`）
+### Chorus.Server (single-process, `src/Chorus.Server/Program.cs`)
 
-单进程形态多一个诊断端点；`/matches` 只在此形态暴露（权威 `MatchRegistry` 在单进程）。`/sessions` 拆分模式下由 EngineHost 暴露（见上）；`/leaderboard` 两种形态都在会话宿主上：
+The single-process form has one extra diagnostic endpoint; `/matches` is only exposed in this form (the authoritative `MatchRegistry` is in single-process). `/sessions` is exposed by EngineHost in split mode (see above); `/leaderboard` is on the session host in both forms:
 
-| 方法 路径 | 用途 | 出处 |
+| Method Path | Purpose | Source |
 |---|---|---|
-| `GET /` | 自述 | `Program.cs:141` |
-| `GET /health` | 存活探针 | `Program.cs:142` |
-| `GET /sessions` | 会话/客户端诊断 JSON（lag、ack、丢弃计数） | `Program.cs:143` |
-| `GET /matches` | match 级聚合视图 JSON | `Program.cs:144` |
-| `GET /leaderboard/{scope}/{scopeId}` | 排行榜只读查询（见 [排行榜](../guide/leaderboard.md)） | `Program.cs:145` |
-| `GET /faces` | 同 Gateway | `Program.cs:146` |
-| `GET /metrics` | 同 Gateway | `Program.cs:149` |
-| `POST /ingress/{platform}` | 同 Gateway | `Program.cs:160` |
-| `WS /ws` | 同 Gateway | `Program.cs:165` |
+| `GET /` | Self-description | `Program.cs:141` |
+| `GET /health` | Liveness probe | `Program.cs:142` |
+| `GET /sessions` | Session/client diagnostic JSON (lag, ack, dropped counts) | `Program.cs:143` |
+| `GET /matches` | Match-level aggregate view JSON | `Program.cs:144` |
+| `GET /leaderboard/{scope}/{scopeId}` | Leaderboard read-only query (see [Leaderboard](../guide/leaderboard.md)) | `Program.cs:145` |
+| `GET /faces` | Same as Gateway | `Program.cs:146` |
+| `GET /metrics` | Same as Gateway | `Program.cs:149` |
+| `POST /ingress/{platform}` | Same as Gateway | `Program.cs:160` |
+| `WS /ws` | Same as Gateway | `Program.cs:165` |
 
 ```bash
 curl http://localhost:5083/sessions
 curl http://localhost:5083/matches
 ```
 
-### /faces 字段
+### /faces Fields
 
-`GET /faces` 返回 `IngressFaceSnapshot` + `StreamerWsFaceSnapshot` 两段
-（`src/Chorus.Gateway.Core/Faces/FaceCounters.cs:67`、`:76`）：
+`GET /faces` returns two sections, `IngressFaceSnapshot` + `StreamerWsFaceSnapshot`
+(`src/Chorus.Gateway.Core/Faces/FaceCounters.cs:67`, `:76`):
 
-- ingress：`accepted` / `rateLimited` / `tooLarge` / `timedOut` / `unverified` / `duplicates` / `unmapped`
-- streamerWs：`connections` / `unauthorized` / `protocolMismatch` / `messageTooLarge` / `ackAccepted` / `ackDropped` / `resyncDropped` / `snapshotDropped`
+- ingress: `accepted` / `rateLimited` / `tooLarge` / `timedOut` / `unverified` / `duplicates` / `unmapped`
+- streamerWs: `connections` / `unauthorized` / `protocolMismatch` / `messageTooLarge` / `ackAccepted` / `ackDropped` / `resyncDropped` / `snapshotDropped`
 
-## Ingress 请求与错误码
+## Ingress Requests and Error Codes
 
-请求体由平台映射器解析为 `AudienceEvent`
-（`src/Chorus.Protocol/Models/AudienceEvent.cs`，record 字段）：
+The request body is parsed by the platform mapper into `AudienceEvent`
+(`src/Chorus.Protocol/Models/AudienceEvent.cs`, record fields):
 
-| 字段 | 类型 | 必填 | 说明 |
+| Field | Type | Required | Description |
 |---|---|---|---|
-| `eventId` | string | 是 | 平台事件 id，去重键（TTL 见 `Ingress:DedupTtlSeconds`） |
-| `platform` | string | 映射器注入 | 来源平台标识 |
-| `sessionId` | string | 是 | 会话/房间 id |
-| `userId` | string | 否 | 观众 id（映射器缺省填 `anonymous`） |
-| `kind` | enum | 是 | `comment` / `like` / `gift` |
-| `ingestTimeMs` | long | 映射器注入 | 接入时间（unix ms） |
-| `text` / `giftId` / `giftCount` / `giftValue` | 可选 | 否 | 按 kind 取用 |
-| `matchId` / `factionId` | 可选 | 否 | 阵营归属提示 |
+| `eventId` | string | Yes | Platform event id, dedup key (TTL see `Ingress:DedupTtlSeconds`) |
+| `platform` | string | Mapper injected | Source platform identifier |
+| `sessionId` | string | Yes | Session/room id |
+| `userId` | string | No | Viewer id (mapper defaults to `anonymous`) |
+| `kind` | enum | Yes | `comment` / `like` / `gift` |
+| `ingestTimeMs` | long | Mapper injected | Ingest time (unix ms) |
+| `text` / `giftId` / `giftCount` / `giftValue` | optional | No | Taken per kind |
+| `matchId` / `factionId` | optional | No | Faction assignment hint |
 
-响应与错误码（`src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs`）：
+Responses and error codes (`src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs`):
 
-| 状态 | 条件 | 出处 |
+| Status | Condition | Source |
 |---|---|---|
-| 200 `{ok,sessionId,eventId,tick?}` | 受理；`tick` 仅单进程形态（引擎 tick 经 IPC 走 welcome/snapshot） | `:141-143` |
-| 200 `{ok:true,duplicated:true,...}` | 重复事件（TTL 内同 `eventId`） | `:101` |
-| 400 `{error:"unmapped_event",platform}` | 未知事件类型 | `:93` |
-| 401 | 验签失败/缺验证器/缺密钥（fail-closed） | `:76` |
-| 413 | 请求体超 `Faces:PlatformIngress:MaxBodyBytes` | `:68` |
-| 429 | 超 `Faces:PlatformIngress:RateLimitPerMinute` | `:58` |
-| 503 | 引擎侧投递失败（回滚去重，平台重试即全新投递）；或事件道满 | `:133`、`:152` |
-| 504 | 单请求超 `Faces:PlatformIngress:TimeoutMs` | `:148` |
+| 200 `{ok,sessionId,eventId,tick?}` | Accepted; `tick` only in single-process form (engine tick goes over IPC via welcome/snapshot) | `:141-143` |
+| 200 `{ok:true,duplicated:true,...}` | Duplicate event (same `eventId` within TTL) | `:101` |
+| 400 `{error:"unmapped_event",platform}` | Unknown event type | `:93` |
+| 401 | Signature verification failed / missing verifier / missing secret (fail-closed) | `:76` |
+| 413 | Request body exceeds `Faces:PlatformIngress:MaxBodyBytes` | `:68` |
+| 429 | Exceeds `Faces:PlatformIngress:RateLimitPerMinute` | `:58` |
+| 503 | Engine-side delivery failure (dedup rolled back; a platform retry is a completely new delivery); or event lane full | `:133`, `:152` |
+| 504 | Single request exceeds `Faces:PlatformIngress:TimeoutMs` | `:148` |
 
-## WS 协议（/ws）
+## WS Protocol (/ws)
 
-JSON 文本帧。消息定义在 `src/Chorus.Protocol/Messages/`：
+JSON text frames. Message definitions are in `src/Chorus.Protocol/Messages/`:
 
-### 客户端 → 服务器
+### Client → Server
 
-| 消息 | 字段 | 出处 |
+| Message | Fields | Source |
 |---|---|---|
-| `hello` | `sessionId?`、`clientId?`、`token?`、`clientVersion?`、`protocolVersion?`（缺省=旧客户端放行，不匹配拒） | `ClientHello.cs:3` |
-| `ack` | `sessionId`、`clientId`、`lastAppliedTickId`、`clientTimeMs?` | `ClientAck.cs:3` |
+| `hello` | `sessionId?`, `clientId?`, `token?`, `clientVersion?`, `protocolVersion?` (default = old client allowed through; mismatch rejected) | `ClientHello.cs:3` |
+| `ack` | `sessionId`, `clientId`, `lastAppliedTickId`, `clientTimeMs?` | `ClientAck.cs:3` |
 
-### 服务器 → 客户端
+### Server → Client
 
-| 消息 | 字段 | 出处 |
+| Message | Fields | Source |
 |---|---|---|
-| `welcome` | `sessionId`、`clientId`、`tickDurationMs`、`inputDelayTicks`、`snapshotEveryTicks`、`serverTimeMs`、`protocolVersion` | `ServerWelcome.cs:5` |
-| `snapshot` | `sessionId`、`tickId`、`serverTimeMs`、`state`（玩法 JSON）、`forced?`、`reason?`、`targetClientId?`、`clientLagTicks?`、`clientLastAckTickId?`、`v`（schema 版本，缺省读 1） | `ServerSnapshot.cs:5`（`v` 在 `:20`） |
-| `error` | `message`、`code?`——`Invalid hello` / `First message must be hello` / 协议版本原因 / `unauthorized: {reason}` / `Engine unavailable` / `Engine welcome timeout` | `ServerError.cs:3`；六处发出点 `StreamerWsFace.cs:97`、`:114`、`:124`、`:134`、`IpcSessionRouter.cs:39`、`:52` |
+| `welcome` | `sessionId`, `clientId`, `tickDurationMs`, `inputDelayTicks`, `snapshotEveryTicks`, `serverTimeMs`, `protocolVersion` | `ServerWelcome.cs:5` |
+| `snapshot` | `sessionId`, `tickId`, `serverTimeMs`, `state` (gameplay JSON), `forced?`, `reason?`, `targetClientId?`, `clientLagTicks?`, `clientLastAckTickId?`, `v` (schema version, defaults to 1 when absent) | `ServerSnapshot.cs:5` (`v` at `:20`) |
+| `error` | `message`, `code?` — `Invalid hello` / `First message must be hello` / protocol version reason / `unauthorized: {reason}` / `Engine unavailable` / `Engine welcome timeout` | `ServerError.cs:3`; six send sites `StreamerWsFace.cs:97`, `:114`, `:124`, `:134`, `IpcSessionRouter.cs:39`, `:52` |
 
-字段语义、`v` 版本策略与客户端状态机见 [协议参考](./protocol.md) 与 [版本策略](./versioning.md)。
+For field semantics, the `v` versioning strategy, and the client state machine, see [Protocol Reference](./protocol.md) and [Versioning Strategy](./versioning.md).
 
-### 连接关闭原因（close status + reason）
+### Connection Close Reasons (close status + reason)
 
-| 关闭 | 触发 | 出处（`StreamerWsFace.cs`） |
+| Close | Trigger | Source (`StreamerWsFace.cs`) |
 |---|---|---|
-| `MessageTooBig` "hello too large" | hello 超 `Faces:StreamerWs:MaxMessageBytes` | `:90` |
-| `NormalClosure` "invalid hello" | hello 解析失败 | `:96` |
-| `NormalClosure` "first message must be hello" | 首帧不是 hello | `:113` |
-| `PolicyViolation`（协议版本原因） | `protocolVersion` 不匹配，先于鉴权 | `:123` |
-| `PolicyViolation` `unauthorized: {missing_token\|invalid_token\|token_expired}` | hello 鉴权失败（fail-closed） | `:133` |
-| `MessageTooBig` "message too large" | 后续消息超限 | `:169` |
+| `MessageTooBig` "hello too large" | hello exceeds `Faces:StreamerWs:MaxMessageBytes` | `:90` |
+| `NormalClosure` "invalid hello" | hello parse failure | `:96` |
+| `NormalClosure` "first message must be hello" | First frame is not hello | `:113` |
+| `PolicyViolation` (protocol version reason) | `protocolVersion` mismatch, before authentication | `:123` |
+| `PolicyViolation` `unauthorized: {missing_token\|invalid_token\|token_expired}` | hello authentication failure (fail-closed) | `:133` |
+| `MessageTooBig` "message too large" | Subsequent message exceeds limit | `:169` |
 
-## IPC 信封（拆分模式内部接口，非后台面）
+## IPC Envelopes (split mode internal interface, not a backend surface)
 
-引擎与网关之间经 `Envelope`（JSON，`sessionId` 为序键）通信，消息类型常量
-`src/Chorus.Messaging/Ipc/IpcMessageTypes.cs:3`：
+The engine and gateway communicate via `Envelope` (JSON, ordered by `sessionId`); message type constants
+`src/Chorus.Messaging/Ipc/IpcMessageTypes.cs:3`:
 
-| 方向 | 类型 | 载荷 | 出处 |
+| Direction | Type | Payload | Source |
 |---|---|---|---|
-| gw→eng | `gw.connect` / `gw.disconnect` | `GatewayConnectCmd` / `GatewayDisconnectCmd` | `Gateway/GatewayIpcService.cs:96`、`:112` |
-| gw→eng | `gw.ack` | `GatewayAckCmd`（`lastAppliedTickId`、`clientTimeMs`） | `GatewayIpcService.cs:117` |
-| gw→eng | `gw.audienceEvent` | `AudienceEvent`（带 `SourceEventId` 关联） | `EngineHost/EngineIpcService.cs:236` |
+| gw→eng | `gw.connect` / `gw.disconnect` | `GatewayConnectCmd` / `GatewayDisconnectCmd` | `Gateway/GatewayIpcService.cs:96`, `:112` |
+| gw→eng | `gw.ack` | `GatewayAckCmd` (`lastAppliedTickId`, `clientTimeMs`) | `GatewayIpcService.cs:117` |
+| gw→eng | `gw.audienceEvent` | `AudienceEvent` (with `SourceEventId` correlation) | `EngineHost/EngineIpcService.cs:236` |
 | eng→gw | `eng.welcome` | `ServerWelcome` | `EngineIpcService.cs:205` |
-| eng→gw | `eng.snapshot` | `ServerSnapshot`（含 `v`） | `EngineHost/EngineBusSessionClient.cs:49-59`（直接构造 `ServerSnapshot` 并发布；`WireSnapshot` 仅用于引擎内广播 WS 路径） |
-| eng→gw | `eng.heartbeat` | `EngineHeartbeatCmd`（哨兵 sessionId `__heartbeat`） | `EngineIpcService.cs:130` |
+| eng→gw | `eng.snapshot` | `ServerSnapshot` (including `v`) | `EngineHost/EngineBusSessionClient.cs:49-59` (constructs `ServerSnapshot` directly and publishes; `WireSnapshot` is only used for in-engine broadcast WS path) |
+| eng→gw | `eng.heartbeat` | `EngineHeartbeatCmd` (sentinel sessionId `__heartbeat`) | `EngineIpcService.cs:130` |
 
-通道命名与多网关扇出：`Ipc:GatewayIds` + `Gateway:Id`（见 [通信抽象](../design/ipc.md) 通道命名一节）。
+Channel naming and multi-gateway fanout: `Ipc:GatewayIds` + `Gateway:Id` (see the channel naming section in [Messaging Abstraction](../design/ipc.md)).
 
-## 配置面
+## Configuration Surface
 
-全部配置键、默认值与 fail-closed 语义见 [配置参考](./config.md)；就绪探针配置见
-[部署与安全](./deployment.md) 拆分模式一节。
+For all configuration keys, defaults, and fail-closed semantics, see [Configuration Reference](./config.md); for readiness probe configuration, see the split mode section in [Deployment and Security](./deployment.md).
 
-## 相关页面
+## Related Pages
 
-- [协议参考](./protocol.md)（字段与示例、版本语义）
-- [可观测性](./observability.md)（`chorus_*` 指标清单、日志关键字段、关联 ID）
-- [平台适配器契约](./adapter-contract.md)（`/ingress/{platform}` 8 步处理顺序与验签模板）
+- [Protocol Reference](./protocol.md) (fields and examples, versioning semantics)
+- [Observability](./observability.md) (`chorus_*` metric inventory, log key fields, correlation IDs)
+- [Platform Adapter Contract](./adapter-contract.md) (`/ingress/{platform}` 8-step processing order and signature verification template)

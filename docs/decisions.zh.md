@@ -29,9 +29,9 @@
 ### D3 两平台官方口径未核实部分：占位契约 + TODO，不做猜测实现
 
 - **背景**：抖音官方文档站登录墙 + 反爬，签名算法/事件字段/推送通道形态均未核实（详见
-  [platform-douyin.md §1](./reference/platform-douyin.md)）；快手拿到官方《消息加解密和签名验证》正文，
+  [platform-douyin.md §1](./reference/platform-douyin.zh.md)）；快手拿到官方《消息加解密和签名验证》正文，
   签名（sha1Hex(body+Token) / kwaisign）与 AES 信封按官方实现，直播事件内层 JSON 官方未给
-  （详见 [platform-kuaishou.md §1](./reference/platform-kuaishou.md)）。
+  （详见 [platform-kuaishou.md §1](./reference/platform-kuaishou.zh.md)）。
 - **决策**：
   - 抖音：验签按 HMAC-SHA256(appSecret, body) 占位、事件信封用 Chorus 自定义占位字段；
   - 快手：验签与信封解密按官方算法实现，仅内层事件字段用占位契约（与抖音同构，便于联调时同点替换）；
@@ -47,7 +47,7 @@
 
 ### D5 单体内先做 listener 代码分层（platform-ingress / streamer-ws），不拆进程
 
-- **背景**：[process-topology.md](./design/process-topology.md) 定了「角色先分、进程后拆」。
+- **背景**：[process-topology.md](./design/process-topology.zh.md) 定了「角色先分、进程后拆」。
 - **决策**：新增共享工程 `Chorus.Gateway.Core` 承载两 face 策略组件：
   - `platform-ingress` 面：限流（每来源固定窗口）、请求体上限（413）、请求超时（504）、按平台验签、去重，
     落在两个 host 的 `POST /ingress/{platform}` 处理器 + `/faces` 计数端点；
@@ -82,7 +82,7 @@
   路径删除权回归总线；关闭时按 bind 身份守卫删除（Unix `CreationTimeUtc` = st_ctime，bind 后不再变化），
   身份未知或文件已换主一律不删，异常退出的残留由下次 `StartServer` 删-绑兜底。删除动作挂 `DisposeAsync`
   而非 accept 循环尾部（带取消 token 的 `Task.Run` 可能从未被调度，循环尾部守卫会整体跳过）。
-  设计细节见 [docs/design/ipc.md](./design/ipc.md)「socket 文件生命周期」。
+  设计细节见 [docs/design/ipc.md](./design/ipc.zh.md)「socket 文件生命周期」。
 - **影响**：线协议、通道名、配置全部不变；客户端 `ConnectAsync` 仍用 BCL 端点（从不 bind，不进跟踪）。
   回滚面：bind 端点改回 `UnixDomainSocketEndPoint` 并恢复原 `File.Delete` 即回到 BCL 管理（竞态重现）。
 

@@ -28,14 +28,14 @@
 - 本地预览：`npm install && npm run docs:dev`
 - 构建静态站：`npm run docs:build`（输出：`docs/.vuepress/dist`）
 
-重点页面：[架构说明（分层与取舍）](docs/architecture.md) ·
-[当前架构总览](docs/design/architecture-overview.md) ·
-[对战](docs/guide/battle.md) ·
-[匹配](docs/guide/matchmaking.md) ·
-[排行榜](docs/guide/leaderboard.md) ·
-[接口参考](docs/reference/api.md) ·
-[配置参考](docs/reference/config.md) ·
-[协议参考](docs/reference/protocol.md)
+重点页面：[架构说明（分层与取舍）](docs/architecture.zh.md) ·
+[当前架构总览](docs/design/architecture-overview.zh.md) ·
+[对战](docs/guide/battle.zh.md) ·
+[匹配](docs/guide/matchmaking.zh.md) ·
+[排行榜](docs/guide/leaderboard.zh.md) ·
+[接口参考](docs/reference/api.zh.md) ·
+[配置参考](docs/reference/config.zh.md) ·
+[协议参考](docs/reference/protocol.zh.md)
 
 ## 快速开始
 
@@ -58,7 +58,7 @@ dotnet run --project src/Chorus.Server
   `Faces:StreamerWs:AuthTokens`（`token` 或 `token@unixMs过期时间`，`;` 分隔），
   否则所有 WS 连接被拒绝（fail-closed）。
 
-详见 [配置参考](docs/reference/config.md) 与 [协议参考](docs/reference/protocol.md)。
+详见 [配置参考](docs/reference/config.zh.md) 与 [协议参考](docs/reference/protocol.zh.md)。
 
 ## 本地测试口径
 
@@ -92,7 +92,7 @@ flowchart TB
 ```
 
 单进程形态（`Chorus.Server`）把两侧装进同一进程，无 IPC 跳。完整进程拓扑与组件 file:line 索引见
-[当前架构总览](docs/design/architecture-overview.md)；后台/管理端接口见[接口参考](docs/reference/api.md)。
+[当前架构总览](docs/design/architecture-overview.zh.md)；后台/管理端接口见[接口参考](docs/reference/api.zh.md)。
 
 ## 产品边界
 

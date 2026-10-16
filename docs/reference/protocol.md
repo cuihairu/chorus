@@ -1,49 +1,53 @@
 ---
-title: 协议参考
+title: Protocol Reference
 ---
 
-# 协议参考（v1）
+<p align="center">
+  English | <a href="protocol.zh.md">简体中文</a>
+</p>
 
-## hello（client -> server）
+# Protocol Reference (v1)
+
+## hello (client -> server)
 
 ```json
 {"type":"hello","sessionId":"optional","clientId":"optional","token":"optional","protocolVersion":1}
 ```
 
-字段说明：
+Field descriptions:
 
-- `sessionId`：客户端希望加入的会话，可选
-- `clientId`：客户端标识，可选；未提供时可由服务端分配
-- `token`：接入凭据，可选；服务端校验（见下）
-- `protocolVersion`：线协议版本，可选；当前为 `1`（见下）
+- `sessionId`: the session the client wants to join; optional
+- `clientId`: client identifier; optional; the server may assign one if not provided
+- `token`: access credential; optional; verified by the server (see below)
+- `protocolVersion`: wire protocol version; optional; currently `1` (see below)
 
-### hello 协议版本（2026-10-12 起）
+### hello Protocol Version (Since 2026-10-12)
 
-`hello.protocolVersion` / `welcome.protocolVersion` 标识**线协议**版本（由服务端 `Chorus.Protocol`
-的 `ProtocolVersionPolicy.Current` 决定），与 `clientVersion`（客户端自身构建号，自由字符串）无关：
+`hello.protocolVersion` / `welcome.protocolVersion` identifies the **wire protocol** version (determined by `ProtocolVersionPolicy.Current` of the server-side `Chorus.Protocol`), unrelated to `clientVersion` (the client's own build number, a free string):
 
-- 缺省（`null`/不传）→ 视为旧版客户端，**放行**（向后兼容，不做硬升级）；
-- 传了且等于服务端版本 → 放行；
-- 传了且不等于服务端版本 → 服务端先回 `error`（`protocol_mismatch: client=N server=M`），
-  随后以 `PolicyViolation` 关闭连接，并计入 `/faces` 的 `streamerWs.protocolMismatch`
-  与 `chorus_ws_protocol_mismatch_total`；
-- 版本校验在鉴权**之前**：版本不对的客户端不消耗鉴权判定。
+- Default (`null`/not sent) → treated as a legacy client, **allowed through** (backward compatible, no hard upgrade);
+- Sent and equal to the server version → allowed through;
+- Sent and not equal to the server version → the server first replies `error` (`protocol_mismatch: client=N server=M`),
+  then closes the connection with `PolicyViolation`, and counts it in `/faces`'s
+  `streamerWs.protocolMismatch`
+  and `chorus_ws_protocol_mismatch_total`;
+- Version validation happens **before** authentication: clients with the wrong version do not consume authentication decisions.
 
-### hello 鉴权（2026-10-12 起，fail-closed）
+### hello Authentication (Since 2026-10-12, fail-closed)
 
-服务端在收到 hello 后校验 `token`（配置 `Faces:StreamerWs:AuthTokens`，支持 `token@unixMs过期时间`，
-分号分隔多个）：
+After receiving hello, the server verifies the `token` (config `Faces:StreamerWs:AuthTokens`, supports `token@unixMs过期时间`,
+multiple tokens separated by semicolons):
 
-- token 缺失/未知/已过期 → 服务端先回 `error`（`unauthorized: missing_token | invalid_token | token_expired`），
-  随后以 `PolicyViolation` 关闭连接；
-- 未配置任何 token 且未开 `Faces:StreamerWs:AllowAnonymous` → 所有连接一律拒绝（fail-closed）；
-- `AllowAnonymous` 仅建议在开发配置（appsettings.Development.json）里显式打开。
+- Token missing / unknown / expired → the server first replies `error` (`unauthorized: missing_token | invalid_token | token_expired`),
+  then closes the connection with `PolicyViolation`;
+- No tokens configured and `Faces:StreamerWs:AllowAnonymous` not enabled → all connections are rejected (fail-closed);
+- `AllowAnonymous` is only recommended to be explicitly enabled in the development configuration (appsettings.Development.json).
 
-hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（默认 64KiB）→ 以
-`MessageTooBig` 关闭连接。ACK 超过 `Faces:StreamerWs:AckPerMinute`（默认 600/连接/分钟）→
-静默丢弃并计入 `/faces` 的 `streamerWs.ackDropped`。
+hello is a single WS text message; exceeding `Faces:StreamerWs:MaxMessageBytes` (default 64KiB) → close the
+connection with `MessageTooBig`. ACKs exceeding `Faces:StreamerWs:AckPerMinute` (default 600/connection/minute) →
+silently dropped and counted in `/faces`'s `streamerWs.ackDropped`.
 
-## welcome（server -> client）
+## welcome (server -> client)
 
 ```json
 {
@@ -58,17 +62,17 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 }
 ```
 
-字段说明：
+Field descriptions:
 
-- `tickDurationMs`：权威 tick 周期
-- `inputDelayTicks`：输入被调度到未来多少 tick 后结算
-- `snapshotEveryTicks`：周期快照频率
-- `serverTimeMs`：服务端当前时间戳，可用于客户端做漂移估计
-- `protocolVersion`：服务端线协议版本；客户端应比对其与自身实现版本，不一致时主动断开而不是猜字段
+- `tickDurationMs`: authoritative tick period
+- `inputDelayTicks`: how many ticks in the future input is scheduled before settlement
+- `snapshotEveryTicks`: periodic snapshot frequency
+- `serverTimeMs`: current server timestamp, usable by the client for drift estimation
+- `protocolVersion`: server wire protocol version; the client should compare it with its own implementation version and actively disconnect on mismatch rather than guessing fields
 
-客户端在收到 `welcome` 后，应以其作为权威节拍配置，而不是继续沿用本地默认值。
+After receiving `welcome`, the client should treat it as the authoritative beat configuration, rather than continuing to use local defaults.
 
-## snapshot（server -> client）
+## snapshot (server -> client)
 
 ```json
 {
@@ -87,27 +91,27 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 }
 ```
 
-字段说明：
+Field descriptions:
 
-- `tickId`：该快照对应的权威 tick
-- `serverTimeMs`：快照生成时的服务端时间
-- `state`：权威状态快照，v1 为 JSON
-- `forced`：是否为强制重同步快照
-- `reason`：强制原因，当前常见值为 `lag`（服务端按 ACK 判定落后主动推送）与 `resync-gap`（客户端 `resync` 请求的补帧窗口已被驱逐，回吐最新帧）
-- `targetClientId`：目标客户端；当服务端只想让特定慢端立即对齐时使用
-- `clientLagTicks`：服务端判定该客户端当前落后多少 tick
-- `clientLastAckTickId`：服务端看到的该客户端最近 ACK tick
-- `frameEvents`：可选（2026-10-13 起，帧同步 P2）。自上一快照以来被应用的弹幕事件，每项 `frameId` 为该事件被应用的那一帧、`eventId` 为事件 id（去重键）、`kind` 为归一化事件类型（`comment` / `like` / `gift` / `share`）、`userId` 为平台用户 id。**无事件时整个字段被省略**（不是空数组）——additive optional 字段，不触发 `v` bump（见 [版本策略](./versioning.md)）。旧客户端可忽略
-- `v`：快照 schema 版本（2026-10-13 起上线，见 [版本策略](./versioning.md)）；引擎快照透传，当前恒为 `1`；旧发送端缺省时接收端按 `1` 读入。未知版本的处理语义（拒绝 + 强制 resync）待首个 v2 schema 设计时定
+- `tickId`: the authoritative tick this snapshot corresponds to
+- `serverTimeMs`: server time when the snapshot was generated
+- `state`: authoritative state snapshot; v1 is JSON
+- `forced`: whether this is a forced resync snapshot
+- `reason`: the forced reason; current common values are `lag` (the server actively pushes based on its ACK-based judgment that the client is behind) and `resync-gap` (the backfill frame window of the client's `resync` request has been evicted; the latest frame is fed back)
+- `targetClientId`: target client; used when the server wants only a specific slow client to align immediately
+- `clientLagTicks`: how many ticks the server judges this client is currently behind
+- `clientLastAckTickId`: the most recent ACK tick the server has seen from this client
+- `frameEvents`: optional (since 2026-10-13, frame sync P2). Danmaku events applied since the last snapshot; each item's `frameId` is the frame the event was applied in, `eventId` is the event id (deduplication key), `kind` is the normalized event type (`comment` / `like` / `gift` / `share`), and `userId` is the platform user id. **When there are no events the entire field is omitted** (not an empty array) — an additive optional field that does not trigger a `v` bump (see [versioning policy](./versioning.md)). Legacy clients may ignore it.
+- `v`: snapshot schema version (live since 2026-10-13, see [versioning policy](./versioning.md)); passed through from the engine snapshot, currently always `1`; when a legacy sender omits it, the receiver reads it as `1`. The handling semantics for unknown versions (reject + force resync) will be defined when the first v2 schema is designed.
 
-语义说明：
+Semantics:
 
-- 普通周期快照用于稳定跟随和重连恢复
-- 当 `forced=true && reason="lag"` 时，表示服务器判定客户端落后，需要立刻以该快照对齐
-- 当 `forced=true && reason="resync-gap"` 时，表示客户端 `resync` 请求的起始帧已不在引擎窗口内，该快照是当前最新帧，客户端应直接对齐、不要补历史
-- 客户端收到强制快照后，不应继续长时间补历史帧，而应优先切换到该快照状态
+- Normal periodic snapshots are used for steady following and reconnect recovery
+- When `forced=true && reason="lag"`, it means the server judges the client is behind and needs to align to that snapshot immediately
+- When `forced=true && reason="resync-gap"`, it means the start frame of the client's `resync` request is no longer in the engine window; that snapshot is the current latest frame, and the client should align directly without backfilling history
+- After receiving a forced snapshot, the client should not keep backfilling history frames for a long time; it should prioritize switching to that snapshot's state
 
-## ack（client -> server）
+## ack (client -> server)
 
 ```json
 {
@@ -119,22 +123,22 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 }
 ```
 
-字段说明：
+Field descriptions:
 
-- `lastAppliedTickId`：客户端已经真正应用完成的权威 tick
-- `clientTimeMs`：可选，用于辅助漂移和排查
+- `lastAppliedTickId`: the authoritative tick the client has actually finished applying
+- `clientTimeMs`: optional, used to assist drift estimation and troubleshooting
 
-语义约束：
+Semantic constraints:
 
-- ACK 只能在状态真正应用完成后发送
-- ACK 不能表示“已经收到消息”
-- ACK 不能表示“已入队，稍后应用”
+- ACK may only be sent after the state has actually been applied
+- ACK cannot mean "message received"
+- ACK cannot mean "queued, will apply later"
 
-如果客户端在快照还未应用完成前就发送 ACK，服务端会误判其已经跟上。
+If the client sends ACK before the snapshot has finished applying, the server will misjudge that it has caught up.
 
-## resync（client -> server）
+## resync (client -> server)
 
-2026-10-13 起（帧同步 P2）。客户端发现丢帧或重连后，按帧号拉取补帧窗口：
+Since 2026-10-13 (frame sync P2). When the client discovers missing frames or after reconnecting, it pulls the backfill frame window by frame number:
 
 ```json
 {
@@ -145,44 +149,44 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 }
 ```
 
-字段说明：
+Field descriptions:
 
-- `fromFrameId`：客户端已应用到的最后帧号，服务端回吐 `[fromFrameId, 当前 tickId]` 窗口内的快照序列
-- `sessionId` / `clientId`：绑定字段，用于校验与定位目标客户端（未知 `clientId` 的请求被计数后忽略）
+- `fromFrameId`: the last frame number the client has applied; the server feeds back the snapshot sequence within the `[fromFrameId, 当前 tickId]` window
+- `sessionId` / `clientId`: binding fields, used to verify and locate the target client (requests with unknown `clientId` are counted and then ignored)
 
-服务端应答语义（两种，互斥）：
+Server response semantics (two kinds, mutually exclusive):
 
-1. **窗口命中** → 通过直发通道按帧号顺序回吐窗口内每一帧快照（不走 latest-wins 队列，因此不会被后续快照挤掉）。客户端按 `tickId` 幂等应用：帧号 ≤ 已应用帧的直接丢弃。回放与周期快照可在传输上交错，客户端必须以 `tickId` 排序而非到达顺序。
-2. **窗口未命中**（起始帧已被驱逐、或该 session 关闭帧历史）→ 回吐单个最新快照，`forced=true`、`reason="resync-gap"`，客户端对齐到最新帧、放弃补历史。
+1. **Window hit** → feed back every frame snapshot within the window in frame-number order through the direct-send channel (not through the latest-wins queue, so it will not be pushed out by subsequent snapshots). The client applies idempotently by `tickId`: frames with frame numbers ≤ the already-applied frame are dropped directly. Replay and periodic snapshots may interleave in transit; the client must sort by `tickId`, not by arrival order.
+2. **Window miss** (the start frame has been evicted, or the session has closed frame history) → feed back a single latest snapshot with `forced=true` and `reason="resync-gap"`; the client aligns to the latest frame and abandons backfilling history.
 
-限流（两层）：
+Rate limiting (two layers):
 
-- WS 面固定窗口：每连接每分钟 `Faces:StreamerWs:ResyncPerMinute`（默认 30），超限丢弃并计入 `/faces` 的 `streamerWs.resyncDropped`
-- 引擎 per-client 冷却：`Session:ResyncRequestCooldownMs`（默认 1000ms），冷却内重复请求计入 `TotalResyncThrottled` 后直接返回
+- WS face fixed window: per connection per minute `Faces:StreamerWs:ResyncPerMinute` (default 30); over-limit requests are dropped and counted in `/faces`'s `streamerWs.resyncDropped`
+- Engine per-client cooldown: `Session:ResyncRequestCooldownMs` (default 1000ms); repeated requests within the cooldown are counted in `TotalResyncThrottled` and then returned directly
 
-服务端不额外回执「resync 已受理」：客户端以收到的快照序列作为应答。重试规则：
+The server does not send an additional "resync accepted" receipt: the client uses the received snapshot sequence as the response. Retry rules:
 
-- 发 `resync` 后在约定预算内**一个快照都没收到** → 重试
-- 收到 `forced=true` 快照（`reason="resync-gap"` 或 `reason="lag"`）→ 已对齐，**不要重试**
-- 收到非 forced 快照且帧号仍跳过了帧 → 可再发一次 `resync`；回放帧会因帧号 ≤ 已应用帧被幂等丢弃，重复发送是安全的
+- After sending `resync`, **no snapshot at all** received within the agreed budget → retry
+- Received a `forced=true` snapshot (`reason="resync-gap"` or `reason="lag"`) → already aligned, **do not retry**
+- Received a non-forced snapshot and frames are still being skipped → `resync` may be sent once more; replay frames will be idempotently dropped because their frame numbers ≤ the already-applied frame, so re-sending is safe
 
-## 推荐实现约束
+## Recommended Implementation Constraints
 
-- 客户端正常跟随时，应周期性发送 ACK
-- 轻度 lag 时，可做受控追赶
-- 重度 lag 时，应等待或请求最新快照
-- 客户端逻辑层应始终以 `tickId` 和权威快照为准
+- When the client is following normally, it should send ACK periodically
+- For mild lag, controlled catch-up is acceptable
+- For severe lag, it should wait or request the latest snapshot
+- The client logic layer should always defer to `tickId` and the authoritative snapshot
 
-## 与当前服务端实现的对应关系
+## Mapping to the Current Server Implementation
 
-当前服务端实现中：
+In the current server implementation:
 
-- `welcome` 对应 `ServerWelcome`
-- `snapshot` 对应 `ServerSnapshot`
-- `ack` 对应 `ClientAck`
-- `resync` 对应 `ClientResync`（帧同步 P2）
+- `welcome` corresponds to `ServerWelcome`
+- `snapshot` corresponds to `ServerSnapshot`
+- `ack` corresponds to `ClientAck`
+- `resync` corresponds to `ClientResync` (frame sync P2)
 
-其中服务端强制重同步所携带的关键上下文字段包括：
+The key context fields carried by the server's forced resync include:
 
 - `forced`
 - `reason`
@@ -190,4 +194,4 @@ hello 为单条 WS 文本消息，超过 `Faces:StreamerWs:MaxMessageBytes`（�
 - `clientLagTicks`
 - `clientLastAckTickId`
 
-客户端如果要做可解释的恢复日志，建议把这些字段一起记录下来。
+If the client wants to produce interpretable recovery logs, it is recommended to log these fields together.
