@@ -163,6 +163,8 @@ public sealed class LoadToolTests
         Assert.Equal(3, options.DriverShardCount);
         Assert.Equal(10.5, options.EffectiveEventsPerSecondTotal);
         Assert.Equal("shard2-", options.EventIdPrefix);
+        Assert.Equal("shard2-", options.ClientIdPrefix);
+        Assert.Equal(" shard2", options.ShardLabel);
     }
 
     [Fact]

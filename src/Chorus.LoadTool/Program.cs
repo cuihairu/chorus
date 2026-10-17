@@ -16,7 +16,7 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-Console.WriteLine($"[loadtool] target={options.BaseUrl} ws={options.EffectiveWsUrl} platform={options.Platform} " +
+Console.WriteLine($"[loadtool{options.ShardLabel}] target={options.BaseUrl} ws={options.EffectiveWsUrl} platform={options.Platform} " +
                   $"sessions={options.Sessions} rate={options.EffectiveEventsPerSecondTotal:0.##}/s total " +
                   $"clients={options.ClientsPerSession} duration={options.DurationSeconds}s");
 
@@ -41,7 +41,7 @@ for (var s = 1; s <= Math.Max(1, options.Sessions); s++)
     var sessionId = $"load-s{s}";
     for (var c = 1; c <= Math.Max(1, options.ClientsPerSession); c++)
     {
-        var clientId = $"load-s{s}-c{c}";
+        var clientId = $"{options.ClientIdPrefix}load-s{s}-c{c}";
         var profile = profiles[(s + c) % profiles.Length];
         var sim = new ClientSimulation(wsUrl, sessionId, clientId, options.Token, profile,
             options.DisconnectEverySeconds, options.ReconnectBackoffMs, seed: s * 1000 + c);
@@ -124,7 +124,7 @@ async Task ReportLoopAsync(IReadOnlyList<ClientSimulation> sims, IngressDriver i
         var maxLag = sims.Count == 0 ? 0 : sims.Max(s => s.LastLagTicks);
         var reconnects = sims.Sum(s => s.Disconnects);
         Console.WriteLine(
-            $"[loadtool] t={tick * Math.Max(1, opts.ReportEverySeconds)}s " +
+            $"[loadtool{opts.ShardLabel}] t={tick * Math.Max(1, opts.ReportEverySeconds)}s " +
             $"ingress(sent={ing.EventsSent},ok={ing.Accepted},dup={ing.Duplicated},401={ing.Unauthorized},429={ing.RateLimited},503={ing.LaneFull},err={ing.Other}) " +
             $"ws(snaps={snaps},acks={acks},maxLag={maxLag},reconnects={reconnects})");
     }
@@ -134,10 +134,10 @@ void PrintSummary(IReadOnlyList<ClientSimulation> sims, IngressDriver ing, LoadT
 {
     var reconnects = sims.Sum(s => s.Disconnects);
     var maxLag = sims.Count == 0 ? 0 : sims.Max(s => s.LastLagTicks);
-    Console.WriteLine("[loadtool] done. ingress: " +
+    Console.WriteLine($"[loadtool{opts.ShardLabel}] done. ingress: " +
         $"sent={ing.EventsSent} accepted={ing.Accepted} duplicated={ing.Duplicated} " +
         $"unauthorized={ing.Unauthorized} rateLimited={ing.RateLimited} laneFull={ing.LaneFull} other={ing.Other}");
-    Console.WriteLine("[loadtool] ws: " +
+    Console.WriteLine($"[loadtool{opts.ShardLabel}] ws: " +
         $"snapshots={sims.Sum(s => s.SnapshotsReceived)} acks={sims.Sum(s => s.AcksSent)} " +
         $"resyncs={sims.Sum(s => s.ResyncsSent)} maxLagTicks={maxLag} reconnects={reconnects}");
 }

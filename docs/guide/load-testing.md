@@ -83,7 +83,7 @@ For rates that exceed one driver process, split the same run across independent 
 dotnet run --project src/Chorus.LoadTool -- --driver-processes 4 --rate 30000
 ```
 
-Each child receives its own rate target and `shardN-` event/client id namespace. Shards report independently; aggregate their summaries to compare the total sent count with gateway metrics.
+Each child receives its own rate target and `shardN-` event/client id namespace, and labels its progress/summary output with `shardN`. Aggregate the labeled summaries to compare total sent/accepted counts with gateway metrics.
 
 There is a zero-acceptance alarm at the end: when `sent>0 && accepted=0`, `[loadtool] ALARM: ...` is printed to stderr and the tool exits with a non-zero exit code — the typical cause is the gateway having `Ingress:Douyin:AppSecret` configured while the request is unsigned (pure 401); when running douyin/kuaishou unsigned, an unsigned warning is also printed at startup.
 

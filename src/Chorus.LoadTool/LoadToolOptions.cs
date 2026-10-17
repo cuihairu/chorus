@@ -50,6 +50,10 @@ public sealed record LoadToolOptions(
 
     public string ClientIdPrefix => EventIdPrefix;
 
+    public string ShardLabel => DriverShardIndex is { } shardIndex
+        ? $" shard{shardIndex + 1}"
+        : string.Empty;
+
     public static string WsEndpoint(string baseUrl, string? explicitUrl = null)
     {
         if (!string.IsNullOrWhiteSpace(explicitUrl))
@@ -197,6 +201,7 @@ public sealed record LoadToolOptions(
               --driver-processes <n>       Run n load-tool processes. The parent
                                            splits rate and namespaces event/client
                                            ids so shards do not collide (default 1)
+                                           Child output is labeled with its shard.
             """);
     }
 }

@@ -84,7 +84,7 @@ dotnet run --project src/Chorus.LoadTool -- --url http://127.0.0.1:5168 \
 dotnet run --project src/Chorus.LoadTool -- --driver-processes 4 --rate 30000
 ```
 
-每个子进程拿到自己的速率目标和 `shardN-` event/client id 命名空间；汇总各分片输出，与网关指标中的总受理数对照。
+每个子进程拿到自己的速率目标和 `shardN-` event/client id 命名空间，并在进度/汇总日志中标注 `shardN`；按标签汇总各分片输出，再与网关指标中的总发送/受理数对照。
 
 结束时有零受理告警：`sent>0 && accepted=0` 时在 stderr 打 `[loadtool] ALARM: ...` 并以非零退出码结束——典型成因是网关配了 `Ingress:Douyin:AppSecret` 而请求没签名（纯 401）；未签名运行 douyin/kuaishou 时启动也会先打一条 unsigned 警告。
 
