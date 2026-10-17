@@ -26,6 +26,19 @@ public sealed class LoadToolTests
     }
 
     [Fact]
+    public void Payload_EventNamespacePrefixesFreshIds()
+    {
+        var factory = new EventPayloadFactory(
+            "test", userPoolSize: 100, giftRate: 0, duplicateRate: 0, matchId: null,
+            sequenceProvider: () => 42, eventIdPrefix: "shard2-");
+
+        var payload = factory.Create("load-s1");
+
+        using var doc = JsonDocument.Parse(payload);
+        Assert.Equal("shard2-load-s1-e42", doc.RootElement.GetProperty("eventId").GetString());
+    }
+
+    [Fact]
     public void Payload_HasDouyinMapperFields()
     {
         var factory = new EventPayloadFactory("douyin", userPoolSize: 100, giftRate: 0, duplicateRate: 0, matchId: null);
@@ -135,6 +148,87 @@ public sealed class LoadToolTests
 
         Assert.Equal("ws://127.0.0.1:5169/ws", options.WsUrl);
         Assert.Equal("ws://127.0.0.1:5169/ws", options.EffectiveWsUrl);
+    }
+
+    [Fact]
+    public void Options_ParseDriverShard()
+    {
+        var options = LoadToolOptions.Parse(new[]
+        {
+            "--rate", "30", "--driver-shard-index", "1", "--driver-shard-count", "3",
+            "--driver-rate", "10.5", "--event-namespace", "shard2",
+        });
+
+        Assert.Equal(1, options.DriverShardIndex);
+        Assert.Equal(3, options.DriverShardCount);
+        Assert.Equal(10.5, options.EffectiveEventsPerSecondTotal);
+        Assert.Equal("shard2-", options.EventIdPrefix);
+    }
+
+    [Fact]
+    public void Options_RejectsInvalidDriverShard()
+    {
+        Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(["--driver-processes", "0"]));
+        Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(["--driver-shard-index", "1"]));
+        Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(
+        [
+            "--driver-shard-index", "2", "--driver-shard-count", "2",
+        ]));
+        Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(
+        [
+            "--driver-shard-index", "0", "--driver-shard-count", "2", "--driver-processes", "2",
+        ]));
+    }
+
+    [Fact]
+    public void MultiProcessDriver_SplitsRateAndNamespace()
+    {
+        Assert.Equal(12, MultiProcessDriver.ShardRate(36, 0, 3));
+        Assert.Equal(12, MultiProcessDriver.ShardRate(36, 1, 3));
+        Assert.Equal(12, MultiProcessDriver.ShardRate(36, 2, 3));
+        Assert.Equal("shard2", MultiProcessDriver.ShardNamespace(1));
+    }
+
+    [Fact]
+    public void MultiProcessDriver_BuildsIsolatedShardArgs()
+    {
+        var args = MultiProcessDriver.BuildShardArgs(
+        [
+            "--url", "http://stub", "--driver-processes", "3", "--rate", "300",
+            "--event-namespace", "user-value", "--ws-url", "ws://stub/ws",
+        ], shardIndex: 1, shardCount: 3, shardRate: 100);
+
+        Assert.Equal(14, args.Length);
+        Assert.Equal("--driver-shard-index", args[^8]);
+        Assert.Equal("1", args[^7]);
+        Assert.Equal("--driver-shard-count", args[^6]);
+        Assert.Equal("3", args[^5]);
+        Assert.Equal("--driver-rate", args[^4]);
+        Assert.Equal("100", args[^3]);
+        Assert.Equal("--event-namespace", args[^2]);
+        Assert.Equal("shard2", args[^1]);
+        Assert.DoesNotContain(args, value => value == "3" && Array.IndexOf(args, value) == Array.IndexOf(args, "--driver-processes") + 1);
+    }
+
+    [Fact]
+    public void MultiProcessDriver_DotnetDllExecutableRequiresAssemblyArgument()
+    {
+        var args = MultiProcessDriver.BuildProcessArgs(
+            "/tools/Chorus.LoadTool.dll", null, ["--platform", "test"]);
+
+        Assert.Equal(["/tools/Chorus.LoadTool.dll", "--platform", "test"], args);
+        Assert.Equal(["--platform", "test"], MultiProcessDriver.BuildProcessArgs(
+            "/usr/bin/dotnet", null, ["--", "--platform", "test"]));
+        Assert.Equal(["/tools/Chorus.LoadTool.dll", "--platform", "test"], MultiProcessDriver.BuildProcessArgs(
+            "/usr/bin/dotnet", "/tools/Chorus.LoadTool.dll", ["--", "--platform", "test"]));
+
+        var startInfo = MultiProcessDriver.BuildStartInfo(
+            "/usr/bin/dotnet", "/tools/Chorus.LoadTool.dll",
+            ["--", "--driver-processes", "2", "--platform", "test"], 0, 2, 15);
+
+        Assert.Equal(11, startInfo.ArgumentList.Count);
+        Assert.Equal("/tools/Chorus.LoadTool.dll", startInfo.ArgumentList[0]);
+        Assert.Equal("15", startInfo.ArgumentList[8]);
     }
 
     [Fact]

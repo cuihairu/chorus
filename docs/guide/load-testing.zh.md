@@ -41,6 +41,7 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 | `--rate` | 50 | 事件/秒，**全部 Session 合计**（跨 producer 摊分，round-robin 覆盖所有 Session）。`RatePacer` 按绝对时刻表对齐每个 producer 的发送节奏（2026-10-16 前是整除间隔，≥1000/s/producer 时截断为 0、`--rate` 静默失效）；producer 跟不上目标节奏时按实际响应速度发送，长程速率趋近于目标。要实际打到目标速率，producer 数需 ≥ 目标速率 × 单请求平均延迟 |
 | `--clients` | 3 | 每 Session WS 客户端数 |
 | `--producers` | 4 | 并行 HTTP 生产者连接数 |
+| `--driver-processes` | 1 | 独立驱动进程数。父进程均分 `--rate`，并为每个分片的 event/client id 加前缀；用于移除 LoadTool 单进程这一侧的瓶颈 |
 | `--ack-mix` | `fast,normal,slow` | ACK 档位混合（fast≈实时 / normal≈几 tick / slow≈十几 tick 滞后） |
 | `--disconnect-every` | 20 | 客户端平均断连间隔（秒，0=不断） |
 | `--reconnect-ms` | 1000 | 断连后重连退避 |
@@ -76,6 +77,14 @@ dotnet run --project src/Chorus.LoadTool -- --url http://127.0.0.1:5168 \
 - 结束时汇总；若给了 `--engine-metrics`，另打印引擎侧三个峰值（`engine peaks: sessions=… tickMs=… cpuPercent=…`，对应阶段三触发条件「单 worker 峰值 CPU > 60%」「单机房间数达数百量级」），并可（`PrintEngineMetricsAsync`）打印一次 `/metrics` 原文。注意：`cpuPercent` 依赖 `chorus_process_cpu_percent`，**只有拆分模式的 EngineHost `/metrics` 发该指标**（`RenderEngine`）——指向单体 Server 的 `/metrics` 时恒为 `-`；阶段三门控测量必须跑 Gateway+EngineHost 并把 `--engine-metrics` 指向 EngineHost。
 
 典型用法：先低速率跑通（`--rate 10 --duration 30`），再逐步加到目标速率；观察 `503`（事件道满，说明速率超过引擎消费能力）、`429`（ingress 限流）与 `maxLag`（慢客户端是否靠 resync 追回）。
+
+当目标速率超过单个驱动进程时，可以把同一次压测拆到多个独立进程：
+
+```bash
+dotnet run --project src/Chorus.LoadTool -- --driver-processes 4 --rate 30000
+```
+
+每个子进程拿到自己的速率目标和 `shardN-` event/client id 命名空间；汇总各分片输出，与网关指标中的总受理数对照。
 
 结束时有零受理告警：`sent>0 && accepted=0` 时在 stderr 打 `[loadtool] ALARM: ...` 并以非零退出码结束——典型成因是网关配了 `Ingress:Douyin:AppSecret` 而请求没签名（纯 401）；未签名运行 douyin/kuaishou 时启动也会先打一条 unsigned 警告。
 

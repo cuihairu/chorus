@@ -23,7 +23,12 @@ public sealed record LoadToolOptions(
     string? Token = null,
     string? EngineMetricsUrl = null,
     int ReportEverySeconds = 5,
-    string? WsUrl = null
+    string? WsUrl = null,
+    int DriverProcesses = 1,
+    int? DriverShardIndex = null,
+    int? DriverShardCount = null,
+    double? DriverEventsPerSecond = null,
+    string EventNamespace = ""
 )
 {
     /// <summary>
@@ -36,6 +41,14 @@ public sealed record LoadToolOptions(
     public string EffectiveWsUrl => string.IsNullOrWhiteSpace(WsUrl)
         ? WsEndpoint(BaseUrl)
         : WsUrl.TrimEnd('/');
+
+    public double EffectiveEventsPerSecondTotal => DriverEventsPerSecond ?? EventsPerSecondTotal;
+
+    public string EventIdPrefix => string.IsNullOrWhiteSpace(EventNamespace)
+        ? string.Empty
+        : EventNamespace.TrimEnd('-') + "-";
+
+    public string ClientIdPrefix => EventIdPrefix;
 
     public static string WsEndpoint(string baseUrl, string? explicitUrl = null)
     {
@@ -90,6 +103,11 @@ public sealed record LoadToolOptions(
                 case "--engine-metrics": o = o with { EngineMetricsUrl = Next() }; break;
                 case "--report-every": o = o with { ReportEverySeconds = int.Parse(Next()) }; break;
                 case "--ws-url": o = o with { WsUrl = Next() }; break;
+                case "--driver-processes": o = o with { DriverProcesses = int.Parse(Next()) }; break;
+                case "--driver-shard-index": o = o with { DriverShardIndex = int.Parse(Next()) }; break;
+                case "--driver-shard-count": o = o with { DriverShardCount = int.Parse(Next()) }; break;
+                case "--driver-rate": o = o with { DriverEventsPerSecond = double.Parse(Next()) }; break;
+                case "--event-namespace": o = o with { EventNamespace = Next() }; break;
                 case "--help":
                 case "-h":
                 case "-?":
@@ -101,7 +119,7 @@ public sealed record LoadToolOptions(
             }
         }
 
-        return o with
+        o = o with
         {
             BaseUrl = Env("CHORUS_LOAD_URL") ?? o.BaseUrl,
             Platform = Env("CHORUS_LOAD_PLATFORM") ?? o.Platform,
@@ -110,6 +128,32 @@ public sealed record LoadToolOptions(
             EngineMetricsUrl = Env("CHORUS_LOAD_ENGINE_METRICS") ?? o.EngineMetricsUrl,
             WsUrl = Env("CHORUS_LOAD_WS_URL") ?? o.WsUrl,
         };
+
+        if (o.DriverProcesses < 1)
+        {
+            throw new ArgumentException("--driver-processes must be at least 1");
+        }
+        if (o.DriverShardIndex.HasValue != o.DriverShardCount.HasValue)
+        {
+            throw new ArgumentException("--driver-shard-index and --driver-shard-count must be supplied together");
+        }
+        if (o.DriverShardIndex is { } index && o.DriverShardCount is { } count)
+        {
+            if (count < 1 || index < 0 || index >= count)
+            {
+                throw new ArgumentException("--driver-shard must be a zero-based index below --driver-shard-count");
+            }
+            if (o.DriverProcesses != 1)
+            {
+                throw new ArgumentException("driver shards cannot spawn nested driver processes");
+            }
+        }
+        if (o.DriverEventsPerSecond is < 0)
+        {
+            throw new ArgumentException("--driver-rate must be at least zero");
+        }
+
+        return o;
     }
 
     public static void PrintUsage()
@@ -150,6 +194,9 @@ public sealed record LoadToolOptions(
                                            (split-role topology). Env:
                                            CHORUS_LOAD_WS_URL. Default: derived from
                                            --url (http→ws, https→wss, + "/ws")
+              --driver-processes <n>       Run n load-tool processes. The parent
+                                           splits rate and namespaces event/client
+                                           ids so shards do not collide (default 1)
             """);
     }
 }

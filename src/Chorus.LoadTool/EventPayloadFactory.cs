@@ -17,11 +17,12 @@ public sealed class EventPayloadFactory
     private readonly double _duplicateRate;
     private readonly string? _matchId;
     private readonly string _platform;
+    private readonly string _eventIdPrefix;
     private readonly Func<long>? _sequenceProvider;
     private long _sequence;
 
     public EventPayloadFactory(string platform, int userPoolSize, double giftRate, double duplicateRate,
-        string? matchId, Func<long>? sequenceProvider = null)
+        string? matchId, Func<long>? sequenceProvider = null, string eventIdPrefix = "")
     {
         _platform = platform;
         _userPoolSize = Math.Max(1, userPoolSize);
@@ -29,6 +30,7 @@ public sealed class EventPayloadFactory
         _duplicateRate = Math.Clamp(duplicateRate, 0, 1);
         _matchId = matchId;
         _sequenceProvider = sequenceProvider;
+        _eventIdPrefix = eventIdPrefix;
     }
 
     public string Create(string sessionId)
@@ -49,7 +51,7 @@ public sealed class EventPayloadFactory
             }
             else
             {
-                eventId = $"{sessionId}-e{seq}";
+                eventId = $"{_eventIdPrefix}{sessionId}-e{seq}";
                 _recentIds.Add(eventId);
                 if (_recentIds.Count > 512)
                 {

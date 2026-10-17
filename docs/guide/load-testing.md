@@ -40,6 +40,7 @@ The WS side requires `--token`, or configuring `Faces:StreamerWs:AllowAnonymous=
 | `--rate` | 50 | events/second, **total across all Sessions** (spread across producers, round-robin covering all Sessions). `RatePacer` aligns each producer's send cadence to an absolute schedule (before 2026-10-16 it was evenly divided intervals, truncated to 0 at ≥1000/s/producer, silently disabling `--rate`); when a producer can't keep up with the target cadence it sends at its actual response speed, and the long-run rate approaches the target. To actually hit the target rate, the number of producers must be ≥ target rate × average per-request latency |
 | `--clients` | 3 | number of WS clients per Session |
 | `--producers` | 4 | number of parallel HTTP producer connections |
+| `--driver-processes` | 1 | number of independent driver processes. The parent splits `--rate` evenly and prefixes event/client ids per shard; this removes the single LoadTool process as the driver-side bottleneck |
 | `--ack-mix` | `fast,normal,slow` | ACK tier mix (fast≈real-time / normal≈a few ticks / slow≈lag of ten-plus ticks) |
 | `--disconnect-every` | 20 | average client disconnect interval (seconds, 0=never) |
 | `--reconnect-ms` | 1000 | reconnect backoff after disconnect |
@@ -75,6 +76,14 @@ A progress line is printed every `--report-every` seconds:
 - A summary is printed at the end; if `--engine-metrics` is given, three engine-side peaks are also printed (`engine peaks: sessions=… tickMs=… cpuPercent=…`, corresponding to the phase-three trigger conditions "single worker peak CPU > 60%" and "room count on a single machine reaching the hundreds"), and it can also (`PrintEngineMetricsAsync`) print the raw `/metrics` output once. Note: `cpuPercent` depends on `chorus_process_cpu_percent`, and **only the split-mode EngineHost `/metrics` emits this metric** (`RenderEngine`) — when pointing at a monolithic Server's `/metrics` it is always `-`; phase-three gate measurements must run Gateway+EngineHost and point `--engine-metrics` at EngineHost.
 
 Typical usage: first run through at a low rate (`--rate 10 --duration 30`), then gradually increase to the target rate; watch `503` (event queue full, meaning the rate exceeds the engine's consumption capacity), `429` (ingress rate limiting), and `maxLag` (whether slow clients catch up via resync).
+
+For rates that exceed one driver process, split the same run across independent processes:
+
+```bash
+dotnet run --project src/Chorus.LoadTool -- --driver-processes 4 --rate 30000
+```
+
+Each child receives its own rate target and `shardN-` event/client id namespace. Shards report independently; aggregate their summaries to compare the total sent count with gateway metrics.
 
 There is a zero-acceptance alarm at the end: when `sent>0 && accepted=0`, `[loadtool] ALARM: ...` is printed to stderr and the tool exits with a non-zero exit code — the typical cause is the gateway having `Ingress:Douyin:AppSecret` configured while the request is unsigned (pure 401); when running douyin/kuaishou unsigned, an unsigned warning is also printed at startup.
 

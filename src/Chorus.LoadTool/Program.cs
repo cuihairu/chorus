@@ -4,6 +4,11 @@ using Chorus.LoadTool;
 
 var options = LoadToolOptions.Parse(args);
 
+if (options.DriverProcesses > 1)
+{
+    return await MultiProcessDriver.RunAsync(options, args);
+}
+
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
@@ -12,7 +17,7 @@ Console.CancelKeyPress += (_, e) =>
 };
 
 Console.WriteLine($"[loadtool] target={options.BaseUrl} ws={options.EffectiveWsUrl} platform={options.Platform} " +
-                  $"sessions={options.Sessions} rate={options.EventsPerSecondTotal}/s total " +
+                  $"sessions={options.Sessions} rate={options.EffectiveEventsPerSecondTotal:0.##}/s total " +
                   $"clients={options.ClientsPerSession} duration={options.DurationSeconds}s");
 
 if (string.IsNullOrWhiteSpace(options.SignSecret))

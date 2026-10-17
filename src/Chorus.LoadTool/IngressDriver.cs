@@ -56,9 +56,10 @@ public sealed class IngressDriver
         // but draws event ids from the driver-wide sequence.
         var factory = new EventPayloadFactory(
             _platform, _options.UserPoolSize, _options.GiftRate, _options.DuplicateRate, _options.MatchId,
-            sequenceProvider: () => Interlocked.Increment(ref _sequence));
+            sequenceProvider: () => Interlocked.Increment(ref _sequence),
+            eventIdPrefix: _options.EventIdPrefix);
 
-        var totalRps = Math.Max(1, _options.EventsPerSecondTotal);
+        var totalRps = Math.Max(1, (int)Math.Ceiling(_options.EffectiveEventsPerSecondTotal));
         var producerRps = Math.Max(1, (int)Math.Ceiling(totalRps / (double)Math.Max(1, _options.ProducerConnections)));
         // Absolute-schedule pacing: integer ms division truncated to 0 above
         // ~1000/s per producer and silently disabled pacing (RatePacer keeps
