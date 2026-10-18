@@ -18,6 +18,7 @@ export default withMermaid(defineConfig({
   },
   themeConfig: {
     logo: "/logo.svg",
+    outline: "deep",
     socialLinks: [
       { icon: "github", link: "https://github.com/cuihairu/chorus" }
     ],
