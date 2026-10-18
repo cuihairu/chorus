@@ -60,24 +60,28 @@ public sealed class ControlDatabase
         db.Open();
         return db;
     }
-    private DbTransaction Begin(DbConnection db, bool write) => db is SqliteConnection sqlite
+    private DbTransaction Begin(DbConnection db, bool write, IsolationLevel? isolation = null) => db is SqliteConnection sqlite
         ? sqlite.BeginTransaction(deferred: !write)
-        : db.BeginTransaction(write ? IsolationLevel.Serializable : IsolationLevel.ReadCommitted);
+        : db.BeginTransaction(isolation ?? (write ? IsolationLevel.Serializable : IsolationLevel.ReadCommitted));
     public T Read<T>(Func<Transaction, T> query)
     {
         using var db = Open();
         using var transaction = Begin(db, write: false);
-        return query(new Transaction(db, transaction));
+        return query(new Transaction(db, transaction, _provider == ControlDatabaseProvider.PostgreSql));
     }
     public T Write<T>(Func<Transaction, T> change)
+        => Write(change, IsolationLevel.Serializable);
+    public T WriteRoom<T>(Func<Transaction, T> change)
+        => Write(change, IsolationLevel.ReadCommitted);
+    private T Write<T>(Func<Transaction, T> change, IsolationLevel isolation)
     {
         for (var attempt = 0; ; attempt++)
         {
             try
             {
                 using var db = Open();
-                using var transaction = Begin(db, write: true);
-                var result = change(new Transaction(db, transaction));
+                using var transaction = Begin(db, write: true, isolation);
+                var result = change(new Transaction(db, transaction, _provider == ControlDatabaseProvider.PostgreSql));
                 transaction.Commit();
                 return result;
             }
@@ -87,7 +91,7 @@ public sealed class ControlDatabase
             }
         }
     }
-    public sealed class Transaction(DbConnection db, DbTransaction transaction)
+    public sealed class Transaction(DbConnection db, DbTransaction transaction, bool postgres)
     {
         private DbCommand Command(string sql, params (string Name, object? Value)[] parameters)
         {
@@ -106,6 +110,12 @@ public sealed class ControlDatabase
         public T? Get<T>(string kind, string id)
         {
             using var cmd = Command("SELECT body FROM records WHERE kind=@k AND id=@i", ("@k", kind), ("@i", id));
+            return cmd.ExecuteScalar() is string body ? JsonSerializer.Deserialize<T>(body, Json) : default;
+        }
+        public T? GetForUpdate<T>(string kind, string id)
+        {
+            using var cmd = Command("SELECT body FROM records WHERE kind=@k AND id=@i" + (postgres ? " FOR UPDATE" : string.Empty),
+                ("@k", kind), ("@i", id));
             return cmd.ExecuteScalar() is string body ? JsonSerializer.Deserialize<T>(body, Json) : default;
         }
         public List<T> List<T>(string kind)
@@ -140,17 +150,13 @@ public sealed class ControlDatabase
         {
             using var receipt = Command("INSERT INTO event_receipts(room_id,event_key,at) VALUES(@r,@k,@a) ON CONFLICT(room_id,event_key) DO NOTHING", ("@r",roomId), ("@k",key), ("@a",at));
             if(receipt.ExecuteNonQuery() == 0) return false;
-            using var bump = Command("INSERT INTO room_queue_counts(room_id,receipts) VALUES(@r,1) ON CONFLICT(room_id) DO UPDATE SET receipts=room_queue_counts.receipts+1",("@r",roomId)); bump.ExecuteNonQuery();
-            using var count = Command("SELECT receipts FROM room_queue_counts WHERE room_id=@r", ("@r",roomId));
-            if(Convert.ToInt32(count.ExecuteScalar()) > 100000)
-            {
-                using var undo = Command("DELETE FROM event_receipts WHERE room_id=@r AND event_key=@k", ("@r",roomId), ("@k",key)); undo.ExecuteNonQuery();
-                using var dec = Command("UPDATE room_queue_counts SET receipts=receipts-1 WHERE room_id=@r",("@r",roomId)); dec.ExecuteNonQuery();
-                throw new ControlConflictException("Room receipt capacity reached; retry after dedup window.");
-            }
+            using var bump = Command("INSERT INTO room_queue_counts(room_id,pending,receipts) VALUES(@r,1,1) " +
+                "ON CONFLICT(room_id) DO UPDATE SET pending=room_queue_counts.pending+1,receipts=room_queue_counts.receipts+1 " +
+                "WHERE room_queue_counts.receipts<100000 RETURNING receipts",("@r",roomId));
+            if (bump.ExecuteScalar() is null) throw new ControlConflictException("Room receipt capacity reached; retry after dedup window.");
             using var cmd = Command("INSERT INTO room_events(room_id,event_key,body,at) VALUES(@r,@k,@b,@a)", ("@r",roomId), ("@k",key), ("@b",JsonSerializer.Serialize(value,Json)), ("@a",at));
             cmd.ExecuteNonQuery();
-            using var inc=Command("UPDATE room_queue_counts SET pending=pending+1 WHERE room_id=@r",("@r",roomId));inc.ExecuteNonQuery(); return true;
+            return true;
         }
         public bool ReceiptExists(string roomId,string key)
         {

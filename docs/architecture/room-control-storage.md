@@ -25,7 +25,7 @@ Budget 2 TiB of fast local storage on each database host for database files and 
 
 ## Implementation and rollout rules
 
-- ControlHost writes must preserve a single serializable transaction for owner/epoch fencing, checkpoint update, inbox consumption, and event receipts.
+- Room tick commits and reliable event writes preserve owner/epoch fencing, checkpoint/inbox changes, and receipts in one transaction. PostgreSQL uses `READ COMMITTED` with `SELECT ... FOR UPDATE` on the room record for these hot paths; the fence is checked after acquiring that row lock. SQLite continues to use its immediate write transaction. Other control writes retain `SERIALIZABLE` isolation.
 - PostgreSQL serialization failures and deadlocks may be retried only by rerunning the complete transaction; callbacks must not perform external side effects.
 - Set `Control:Provider=PostgreSql` and provide `Control:ConnectionString` through secret configuration. Do not place credentials in checked-in settings.
 - Provision primary and standby on separate physical hosts with synchronous replication, TLS, SCRAM authentication, and a tested manual promotion runbook. Do not count two containers on one host as HA.

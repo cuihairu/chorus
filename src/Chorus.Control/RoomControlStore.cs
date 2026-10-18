@@ -95,9 +95,9 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         t.Put("room", id, r); t.Audit(Now, owner.WorkerId, "room.recovered", id, new { r.Epoch, r.TickId });
         return r;
     });
-    public bool Commit(string id, TickCommit commit) => database.Write(t =>
+    public bool Commit(string id, TickCommit commit) => database.WriteRoom(t =>
     {
-        var r = t.Get<RoomRecord>("room", id) ?? throw new KeyNotFoundException(id);
+        var r = t.GetForUpdate<RoomRecord>("room", id) ?? throw new KeyNotFoundException(id);
         if (!Owner(t, r, new(commit.WorkerId, commit.InstanceId, commit.Epoch))
             || r.State is not (RoomLifecycleState.Waiting or RoomLifecycleState.Active or RoomLifecycleState.Idle)
             || r.TickId != commit.ExpectedTick || commit.TickId != commit.ExpectedTick + 1)
@@ -114,10 +114,23 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         return true;
     });
     public static string EventKey(Chorus.Protocol.Models.AudienceEvent e) => JsonSerializer.Serialize(new[] { e.Platform, e.EventId });
-    public bool AppendEvent(Chorus.Protocol.Models.AudienceEvent e) => database.Write(t =>
+    public bool AppendEvent(Chorus.Protocol.Models.AudienceEvent e)
     {
         Id(e.EventId); Id(e.UserId);
-        var r = Assign(t, new(e.SessionId, Platform: e.Platform));
+        Id(e.SessionId);
+        try
+        {
+            return database.WriteRoom(t => AppendEvent(t, e,
+                t.GetForUpdate<RoomRecord>("room", e.SessionId) ?? throw new RoomAssignmentRequiredException()));
+        }
+        catch (RoomAssignmentRequiredException)
+        {
+            // Creating a missing room still uses Serializable to preserve stable capacity-aware assignment.
+            return database.Write(t => AppendEvent(t, e, Assign(t, new(e.SessionId, Platform: e.Platform))));
+        }
+    }
+    private bool AppendEvent(ControlDatabase.Transaction t, Chorus.Protocol.Models.AudienceEvent e, RoomRecord r)
+    {
         if (r.State is RoomLifecycleState.Closing or RoomLifecycleState.Destroyed) throw new ControlConflictException("Room is closed.");
         var key = EventKey(e);
         t.PruneReceipts(r.Id,Now-86_400_000);
@@ -128,7 +141,8 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         r = r with { UpdatedAtMs = Now };
         t.Put("room", r.Id, r);
         return true; // SQLite transaction is committed before HTTP success.
-    });
+    }
+    private sealed class RoomAssignmentRequiredException : Exception { }
     public RoomRecord Action(string id, RoomAction request, string actor) => database.Write(t =>
     {
         var r = t.Get<RoomRecord>("room", id) ?? throw new KeyNotFoundException(id);

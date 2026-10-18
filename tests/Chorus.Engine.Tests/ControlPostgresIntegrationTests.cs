@@ -10,27 +10,44 @@ public sealed class ControlPostgresIntegrationTests
     [Fact]
     public async Task PostgresProvider_ConcurrentAssignmentsKeepOneAuthoritativeRoomRecord()
     {
-        var connectionString = Environment.GetEnvironmentVariable("CHORUS_TEST_POSTGRES");
-        Assert.False(string.IsNullOrWhiteSpace(connectionString), "Set CHORUS_TEST_POSTGRES to an isolated PostgreSQL 16 test database.");
+        using var testDatabase = new PostgresTestDatabase();
+        var connectionString = testDatabase.ConnectionString;
         var roomId = "pg-race-" + Guid.NewGuid().ToString("N");
-        var setup = NewStore(connectionString!);
+        var setup = NewStore(connectionString);
         setup.ReportNode(new("worker-a", "boot-a", "machine-a", "worker", new("127.0.0.1", 3101), 100));
 
         var assignments = await Task.WhenAll(Enumerable.Range(0, 12).Select(_ => Task.Run(() =>
-            NewStore(connectionString!).Assign(new(roomId)))));
+            NewStore(connectionString).Assign(new(roomId)))));
 
         Assert.All(assignments, room => Assert.Equal("worker-a", room.WorkerId));
         Assert.Single(setup.Rooms().Where(room => room.Id == roomId));
     }
 
     [Fact]
+    public async Task PostgresProvider_ConcurrentRoomEventsKeepAllReceipts()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var store = NewStore(testDatabase.ConnectionString);
+        var prefix = "pg-events-" + Guid.NewGuid().ToString("N");
+        store.ReportNode(new(prefix + "-worker", prefix + "-boot", prefix + "-machine", "worker", new("127.0.0.1", 3101), 100));
+        var room = store.Assign(new(prefix));
+
+        var accepted = await Task.WhenAll(Enumerable.Range(0, 32).Select(index => Task.Run(() =>
+            store.AppendEvent(new("event-" + index, "test", prefix, "viewer", Chorus.Protocol.Models.AudienceEventKind.Like, 1)))));
+
+        Assert.All(accepted, Assert.True);
+        Assert.Equal(32, store.PendingCount(prefix));
+        Assert.Equal(32, store.Prepare(prefix, new(room.WorkerId, room.WorkerInstance, room.Epoch)).Inbox!.Count);
+    }
+
+    [Fact]
     public void PostgresProvider_PersistsFencedTickAndReliableEventAcrossStoreInstances()
     {
-        var connectionString = Environment.GetEnvironmentVariable("CHORUS_TEST_POSTGRES");
-        Assert.False(string.IsNullOrWhiteSpace(connectionString), "Set CHORUS_TEST_POSTGRES to an isolated PostgreSQL 16 test database.");
+        using var testDatabase = new PostgresTestDatabase();
+        var connectionString = testDatabase.ConnectionString;
         var roomId = "pg-" + Guid.NewGuid().ToString("N");
-        var first = NewStore(connectionString!);
-        var second = NewStore(connectionString!);
+        var first = NewStore(connectionString);
+        var second = NewStore(connectionString);
         first.ReportNode(new("worker-a", "boot-a", "machine-a", "worker", new("127.0.0.1", 3101), 4));
 
         var room = first.Assign(new(roomId));
