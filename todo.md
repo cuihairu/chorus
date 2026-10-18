@@ -229,11 +229,11 @@
 
 审查依据：[房间管理与横向扩展架构审查](docs/architecture/multi-machine-rooms.md)。保留现有 Gateway / Engine / GameModule 分层，以不同房间分配给不同 Worker 为扩展单位。§14/§15/§18 的库级勾选不替代以下生产验收。
 
-2026-10-18 实施进展：已落地容量满时拒绝新 Actor、可选业务空房清理默认关闭；新增 ControlHost + SQLite 持久房间目录、节点租约、按容量选择 Worker、连接代次登记、可靠输入 inbox、epoch/tick fenced checkpoint、两阶段迁移 API、独立 Worker/Gateway advertised endpoint。待处理事件、去重回执和 checkpoint 拆为独立表，避免每次事件重写房间全量 JSON。定向验证：ControlStoreTests 7/7、满容量保留房间 IPC 测试 1/1。**不勾选完整 ROOM 条目**：真实多机网络分区/恢复未测；当前每房间每 tick 的 SQLite 单写者同步 checkpoint 与逐快照控制面 HTTP 查询存在明确吞吐上限，见审查文档第 7 节。ROOM-10 实施中：增加单次 routing snapshot API，EngineHost 每秒刷新、Gateway 每秒更新本地 epoch cache；快照输出与 Gateway 接收热路径不再逐条查询控制面，超过 1.5 秒 fail-closed。新增快照路由单测 6 项，尚需完整回归以及多节点迁移传播测试后再关闭条目。ROOM-10 实施中：增加单次 routing snapshot API，EngineHost 每秒刷新、Gateway 每秒更新本地 epoch cache；快照输出与 Gateway 接收热路径不再逐条查询控制面，超过 1.5 秒 fail-closed。新增快照路由单测 6 项，尚需完整回归以及多节点迁移传播测试后再关闭条目。匹配面板数据和展示代码已接入但主播认证、对局房间接线、匹配质量及排行榜聚合仍需分别完成验收。
+2026-10-18 实施进展：容量满时拒绝新 Actor、可选业务空房清理默认关闭；ControlHost + SQLite 持久房间目录、节点租约、按容量选择 Worker、连接代次登记、可靠输入 inbox、epoch/tick fenced checkpoint、两阶段迁移 API、独立 Worker/Gateway advertised endpoint 已落地。待处理事件、去重回执和 checkpoint 拆为独立表，避免每次事件重写房间全量 JSON。ROOM-01 验收已由 `ControlStoreTests.CapacityAndDrainRejectNewRoomsWithoutChangingExisting`、`SessionRegistryTests.CapExceeded_RejectsNewRoomAndPreservesAllExistingActors`、`SessionManagerLifecycleTests.CapExceeded_RejectsNewSessionWithoutDestroyingExistingState` 及容量拒绝指标覆盖。真实多机网络分区/恢复仍未测；每房间每 tick 的 SQLite 单写者同步 checkpoint 仍有吞吐上限，见审查文档第 7 节。ROOM-10 路由缓存代码和快照路由单测已合入，完整回归通过（1038/1038）；快照输出和 Gateway 接收热路径不再逐条查询控制面，缓存超过 1.5 秒 fail-closed。ROOM-10 暂不关闭：缺少控制面路由变更经多 Gateway/Worker 传播并拒绝旧 epoch 输出的端到端验收。匹配面板与展示代码已接入，但主播认证、对局房间接线、匹配质量及排行榜聚合仍待分别验收。
 
 ### 第一阶段：房间准入与状态保留
 
-- [ ] **ROOM-01 / P0：容量不足时保护现有房间（审查 R01）**。替换 `SessionRegistry` 满容量直接淘汰 Actor 的策略；拒绝新分配或由调度器选择有余量的 Worker。Actor 释放须满足业务关闭条件或保存/恢复条件；补齐创建失败时资源清理。验收：有连接或未结束的房间不会被新房间挤掉；容量拒绝可重试且可观测；创建失败不泄漏旧 Actor；原房间状态及客户端继续有效。
+- [x] **ROOM-01 / P0：容量不足时保护现有房间（审查 R01）**（ControlStore/SessionRegistry/SessionManager 容量拒绝与保留现有房间测试，拒绝计数进 `/metrics`）。替换 `SessionRegistry` 满容量直接淘汰 Actor 的策略；拒绝新分配或由调度器选择有余量的 Worker。Actor 释放须满足业务关闭条件或保存/恢复条件；补齐创建失败时资源清理。验收：有连接或未结束的房间不会被新房间挤掉；容量拒绝可重试且可观测；创建失败不泄漏旧 Actor；原房间状态及客户端继续有效。
 - [ ] **ROOM-02 / P1：生命周期接入生产（R05，依赖 ROOM-01）**。区分业务 Room、Actor、Connection，将 Created/Waiting/Active/Idle/Sleeping/Migrating/Recovering/Closing/Destroyed 接入入口准入、tick 调度、休眠唤醒、关闭排空与终态清理。验收：未知、关闭、恢复中的房间有明确响应；没有主播连接不等于业务销毁；不能可靠保存时不以休眠名义丢状态；迁移中止有明确恢复路径。
 
 ### 第二阶段：固定归属的水平分房间
