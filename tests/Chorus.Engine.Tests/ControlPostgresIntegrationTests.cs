@@ -71,6 +71,57 @@ public sealed class ControlPostgresIntegrationTests
     }
 
     [Fact]
+    public void PostgresProvider_MigrationPreservesCheckpointAndPendingInputAndFencesOldOwner()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var store = NewStore(testDatabase.ConnectionString);
+        var secondStore = NewStore(testDatabase.ConnectionString);
+        var prefix = "pg-migration-" + Guid.NewGuid().ToString("N");
+        var workerA = prefix + "-a";
+        var workerB = prefix + "-b";
+        store.ReportNode(new(workerA, "boot-a", "machine-a", "worker", new("127.0.0.1", 3101), 10));
+        store.ReportNode(new(workerB, "boot-b", "machine-b", "worker", new("127.0.0.1", 3102), 10));
+        var room = store.Assign(new(prefix));
+        Assert.Equal(workerA, room.WorkerId);
+        var firstEvent = new Chorus.Protocol.Models.AudienceEvent("first", "test", room.Id, "viewer", Chorus.Protocol.Models.AudienceEventKind.Like, 1);
+        var pendingEvent = firstEvent with { EventId = "pending" };
+        Assert.True(store.AppendEvent(firstEvent));
+        var prepared = store.Prepare(room.Id, new(workerA, "boot-a", room.Epoch));
+        var state = JsonSerializer.SerializeToElement(new { tick = 1 });
+        Assert.True(store.Commit(room.Id, new(workerA, "boot-a", room.Epoch, 0, 1, 1, state,
+            prepared.Inbox!.Select(RoomControlStore.EventKey).ToArray())));
+        Assert.True(store.AppendEvent(pendingEvent));
+        Assert.Throws<ControlConflictException>(() => secondStore.Commit(room.Id,
+            new(workerA, "boot-a", room.Epoch, 1, 2, 1, state, ["missing-receipt"])));
+        Assert.Equal(1, store.Room(room.Id)!.TickId);
+        Assert.Equal(1, store.PendingCount(room.Id));
+
+        var moving = store.Move(room.Id, new(workerB, room.Epoch), "operator");
+        var handedOff = store.Handoff(room.Id, moving.Epoch);
+        Assert.Equal(RoomLifecycleState.Recovering, handedOff.State);
+        Assert.Equal(1, handedOff.TickId);
+        Assert.Equal(1, store.PendingCount(room.Id));
+        store.Ready(room.Id, new(workerB, "boot-b", handedOff.Epoch));
+        Assert.Throws<ControlConflictException>(() => secondStore.Commit(room.Id,
+            new(workerA, "boot-a", room.Epoch, 1, 2, 1, state, [])));
+        Assert.Equal(1, store.Room(room.Id, checkpoint: true)!.Snapshot!.Value.GetProperty("tick").GetInt32());
+        var incoming = store.Prepare(room.Id, new(workerB, "boot-b", handedOff.Epoch));
+        Assert.Equal("pending", Assert.Single(incoming.Inbox!).EventId);
+        Assert.True(secondStore.Commit(room.Id, new(workerB, "boot-b", handedOff.Epoch, 1, 2, 1, state,
+            incoming.Inbox!.Select(RoomControlStore.EventKey).ToArray())));
+        Assert.Equal(0, store.PendingCount(room.Id));
+
+        var movingBack = store.Move(room.Id, new(workerA, store.Room(room.Id)!.Epoch), "operator");
+        var recovering = store.Handoff(room.Id, movingBack.Epoch);
+        var aborted = store.Abort(room.Id, recovering.Epoch, "operator");
+        Assert.Equal(workerB, aborted.WorkerId);
+        Assert.Equal(recovering.Epoch + 1, aborted.Epoch);
+        var restored = store.Ready(room.Id, new(workerB, "boot-b", aborted.Epoch));
+        Assert.Equal(RoomLifecycleState.Active, restored.State);
+        Assert.Equal(2, restored.TickId);
+    }
+
+    [Fact]
     public void PostgresProvider_RequiresConnectionsDrainedBeforeClosingRoom()
     {
         using var testDatabase = new PostgresTestDatabase();

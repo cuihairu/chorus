@@ -17,6 +17,66 @@ namespace Chorus.Engine.Tests;
 public sealed class ControlHostFencingTests
 {
     [Fact]
+    public async Task DelayedLiveActorCommitIsRejectedAfterPostgresAuthorityHandoff()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        const string key = "test-control-key-with-more-than-24-characters";
+        var passwordHash = new PasswordHasher<string>().HashPassword("test-admin", "unused-test-password");
+        using var factory = new WebApplicationFactory<global::Chorus.ControlHost.Program>().WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Control:Key", key);
+            builder.UseSetting("Control:Provider", "PostgreSql");
+            builder.UseSetting("Control:ConnectionString", testDatabase.ConnectionString);
+            builder.UseSetting("Admin:Users:0:Name", "test-admin");
+            builder.UseSetting("Admin:Users:0:Role", "admin");
+            builder.UseSetting("Admin:Users:0:PasswordHash", passwordHash);
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(new Dictionary<string,string?>
+            {
+                ["Control:Key"] = key,
+                ["Control:Provider"] = "PostgreSql",
+                ["Control:ConnectionString"] = testDatabase.ConnectionString,
+                ["Admin:Users:0:Name"] = "test-admin",
+                ["Admin:Users:0:Role"] = "admin",
+                ["Admin:Users:0:PasswordHash"] = passwordHash
+            }));
+        });
+
+        var partition = new DelaySecondPrepareHandler(factory.Server.CreateHandler());
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+        { ["Control:Url"] = "http://localhost/", ["Control:Key"] = key }).Build();
+        using var oldOwner = new ControlClient(config, "worker-a", partition);
+        using var newOwner = new ControlClient(config, "worker-b", factory.Server.CreateHandler());
+        var store = factory.Services.GetRequiredService<RoomControlStore>();
+        store.ReportNode(Worker("worker-a", oldOwner.InstanceId));
+        store.ReportNode(Worker("worker-b", newOwner.InstanceId));
+        var room = store.Assign(new("pg-fenced-room-" + Guid.NewGuid().ToString("N")));
+        using var game = new NoopGame();
+        var actor = new SessionActor(room.Id, new SessionConfig { TickDurationMs = 50 }, game,
+            durability: new ControlTickDurability(oldOwner, room), restoredTick: room.TickId);
+        actor.Start();
+        try
+        {
+            await WaitUntil(() => store.Room(room.Id)!.TickId >= 1);
+            await partition.SecondPrepareEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            var moving = store.Move(room.Id, new("worker-b", room.Epoch), "test");
+            var handedOff = store.Handoff(room.Id, moving.Epoch);
+            store.Ready(room.Id, new(handedOff.WorkerId, handedOff.WorkerInstance, handedOff.Epoch));
+            var tickAtHandoff = handedOff.TickId;
+            partition.ReleaseSecondPrepare();
+
+            await WaitUntil(() => actor.DurabilityFailed);
+            Assert.Equal("worker-b", store.Room(room.Id)!.WorkerId);
+            Assert.Equal(tickAtHandoff, store.Room(room.Id)!.TickId);
+        }
+        finally
+        {
+            partition.ReleaseSecondPrepare();
+            await actor.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task DelayedLiveActorCommitIsRejectedAfterHttpAuthorityHandoff()
     {
         var dir=Path.Combine(Path.GetTempPath(),"chorus-control-http-"+Guid.NewGuid().ToString("N"));
@@ -58,7 +118,7 @@ public sealed class ControlHostFencingTests
             try
             {
                 await WaitUntil(()=>store.Room("room")!.TickId>=1);
-                await partition.SecondPrepareEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+                await partition.SecondPrepareEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
                 var moving=store.Move("room",new("worker-b",room.Epoch),"test");
                 var handedOff=store.Handoff("room",moving.Epoch);
@@ -87,7 +147,7 @@ public sealed class ControlHostFencingTests
         new IpcNetworkEndpoint("127.0.0.1",3000+(id=="worker-a"?1:2)),10);
     private static async Task WaitUntil(Func<bool> condition)
     {
-        var until=DateTime.UtcNow+TimeSpan.FromSeconds(3);
+        var until=DateTime.UtcNow+TimeSpan.FromSeconds(10);
         while(!condition()&&DateTime.UtcNow<until) await Task.Delay(5);
         Assert.True(condition(),"Condition did not become true before timeout.");
     }

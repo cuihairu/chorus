@@ -106,7 +106,7 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
             throw new ControlConflictException("Checkpoint fenced: stale owner, state or tick.");
         if (commit.SchemaVersion != 1 || commit.State.GetRawText().Length > 1_048_576) throw new ArgumentException("Invalid checkpoint schema/size.");
         var keys = new HashSet<string>(commit.ConsumedEventKeys, StringComparer.Ordinal);
-        if (keys.Any(key => !t.ReceiptExists(id,key))) throw new ControlConflictException("Checkpoint contains unknown input receipts.");
+        if (!t.ReceiptsExist(id, keys)) throw new ControlConflictException("Checkpoint contains unknown input receipts.");
         t.DeleteEvents(id,keys.ToArray());
         var checksum=SnapshotIntegrity.Compute(commit.State.GetRawText());
         t.PutCheckpoint(id,commit.State,commit.TickId,commit.Epoch,checksum,commit.SchemaVersion);

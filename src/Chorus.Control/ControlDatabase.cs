@@ -221,6 +221,14 @@ public sealed class ControlDatabase
         {
             using var cmd=Command("SELECT 1 FROM event_receipts WHERE room_id=@r AND event_key=@k",("@r",roomId),("@k",key)); return cmd.ExecuteScalar() is not null;
         }
+        public bool ReceiptsExist(string roomId, IReadOnlyCollection<string> keys)
+        {
+            if (keys.Count == 0) return true;
+            using var cmd = postgres
+                ? Command("SELECT COUNT(*) FROM event_receipts WHERE room_id=@r AND event_key=ANY(@keys)", ("@r", roomId), ("@keys", keys.ToArray()))
+                : Command("SELECT COUNT(*) FROM event_receipts WHERE room_id=@r AND event_key IN (SELECT value FROM json_each(@keys))", ("@r", roomId), ("@keys", JsonSerializer.Serialize(keys, Json)));
+            return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L) == keys.Count;
+        }
         public void PruneReceipts(string roomId,long cutoff)
         {
             using var cmd=Command("DELETE FROM event_receipts WHERE room_id=@r AND at<@c AND NOT EXISTS(SELECT 1 FROM room_events e WHERE e.room_id=event_receipts.room_id AND e.event_key=event_receipts.event_key)",("@r",roomId),("@c",cutoff)); var removed=cmd.ExecuteNonQuery();
@@ -238,8 +246,11 @@ public sealed class ControlDatabase
         }
         public void DeleteEvents(string roomId,IReadOnlyList<string> keys)
         {
-            var removed=0;
-            foreach(var key in keys){using var cmd=Command("DELETE FROM room_events WHERE room_id=@r AND event_key=@k",("@r",roomId),("@k",key));removed+=cmd.ExecuteNonQuery();}
+            if (keys.Count == 0) return;
+            using var cmd = postgres
+                ? Command("DELETE FROM room_events WHERE room_id=@r AND event_key=ANY(@keys)", ("@r", roomId), ("@keys", keys.ToArray()))
+                : Command("DELETE FROM room_events WHERE room_id=@r AND event_key IN (SELECT value FROM json_each(@keys))", ("@r", roomId), ("@keys", JsonSerializer.Serialize(keys, Json)));
+            var removed=cmd.ExecuteNonQuery();
             if(removed>0){using var dec=Command("UPDATE room_queue_counts SET pending=CASE WHEN pending>@n THEN pending-@n ELSE 0 END WHERE room_id=@r",("@n",removed),("@r",roomId));dec.ExecuteNonQuery();}
         }
         public void Delete(string kind, string id)

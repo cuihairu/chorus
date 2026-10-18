@@ -179,6 +179,21 @@ public sealed class ControlStoreTests : IDisposable
     }
 
     [Fact]
+    public void CheckpointRejectsUnknownReceiptWithoutConsumingValidInput()
+    {
+        var s=NewStore();s.ReportNode(Worker("a"));var room=s.Assign(new("room"));
+        Assert.True(s.AppendEvent(Event("valid")));
+
+        Assert.Throws<ControlConflictException>(()=>s.Commit("room",Commit(room,0,"a","missing-receipt")));
+        Assert.Equal(0,s.Room("room")!.TickId);
+        Assert.Equal(1,s.PendingCount("room"));
+        var pending=s.Prepare("room",new("a","a-boot",room.Epoch)).Inbox!;
+        Assert.Equal("valid",Assert.Single(pending).EventId);
+        Assert.True(s.Commit("room",Commit(room,0,"a",RoomControlStore.EventKey(Event("valid")))));
+        Assert.Equal(0,s.PendingCount("room"));
+    }
+
+    [Fact]
     public async Task LiveOldActorLosesWriteAuthorityAfterLeaseTakeoverAndHandoff()
     {
         var s=NewStore();
