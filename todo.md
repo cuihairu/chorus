@@ -313,3 +313,10 @@
   3) GitHub 链接改为默认带图标版本——用 .vitepress/config 里 socialLinks 的官方写法（icon: 'github'），不要用纯文字链接
   完成后构建通过（pnpm docs:build 或对应脚本）贴输出，勾掉并 commit+push，回报 hash 与三处的 file:line
 硬要求：中文写真中文禁机翻；glob 禁 node_modules/dist/build
+- [ ] 审核整改（2026-10-18 独立审核，见 docs/review/luna-review-2026-10-18.md）：
+      按审核报告的三张表逐项处理，**先核对再动手**，每项给 file:line 证据。
+      1) 表一「缺陷」：按风险排序修，高风险优先
+      2) 表二「文档与实现不一致」：以代码为准改文档，或明确标注为规划中
+         **禁止为对齐文档去改业务代码**
+      3) 表三「值得补的能力」：只做评估与分期建议，**不实现**（需用户拍板）
+      每完成一项勾掉并写证据；全部测试通过后 commit+push；不 bump 版本号。
