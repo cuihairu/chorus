@@ -2,9 +2,6 @@
 title: Overall architecture and code agent implementation spec
 ---
 
-<p align="center">
-  English | <a href="overall-architecture.zh.md">简体中文</a>
-</p>
 
 # Overall architecture and code agent implementation spec
 
@@ -12,7 +9,7 @@ title: Overall architecture and code agent implementation spec
 > (architecture design, code-audit baseline, 80 audit items, dated 2026-10-13); a
 > low-quality machine translation would be worse than none, so it is left untranslated on purpose.
 > The authoritative version is the
-> [整体架构与 Code Agent 实施规范](./overall-architecture.zh.md).
+This historical design document is currently available in Chinese only.
 
 For navigation only, the Chinese document's section structure (translated headings):
 

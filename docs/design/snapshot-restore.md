@@ -1,6 +1,3 @@
-<p align="center">
-  English | <a href="snapshot-restore.zh.md">简体中文</a>
-</p>
 
 # Module Snapshot Recovery Contract (Phase Three Recovery Half, Option A Proxy-Decided and Landed)
 

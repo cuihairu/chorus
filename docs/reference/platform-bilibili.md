@@ -2,9 +2,6 @@
 title: "Platform Integration Reference: Bilibili"
 ---
 
-<p align="center">
-  English | <a href="platform-bilibili.zh.md">简体中文</a>
-</p>
 
 # Platform Integration Reference: Bilibili
 

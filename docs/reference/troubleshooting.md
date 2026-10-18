@@ -2,9 +2,6 @@
 title: Troubleshooting
 ---
 
-<p align="center">
-  English | <a href="troubleshooting.zh.md">简体中文</a>
-</p>
 
 # Troubleshooting
 

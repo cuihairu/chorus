@@ -2,9 +2,6 @@
 title: "Platform Integration Reference: Kuaishou Mini-Game"
 ---
 
-<p align="center">
-  English | <a href="platform-kuaishou-mini-game.zh.md">简体中文</a>
-</p>
 
 # Platform Integration Reference: Kuaishou Mini-Game (kuaishou mini-game)
 

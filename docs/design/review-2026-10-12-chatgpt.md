@@ -1,6 +1,3 @@
-<p align="center">
-  English | <a href="review-2026-10-12-chatgpt.zh.md">简体中文</a>
-</p>
 
 # Chorus (formerly Cohort) Project Analysis and Improvement Suggestions — External Review Archive
 

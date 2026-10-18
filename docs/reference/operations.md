@@ -2,9 +2,6 @@
 title: Operations and Observability
 ---
 
-<p align="center">
-  English | <a href="operations.zh.md">简体中文</a>
-</p>
 
 # Operations and Observability
 

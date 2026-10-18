@@ -2,9 +2,6 @@
 title: Bilibili Danmaku Source Adapter (Research + Integration Plan)
 ---
 
-<p align="center">
-  English | <a href="bilibili-danmaku-adapter.zh.md">简体中文</a>
-</p>
 
 # Bilibili Danmaku Source Adapter (Research + Integration Plan)
 

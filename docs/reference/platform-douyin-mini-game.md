@@ -2,9 +2,6 @@
 title: "Platform Integration Reference: Douyin Mini-Game"
 ---
 
-<p align="center">
-  English | <a href="platform-douyin-mini-game.zh.md">简体中文</a>
-</p>
 
 # Platform Integration Reference: Douyin Mini-Game (douyin mini-game)
 

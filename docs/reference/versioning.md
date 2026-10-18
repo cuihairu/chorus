@@ -2,9 +2,6 @@
 title: Versioning Policy and Compatibility
 ---
 
-<p align="center">
-  English | <a href="versioning.zh.md">简体中文</a>
-</p>
 
 # Versioning Policy and Compatibility
 

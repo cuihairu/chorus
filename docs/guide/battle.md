@@ -2,9 +2,6 @@
 title: "Battle: Sessions, Frame Sync, and Client Integration"
 ---
 
-<p align="center">
-  English | <a href="battle.zh.md">简体中文</a>
-</p>
 
 # Battle: Sessions, Frame Sync, and Client Integration
 

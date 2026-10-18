@@ -1,6 +1,3 @@
-<p align="center">
-  English | <a href="decisions.zh.md">简体中文</a>
-</p>
 
 # Decision log (for review)
 

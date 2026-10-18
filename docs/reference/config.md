@@ -2,9 +2,6 @@
 title: Configuration Reference
 ---
 
-<p align="center">
-  English | <a href="config.zh.md">简体中文</a>
-</p>
 
 # Configuration Reference
 

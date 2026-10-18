@@ -2,9 +2,6 @@
 title: Leaderboard
 ---
 
-<p align="center">
-  English | <a href="leaderboard.zh.md">简体中文</a>
-</p>
 
 # Leaderboard
 

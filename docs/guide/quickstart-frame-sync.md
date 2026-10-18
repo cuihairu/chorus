@@ -2,9 +2,6 @@
 title: "Quickstart: Frame Sync Integration"
 ---
 
-<p align="center">
-  English | <a href="quickstart-frame-sync.zh.md">简体中文</a>
-</p>
 
 # Quickstart: Frame Sync Integration
 

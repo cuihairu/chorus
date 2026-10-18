@@ -2,9 +2,6 @@
 title: "Platform Integration Reference: Kuaishou"
 ---
 
-<p align="center">
-  English | <a href="platform-kuaishou.zh.md">简体中文</a>
-</p>
 
 # Platform Integration Reference: Kuaishou (kuaishou)
 

@@ -2,9 +2,6 @@
 title: Shared Memory IPC Transport Evaluation (MemoryMappedFile + FlatBuffers)
 ---
 
-<p align="center">
-  English | <a href="shared-memory-transport.zh.md">简体中文</a>
-</p>
 
 # Background
 

@@ -2,9 +2,6 @@
 title: Getting Started
 ---
 
-<p align="center">
-  English | <a href="getting-started.zh.md">简体中文</a>
-</p>
 
 # Getting Started
 

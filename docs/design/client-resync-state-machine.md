@@ -2,9 +2,6 @@
 title: Client Resync State Machine
 ---
 
-<p align="center">
-  English | <a href="client-resync-state-machine.zh.md">简体中文</a>
-</p>
 
 # Client Resync State Machine
 

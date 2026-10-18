@@ -2,9 +2,6 @@
 title: Platform Adapter Contract
 ---
 
-<p align="center">
-  English | <a href="adapter-contract.zh.md">简体中文</a>
-</p>
 
 # Platform Adapter Contract and Templates
 

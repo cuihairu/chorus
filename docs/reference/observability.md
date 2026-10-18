@@ -2,9 +2,6 @@
 title: Observability
 ---
 
-<p align="center">
-  English | <a href="observability.zh.md">简体中文</a>
-</p>
 
 # Observability
 

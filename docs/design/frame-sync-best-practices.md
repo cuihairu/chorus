@@ -2,9 +2,6 @@
 title: Frame Sync Best Practices
 ---
 
-<p align="center">
-  English | <a href="frame-sync-best-practices.zh.md">简体中文</a>
-</p>
 
 # Frame Sync Best Practices
 

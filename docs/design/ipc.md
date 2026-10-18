@@ -2,9 +2,6 @@
 title: Communication Abstraction (In-Process / Inter-Process)
 ---
 
-<p align="center">
-  English | <a href="ipc.zh.md">简体中文</a>
-</p>
 
 # Communication Abstraction (In-Process / Inter-Process)
 

@@ -2,9 +2,6 @@
 title: Game Module
 ---
 
-<p align="center">
-  English | <a href="game-module.zh.md">简体中文</a>
-</p>
 
 # Game Module (Minimal Example)
 

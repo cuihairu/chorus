@@ -2,9 +2,6 @@
 title: Matchmaking (Matchmaker)
 ---
 
-<p align="center">
-  English | <a href="matchmaking.zh.md">简体中文</a>
-</p>
 
 # Matchmaking (Matchmaker)
 

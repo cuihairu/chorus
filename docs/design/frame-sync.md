@@ -2,9 +2,6 @@
 title: Frame Sync (Authoritative Tick + Snapshot)
 ---
 
-<p align="center">
-  English | <a href="frame-sync.zh.md">简体中文</a>
-</p>
 
 # Frame Sync (Authoritative Tick + Snapshot)
 

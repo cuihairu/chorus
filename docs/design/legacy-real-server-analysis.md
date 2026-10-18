@@ -2,9 +2,6 @@
 title: Legacy Server Problem Analysis
 ---
 
-<p align="center">
-  English | <a href="legacy-real-server-analysis.zh.md">简体中文</a>
-</p>
 
 # Legacy Server Problem Analysis (real-server)
 

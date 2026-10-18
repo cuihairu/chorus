@@ -2,9 +2,6 @@
 title: Specification Draft
 ---
 
-<p align="center">
-  English | <a href="spec.zh.md">简体中文</a>
-</p>
 
 # Specification Draft (v1)
 

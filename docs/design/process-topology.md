@@ -1,6 +1,3 @@
-<p align="center">
-  English | <a href="process-topology.zh.md">简体中文</a>
-</p>
 
 # Process Topology: Gateway Split and Room Processes (Design)
 

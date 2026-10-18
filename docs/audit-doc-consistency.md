@@ -1,6 +1,3 @@
-<p align="center">
-  English | <a href="audit-doc-consistency.zh.md">简体中文</a>
-</p>
 
 # Docs–code consistency audit (2026-10-13)
 

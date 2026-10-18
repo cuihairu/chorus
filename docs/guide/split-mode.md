@@ -2,9 +2,6 @@
 title: Split Mode (Gateway + EngineHost)
 ---
 
-<p align="center">
-  English | <a href="split-mode.zh.md">简体中文</a>
-</p>
 
 # Split Mode (Gateway + EngineHost)
 

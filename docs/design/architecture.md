@@ -2,9 +2,6 @@
 title: Architecture Design
 ---
 
-<p align="center">
-  English | <a href="architecture.zh.md">简体中文</a>
-</p>
 
 # Architecture Design
 

@@ -2,9 +2,6 @@
 title: Load Testing
 ---
 
-<p align="center">
-  English | <a href="load-testing.zh.md">简体中文</a>
-</p>
 
 # Load Testing (Standalone Load Test Tool)
 

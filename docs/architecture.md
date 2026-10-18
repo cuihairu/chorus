@@ -1,6 +1,3 @@
-<p align="center">
-  English | <a href="architecture.zh.md">简体中文</a>
-</p>
 
 # Architecture: Layers, Decisions and Trade-offs
 

@@ -2,9 +2,6 @@
 title: API Reference (Backend/Admin Side)
 ---
 
-<p align="center">
-  English | <a href="api.zh.md">简体中文</a>
-</p>
 
 # API Reference
 

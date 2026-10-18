@@ -2,9 +2,6 @@
 title: Deployment and Security
 ---
 
-<p align="center">
-  English | <a href="deployment.zh.md">简体中文</a>
-</p>
 
 # Deployment and Security Configuration
 

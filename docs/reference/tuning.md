@@ -2,9 +2,6 @@
 title: Parameter Tuning
 ---
 
-<p align="center">
-  English | <a href="tuning.zh.md">简体中文</a>
-</p>
 
 # Parameter Tuning
 

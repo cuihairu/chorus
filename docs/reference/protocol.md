@@ -2,9 +2,6 @@
 title: Protocol Reference
 ---
 
-<p align="center">
-  English | <a href="protocol.zh.md">简体中文</a>
-</p>
 
 # Protocol Reference (v1)
 

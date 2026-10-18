@@ -2,9 +2,6 @@
 title: Current Architecture Overview (Process Topology and Components)
 ---
 
-<p align="center">
-  English | <a href="architecture-overview.zh.md">简体中文</a>
-</p>
 
 # Current Architecture Overview
 

@@ -21,10 +21,6 @@ features:
 footer: Apache-2.0 License
 ---
 
-<p align="center">
-  English | <a href="README.zh.md">简体中文</a>
-</p>
-
 ## Documentation index
 
 - New to the project: start with [Getting Started](./guide/getting-started.md)

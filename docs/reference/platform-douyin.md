@@ -2,9 +2,6 @@
 title: "Platform Integration Reference: Douyin"
 ---
 
-<p align="center">
-  English | <a href="platform-douyin.zh.md">简体中文</a>
-</p>
 
 # Platform Integration Reference: Douyin
 
