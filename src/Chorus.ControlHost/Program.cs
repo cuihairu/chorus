@@ -123,6 +123,7 @@ admin.MapGet("/boards/{id}", (string id, string? search, int? page, int? size, R
     return Results.Ok(new { b.Id, b.Scope, b.Unit, b.Season, b.Frozen, b.UpdatedAtMs, total = filtered.Length, entries = filtered.Skip((Math.Max(1,page ?? 1)-1)*Math.Clamp(size ?? 50,1,200)).Take(Math.Clamp(size ?? 50,1,200)) });
 });
 admin.MapGet("/audit", (int? limit, RoomControlStore s) => s.Audits(limit ?? 100));
+admin.MapGet("/audit/usage", (RoomControlStore s) => s.AuditUsage());
 admin.MapPost("/nodes/{id}/drain", (string id, DrainRequest r, HttpContext c, RoomControlStore s) => s.Drain(id,r.Draining,c.User.Identity!.Name!)).RequireAuthorization("operate");
 admin.MapPost("/rooms/{id}/action", (string id, RoomAction r, HttpContext c, RoomControlStore s) => s.Action(id,r,c.User.Identity!.Name!)).RequireAuthorization("operate");
 admin.MapPost("/rooms/{id}/move", (string id, RoomMove r, HttpContext c, RoomControlStore s) => s.Move(id,r,c.User.Identity!.Name!)).RequireAuthorization("operate");

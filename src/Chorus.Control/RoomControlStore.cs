@@ -12,6 +12,7 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
     public const long NodeLeaseMs = 15000;
     public const long ConnectionLeaseMs = 30000;
     public const int MaxInbox = 8000;
+    public const long AuditCapacityWarningBytes = 256L * 1024 * 1024;
     private long Now => _time.GetUtcNow().ToUnixTimeMilliseconds();
     private static void Id(string id) { ArgumentException.ThrowIfNullOrWhiteSpace(id); if (id.Length > 200) throw new ArgumentException("Identifier too long."); }
     private bool Healthy(NodeReport? node) => node is not null && Now - node.LastHeartbeatMs < NodeLeaseMs;
@@ -256,6 +257,12 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
             t.List<MatchRecord>("match").Count(m => m.Status == "Running"), roomsByPlatform, onlineUsersByPlatform);
     });
     public List<AuditRecord> Audits(int limit = 100) => database.Read(t => t.Audits(limit));
+    public AuditStoreUsage AuditUsage() => database.Read(t =>
+    {
+        var usage = t.AuditUsage();
+        return new AuditStoreUsage(usage.Rows, usage.ApproximatePayloadBytes, usage.OldestAtMs, usage.NewestAtMs,
+            usage.ApproximatePayloadBytes >= AuditCapacityWarningBytes);
+    });
     public void Sample()
     {
         var summary = Summary();

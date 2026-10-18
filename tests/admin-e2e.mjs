@@ -211,6 +211,15 @@ try {
   assert.equal(drainStatus, 200);
   await page.locator('a[href="#audit"]').click();
   await page.getByText('node.drain', { exact: true }).waitFor();
+  await page.getByText(/追加保留，不自动删除/).waitFor();
+  const auditUsage = await page.evaluate(async () => {
+    const response = await fetch('/api/audit/usage', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`/api/audit/usage returned ${response.status}`);
+    return response.json();
+  });
+  assert.ok(auditUsage.rows >= 1);
+  assert.ok(auditUsage.approximatePayloadBytes > 0);
+  assert.equal(auditUsage.capacityWarning, false);
 
   const viewerPage = await (await browser.newContext()).newPage();
   await viewerPage.goto(baseUrl);

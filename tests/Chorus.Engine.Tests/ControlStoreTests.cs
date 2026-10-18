@@ -358,6 +358,17 @@ public sealed class ControlStoreTests : IDisposable
         Assert.Empty(s.EventHeatAlerts());
     }
     [Fact]
+    public void AuditUsageReportsAppendOnlyRecordsWithoutRequestingDeletion()
+    {
+        var s=NewStore();s.ReportNode(Worker("a"));s.Drain("a",true,"operator");
+
+        var usage=s.AuditUsage();
+        Assert.Equal(1,usage.Rows);
+        Assert.True(usage.ApproximatePayloadBytes>0);
+        Assert.Equal(usage.OldestAtMs,usage.NewestAtMs);
+        Assert.False(usage.CapacityWarning);
+    }
+    [Fact]
     public void LifecycleCannotDiscardPendingInputOrResurrectDestroyedRoom()
     {
         var s=NewStore();s.ReportNode(Worker("a"));s.Assign(new("room"));s.AppendEvent(Event());

@@ -89,6 +89,11 @@ public sealed class ControlPostgresIntegrationTests
         Assert.Equal(RoomLifecycleState.Closing, store.Action(room.Id,
             new(RoomLifecycleAction.Close, room.Epoch), "operator").State);
         Assert.Contains(store.Audits(), audit => audit.Action == "room.lifecycle" && audit.Target == room.Id);
+        var auditUsage = store.AuditUsage();
+        Assert.True(auditUsage.Rows >= 1);
+        Assert.True(auditUsage.ApproximatePayloadBytes > 0);
+        Assert.NotNull(auditUsage.OldestAtMs);
+        Assert.NotNull(auditUsage.NewestAtMs);
     }
 
     [Fact]

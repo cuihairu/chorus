@@ -261,5 +261,12 @@ public sealed class ControlDatabase
             while (r.Read()) result.Add(new(r.GetInt64(0),r.GetInt64(1),r.GetString(2),r.GetString(3),r.GetString(4),r.GetString(5)));
             return result;
         }
+        public (long Rows, long ApproximatePayloadBytes, long? OldestAtMs, long? NewestAtMs) AuditUsage()
+        {
+            using var cmd = Command("SELECT COUNT(*),COALESCE(SUM((LENGTH(actor)+LENGTH(action)+LENGTH(target)+LENGTH(detail))*4+32),0),MIN(at),MAX(at) FROM audit");
+            using var r = cmd.ExecuteReader();
+            if (!r.Read()) return (0, 0, null, null);
+            return (r.GetInt64(0), r.GetInt64(1), r.IsDBNull(2) ? null : r.GetInt64(2), r.IsDBNull(3) ? null : r.GetInt64(3));
+        }
     }
 }
