@@ -247,7 +247,7 @@
 ### 第三阶段：权威隔离、恢复与重要事件可靠性
 
 - [x] **ROOM-06 / P1：快照原子写入与生产恢复（R06）**（SQLite 持久 checkpoint 与房间 tick 在同一事务提交；事务 fence 校验 owner 实例/epoch、租约、expected tick，低版本晚写及旧 owner 写入拒绝；重启读取、checksum 损坏和不支持 schema fail-closed 已有测试。恢复模块接线和 schema/checksum 校验由 `ControlCheckpointRestorer` 覆盖。后端仍是单写者 SQLite，容量/HA 属 ROOM-11，不据此宣称生产 HA。）
-- [ ] **ROOM-07 / P0：真实写入边界的权威隔离（R03，依赖 ROOM-03、ROOM-06）**（新增真实 `SessionActor` 在租约替换、迁移 handoff 后继续运行的测试，证明旧 actor 的下一次 durable 操作失败且 checkpoint 不再前进。剩余验收阻塞：需独立进程/网络分区故障注入环境，验证暂停/隔离 Worker 恢复后仍被共享权威拒绝，并覆盖 ControlHost 重启；本机 SQLite 同步调用不能证明真实分区下的进程与网络行为。）
+- [ ] **ROOM-07 / P0：真实写入边界的权威隔离（R03，依赖 ROOM-03、ROOM-06）**（`ControlHostFencingTests.DelayedLiveActorCommitIsRejectedAfterHttpAuthorityHandoff` 通过真实 `SessionActor` → `ControlClient` → ControlHost HTTP → SQLite 路径，把旧 owner 的第二次 `/prepare` 延迟到新 owner Handoff/Ready 后再放行，验证旧 actor durable 操作失败、owner 保持 worker-b 且 checkpoint tick 不越过 handoff tick；直接 store 层仍覆盖租约替换。剩余验收阻塞：需独立进程/网络分区故障注入环境，验证暂停/隔离 Worker 恢复后仍被共享权威拒绝，并覆盖 ControlHost 重启；TestServer HTTP 与本机 SQLite 不能证明真实分区下的进程行为。）
 - [x] **ROOM-08 / P1：权威边界去重与事件确认（R07）**（事件按 room + platform/eventId 建持久 receipt，inbox 有界；重复提交返回 duplicate，成功仅在 SQLite 事务提交后返回；checkpoint 消费与待处理事件删除同事务，receipt 在迁移/handoff 后保留。`DuplicateReliableEventAcrossGatewaysAndMigrationKeepsOneReceipt` 覆盖两个独立 store client 重试及迁移去重；拒绝无容量时返回冲突，调用方须重试。仅适用于共享的当前 SQLite 权威，不代表多控制面高可用。）
 - [ ] **ROOM-09 / P1：在线迁移与故障接管编排（R02/R03/R05/R06，依赖 ROOM-02～ROOM-08）**。控制面已串联 Move 冻结旧 owner、保存已提交 tick/inbox 游标、Handoff 递增 epoch、目标 EngineHost 恢复/Ready、控制循环移除旧 Actor；Abort 恢复前 owner 但再次递增 epoch，迁移中输入可重试拒绝。存储状态流与恢复/Abort 单测已覆盖。剩余 blocker：ROOM-07 规定的独立网络分区进程测试尚无可用多机故障注入环境；未证明目标进程部分恢复、旧进程仍存活和网络恢复同时发生时端到端路由收敛。
 
