@@ -52,6 +52,15 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
             .OrderBy(x => x.Count).ThenBy(x => x.Node.Id, StringComparer.Ordinal).Select(x => x.Node).FirstOrDefault()
             ?? throw new ControlConflictException("No healthy worker with available capacity.");
     }
+    private RoomRecord WakeSleeping(ControlDatabase.Transaction t, RoomRecord room)
+    {
+        if (room.State != RoomLifecycleState.Sleeping) return room;
+        room = room with { State = RoomLifecycleState.Recovering, Epoch = room.Epoch + 1,
+            ResumeState = room.ResumeState ?? RoomLifecycleState.Idle, UpdatedAtMs = Now };
+        t.Put("room", room.Id, room);
+        t.Audit(Now, "system", "room.wake", room.Id, new { room.Epoch });
+        return room;
+    }
     private RoomRecord Assign(ControlDatabase.Transaction t, RoomAssignment request)
     {
         Id(request.Id);
@@ -113,6 +122,7 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         var key = EventKey(e);
         t.PruneReceipts(r.Id,Now-86_400_000);
         if(t.ReceiptExists(r.Id,key)) return false;
+        r = WakeSleeping(t, r);
         if(t.PendingCount(r.Id)>=MaxInbox) throw new ControlConflictException("Reliable room inbox is full; retry later.");
         t.AddEvent(r.Id,key,e,Now);
         r = r with { UpdatedAtMs = Now };
@@ -128,9 +138,18 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
             throw new ControlConflictException("Use the migration/recovery protocol.");
         if (request.Action is RoomLifecycleAction.Close or RoomLifecycleAction.Destroyed && t.PendingCount(id) > 0)
             throw new ControlConflictException("Drain reliable input before closing.");
-        if (request.Action == RoomLifecycleAction.Sleep && Connections(t).Any(c => c.SessionId == id))
-            throw new ControlConflictException("Connected room cannot sleep.");
-        r = r with { State = state, Epoch = r.Epoch + 1, UpdatedAtMs = Now, ResumeState = r.State };
+        if (request.Action is RoomLifecycleAction.Close or RoomLifecycleAction.Destroyed
+            && Connections(t).Any(c => c.SessionId == id))
+            throw new ControlConflictException("Drain room connections before closing.");
+        if (request.Action == RoomLifecycleAction.Sleep)
+        {
+            if (Connections(t).Any(c => c.SessionId == id)) throw new ControlConflictException("Connected room cannot sleep.");
+            if (t.GetCheckpoint(id) is null) throw new ControlConflictException("Room cannot sleep without a durable checkpoint.");
+        }
+        var resumeState = request.Action == RoomLifecycleAction.Resume
+            ? r.ResumeState ?? RoomLifecycleState.Idle
+            : r.State;
+        r = r with { State = state, Epoch = r.Epoch + 1, UpdatedAtMs = Now, ResumeState = resumeState };
         t.Put("room", id, r); t.Audit(Now, actor, "room.lifecycle", id, request);
         return r;
     });
@@ -172,6 +191,8 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         if (!Healthy(gateway) || gateway!.InstanceId != connection.GatewayInstance) throw new ControlConflictException("Unknown gateway lease.");
         var r = Assign(t, new(connection.SessionId, connection.Role == "streamer" ? connection.UserId : null));
         if (r.State is RoomLifecycleState.Closing or RoomLifecycleState.Destroyed) throw new ControlConflictException("Room closed.");
+        if (r.State == RoomLifecycleState.Migrating) throw new ControlConflictException("Room is migrating; retry connection.");
+        r = WakeSleeping(t, r);
         if (connection.Role == "streamer" && r.StreamerId is null) t.Put("room", r.Id, r with { StreamerId = connection.UserId });
         t.Put("connection", ConnectionKey(connection), connection with { LastSeenMs = Now });
         return true;

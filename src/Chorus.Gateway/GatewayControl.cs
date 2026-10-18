@@ -7,6 +7,9 @@ namespace Chorus.Gateway;
 
 public sealed partial class GatewayIpcService
 {
+    private readonly ProcessResourceSampler _resourceSampler=new(ReadCpuTime,ReadMemoryBytes);
+    private static TimeSpan ReadCpuTime(){using var p=System.Diagnostics.Process.GetCurrentProcess();return p.TotalProcessorTime;}
+    private static long ReadMemoryBytes(){using var p=System.Diagnostics.Process.GetCurrentProcess();return p.WorkingSet64;}
     private ControlClient? _control;
     private readonly ConcurrentDictionary<string,IMessageBus> _controlChannels = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string,long> _workerLastSeen = new(StringComparer.Ordinal);
@@ -27,8 +30,9 @@ public sealed partial class GatewayIpcService
             {
                 var endpoint = _ipcSettings.Gateways is not null && _ipcSettings.Gateways.TryGetValue(_control!.NodeId,out var e) ? e
                     : new IpcNetworkEndpoint(_ipcSettings.TcpHost,_ipcSettings.TcpEngineToGatewayPort,_ipcSettings.HttpEngineToGatewayUrl);
-                using var process = System.Diagnostics.Process.GetCurrentProcess();
-                await _control!.Post<NodeReport>("nodes/report",new NodeReport(_control.NodeId,_control.InstanceId,_machineId,"gateway",endpoint,0,MemoryBytes:process.WorkingSet64),ct);
+                var usage=_resourceSampler.Sample();
+                await _control!.Post<NodeReport>("nodes/report",new NodeReport(_control.NodeId,_control.InstanceId,_machineId,"gateway",endpoint,0,
+                    MemoryBytes:usage.MemoryBytes,CpuPercent:usage.CpuPercent),ct);
                 var connections = _clientsBySession.Values.SelectMany(m => m.Values).Select(Connection).ToArray();
                 await _control.Send("connections/renew",new { gatewayId = _control.NodeId, instanceId = _control.InstanceId, connections },ct);
                 var routing = await _control.Routing(ct);

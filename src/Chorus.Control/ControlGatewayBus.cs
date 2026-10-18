@@ -33,6 +33,16 @@ public sealed class ControlGatewayBus : IMessageBus
         ReplaceRoutingState(await control.Routing(ct));
     }
 
+    public bool TryValidateConnect(string roomId,long epoch,string workerId,string workerInstance,
+        string clientId,string generation,string gatewayInstance,long nowMs,out RoomRecord room)
+    {
+        var snapshot=Volatile.Read(ref _snapshot);
+        if(snapshot is not null) return snapshot.TryValidateConnect(roomId,epoch,workerId,workerInstance,
+            clientId,generation,gatewayInstance,nowMs,out room);
+        room=null!;
+        return false;
+    }
+
     public async ValueTask PublishAsync(Envelope env, CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();

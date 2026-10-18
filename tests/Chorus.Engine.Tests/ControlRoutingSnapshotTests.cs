@@ -48,6 +48,35 @@ public sealed class ControlRoutingSnapshotTests
         Assert.False(replaced.TryGetAuthority("room",4,now,out _));
     }
 
+    [Fact]
+    public void HealthyWorkerDoesNotMaskExpiredOwnerOfAnotherRoom()
+    {
+        const long now = 1_800_000_000_000;
+        var snapshot = new ControlRoutingSnapshot(now,
+            [new NodeReport("worker-a","a-boot","machine-a","worker",new("127.0.0.1",3101),100,now-RoomControlStore.NodeLeaseMs),
+             new NodeReport("worker-b","b-boot","machine-b","worker",new("127.0.0.1",3102),100,now),
+             new NodeReport("gateway","g-boot","machine-g","gateway",new("127.0.0.1",4101),0,now)],
+            [new RoomRecord("room-a","worker-a","a-boot",1,RoomLifecycleState.Active,now),
+             new RoomRecord("room-b","worker-b","b-boot",1,RoomLifecycleState.Active,now)],
+            [new ConnectionRecord("room-a","client-a","user-a","streamer","gateway","g-boot","a",now),
+             new ConnectionRecord("room-b","client-b","user-b","streamer","gateway","g-boot","b",now)]);
+
+        Assert.False(snapshot.TryGetTargets("room-a",1,"worker-a","a-boot",now,out _));
+        Assert.True(snapshot.TryGetTargets("room-b",1,"worker-b","b-boot",now,out var targets));
+        Assert.Equal("gateway",Assert.Single(targets).Id);
+    }
+
+    [Fact]
+    public void CachedSnapshotValidatesConnectAuthorityAndGenerationFailClosed()
+    {
+        const long now=1_800_000_000_000;
+        var snapshot=Snapshot(now);
+        Assert.True(snapshot.TryValidateConnect("room",4,"worker","worker-boot","client-a","generation-a","ga-boot",now,out _));
+        Assert.False(snapshot.TryValidateConnect("room",4,"worker","worker-boot","client-a","old-generation","ga-boot",now,out _));
+        Assert.False(snapshot.TryValidateConnect("room",3,"worker","worker-boot","client-a","generation-a","ga-boot",now,out _));
+        Assert.False(snapshot.TryValidateConnect("room",4,"worker","worker-boot","client-a","generation-a","ga-boot",now+ControlRoutingSnapshot.MaxAgeMs,out _));
+    }
+
     private static ControlRoutingSnapshot Snapshot(long now, RoomLifecycleState state = RoomLifecycleState.Active,
         long? workerHeartbeat = null,string workerInstance = "worker-boot") => new(
         now,

@@ -9,6 +9,7 @@ public sealed class ControlRoutingSnapshot
     private readonly IReadOnlyDictionary<string, NodeReport> _nodes;
     private readonly IReadOnlyDictionary<string, RoomRecord> _rooms;
     private readonly IReadOnlyDictionary<string, string[]> _gatewaysByRoom;
+    private readonly IReadOnlyList<ConnectionRecord> _connections;
     public long CreatedAtMs { get; }
 
     public ControlRoutingSnapshot(long createdAtMs, IEnumerable<NodeReport> nodes,
@@ -17,7 +18,8 @@ public sealed class ControlRoutingSnapshot
         CreatedAtMs = createdAtMs;
         _nodes = nodes.ToDictionary(n => n.Id, StringComparer.Ordinal);
         _rooms = rooms.ToDictionary(r => r.Id, StringComparer.Ordinal);
-        _gatewaysByRoom = connections.GroupBy(c => c.SessionId, StringComparer.Ordinal)
+        _connections = connections.ToArray();
+        _gatewaysByRoom = _connections.GroupBy(c => c.SessionId, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Select(c => c.GatewayId).Distinct(StringComparer.Ordinal).ToArray(), StringComparer.Ordinal);
     }
 
@@ -48,6 +50,22 @@ public sealed class ControlRoutingSnapshot
             || found.State is not (RoomLifecycleState.Active or RoomLifecycleState.Waiting or RoomLifecycleState.Idle)
             || !LiveWorker(found,nowMs)) return false;
         room = found;
+        return true;
+    }
+
+    public bool TryValidateConnect(string roomId,long epoch,string workerId,string workerInstance,
+        string clientId,string generation,string gatewayInstance,long nowMs,out RoomRecord room)
+    {
+        room=null!;
+        if(!TryGetAuthority(roomId,epoch,nowMs,out var found) || found.WorkerId!=workerId
+            || found.WorkerInstance!=workerInstance) return false;
+        var connection=_connections.FirstOrDefault(c=>c.SessionId==roomId && c.ClientId==clientId
+            && c.Generation==generation && c.GatewayInstance==gatewayInstance);
+        if(connection is null || !_nodes.TryGetValue(connection.GatewayId,out var gateway)
+            || gateway.Role!="gateway" || gateway.InstanceId!=gatewayInstance || gateway.Draining
+            || nowMs<gateway.LastHeartbeatMs || nowMs-gateway.LastHeartbeatMs>=RoomControlStore.NodeLeaseMs)
+            return false;
+        room=found;
         return true;
     }
 

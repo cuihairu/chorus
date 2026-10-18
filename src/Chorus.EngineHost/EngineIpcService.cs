@@ -202,12 +202,7 @@ public sealed partial class EngineIpcService : BackgroundService
             if (_control is not null)
             {
                 var room = _controlledRooms[sessionId];
-                if (room.Snapshot is { } snapshot)
-                {
-                    if (room.SchemaVersion != 1 || SnapshotIntegrity.Compute(snapshot.GetRawText()) != room.Checksum)
-                        throw new InvalidOperationException("Corrupt or incompatible controlled checkpoint.");
-                    game.RestoreState(room.SchemaVersion,snapshot);
-                }
+                ControlCheckpointRestorer.Restore(game,room);
                 actor = new SessionActor(sessionId,_sessionConfig,game,durability:new ControlTickDurability(_control,room,_sessionConfig.MaxEventsPerTick),restoredTick:room.TickId);
             }
             else
@@ -251,16 +246,17 @@ public sealed partial class EngineIpcService : BackgroundService
             case IpcMessageTypes.GatewayConnect:
                 {
                     var cmd = EnvelopeFactory.DeserializeBody<GatewayConnectCmd>(env);
+                    RoomRecord? routedRoom = null;
                     if (_control is not null)
                     {
-                        var room = await _control.Room(cmd.SessionId,cancellationToken);
-                        if (env.AuthorityEpoch != room.Epoch) throw new ControlConflictException("Stale connect route.");
-                        var registered = await _control.Get<List<ConnectionRecord>>("connections",cancellationToken);
-                        if (!registered.Any(c => c.SessionId == cmd.SessionId && c.ClientId == cmd.ClientId && c.Generation == cmd.Generation && c.GatewayInstance == cmd.GatewayInstance))
+                        if (env.AuthorityEpoch is null || string.IsNullOrWhiteSpace(cmd.Generation)
+                            || string.IsNullOrWhiteSpace(cmd.GatewayInstance)
+                            || !_controlGatewayBus!.TryValidateConnect(cmd.SessionId,env.AuthorityEpoch.Value,
+                            _control.NodeId,_control.InstanceId,cmd.ClientId,cmd.Generation,cmd.GatewayInstance,
+                            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),out routedRoom))
                             throw new ControlConflictException("Stale connection generation.");
-                        await _controlGatewayBus!.RefreshRoutingStateAsync(cancellationToken);
                     }
-                    var session = await ResolveSessionAsync(cmd.SessionId,cancellationToken);
+                    var session = await ResolveSessionAsync(cmd.SessionId,cancellationToken,routedRoom);
                     _broadcastOwners.OnConnect(cmd.SessionId, cmd.ClientId);
                     var client = new EngineBusSessionClient(
                         _outgoing, cmd.SessionId, cmd.ClientId,

@@ -9,6 +9,9 @@ namespace Chorus.EngineHost;
 
 public sealed partial class EngineIpcService
 {
+    private readonly ProcessResourceSampler _resourceSampler=new(ReadCpuTime,ReadMemoryBytes);
+    private static TimeSpan ReadCpuTime(){using var p=System.Diagnostics.Process.GetCurrentProcess();return p.TotalProcessorTime;}
+    private static long ReadMemoryBytes(){using var p=System.Diagnostics.Process.GetCurrentProcess();return p.WorkingSet64;}
     private ControlClient? _control;
     private ControlGatewayBus? _controlGatewayBus;
     private readonly ConcurrentDictionary<string,RoomRecord> _controlledRooms = new(StringComparer.Ordinal);
@@ -22,13 +25,16 @@ public sealed partial class EngineIpcService
     {
         var endpoint = _ipcSettings.Workers is not null && _ipcSettings.Workers.TryGetValue(_control!.NodeId,out var e) ? e
             : new IpcNetworkEndpoint(_ipcSettings.TcpHost,_ipcSettings.TcpGatewayToEnginePort,_ipcSettings.HttpGatewayToEngineUrl);
-        using var process = System.Diagnostics.Process.GetCurrentProcess();
+        var usage=_resourceSampler.Sample();
         await _control!.Post<NodeReport>("nodes/report",new NodeReport(_control.NodeId,_control.InstanceId,_machineId,"worker",endpoint,
-            _sessionConfig.MaxSessions,MemoryBytes:process.WorkingSet64,Version:typeof(EngineIpcService).Assembly.GetName().Version?.ToString() ?? "",Sessions:GetDiagnostics()),ct);
+            _sessionConfig.MaxSessions,MemoryBytes:usage.MemoryBytes,Version:typeof(EngineIpcService).Assembly.GetName().Version?.ToString() ?? "",Sessions:GetDiagnostics(),CpuPercent:usage.CpuPercent),ct);
     }
-    private async Task<SessionActor> ResolveSessionAsync(string id, CancellationToken ct)
+    private async Task<SessionActor> ResolveSessionAsync(string id, CancellationToken ct,RoomRecord? routedRoom=null)
     {
         if (_control is null) return GetOrCreateSession(id);
+        if (_controlledRooms.TryGetValue(id,out var cached) && _registry.TryGet(id,out var cachedActor)
+            && cachedActor is not null && !cachedActor.DurabilityFailed
+            && (routedRoom is null || cached.Epoch==routedRoom.Epoch)) return cachedActor;
         var room = await _control.Room(id,ct,checkpoint:true);
         if (room.WorkerId != _control.NodeId || room.WorkerInstance != _control.InstanceId
             || room.State is not (RoomLifecycleState.Waiting or RoomLifecycleState.Active or RoomLifecycleState.Idle or RoomLifecycleState.Recovering))
@@ -69,14 +75,26 @@ public sealed partial class EngineIpcService
                 foreach (var obsolete in _controlledRooms.Keys.Where(id => !mine.Any(r => r.Id == id)))
                 {
                     await _roomGate.WaitAsync(ct);
-                    try { await _registry.CloseAsync(obsolete); _controlledRooms.TryRemove(obsolete,out _); }
+                    try
+                    {
+                        await _registry.CloseAsync(obsolete);
+                        _controlledRooms.TryRemove(obsolete,out _);
+                        foreach (var key in _clients.Keys.Where(k => k.SessionId == obsolete).ToArray())
+                        {
+                            _clients.TryRemove(key,out _);
+                            _clientOrigins.TryRemove(key,out _);
+                            _broadcastOwners.OnDisconnect(obsolete,key.ClientId,
+                                _clients.Keys.Where(k=>k.SessionId==obsolete).Select(k=>k.ClientId));
+                        }
+                        _clientCountBySession.TryRemove(obsolete,out _);
+                    }
                     finally { _roomGate.Release(); }
                 }
                 foreach (var room in mine)
                 {
                     try
                     {
-                        var actor = await ResolveSessionAsync(room.Id,ct);
+                        var actor = await ResolveSessionAsync(room.Id,ct,room);
                         var desired = connections.Where(c => c.SessionId == room.Id).ToArray();
                         foreach (var stale in _clients.Keys.Where(k => k.SessionId == room.Id && !desired.Any(c => c.ClientId == k.ClientId)).ToArray())
                         { await actor.RemoveClientAsync(stale.ClientId); _clients.TryRemove(stale,out _); _clientOrigins.TryRemove(stale,out _); _broadcastOwners.OnDisconnect(room.Id,stale.ClientId,desired.Select(c=>c.ClientId)); }
