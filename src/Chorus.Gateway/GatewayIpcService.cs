@@ -254,12 +254,8 @@ public sealed partial class GatewayIpcService : BackgroundService
             }
             if (_control is not null)
             {
-                try
-                {
-                    var room = await _control.Room(env.SessionId,stoppingToken);
-                    if (room.Epoch != env.AuthorityEpoch || room.State is not (Chorus.Engine.Routing.RoomLifecycleState.Active or Chorus.Engine.Routing.RoomLifecycleState.Waiting or Chorus.Engine.Routing.RoomLifecycleState.Idle)) continue;
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException) { _logger.LogWarning(ex,"Cannot validate engine authority"); continue; }
+                var route=Volatile.Read(ref _controlRoutingSnapshot);
+                if (route is null || !route.TryGetAuthority(env.SessionId,env.AuthorityEpoch,DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),out _)) continue;
             }
 
             if (env.Type == IpcMessageTypes.EngineWelcome)

@@ -34,6 +34,7 @@ public sealed class ControlClient : IDisposable
         response.EnsureSuccessStatusCode();
     }
     public Task<RoomRecord> Assign(string id, CancellationToken ct) => Post<RoomRecord>("rooms/assign", new RoomAssignment(id), ct);
+    public Task<ControlRoutingData> Routing(CancellationToken ct = default) => Get<ControlRoutingData>("routing",ct);
     public Task<RoomRecord> Room(string id, CancellationToken ct = default, bool checkpoint = false) => Get<RoomRecord>($"rooms/{Uri.EscapeDataString(id)}?checkpoint={checkpoint.ToString().ToLowerInvariant()}", ct);
     public void Dispose() => _http.Dispose();
 }

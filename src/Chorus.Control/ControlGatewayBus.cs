@@ -8,20 +8,25 @@ namespace Chorus.Control;
 public sealed class ControlGatewayBus(ControlClient control, IpcTransport transport, IpcSettings settings) : IMessageBus
 {
     private readonly ConcurrentDictionary<string,IMessageBus> _channels = new(StringComparer.Ordinal);
+    private ControlRoutingSnapshot? _snapshot;
+
+    public void ReplaceRoutingState(ControlRoutingData routing) =>
+        Volatile.Write(ref _snapshot,new ControlRoutingSnapshot(routing.SnapshotAtMs,routing.Nodes,routing.Rooms,routing.Connections));
+
+    public async Task RefreshRoutingStateAsync(CancellationToken ct = default)
+    {
+        ReplaceRoutingState(await control.Routing(ct));
+    }
+
     public async ValueTask PublishAsync(Envelope env, CancellationToken cancellationToken)
     {
-        var nodes = await control.Get<List<NodeReport>>("nodes",cancellationToken);
-        HashSet<string>? recipients = null;
-        if (env.Type != IpcMessageTypes.EngineHeartbeat)
-        {
-            var room = await control.Room(env.SessionId,cancellationToken);
-            if (room.Epoch != env.AuthorityEpoch || room.WorkerId != control.NodeId || room.WorkerInstance != control.InstanceId
-                || room.State is not (Chorus.Engine.Routing.RoomLifecycleState.Active or Chorus.Engine.Routing.RoomLifecycleState.Waiting or Chorus.Engine.Routing.RoomLifecycleState.Idle)) return;
-            var connections = await control.Get<List<ConnectionRecord>>("connections",cancellationToken);
-            recipients = connections.Where(c => c.SessionId == env.SessionId).Select(c => c.GatewayId).ToHashSet(StringComparer.Ordinal);
-        }
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var targets = nodes.Where(n => n.Role == "gateway" && now - n.LastHeartbeatMs < RoomControlStore.NodeLeaseMs && (recipients is null || recipients.Contains(n.Id))).ToArray();
+        var snapshot=Volatile.Read(ref _snapshot);
+        if(snapshot is null) return;
+        if(snapshot is null || !snapshot.IsFresh(now)) return;
+        IReadOnlyList<NodeReport> targets;
+        if(env.Type == IpcMessageTypes.EngineHeartbeat) targets=snapshot.LiveGateways(now);
+        else if(!snapshot.TryGetTargets(env.SessionId,env.AuthorityEpoch,control.NodeId,control.InstanceId,now,out targets)) return;
         await Task.WhenAll(targets.Select(async node =>
         {
             var key = $"{node.Id}/{node.InstanceId}";
@@ -31,7 +36,8 @@ public sealed class ControlGatewayBus(ControlClient control, IpcTransport transp
             timeout.CancelAfter(TimeSpan.FromSeconds(2));
             await bus.PublishAsync(env,timeout.Token);
         }));
-        foreach (var stale in _channels.Keys.Where(k => !nodes.Any(n => $"{n.Id}/{n.InstanceId}" == k)).ToArray())
+        var live=snapshot.LiveGateways(now).Select(n=>$"{n.Id}/{n.InstanceId}").ToHashSet(StringComparer.Ordinal);
+        foreach (var stale in _channels.Keys.Where(k => !live.Contains(k)).ToArray())
             if (_channels.TryRemove(stale,out var bus)) await bus.DisposeAsync();
     }
     public IAsyncEnumerable<Envelope> SubscribeAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();

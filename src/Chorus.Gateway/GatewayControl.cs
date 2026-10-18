@@ -13,13 +13,14 @@ public sealed partial class GatewayIpcService
     private readonly CancellationTokenSource _controlStop = new();
     private Task _controlTask = Task.CompletedTask;
     private volatile bool _controlReady;
+    private ControlRoutingSnapshot? _controlRoutingSnapshot;
     private string _machineId = Environment.MachineName;
     private ConnectionRecord Connection(GatewayClientConnection conn) => new(conn.SessionId,conn.ClientId,conn.ClientId,"streamer",_control!.NodeId,_control.InstanceId,conn.Generation);
     private async Task RunControlAsync(CancellationToken serviceToken)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(serviceToken,_controlStop.Token);
         var ct = linked.Token;
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         while (!ct.IsCancellationRequested)
         {
             try
@@ -30,10 +31,11 @@ public sealed partial class GatewayIpcService
                 await _control!.Post<NodeReport>("nodes/report",new NodeReport(_control.NodeId,_control.InstanceId,_machineId,"gateway",endpoint,0,MemoryBytes:process.WorkingSet64),ct);
                 var connections = _clientsBySession.Values.SelectMany(m => m.Values).Select(Connection).ToArray();
                 await _control.Send("connections/renew",new { gatewayId = _control.NodeId, instanceId = _control.InstanceId, connections },ct);
-                var nodes = await _control.Get<List<NodeReport>>("nodes",ct);
-                var workers = nodes.Where(n => n.Role == "worker").ToArray();
-                var rooms = await _control.Get<List<RoomRecord>>("rooms",ct);
+                var routing = await _control.Routing(ct);
+                var workers = routing.Nodes.Where(n => n.Role == "worker").ToArray();
+                var rooms = routing.Rooms;
                 var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                Volatile.Write(ref _controlRoutingSnapshot,new ControlRoutingSnapshot(routing.SnapshotAtMs,routing.Nodes,rooms,Array.Empty<ConnectionRecord>()));
                 _controlReady = workers.Any(n => now - n.LastHeartbeatMs < RoomControlStore.NodeLeaseMs && !n.Draining)
                     && rooms.Where(r => r.State != Chorus.Engine.Routing.RoomLifecycleState.Destroyed).All(r => workers.Any(n => n.Id == r.WorkerId && n.InstanceId == r.WorkerInstance && now - n.LastHeartbeatMs < RoomControlStore.NodeLeaseMs));
             }

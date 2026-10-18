@@ -73,6 +73,7 @@ var internalApi = app.MapGroup("/internal").AddEndpointFilter(async (context, ne
 });
 internalApi.MapPost("/nodes/report", (NodeReport report, RoomControlStore s) => s.ReportNode(report));
 internalApi.MapGet("/nodes", (RoomControlStore s) => s.Nodes());
+internalApi.MapGet("/routing", (RoomControlStore s) => s.RoutingData());
 internalApi.MapGet("/rooms", (RoomControlStore s) => s.Rooms().Select(r => r with { Inbox = null, Receipts = null, Snapshot = null }));
 internalApi.MapGet("/rooms/{id}", (string id, bool? checkpoint, RoomControlStore s) => s.Room(id, checkpoint == true) is { } r ? Results.Ok(r with { Inbox = null, Receipts = null }) : Results.NotFound());
 internalApi.MapPost("/rooms/assign", (RoomAssignment request, RoomControlStore s) => s.Assign(request));

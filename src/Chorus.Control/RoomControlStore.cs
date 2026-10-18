@@ -17,6 +17,8 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
     private static bool Live(RoomRecord room) => room.State != RoomLifecycleState.Destroyed;
     public List<NodeReport> Nodes() => database.Read(t => t.List<NodeReport>("node"));
     public List<RoomRecord> Rooms() => database.Read(t => t.List<RoomRecord>("room"));
+    public ControlRoutingData RoutingData() => database.Read(t => new ControlRoutingData(Now,
+        t.List<NodeReport>("node"),t.List<RoomRecord>("room"),Connections(t)));
     public RoomRecord? Room(string id, bool checkpoint = false) => database.Read(t =>
     {
         var r=t.Get<RoomRecord>("room", id); if(r is null) return null;

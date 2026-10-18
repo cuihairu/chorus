@@ -10,6 +10,7 @@ namespace Chorus.EngineHost;
 public sealed partial class EngineIpcService
 {
     private ControlClient? _control;
+    private ControlGatewayBus? _controlGatewayBus;
     private readonly ConcurrentDictionary<string,RoomRecord> _controlledRooms = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<(string SessionId,string ClientId),GatewayConnectCmd> _clientOrigins = new();
     private readonly SemaphoreSlim _roomGate = new(1,1);
@@ -59,8 +60,10 @@ public sealed partial class EngineIpcService
             try
             {
                 await ReportControlAsync(ct);
-                var rooms = await _control!.Get<List<RoomRecord>>("rooms",ct);
-                var connections = await _control.Get<List<ConnectionRecord>>("connections",ct);
+                var routing = await _control!.Routing(ct);
+                var rooms = routing.Rooms;
+                var connections = routing.Connections;
+                _controlGatewayBus?.ReplaceRoutingState(routing);
                 var mine = rooms.Where(r => r.WorkerId == _control.NodeId && r.WorkerInstance == _control.InstanceId
                     && r.State is RoomLifecycleState.Waiting or RoomLifecycleState.Active or RoomLifecycleState.Idle or RoomLifecycleState.Recovering).ToArray();
                 foreach (var obsolete in _controlledRooms.Keys.Where(id => !mine.Any(r => r.Id == id)))

@@ -178,6 +178,6 @@ dotnet test tests/Chorus.Engine.Tests/Chorus.Engine.Tests.csproj --no-restore --
 
 控制面仍是**单个 SQLite 写者**，不具备多副本高可用或写分片。当前 `SessionActor` 每个 tick 都提交一个状态 checkpoint；每个 checkpoint 写入 SQLite，并与输入确认处在同一事务。于是所有 Worker 的 tick 写入都汇聚到 ControlHost 的一个 SQLite 写锁，状态越大写入成本越高。此设计适合作为受控规模的正确性原型，不能仅凭多 Worker 分房间宣称线性扩容。生产放量前必须压测控制面写入延迟、锁等待、WAL 增长和最大 checkpoint，并确定外部数据库/分片或有明确定义恢复损失窗口的持久化策略。不能简单降低 checkpoint 频率：当前没有快照后的确定性事件重放，降低频率会扩大已确认事件对应的状态丢失窗口。
 
-此外，EngineHost 的输出广播路径当前会为快照查询控制面房间、连接和节点信息；Gateway 收到每条 Engine 输出也会同步查询房间 epoch。以帧频输出时，这种逐消息 HTTP 验权会把数据库和 API 变成热点。需要按版本缓存/批量刷新并保留过期 fail-closed 的权威语义，再进行高频场景上线评估，见 `todo.md` §19 ROOM-10。
+此前发现的逐快照 HTTP 查询已改为控制面一次性返回节点、房间和连接的 routing snapshot；Worker 周期刷新并原子替换本地快照，Gateway 收包路径只读本地 epoch/state 快照，快照超过 1.5 秒即 fail-closed。新连接时 Worker 会主动刷新路由，避免初始欢迎消息因订阅缓存未建立而丢失。该实现消除了每条输出对控制面 API 的读取，但迁移/epoch 更新在节点间是周期传播，仍须通过多机迁移测试确认可接受的传播窗口；完整验收见 `todo.md` §19 ROOM-10/ROOM-12。
 
 **验收结论：** 本地定向测试覆盖容量拒绝、房间分配稳定、事件去重、连接代次、checkpoint fencing 和迁移状态转换；没有执行真实多主机网络分区、控制面重启恢复或容量压测。固定归属和旧 epoch commit 拒绝有代码路径，跨机安全扩展及生产吞吐仍为未验收。

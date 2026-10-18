@@ -130,7 +130,8 @@ public sealed partial class EngineIpcService : BackgroundService
         // separated); each gateway hosts its own suffixed endpoint and the
         // engine fans every message out to all of them (stage-2 transport
         // half). Empty list = legacy single-gateway channel, byte-identical.
-        _outgoing = _control is null ? BuildOutgoing(endpoints) : new ControlGatewayBus(_control,_ipcSettings.Transport,_ipcSettings);
+        if (_control is null) _outgoing = BuildOutgoing(endpoints);
+        else { _controlGatewayBus = new ControlGatewayBus(_control,_ipcSettings.Transport,_ipcSettings); _outgoing = _controlGatewayBus; }
         if (_control is not null)
         {
             await ReportControlAsync(stoppingToken);
@@ -257,6 +258,7 @@ public sealed partial class EngineIpcService : BackgroundService
                         var registered = await _control.Get<List<ConnectionRecord>>("connections",cancellationToken);
                         if (!registered.Any(c => c.SessionId == cmd.SessionId && c.ClientId == cmd.ClientId && c.Generation == cmd.Generation && c.GatewayInstance == cmd.GatewayInstance))
                             throw new ControlConflictException("Stale connection generation.");
+                        await _controlGatewayBus!.RefreshRoutingStateAsync(cancellationToken);
                     }
                     var session = await ResolveSessionAsync(cmd.SessionId,cancellationToken);
                     _broadcastOwners.OnConnect(cmd.SessionId, cmd.ClientId);
