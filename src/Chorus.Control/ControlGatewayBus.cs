@@ -5,10 +5,25 @@ using Chorus.Messaging.Ipc;
 namespace Chorus.Control;
 
 /// <summary>Subscription-directed output with independent per-node transport and timeout.</summary>
-public sealed class ControlGatewayBus(ControlClient control, IpcTransport transport, IpcSettings settings) : IMessageBus
+public sealed class ControlGatewayBus : IMessageBus
 {
     private readonly ConcurrentDictionary<string,IMessageBus> _channels = new(StringComparer.Ordinal);
+    private readonly ControlClient control;
+    private readonly IpcTransport transport;
+    private readonly IpcSettings settings;
+    private readonly Func<NodeReport,IMessageBus> _createChannel;
     private ControlRoutingSnapshot? _snapshot;
+
+    public ControlGatewayBus(ControlClient control, IpcTransport transport, IpcSettings settings,
+        Func<NodeReport,IMessageBus>? createChannel = null)
+    {
+        this.control = control;
+        this.transport = transport;
+        this.settings = settings;
+        _createChannel = createChannel ?? (node => IpcMessageBusFactory.CreateClient(transport,
+            IpcEndpointBuilder.Build(settings with { GatewayId = node.Id,
+                Gateways = new Dictionary<string,IpcNetworkEndpoint> { [node.Id] = node.Endpoint } }).EngineToGateway));
+    }
 
     public void ReplaceRoutingState(ControlRoutingData routing) =>
         Volatile.Write(ref _snapshot,new ControlRoutingSnapshot(routing.SnapshotAtMs,routing.Nodes,routing.Rooms,routing.Connections));
@@ -30,8 +45,7 @@ public sealed class ControlGatewayBus(ControlClient control, IpcTransport transp
         await Task.WhenAll(targets.Select(async node =>
         {
             var key = $"{node.Id}/{node.InstanceId}";
-            var bus = _channels.GetOrAdd(key, _ => IpcMessageBusFactory.CreateClient(transport,
-                IpcEndpointBuilder.Build(settings with { GatewayId = node.Id, Gateways = new Dictionary<string,IpcNetworkEndpoint> { [node.Id] = node.Endpoint } }).EngineToGateway));
+            var bus = _channels.GetOrAdd(key, _ => _createChannel(node));
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(2));
             await bus.PublishAsync(env,timeout.Token);
