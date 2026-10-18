@@ -37,7 +37,7 @@ jobs:
         run: dotnet publish src/Chorus.Server -c Release -o ./publish
 
       - name: Upload nightly artifact (rolling, no tag)
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: chorus-nightly
           path: publish/

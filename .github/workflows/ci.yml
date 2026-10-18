@@ -43,7 +43,7 @@ jobs:
         run: dotnet test Chorus.sln -c Release --no-build --collect:"XPlat Code Coverage" --results-directory ./TestResults
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: coverage
           path: TestResults/**/coverage.cobertura.xml
