@@ -3,6 +3,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Npgsql" Version="10.0.0" />
     <ProjectReference Include="../Chorus.Engine/Chorus.Engine.csproj" />
     <ProjectReference Include="../Chorus.Data/Chorus.Data.csproj" />
     <ProjectReference Include="../Chorus.Messaging/Chorus.Messaging.csproj" />

@@ -22,7 +22,11 @@ var publicOriginIsHttps = publicOrigin?.StartsWith("https://", StringComparison.
 var users = builder.Configuration.GetSection("Admin:Users").Get<AdminUser[]>() ?? [];
 if (users.Length == 0 || users.Any(u => string.IsNullOrWhiteSpace(u.Name) || string.IsNullOrWhiteSpace(u.PasswordHash) || u.Role is not ("viewer" or "operator" or "admin")))
     throw new InvalidOperationException("Configure Admin:Users with names, PasswordHasher hashes and viewer/operator/admin roles.");
-builder.Services.AddSingleton(new ControlDatabase(builder.Configuration["Control:Database"] ?? "data/control.db"));
+var databaseProvider = Enum.Parse<ControlDatabaseProvider>(builder.Configuration["Control:Provider"] ?? "Sqlite", ignoreCase: true);
+var databaseConnection = databaseProvider == ControlDatabaseProvider.Sqlite
+    ? builder.Configuration["Control:Database"] ?? "data/control.db"
+    : builder.Configuration["Control:ConnectionString"] ?? throw new InvalidOperationException("Configure Control:ConnectionString for PostgreSQL.");
+builder.Services.AddSingleton(new ControlDatabase(databaseConnection, databaseProvider));
 builder.Services.AddSingleton<RoomControlStore>();
 builder.Services.AddHostedService<ControlMaintenance>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>

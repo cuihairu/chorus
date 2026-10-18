@@ -40,6 +40,17 @@ DOTNET_ENVIRONMENT=Production dotnet ./publish/Chorus.Server.dll
 
 Configuration priority: `appsettings.json` → `appsettings.{Environment}.json` → environment variables (`__` as separator, e.g. `Session__MaxSessions`) → command line.
 
+## Room Control Storage
+
+`Chorus.ControlHost` uses SQLite by default for development and single-host deployments. For multi-worker production, configure a PostgreSQL 16+ authority database; Workers and Gateways continue to access it only through ControlHost HTTP and must not open a shared database file.
+
+```bash
+Control__Provider=PostgreSql
+Control__ConnectionString='Host=control-db.internal;Database=chorus;Username=chorus;Password=<from-secret-store>;SSL Mode=VerifyFull'
+```
+
+Supply the connection string through the deployment secret store, enable TLS and SCRAM authentication, and provision the synchronous standby described in [Room Control Storage](../architecture/room-control-storage.md). SQLite remains the default when `Control__Provider` is omitted. PostgreSQL integration tests require `CHORUS_TEST_POSTGRES` to point at an isolated test database; CI provisions PostgreSQL 16 for that test.
+
 ## Endpoints and Ports
 
 | Endpoint | Purpose | Single-process | Split |

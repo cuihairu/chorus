@@ -95,7 +95,7 @@ flowchart LR
 
 此架构扩展的是**房间数量**：每个房间同一时刻由一个 Worker 上的 `SessionActor` 权威推进；ControlHost 固定新房间归属，增加 Worker 后主要承接新房间。单个热点房间不会因增加 Worker 自动拆分，必须由该 Worker 的单房间 Actor 能力承载。节点 drain 阻止新分配并保留存量房间；迁移是显式的冻结、handoff、目标恢复/ready 流程，不是改变 Worker 列表就能完成的再均衡。
 
-当前控制权威是一个 ControlHost 和本机 SQLite WAL。所有 Worker 的每 tick checkpoint 与可靠输入确认都汇聚到该单写者。因此多 Worker 的房间计算可以分散，持久化提交仍共享控制面瓶颈；不能据此宣称线性扩展、控制面 HA 或生产容量已通过。ROOM-11 需用户确认目标房间数、tick 频率、RPO/RTO、部署和磁盘预算后再评估存储方案，本轮不代选后端或降低 checkpoint 频率。
+当前控制权威仍由一个 ControlHost 提供，开发默认使用本机 SQLite WAL。ROOM-11 已按 patrol-1018-chorus.md 用户授权代决为 PostgreSQL 16+ 主库/同步备库；首版容量目标和硬件预算见 [存储决策](room-control-storage.md)。PostgreSQL provider 和 ControlHost 配置已接入，真实多机负载、同步复制、故障切换及性能门槛尚未验收，因此目前不能宣称生产 HA 或线性扩展。实现重放前不降低 checkpoint 频率。
 
 自动故障接管的安全前提是旧 owner 在网络隔离但进程仍运行时也无法成功 durable commit，并且路由/连接状态能在新 owner ready 后收敛。现有 fencing 和迁移状态流有本机 HTTP/SQLite 与 Actor 级测试证据；尚缺独立机器、可控网络分区、进程暂停/恢复及 ControlHost 重启组合测试。ROOM-07、ROOM-09、ROOM-12 是验证门槛，不应被文档或单机测试标成已通过。
 
@@ -105,7 +105,7 @@ flowchart LR
 
 ## 6. 实施顺序
 
-已完成的工程顺序为：容量保护（ROOM-01）→ 稳定分房间及生命周期/节点接线（ROOM-02～ROOM-05）→ 持久恢复、事件确认及权威状态流（ROOM-06～ROOM-09）→ 控制面路由热路径（ROOM-10）。剩余交付取决于环境和产品决策：ROOM-07/09/12 需要真实多机故障注入；ROOM-11 需要已批准的 SLO 和容量预算，故本轮只记录决策输入，不选定存储后端。详细验收条件以根目录 `todo.md` §19 为准。
+已完成的工程顺序为：容量保护（ROOM-01）→ 稳定分房间及生命周期/节点接线（ROOM-02～ROOM-05）→ 持久恢复、事件确认及权威状态流（ROOM-06～ROOM-09）→ 控制面路由热路径（ROOM-10）。ROOM-11 的后端、初始 SLO 和预算已代决，provider 的 PostgreSQL 集成测试已通过；生产容量基线仍待完成。ROOM-07/09/12 仍需要独立主机网络故障注入。详细验收条件以根目录 `todo.md` §19 为准。
 
 ## 7. 2026-10-18 控制面接线复核
 
