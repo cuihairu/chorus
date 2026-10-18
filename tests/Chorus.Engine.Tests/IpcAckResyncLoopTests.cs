@@ -513,11 +513,12 @@ public sealed class IpcAckResyncLoopTests
                 await outgoing.PublishAsync(
                     EnvelopeFactory.Create(IpcMessageTypes.GatewayDisconnect, "s-sweep",
                         new GatewayDisconnectCmd("s-sweep", "c-sweep")), cts.Token);
-
-                await Task.Delay(200, cts.Token);
+                await WaitUntilAsync(
+                    () => engine.GetDiagnostics().Single(d => d.SessionId == "s-sweep").Clients.Count == 0,
+                    cts.Token);
 
                 await ConnectAsync(outgoing, "s-next", "c-next", cts.Token);
-                await Task.Delay(100, cts.Token);
+                await WaitUntilAsync(() => engine.CapacityRejections > 0, cts.Token);
                 Assert.Contains(engine.GetDiagnostics(), d => d.SessionId == "s-sweep");
                 Assert.DoesNotContain(engine.GetDiagnostics(), d => d.SessionId == "s-next");
             }
