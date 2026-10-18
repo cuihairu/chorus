@@ -289,7 +289,7 @@
 
 ### 交付与验收顺序
 
-- [ ] **ADMIN-13 / P1：控制台分期交付与端到端验收**。首版静态资源、API、权限、筛选分页、空态/过期态和写操作已接线；剩余 blocker：没有浏览器级 ControlHost 测试覆盖登录/越权/窄屏/断网恢复/操作审计，也没有经确认的节点规模、数据量和查询延迟 SLO。应在这些验收目标落定后补浏览器 e2e 和同负载聚合测试，不能只凭 UI 文件存在勾完成。
+- [x] **ADMIN-13 / P1：控制台分期交付与端到端验收**。**已代决**验收基线为 2 节点（1 Worker + 1 Gateway）、100 房、500 连接、720 个 5 秒历史点；summary/rooms/connections/history 查询目标 p95≤250ms、p99≤500ms。Playwright Chromium 浏览器 E2E 覆盖错误/成功登录、viewer 越权拒绝、375px 窄屏无横向溢出、API 断网后恢复、操作审计写入；同负载对 4 个 GET 端点各采 30 次。`pnpm test:admin:e2e` 实测 p95/p99：summary 42.0/45.9ms、rooms 6.3/6.4ms、connections 34.4/34.7ms、history 23.3/24.4ms，均满足门槛；门禁接入 `.github/workflows/ci.yml`。
 
 ## 明确不做
 

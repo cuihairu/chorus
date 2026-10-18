@@ -44,6 +44,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install browser test dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for admin browser tests
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:
@@ -57,6 +74,9 @@ jobs:
 
       - name: Test (with coverage)
         run: dotnet test Chorus.sln -c Release --no-build --collect:"XPlat Code Coverage" --results-directory ./TestResults
+
+      - name: Admin browser end-to-end and query SLO gate
+        run: pnpm test:admin:e2e
 
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v6

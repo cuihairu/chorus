@@ -5,10 +5,12 @@
   "license": "Apache-2.0",
   "scripts": {
     "docs:dev": "vitepress dev docs",
-    "docs:build": "vitepress build docs"
+    "docs:build": "vitepress build docs",
+    "test:admin:e2e": "node --no-warnings=ExperimentalWarning tests/admin-e2e.mjs"
   },
   "devDependencies": {
     "mermaid": "^12.2.0",
+    "playwright": "1.63.0",
     "vitepress": "^1.6.4",
     "vitepress-plugin-mermaid": "^2.0.17"
   },
