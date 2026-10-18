@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/.vuepress/public/logo.svg" width="64" height="64" alt="Chorus logo" />
+  <img src="docs/public/logo.svg" width="64" height="64" alt="Chorus logo" />
 </p>
 
 <h1 align="center">Chorus</h1>
@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="https://github.com/cuihairu/chorus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/chorus/actions/workflows/ci.yml/badge.svg" /></a>
-  <a href="https://github.com/cuihairu/chorus/actions/workflows/daily-build.yml"><img alt="Nightly" src="https://github.com/cuihairu/chorus/actions/workflows/daily-build.yml/badge.svg" /></a>
+  <a href="https://github.com/cuihairu/chorus/actions/workflows/nightly.yml"><img alt="Nightly" src="https://github.com/cuihairu/chorus/actions/workflows/nightly.yml/badge.svg" /></a>
   <a href="https://codecov.io/gh/cuihairu/chorus"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/chorus/branch/main/graph/badge.svg" /></a>
   <a href="https://github.com/cuihairu/chorus/releases"><img alt="Release" src="https://img.shields.io/github/v/release/cuihairu/chorus?sort=semver" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
