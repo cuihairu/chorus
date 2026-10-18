@@ -233,3 +233,9 @@
   5) 构建通过（pnpm docs:build 或对应脚本），贴输出
   6) 完成后勾掉本项并 commit+push，回报 hash、组件数、已实现/未实现计数
 硬要求：禁止自造切换链接；中文写真中文禁机翻；glob 禁 node_modules/dist/build
+- [ ] 文档页三处修正（2026-10-17 用户令）：
+  1) logo 缩小至少一半（现在过大）——按 .vitepress/config.* 中 themeConfig.logo 的尺寸设置改；站点 logo 与 docs 内页同时核对
+  2) 中英文切换缺失——必须用 vitepress 官方 locales 方案（root=en + zh，各自独立 nav/sidebar），**禁止自造切换链接**
+  3) GitHub 链接改为默认带图标版本——用 .vitepress/config 里 socialLinks 的官方写法（icon: 'github'），不要用纯文字链接
+  完成后构建通过（pnpm docs:build 或对应脚本）贴输出，勾掉并 commit+push，回报 hash 与三处的 file:line
+硬要求：中文写真中文禁机翻；glob 禁 node_modules/dist/build
