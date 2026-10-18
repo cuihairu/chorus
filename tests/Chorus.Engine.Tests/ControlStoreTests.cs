@@ -316,6 +316,48 @@ public sealed class ControlStoreTests : IDisposable
         Assert.Empty(s.History("not-a-supported-platform"));
     }
     [Fact]
+    public void AcceptedEventHeatIsDurableDeduplicatedAndPlatformBounded()
+    {
+        var s=NewStore();s.ReportNode(Worker("a"));
+        var at=_clock.GetUtcNow().ToUnixTimeMilliseconds();
+        var like=new AudienceEvent("heat-like","douyin","heat-room","user-a",AudienceEventKind.Like,at);
+        var gift=new AudienceEvent("heat-gift","tenant-platform","heat-room","user-b",AudienceEventKind.Gift,at,GiftCount:3,GiftValue:999);
+
+        Assert.True(s.AppendEvent(like));
+        Assert.False(s.AppendEvent(like));
+        Assert.True(s.AppendEvent(like with { EventId="heat-like-two", SessionId="heat-room-two" }));
+        Assert.True(s.AppendEvent(gift));
+
+        var heat=s.EventHeat();
+        Assert.Equal(3,heat.Sum(sample=>sample.Events));
+        Assert.Equal(2,heat.Single(sample=>sample.Platform=="douyin"&&sample.Kind==AudienceEventKind.Like).Events);
+        var otherGift=Assert.Single(heat.Where(sample=>sample.Platform=="other"&&sample.Kind==AudienceEventKind.Gift));
+        Assert.Equal(1,otherGift.Events);
+        Assert.Equal(3,otherGift.GiftUnits);
+        Assert.Equal(3,s.PruneEventHeat(at+60_000));
+        Assert.Empty(s.EventHeat());
+    }
+    [Fact]
+    public void EventHeatAlertUsesFixedOneMinuteThresholdAndAcknowledgementIsAudited()
+    {
+        var s=NewStore();s.ReportNode(Worker("a"));
+        var at=_clock.GetUtcNow().ToUnixTimeMilliseconds();
+        for(var i=0;i<300;i++)
+            Assert.True(s.AppendEvent(new("alert-"+i,"bilibili","alert-room-"+(i%2),"viewer-"+i,AudienceEventKind.Comment,at)));
+
+        var alert=Assert.Single(s.EventHeatAlerts());
+        Assert.Equal(300,alert.Events);
+        Assert.False(alert.Acknowledged);
+        var acknowledged=s.AcknowledgeEventHeatAlert(alert.Platform,alert.BucketAtMs,"operator");
+        Assert.True(acknowledged.Acknowledged);
+        Assert.Single(s.Audits().Where(a=>a.Action=="event_heat.ack"));
+        Assert.True(s.AcknowledgeEventHeatAlert(alert.Platform,alert.BucketAtMs,"operator").Acknowledged);
+        Assert.Single(s.Audits().Where(a=>a.Action=="event_heat.ack"));
+        _clock.Advance(61*60_000L);
+        Assert.Equal(2,s.PruneEventHeat(_clock.GetUtcNow().ToUnixTimeMilliseconds()-60*60_000L));
+        Assert.Empty(s.EventHeatAlerts());
+    }
+    [Fact]
     public void LifecycleCannotDiscardPendingInputOrResurrectDestroyedRoom()
     {
         var s=NewStore();s.ReportNode(Worker("a"));s.Assign(new("room"));s.AppendEvent(Event());

@@ -38,6 +38,7 @@ public sealed class ControlPostgresIntegrationTests
         Assert.All(accepted, Assert.True);
         Assert.Equal(32, store.PendingCount(prefix));
         Assert.Equal(32, store.Prepare(prefix, new(room.WorkerId, room.WorkerInstance, room.Epoch)).Inbox!.Count);
+        Assert.Equal(32, store.EventHeat().Single().Events);
     }
 
     [Fact]
@@ -64,6 +65,9 @@ public sealed class ControlPostgresIntegrationTests
         Assert.Equal(1, restored.TickId);
         Assert.Equal(1, restored.Snapshot!.Value.GetProperty("count").GetInt32());
         Assert.False(second.AppendEvent(evt));
+        var heat = Assert.Single(second.EventHeat());
+        Assert.Equal("test", heat.Platform);
+        Assert.Equal(1, heat.Events);
     }
 
     [Fact]
@@ -106,6 +110,28 @@ public sealed class ControlPostgresIntegrationTests
         Assert.Equal("new-generation", remaining.Generation);
     }
 
-    private static RoomControlStore NewStore(string connectionString) =>
-        new(new ControlDatabase(connectionString, ControlDatabaseProvider.PostgreSql));
+    [Fact]
+    public void PostgresProvider_PersistsEventHeatAndAlertAcknowledgement()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var store = NewStore(testDatabase.ConnectionString, new FixedTimeProvider(DateTimeOffset.FromUnixTimeMilliseconds(at)));
+        store.ReportNode(new("worker", "worker-boot", "worker-host", "worker", new("127.0.0.1", 3101), 10));
+        for (var i = 0; i < RoomControlStore.EventHeatAlertThreshold; i++)
+            Assert.True(store.AppendEvent(new("pg-heat-" + i, "bilibili", "pg-heat-room-" + (i % 2), "viewer-" + i,
+                Chorus.Protocol.Models.AudienceEventKind.Comment, at)));
+
+        var alert = Assert.Single(store.EventHeatAlerts());
+        Assert.Equal(RoomControlStore.EventHeatAlertThreshold, alert.Events);
+        Assert.True(store.AcknowledgeEventHeatAlert(alert.Platform, alert.BucketAtMs, "operator").Acknowledged);
+        Assert.True(Assert.Single(store.EventHeatAlerts()).Acknowledged);
+    }
+
+    private static RoomControlStore NewStore(string connectionString, TimeProvider? timeProvider = null) =>
+        new(new ControlDatabase(connectionString, ControlDatabaseProvider.PostgreSql), timeProvider);
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
 }

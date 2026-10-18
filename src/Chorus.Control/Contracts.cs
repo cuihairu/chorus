@@ -42,6 +42,19 @@ public sealed record StoredBoard(string Id, string Scope, string Unit, string Se
 public sealed record AuditRecord(long Id, long AtMs, string Actor, string Action, string Target, string Detail);
 public sealed record SummarySample(long AtMs, int Machines, int Workers, int Gateways, int Rooms, int ActiveRooms, int Connections, int OnlineUsers, int OnlineStreamers, int Queued, int RunningMatches,
     IReadOnlyDictionary<string, int>? RoomsByPlatform = null, IReadOnlyDictionary<string, int>? OnlineUsersByPlatform = null);
+public sealed record EventHeatSample(long BucketAtMs, string Platform, AudienceEventKind Kind, long Events, long GiftUnits);
+public sealed record EventHeatAlert(string Id, string Platform, long BucketAtMs, long Events, long Threshold, bool Acknowledged, long? AcknowledgedAtMs);
+public sealed record EventHeatAlertAckRequest(string Platform, long BucketAtMs);
+public static class ControlDimensions
+{
+    private static readonly HashSet<string> Platforms = new(StringComparer.Ordinal) { "bilibili", "douyin", "kuaishou", "test", "other" };
+    public static string PlatformBucket(string? platform)
+    {
+        var normalized = platform?.Trim().ToLowerInvariant();
+        return normalized is not null && Platforms.Contains(normalized) && normalized != "other" ? normalized : "other";
+    }
+    public static bool IsPlatformBucket(string platform) => Platforms.Contains(platform.Trim().ToLowerInvariant());
+}
 public sealed record ControlRoutingData(long SnapshotAtMs, IReadOnlyList<NodeReport> Nodes,
     IReadOnlyList<RoomRecord> Rooms, IReadOnlyList<ConnectionRecord> Connections);
 public sealed class ControlConflictException(string message) : Exception(message);

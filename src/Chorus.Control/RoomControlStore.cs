@@ -7,8 +7,7 @@ namespace Chorus.Control;
 /// <summary>Durable room directory, fenced checkpoints and bounded reliable input.</summary>
 public sealed partial class RoomControlStore(ControlDatabase database, TimeProvider? timeProvider = null)
 {
-    private static readonly HashSet<string> HistoryPlatforms = new(StringComparer.Ordinal)
-        { "bilibili", "douyin", "kuaishou", "test", "other" };
+    public const long EventHeatAlertThreshold = 300;
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     public const long NodeLeaseMs = 15000;
     public const long ConnectionLeaseMs = 30000;
@@ -17,11 +16,6 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
     private static void Id(string id) { ArgumentException.ThrowIfNullOrWhiteSpace(id); if (id.Length > 200) throw new ArgumentException("Identifier too long."); }
     private bool Healthy(NodeReport? node) => node is not null && Now - node.LastHeartbeatMs < NodeLeaseMs;
     private static bool Live(RoomRecord room) => room.State != RoomLifecycleState.Destroyed;
-    private static string PlatformBucket(string? platform)
-    {
-        var normalized = platform?.Trim().ToLowerInvariant();
-        return normalized is not null && HistoryPlatforms.Contains(normalized) && normalized != "other" ? normalized : "other";
-    }
     public List<NodeReport> Nodes() => database.Read(t => t.List<NodeReport>("node"));
     public List<RoomRecord> Rooms() => database.Read(t => t.List<RoomRecord>("room"));
     public ControlRoutingData RoutingData() => database.Read(t => new ControlRoutingData(Now,
@@ -250,7 +244,7 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         var nodes = t.List<NodeReport>("node").Where(Healthy).ToArray();
         var rooms = t.List<RoomRecord>("room").Where(Live).ToArray();
         var connections = Connections(t);
-        var roomPlatforms = rooms.ToDictionary(r => r.Id, r => PlatformBucket(r.Platform), StringComparer.Ordinal);
+        var roomPlatforms = rooms.ToDictionary(r => r.Id, r => ControlDimensions.PlatformBucket(r.Platform), StringComparer.Ordinal);
         var roomsByPlatform = rooms.GroupBy(r => roomPlatforms[r.Id], StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
         var onlineUsersByPlatform = connections
@@ -272,7 +266,7 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         var history = t.Get<List<SummarySample>>("system", "history") ?? [];
         if (string.IsNullOrWhiteSpace(platform)) return history;
         var normalized = platform.Trim().ToLowerInvariant();
-        if (!HistoryPlatforms.Contains(normalized)) return [];
+        if (!ControlDimensions.IsPlatformBucket(normalized)) return [];
         return history.Where(sample => sample.RoomsByPlatform is not null && sample.OnlineUsersByPlatform is not null)
             .Select(sample => sample with
             {
@@ -280,4 +274,23 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
                 OnlineUsers = sample.OnlineUsersByPlatform!.GetValueOrDefault(normalized)
             }).ToList();
     });
+    public List<EventHeatSample> EventHeat(int windowMinutes = 60) => database.Read(t =>
+        t.EventHeat(Now - Math.Clamp(windowMinutes, 1, 1440) * 60_000L));
+    public List<EventHeatAlert> EventHeatAlerts(int windowMinutes = 60) => database.Read(t =>
+        t.EventHeatAlerts(Now - Math.Clamp(windowMinutes, 1, 60) * 60_000L, EventHeatAlertThreshold));
+    public EventHeatAlert AcknowledgeEventHeatAlert(string platform, long bucketAtMs, string actor)
+    {
+        var normalized = platform.Trim().ToLowerInvariant();
+        if (!ControlDimensions.IsPlatformBucket(normalized)) throw new ArgumentException("Unknown platform bucket.", nameof(platform));
+        var bucket = bucketAtMs - bucketAtMs % 60_000;
+        return database.Write(t =>
+        {
+            if (bucket < Now - 60 * 60_000L || bucket > Now || t.EventHeatCount(bucket, normalized) < EventHeatAlertThreshold)
+                throw new ControlConflictException("Event heat alert is no longer active.");
+            var (inserted, acknowledgedAt) = t.AcknowledgeEventHeat(bucket, normalized, actor, Now);
+            if (inserted) t.Audit(Now, actor, "event_heat.ack", $"{normalized}:{bucket}", new { platform = normalized, bucketAtMs = bucket });
+            return new EventHeatAlert($"{normalized}:{bucket}", normalized, bucket, t.EventHeatCount(bucket, normalized), EventHeatAlertThreshold, true, acknowledgedAt);
+        });
+    }
+    public int PruneEventHeat(long cutoffMs) => database.Write(t => t.PruneEventHeat(cutoffMs));
 }

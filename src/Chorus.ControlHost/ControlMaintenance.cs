@@ -20,6 +20,7 @@ public sealed class ControlMaintenance(RoomControlStore store, ILogger<ControlMa
                 }
                 store.FormMatches();
                 if (++iteration % 5 == 0) store.Sample();
+                if (iteration % 60 == 0) store.PruneEventHeat(DateTimeOffset.UtcNow.AddMinutes(-60).ToUnixTimeMilliseconds());
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { logger.LogError(ex, "Control maintenance failed; authority remains fenced"); }
         }
