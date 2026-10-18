@@ -75,98 +75,37 @@ flowchart LR
 | RoomAuthorityRegistry / RoomLifecycleRegistry | `src/Chorus.Engine/Routing/RoomAuthorityRegistry.cs:35`、`src/Chorus.Engine/Routing/RoomLifecycle.cs:151` |
 | SnapshotStore / InMemorySnapshotBackend | `src/Chorus.Data/StateSnapshot.cs:102`、`src/Chorus.Data/StateSnapshot.cs:74` |
 
-## 3. 已确认问题
+## 3. 初审问题处置状态（R01–R09）
 
-优先级表示能力所需的修复顺序：P0 为房间正确性和安全扩容前置条件，P1 为跨机及可靠性闭环，P2 为扩展效率。以下代码行为已经静态核实；故障影响按给定场景推导，未冒充真实跨机故障实验。
+下列问题来自较早的静态审查。旧版问题描述仍保留在 Git 历史中；当前状态以本节、实现及 `todo.md` §19 为准，避免把已修复缺陷误报为现存风险。
 
-### R01：容量淘汰会丢失权威房间状态（P0）
+| 审查项 | 当前状态 | 实现结论与剩余边界 |
+|---|---|---|
+| R01 容量淘汰丢状态 | 已关闭，ROOM-01 | 容量满拒绝新 Actor；可选空房清扫默认关闭。 |
+| R02 扩容重映射存量房间 | 已关闭，ROOM-03；迁移验收见 ROOM-09 | ControlHost 原子分配稳定 owner，新节点承接新房间；在线迁移有状态流，但真实分区路由收敛仍待 ROOM-07/09。 |
+| R03 旧 owner 未被 fencing | 部分关闭，ROOM-06/07 | 每 tick durable commit 校验 lease、实例、epoch、连续 tick；真实独立进程网络分区与 ControlHost 重启注入仍未完成。 |
+| R04 节点端点不可独立配置 | 已关闭，ROOM-04 | Worker/Gateway listen 与 advertised endpoint 分开配置；本机独立 TCP 端点已测，远端主机仍待 ROOM-12。 |
+| R05 生命周期未接入生产 | 已关闭，ROOM-02 | 睡眠、恢复、迁移、关闭等准入及控制循环已接入；分区恢复验收依赖 ROOM-07/09。 |
+| R06 恢复和快照缺少原子持久化 | 已关闭，ROOM-06（存储容量除外） | SQLite checkpoint 与 tick 在同一事务并带 fencing；恢复校验已接线。 SQLite 单写者容量/HA 保留为 ROOM-11。 |
+| R07 跨 Gateway 去重/确认不完整 | 已关闭，ROOM-08 | 可靠 inbox、持久 receipt、确认与 checkpoint 消费事务化；边界是当前共享 SQLite 控制权威。 |
+| R08 Worker 健康与连接归属不完整 | 已关闭，ROOM-05 | 节点实例 lease、连接租约/generation、drain 已实现；跨机失联行为仍待 ROOM-12。 |
+| R09 全量路由查询压热路径 | 已关闭，ROOM-10 | 周期 routing snapshot 替代逐消息控制面查询，过期 fail-closed；tick checkpoint 仍同步写控制面，其容量属于 ROOM-11。 |
 
-`SessionRegistry.GetOrCreate` 达到 `MaxSessions` 后直接调用 `EvictIdlestLocked`，不检查受害房间是否仍有客户端，也没有保存或迁移状态（`src/Chorus.Engine/Session/SessionRegistry.cs:93`、`:137`）。Actor 随后被销毁；相同房间再来事件会创建全新 Actor，现有客户端不会自动挂到新 Actor。空闲清扫也只移除运行实例，没有与业务生命周期、状态保存组合。
+## 4. 当前扩展模型与验收边界
 
-建议区分业务 Room、Worker 上的 Actor 和客户端 Connection。容量不足时拒绝新分配或选择其他 Worker；释放运行实例须经过明确的关闭条件或保存/恢复流程。还需处理淘汰后新 Actor 构造失败时的清理路径，防止已移出表的旧 Actor 无人释放。
+此架构扩展的是**房间数量**：每个房间同一时刻由一个 Worker 上的 `SessionActor` 权威推进；ControlHost 固定新房间归属，增加 Worker 后主要承接新房间。单个热点房间不会因增加 Worker 自动拆分，必须由该 Worker 的单房间 Actor 能力承载。节点 drain 阻止新分配并保留存量房间；迁移是显式的冻结、handoff、目标恢复/ready 流程，不是改变 Worker 列表就能完成的再均衡。
 
-### R02：扩容改变存量房间归属，滚动更新可能产生双实例（P0）
+当前控制权威是一个 ControlHost 和本机 SQLite WAL。所有 Worker 的每 tick checkpoint 与可靠输入确认都汇聚到该单写者。因此多 Worker 的房间计算可以分散，持久化提交仍共享控制面瓶颈；不能据此宣称线性扩展、控制面 HA 或生产容量已通过。ROOM-11 需用户确认目标房间数、tick 频率、RPO/RTO、部署和磁盘预算后再评估存储方案，本轮不代选后端或降低 checkpoint 频率。
 
-`RoomAffinity.Assign` 使用排序后的 Worker 集合和 `hash(roomId) % workerCount`（`src/Chorus.Engine/Routing/RoomAffinity.cs:20`）。Gateway 直接计算归属，不消费 `RoomRouteTable`（`src/Chorus.Gateway/GatewayIpcService.cs:153`）。增加 Worker 会重映射大量房间；新旧 Gateway 配置不同期间，同一房间可能被送到两个 Worker，两端都会按消息创建 Actor。
-
-建议由统一房间目录记录 `RoomId → WorkerId + Epoch + State`。首次创建原子分配，扩容优先承接新房间，存量归属保持稳定；迁移单独编排。目录更新应有版本和过期路由响应，Gateway 能刷新/重试。一致性哈希只减少重映射，无法替代迁移与权威隔离。
-
-### R03：权威注册表没有隔离真实旧写者（P0）
-
-`TryBeginTakeover` 只更新进程内记录（`src/Chorus.Engine/Routing/RoomAuthorityRegistry.cs:88`）。生产 `EngineIpcService` 接受连接、事件时不校验 owner/epoch，Actor tick 也没有租约约束；IPC `Envelope` 不含 epoch（`src/Chorus.EngineHost/EngineIpcService.cs:214`、`:295`；`src/Chorus.Messaging/Envelope.cs:10`）。
-
-建议在输入、tick、持久化和对外快照边界落实 epoch/租约检查，明确旧节点暂停、失联和恢复后的行为。健康超时只能触发观察与决策，不能证明旧进程已经停止。控制面必须有共享的原子权威来源，并考虑自身重启和并发决策；无需预先指定独立 RoomManager 进程。
-
-### R04：多节点 TCP/HTTP 地址没有分别配置（P1）
-
-Gateway 为每个 Worker 建通道时只替换 `WorkerId`（`src/Chorus.Gateway/GatewayIpcService.cs:208`）；`IpcEndpointBuilder.Build` 只给 UDS/NamedPipe 名称加后缀，TCP host/port 和 HTTP URL 均相同（`src/Chorus.Messaging/Ipc/IpcEndpointBuilder.cs:11`）。EngineHost 的多 Gateway 回传也只替换 `GatewayId`（`src/Chorus.EngineHost/EngineIpcService.cs:94`）。
-
-建议增加 Worker/Gateway 独立端点目录，区分监听地址和对外连接地址，校验重复、缺失与非法配置。TCP/HTTP transport 存在不等于跨机多 Worker 拓扑接线完成。
-
-### R05：业务生命周期没有控制运行实例（P1）
-
-`RoomLifecycleRegistry` 的状态转换仅存在于库中，生产入口仍通过连接或观众事件直接 `GetOrCreateSession`（`src/Chorus.EngineHost/EngineIpcService.cs:187`、`:217`、`:305`）。Created、Sleeping、Recovering、Closing 等状态未约束消息准入、调度、关闭与恢复。
-
-建议把业务房间与 Actor 存活分开；规定未知/关闭/恢复中房间的输入响应、休眠与唤醒、关闭排空及终态清理。迁移失败应有明确中止和回退路径，不能只依赖状态枚举存在。
-
-### R06：恢复缺生产闭环，快照版本检查不是原子操作（P1）
-
-EngineHost 创建 Actor 前可以调用恢复器，但生产 DI 未注册恢复源，也没有快照保存链路；唯一快照后端是内存实现（`src/Chorus.EngineHost/EngineIpcService.cs:175`；`src/Chorus.EngineHost/Program.cs`；`src/Chorus.Data/StateSnapshot.cs:74`）。
-
-`SnapshotStore.TrySave` 先读取版本、后无条件写入（`src/Chorus.Data/StateSnapshot.cs:144`、`:152`）。若两个保存操作都读到版本 1，版本 3 先写、版本 2 后写，就会倒退；顺序单测无法证明并发隔离。仅比较版本大小也不能阻止旧 owner 携带较大版本继续写。
-
-建议后端原子校验 owner epoch 与快照版本，接入生产保存/恢复链路。故障恢复还需保存恢复游标及必要运行元数据，区分 schema version、epoch、tick 和快照版本。对于快照后的已确认事件，必须定义损失窗口和补齐策略；若要求不丢失，应先修订现有“历史事件重放明确不做”的约束，再选择事件日志或可靠输入方案。
-
-### R07：多 Gateway 去重与交付确认不完整（P1）
-
-Gateway 的 `EventDeduplicator` 为实例内对象（`src/Chorus.Gateway/Program.cs:86`），Actor 入口没有对应的平台事件幂等边界。同一个事件重试到另一 Gateway，可能再次影响游戏状态。
-
-`IpcSessionActorRef.TellAsync` 将 IPC 发布成功视为 Accepted（`src/Chorus.Gateway/IpcSessionActorRouter.cs:53`）；EngineHost 随后可能因事件队列满而丢弃，此时平台已收到成功响应（`src/Chorus.EngineHost/EngineIpcService.cs:306`）。
-
-建议在权威处理边界实现有界去重，并明确迁移时幂等状态如何延续。按事件级别规定成功响应代表收到、可靠保存还是已应用；重要事件的确认需要与该语义匹配，超时重试不能造成重复计分。
-
-### R08：健康判断无法定位单个 Worker，连接缺少节点归属（P1）
-
-Gateway 用一个 `_lastEngineMessageMs` 记录任意引擎消息（`src/Chorus.Gateway/GatewayIpcService.cs:35`、`:226`）；一个 Worker 继续发送心跳可掩盖另一个 Worker 已失联。心跳内容仅有时间，没有 Worker 身份（`src/Chorus.Messaging/Ipc/GatewayCommands.cs:19`）。`WorkerRegistry.Healthy()` 过滤过期节点，`SortedWorkerIds()` 返回全部已登记 ID；后者不会自动变成健康集合。
-
-连接命令仅含 SessionId/ClientId，缺少 Gateway 身份、连接代次和失效清理机制（`src/Chorus.Messaging/Ipc/GatewayCommands.cs:3`）。Gateway 异常退出时无法依赖正常 disconnect 清理；同 clientId 重连也需避免迟到 disconnect 移除新连接。
-
-建议按 Worker 身份和进程代次跟踪健康，定义部分失效时的 readiness 和路由行为；按 Gateway/连接代次登记连接，以租约或明确失效清理回收残留。
-
-### R09：全量串行快照扇出限制扩展效率（P2）
-
-EngineHost 把每条输出发送给所有配置的 Gateway（`src/Chorus.EngineHost/EngineIpcService.cs:94`），`FanOutMessageBus` 按顺序 await 各子通道（`src/Chorus.Messaging/FanOutMessageBus.cs:29`）。即使 Gateway 没有订阅该房间也收到快照；某通道阻塞会延迟后续通道。
-
-建议按房间订阅向必要 Gateway 发快照，对通道隔离队列、超时与失败；重同步和重要控制消息分别明确策略。Gateway 已有逐连接容量 1 的 latest-wins 出站槽（`src/Chorus.Gateway/GatewayClientConnection.cs:21`、`:62`），不能再把这一点描述为“尚无慢客户端丢弃策略”。
-
-## 4. 建议实施顺序与验收边界
-
-1. **先修房间准入和状态保留**：容量满拒绝新分配，活跃房间不被挤掉；Actor 释放经过业务关闭或保存流程。
-2. **再实现固定归属的水平分房间**：统一房间目录、独立节点地址、生命周期接线、节点健康与连接归属。新节点承接新房间，存量房间不因节点集合变化而迁移；缩容先停止分配，等待房间自然结束。此阶段不宣称自动故障恢复。
-3. **再实现在线迁移与故障接管**：完成权威隔离、原子快照保存、恢复游标与事件确认语义，才能启用冻结、恢复、换主、路由发布及失败回退。迁移中输入需排队或明确可重试拒绝。
-4. **最后优化并验证扩展效率**：按订阅发送、通道隔离、真实独立地址的 TCP/HTTP 多节点测试，以及同负载单/多 Worker 对比。吞吐收益与正确性分别验收。
-
-阶段三必须验证旧 Worker 仍存活但网络分区的情况，不能只测进程退出。共享目录和控制面自身重启也不能导致 epoch 重用或双分配。
+自动故障接管的安全前提是旧 owner 在网络隔离但进程仍运行时也无法成功 durable commit，并且路由/连接状态能在新 owner ready 后收敛。现有 fencing 和迁移状态流有本机 HTTP/SQLite 与 Actor 级测试证据；尚缺独立机器、可控网络分区、进程暂停/恢复及 ControlHost 重启组合测试。ROOM-07、ROOM-09、ROOM-12 是验证门槛，不应被文档或单机测试标成已通过。
 
 ## 5. 验证证据与限制
 
-2026-10-18 执行以下定向测试，135 项通过，0 失败、0 跳过：
+当前代码能力和已执行门禁按 `todo.md` §19 的 ROOM-01～ROOM-12 记录。本机单测、HTTP 测试宿主和多个本地 TCP 端点能验证状态机、fencing、持久事务与端点路由；它们不能代替独立主机上的网络分区、旧进程恢复、ControlHost 重启或生产容量压测。历史测试命令与当时结果可从 Git 历史查阅，不作为本轮新增验收证据。
 
-```bash
-dotnet test tests/Chorus.Engine.Tests/Chorus.Engine.Tests.csproj --no-restore --filter 'FullyQualifiedName~RoomAffinityTests|FullyQualifiedName~RoomLifecycleTests|FullyQualifiedName~RoomAuthorityRegistryTests|FullyQualifiedName~WorkerRegistryTests|FullyQualifiedName~WorkerTakeoverEndToEndTests|FullyQualifiedName~MultiWorkerGatewayIpcTests|FullyQualifiedName~SessionRegistryTests|FullyQualifiedName~IpcEndpointBuilderTests|FullyQualifiedName~StateSnapshotStoreTests' --verbosity minimal
-```
+## 6. 实施顺序
 
-`MultiWorkerGatewayIpcTests` 使用同机 UDS。`WorkerTakeoverEndToEndTests` 验证 WorkerRegistry 与 RoomAuthorityRegistry 的组合状态转换，没有启动真实 Actor 证明旧写者停止。现有测试通过不能作为跨机扩容、网络分区或重要事件不丢失的验收证据。本轮未执行跨机部署、故障注入或性能压测。
-
-## 6. 对原核对文档的修正
-
-- 将“跨机多 Worker 数据面已具备”收窄为“同机静态多 Worker 已验证，跨机地址接线仍缺失”。
-- 将“单房间单写者”限定为 Actor 内部串行；集群唯一权威仍需生产隔离机制。
-- 将“心跳可检测 Worker 静默”修正为当前仅能检测所有引擎消息整体静默，不能定位单个 Worker。
-- 修正 Worker 健康视图：`Healthy()` 过滤过期节点，`SortedWorkerIds()` 不过滤。
-- 将“快照版本单调可隔离旧写者”收窄为顺序调用的版本检查，跨写者原子条件更新尚未实现。
-- 保留已完成库能力的历史记录，未完成的生产能力在 `todo.md` §19 单独列项；§14/§15/§18 勾选不代表生产接管完成。
-
+已完成的工程顺序为：容量保护（ROOM-01）→ 稳定分房间及生命周期/节点接线（ROOM-02～ROOM-05）→ 持久恢复、事件确认及权威状态流（ROOM-06～ROOM-09）→ 控制面路由热路径（ROOM-10）。剩余交付取决于环境和产品决策：ROOM-07/09/12 需要真实多机故障注入；ROOM-11 需要已批准的 SLO 和容量预算，故本轮只记录决策输入，不选定存储后端。详细验收条件以根目录 `todo.md` §19 为准。
 
 ## 7. 2026-10-18 控制面接线复核
 
