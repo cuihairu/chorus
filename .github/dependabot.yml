@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    ignore:
+      # 以下均为 vitepress@1.6.4（npm 最新版）锁定的构建期依赖，
+      # 补丁版本要求 vite ^6，与 vitepress 不兼容；强制升级会直接破坏构建（已实测）。
+      # 它们不进入运行时产物。等 vitepress 出新版后再解除忽略。
+      - dependency-name: "vite"
+        versions: ["<6.4.3"]
+      - dependency-name: "esbuild"
+        versions: ["<0.25.0"]
+      - dependency-name: "decode-uri-component"
+        versions: ["<0.5.0"]
