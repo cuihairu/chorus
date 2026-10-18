@@ -293,6 +293,29 @@ public sealed class ControlStoreTests : IDisposable
         _clock.Advance(RoomControlStore.NodeLeaseMs);Assert.Empty(s.Connections());
     }
     [Fact]
+    public void HistoryCanFilterByCanonicalPlatformWithUnknownPlatformsBoundedToOther()
+    {
+        var s=NewStore();s.ReportNode(Worker("a"));
+        s.ReportNode(new("g","boot","gateway-host","gateway",new("localhost",4000),0));
+        var bilibili=s.Assign(new("history-bili",Platform:"bilibili"));
+        var douyin=s.Assign(new("history-douyin",Platform:"douyin"));
+        s.Assign(new("history-custom",Platform:"tenant-platform-"+Guid.NewGuid().ToString("N")));
+        s.Connect(new(bilibili.Id,"bili-viewer","shared-user","viewer","g","boot","b1"));
+        s.Connect(new(douyin.Id,"douyin-viewer","douyin-user","viewer","g","boot","d1"));
+        s.Sample();
+
+        var all=Assert.Single(s.History());
+        var filtered=Assert.Single(s.History("bilibili"));
+        var other=Assert.Single(s.History("other"));
+        Assert.Equal(3,all.Rooms);
+        Assert.Equal(2,all.OnlineUsers);
+        Assert.Equal(1,filtered.Rooms);
+        Assert.Equal(1,filtered.OnlineUsers);
+        Assert.Equal(1,other.Rooms);
+        Assert.Equal(0,other.OnlineUsers);
+        Assert.Empty(s.History("not-a-supported-platform"));
+    }
+    [Fact]
     public void LifecycleCannotDiscardPendingInputOrResurrectDestroyedRoom()
     {
         var s=NewStore();s.ReportNode(Worker("a"));s.Assign(new("room"));s.AppendEvent(Event());

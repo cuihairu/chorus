@@ -270,7 +270,7 @@
 
 ### 总览、节点与房间
 
-- [ ] **ADMIN-03 / P1：全局总览与趋势**。机器/Worker/Gateway、在线/主播、房间/匹配/对局总览、最近一小时在线与房间趋势、下钻和过期状态已实现。剩余 blocker：历史 `SummarySample` 只存全局聚合，尚无平台/模式/区域维度；补筛选历史前必须确定维度组合和采样保留预算，避免按高基数筛选无界增长。
+- [x] **ADMIN-03 / P1：全局总览与趋势**。机器/Worker/Gateway、在线/主播、房间/匹配/对局总览、最近一小时在线与房间趋势、下钻和过期状态已实现。**已代决**历史只按低基数平台维度切分：`douyin`、`kuaishou`、`bilibili`、`test`、`other`，未知值归入 `other`；不按部署可控且高基数的 mode/region 分组。保留 720 个 5 秒采样点（1 小时）；全局 `/api/history` 兼容旧样本，平台过滤跳过缺维度的旧样本；控制台趋势可切平台。决策见 `docs/architecture/admin-history.md`。验证：`dotnet test tests/Chorus.Engine.Tests/Chorus.Engine.Tests.csproj -c Release --no-restore` → 1069/1069；`node --check src/Chorus.ControlHost/wwwroot/admin.js`；`pnpm docs:build` → build complete 48.57s。测试 `HistoryCanFilterByCanonicalPlatformWithUnknownPlatformsBoundedToOther` 覆盖汇总、去重用户、未知值收敛和无效筛选。
 - [x] **ADMIN-04 / P1：机器与 Worker 管理**（节点目录展示机器/实例、地址/版本、心跳、健康/排空、CPU/内存、容量/承载房间和 actor 诊断；Worker 控制页可停止新分配/恢复分配，房间页提供迁移/中止进度。Worker 与 Gateway 心跳现用 CPU 时间差采样并按机器总核数归一化，首个样本为 0；`ProcessResourceSamplerTests` 验证公式及封顶。没有控制台配置/自动扩缩容操作，未支持操作不展示）。
 - [x] **ADMIN-05 / P1：房间列表与详情**（只读控制面目录展示房间 owner/epoch/生命周期/连接数/去重用户/Worker/tick/活动时间；详情列连接角色、pending event、匹配及迁移字段；支持平台/状态筛选与热度观察，使用需要登录的管理 API，控制面 room id 唯一且迁移不另建同一业务房间）。
 - [ ] **ADMIN-06 / P1：热点识别与容量告警**。当前已实现 Top 20 人气（去重在线用户）与资源热点（tick 耗时、mailbox、tick 错误/超时）、事件速率及房间下钻；缺数据会显示等待上报。剩余 blocker：平台互动/礼物热度没有统一可靠事件聚合源，热点暂无历史趋势/告警确认流；需先接入已保存的权威事件聚合并定义告警阈值/窗口，不能把当前连接人数假称礼物热度。

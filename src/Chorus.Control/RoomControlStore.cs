@@ -7,6 +7,8 @@ namespace Chorus.Control;
 /// <summary>Durable room directory, fenced checkpoints and bounded reliable input.</summary>
 public sealed partial class RoomControlStore(ControlDatabase database, TimeProvider? timeProvider = null)
 {
+    private static readonly HashSet<string> HistoryPlatforms = new(StringComparer.Ordinal)
+        { "bilibili", "douyin", "kuaishou", "test", "other" };
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     public const long NodeLeaseMs = 15000;
     public const long ConnectionLeaseMs = 30000;
@@ -15,6 +17,11 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
     private static void Id(string id) { ArgumentException.ThrowIfNullOrWhiteSpace(id); if (id.Length > 200) throw new ArgumentException("Identifier too long."); }
     private bool Healthy(NodeReport? node) => node is not null && Now - node.LastHeartbeatMs < NodeLeaseMs;
     private static bool Live(RoomRecord room) => room.State != RoomLifecycleState.Destroyed;
+    private static string PlatformBucket(string? platform)
+    {
+        var normalized = platform?.Trim().ToLowerInvariant();
+        return normalized is not null && HistoryPlatforms.Contains(normalized) && normalized != "other" ? normalized : "other";
+    }
     public List<NodeReport> Nodes() => database.Read(t => t.List<NodeReport>("node"));
     public List<RoomRecord> Rooms() => database.Read(t => t.List<RoomRecord>("room"));
     public ControlRoutingData RoutingData() => database.Read(t => new ControlRoutingData(Now,
@@ -243,10 +250,16 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         var nodes = t.List<NodeReport>("node").Where(Healthy).ToArray();
         var rooms = t.List<RoomRecord>("room").Where(Live).ToArray();
         var connections = Connections(t);
+        var roomPlatforms = rooms.ToDictionary(r => r.Id, r => PlatformBucket(r.Platform), StringComparer.Ordinal);
+        var roomsByPlatform = rooms.GroupBy(r => roomPlatforms[r.Id], StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
+        var onlineUsersByPlatform = connections
+            .GroupBy(c => roomPlatforms.GetValueOrDefault(c.SessionId, "other"), StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(c => c.UserId).Distinct(StringComparer.Ordinal).Count(), StringComparer.Ordinal);
         return new SummarySample(Now, nodes.Select(n => n.MachineId).Distinct().Count(), nodes.Count(n => n.Role == "worker"), nodes.Count(n => n.Role == "gateway"),
             rooms.Length, rooms.Count(r => r.State == RoomLifecycleState.Active), connections.Count, connections.Select(c => c.UserId).Distinct().Count(),
             connections.Where(c => c.Role == "streamer").Select(c => c.UserId).Distinct().Count(), t.List<QueueEntry>("queue").Count,
-            t.List<MatchRecord>("match").Count(m => m.Status == "Running"));
+            t.List<MatchRecord>("match").Count(m => m.Status == "Running"), roomsByPlatform, onlineUsersByPlatform);
     });
     public List<AuditRecord> Audits(int limit = 100) => database.Read(t => t.Audits(limit));
     public void Sample()
@@ -254,5 +267,17 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         var summary = Summary();
         database.Write(t => { var history = t.Get<List<SummarySample>>("system", "history") ?? []; history.Add(summary); if (history.Count > 720) history.RemoveRange(0, history.Count - 720); t.Put("system", "history", history); return true; });
     }
-    public List<SummarySample> History() => database.Read(t => t.Get<List<SummarySample>>("system", "history") ?? []);
+    public List<SummarySample> History(string? platform = null) => database.Read(t =>
+    {
+        var history = t.Get<List<SummarySample>>("system", "history") ?? [];
+        if (string.IsNullOrWhiteSpace(platform)) return history;
+        var normalized = platform.Trim().ToLowerInvariant();
+        if (!HistoryPlatforms.Contains(normalized)) return [];
+        return history.Where(sample => sample.RoomsByPlatform is not null && sample.OnlineUsersByPlatform is not null)
+            .Select(sample => sample with
+            {
+                Rooms = sample.RoomsByPlatform!.GetValueOrDefault(normalized),
+                OnlineUsers = sample.OnlineUsersByPlatform!.GetValueOrDefault(normalized)
+            }).ToList();
+    });
 }

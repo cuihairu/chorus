@@ -40,7 +40,8 @@ public sealed record ScoreChange(string ParticipantId, long Delta, string Source
 public sealed record StoredBoard(string Id, string Scope, string Unit, string Season,
     IReadOnlyDictionary<string, long> Scores, IReadOnlySet<string> Sources, long UpdatedAtMs, bool Frozen = false);
 public sealed record AuditRecord(long Id, long AtMs, string Actor, string Action, string Target, string Detail);
-public sealed record SummarySample(long AtMs, int Machines, int Workers, int Gateways, int Rooms, int ActiveRooms, int Connections, int OnlineUsers, int OnlineStreamers, int Queued, int RunningMatches);
+public sealed record SummarySample(long AtMs, int Machines, int Workers, int Gateways, int Rooms, int ActiveRooms, int Connections, int OnlineUsers, int OnlineStreamers, int Queued, int RunningMatches,
+    IReadOnlyDictionary<string, int>? RoomsByPlatform = null, IReadOnlyDictionary<string, int>? OnlineUsersByPlatform = null);
 public sealed record ControlRoutingData(long SnapshotAtMs, IReadOnlyList<NodeReport> Nodes,
     IReadOnlyList<RoomRecord> Rooms, IReadOnlyList<ConnectionRecord> Connections);
 public sealed class ControlConflictException(string message) : Exception(message);

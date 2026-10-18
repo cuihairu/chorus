@@ -98,7 +98,7 @@ internalApi.MapPost("/connections/renew", (ConnectionRenew r, RoomControlStore s
 internalApi.MapGet("/connections", (RoomControlStore s) => s.Connections());
 var admin = app.MapGroup("/api").RequireAuthorization();
 admin.MapGet("/summary", (RoomControlStore s) => s.Summary());
-admin.MapGet("/history", (RoomControlStore s) => s.History());
+admin.MapGet("/history", (string? platform, RoomControlStore s) => s.History(platform));
 admin.MapGet("/nodes", (RoomControlStore s) => s.Nodes());
 admin.MapGet("/rooms", (RoomControlStore s) => s.Rooms().Select(r => r with { Inbox = null, Receipts = null, Snapshot = null }));
 admin.MapGet("/rooms/{id}", (string id, RoomControlStore s) => s.Room(id) is { } r ? Results.Ok(new { room = r with { Inbox = null, Receipts = null }, pendingEvents = s.PendingCount(id), connections = s.Connections().Where(c => c.SessionId == id) }) : Results.NotFound());
