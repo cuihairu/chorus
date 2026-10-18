@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Chorus.Control;
 using Chorus.Engine.Routing;
 using Chorus.Messaging;
 using Chorus.Messaging.Ipc;
@@ -6,7 +7,7 @@ using Chorus.Protocol.Messages;
 
 namespace Chorus.Gateway;
 
-public sealed class GatewayIpcService : BackgroundService
+public sealed partial class GatewayIpcService : BackgroundService
 {
     private readonly ILogger<GatewayIpcService> _logger;
     private readonly IConfiguration _config;
@@ -34,6 +35,8 @@ public sealed class GatewayIpcService : BackgroundService
     /// </summary>
     public bool IsEngineReady(long nowMs)
     {
+        if (_control is not null) return _controlReady;
+        if (_workerIds.Length > 0) return _workerIds.All(id => _workerLastSeen.TryGetValue(id,out var at) && nowMs - at <= _readinessMaxSilenceMs);
         var last = Interlocked.Read(ref _lastEngineMessageMs);
         return last != 0 && nowMs - last <= _readinessMaxSilenceMs;
     }
@@ -67,10 +70,23 @@ public sealed class GatewayIpcService : BackgroundService
             GatewayId: _config["Gateway:Id"] ?? ""
         );
 
+        _ipcSettings = _ipcSettings with
+        {
+            Workers = _config.GetSection("Ipc:Workers").Get<Dictionary<string, IpcNetworkEndpoint>>(),
+            Gateways = _config.GetSection("Ipc:Gateways").Get<Dictionary<string, IpcNetworkEndpoint>>(),
+        };
+
         _workerIds = (_config["Ipc:WorkerIds"] ?? "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+
+        if (!string.IsNullOrWhiteSpace(_config["Control:Url"]))
+        {
+            if (string.IsNullOrWhiteSpace(_ipcSettings.GatewayId)) throw new ArgumentException("Control mode requires Gateway:Id.");
+            _control = new ControlClient(_config,_ipcSettings.GatewayId);
+            _machineId = _config["Control:MachineId"] ?? Environment.MachineName;
+        }
 
         // Recommend >= 3x the engine heartbeat (default 5000) - see deployment.md.
         _readinessMaxSilenceMs = int.TryParse(_config["Ipc:ReadinessMaxSilenceMs"], out var w) ? Math.Max(1, w) : 15000;
@@ -114,26 +130,30 @@ public sealed class GatewayIpcService : BackgroundService
     public async ValueTask RegisterClientAsync(GatewayClientConnection conn, CancellationToken cancellationToken)
     {
         var map = _clientsBySession.GetOrAdd(conn.SessionId, _ => new ConcurrentDictionary<string, GatewayClientConnection>(StringComparer.Ordinal));
+        if (_control is not null) await _control.Send("connections/connect",Connection(conn),cancellationToken);
         map[conn.ClientId] = conn;
 
         await PublishAsync(
-            EnvelopeFactory.Create(IpcMessageTypes.GatewayConnect, conn.SessionId, new GatewayConnectCmd(conn.SessionId, conn.ClientId)),
+            EnvelopeFactory.Create(IpcMessageTypes.GatewayConnect, conn.SessionId, new GatewayConnectCmd(conn.SessionId, conn.ClientId,_ipcSettings.GatewayId,_control?.InstanceId,conn.Generation)),
             cancellationToken);
     }
 
-    public async ValueTask UnregisterClientAsync(string sessionId, string clientId, CancellationToken cancellationToken)
+    public async ValueTask UnregisterClientAsync(string sessionId, string clientId, CancellationToken cancellationToken, string? generation = null)
     {
+        GatewayClientConnection? removed = null;
         if (_clientsBySession.TryGetValue(sessionId, out var map))
         {
-            map.TryRemove(clientId, out _);
+            if (map.TryGetValue(clientId,out var current) && generation is not null && current.Generation != generation) return;
+            map.TryRemove(clientId, out removed);
             if (map.IsEmpty)
             {
                 _clientsBySession.TryRemove(sessionId, out _);
             }
         }
 
+        if (_control is not null && removed is not null) await _control.Send("connections/disconnect",Connection(removed),cancellationToken);
         await PublishAsync(
-            EnvelopeFactory.Create(IpcMessageTypes.GatewayDisconnect, sessionId, new GatewayDisconnectCmd(sessionId, clientId)),
+            EnvelopeFactory.Create(IpcMessageTypes.GatewayDisconnect, sessionId, new GatewayDisconnectCmd(sessionId, clientId,_ipcSettings.GatewayId,_control?.InstanceId,generation ?? removed?.Generation)),
             cancellationToken);
     }
 
@@ -155,6 +175,7 @@ public sealed class GatewayIpcService : BackgroundService
 
     private ValueTask PublishAsync(Envelope env, CancellationToken cancellationToken)
     {
+        if (_control is not null) return PublishControlledAsync(env,cancellationToken);
         if (_workerIds.Length == 0)
         {
             if (_outgoing == null)
@@ -194,8 +215,9 @@ public sealed class GatewayIpcService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var endpoints = IpcEndpointBuilder.Build(_ipcSettings);
-        _incoming = IpcMessageBusFactory.CreateServer(_ipcSettings.Transport, endpoints.EngineToGateway);
+        _incoming = IpcMessageBusFactory.CreateServer(_ipcSettings.Transport, IpcEndpointBuilder.Build(_ipcSettings, forServer: true).EngineToGateway);
 
+        if (_control is not null) _controlTask = RunControlAsync(stoppingToken);
         if (_workerIds.Length == 0)
         {
             _outgoing = IpcMessageBusFactory.CreateClient(_ipcSettings.Transport, endpoints.GatewayToEngine);
@@ -224,6 +246,21 @@ public sealed class GatewayIpcService : BackgroundService
         await foreach (var env in _incoming.SubscribeAsync(stoppingToken))
         {
             RecordEngineMessage(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            if (env.Type == IpcMessageTypes.EngineHeartbeat)
+            {
+                var heartbeat = EnvelopeFactory.DeserializeBody<EngineHeartbeatCmd>(env);
+                if (!string.IsNullOrEmpty(heartbeat.WorkerId)) _workerLastSeen[heartbeat.WorkerId] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                continue;
+            }
+            if (_control is not null)
+            {
+                try
+                {
+                    var room = await _control.Room(env.SessionId,stoppingToken);
+                    if (room.Epoch != env.AuthorityEpoch || room.State is not (Chorus.Engine.Routing.RoomLifecycleState.Active or Chorus.Engine.Routing.RoomLifecycleState.Waiting or Chorus.Engine.Routing.RoomLifecycleState.Idle)) continue;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException) { _logger.LogWarning(ex,"Cannot validate engine authority"); continue; }
+            }
 
             if (env.Type == IpcMessageTypes.EngineWelcome)
             {
@@ -280,6 +317,8 @@ public sealed class GatewayIpcService : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        _controlStop.Cancel();
+        try { await _controlTask; } catch (OperationCanceledException) { }
         foreach (var key in _pendingWelcomes.Keys)
         {
             if (_pendingWelcomes.TryRemove(key, out var tcs))
@@ -300,6 +339,8 @@ public sealed class GatewayIpcService : BackgroundService
         }
 
         _outgoingByWorker = new Dictionary<string, IMessageBus>(StringComparer.Ordinal);
+        foreach (var bus in _controlChannels.Values) await bus.DisposeAsync();
+        _controlChannels.Clear();
         await base.StopAsync(cancellationToken);
     }
 }

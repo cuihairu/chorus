@@ -62,6 +62,9 @@ public interface ISnapshotBackend
 
     void Put(StateSnapshot snapshot);
 
+    /// <summary>Atomically compare the stored version and install a newer snapshot.</summary>
+    bool TryPutIfNewer(StateSnapshot snapshot);
+
     bool Delete(string roomId);
 
     IReadOnlyList<string> ListRoomIds();
@@ -79,6 +82,19 @@ public sealed class InMemorySnapshotBackend : ISnapshotBackend
         _snapshots.TryGetValue(roomId, out var snapshot) ? snapshot : null;
 
     public void Put(StateSnapshot snapshot) => _snapshots[snapshot.RoomId] = snapshot;
+
+    public bool TryPutIfNewer(StateSnapshot snapshot)
+    {
+        while (true)
+        {
+            if (_snapshots.TryGetValue(snapshot.RoomId,out var current))
+            {
+                if (current.Version >= snapshot.Version) return false;
+                if (_snapshots.TryUpdate(snapshot.RoomId,snapshot,current)) return true;
+            }
+            else if (_snapshots.TryAdd(snapshot.RoomId,snapshot)) return true;
+        }
+    }
 
     public bool Delete(string roomId) => _snapshots.TryRemove(roomId, out _);
 
@@ -141,16 +157,7 @@ public sealed class SnapshotStore
         }
 
         var canonical = snapshot with { Checksum = SnapshotIntegrity.Compute(snapshot.Payload) };
-        if (_backend.TryGet(snapshot.RoomId) is { } existing)
-        {
-            if (canonical.Version <= existing.Version)
-            {
-                return false;
-            }
-        }
-
-        _backend.Put(canonical);
-        return true;
+        return _backend.TryPutIfNewer(canonical);
     }
 
     /// <summary>

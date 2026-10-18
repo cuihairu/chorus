@@ -37,7 +37,7 @@ public sealed class SessionRegistryTests
             },
             sessionId => CreateStartedActor(sessionId),
             sessionId => withClients?.Contains(sessionId) ?? false,
-            runSweepLoop: false);
+            runSweepLoop: false, canRelease: _ => true);
     }
 
     private static SessionActor CreateStartedActor(string sessionId)
@@ -66,22 +66,29 @@ public sealed class SessionRegistryTests
     }
 
     [Fact]
-    public async Task CapExceeded_EvictsIdlestFirst()
+    public async Task CapExceeded_RejectsNewRoomAndPreservesAllExistingActors()
     {
         await using var registry = CreateRegistry(maxSessions: 2);
-
-        registry.GetOrCreate("older", nowMs: 1_000);
-        registry.GetOrCreate("newer", nowMs: 60_000);
-
-        var freshest = registry.GetOrCreate("freshest", nowMs: 120_000);
-
+        var old = registry.GetOrCreate("older", nowMs: 1_000);
+        var newer = registry.GetOrCreate("newer", nowMs: 60_000);
+        Assert.Throws<SessionCapacityException>(() => registry.GetOrCreate("freshest", nowMs: 120_000));
         Assert.Equal(2, registry.Count);
-        Assert.Equal(1, registry.CapacityEvictions);
-        Assert.Equal(0, registry.IdleEvictions);
-        Assert.False(registry.TryGet("older", out _));
-        Assert.True(registry.TryGet("newer", out _));
-        Assert.True(registry.TryGet("freshest", out _));
-        await freshest.DisposeAsync();
+        Assert.Equal(1, registry.CapacityRejections);
+        Assert.Equal(0, registry.CapacityEvictions);
+        Assert.Same(old, registry.GetOrCreate("older"));
+        Assert.Same(newer, registry.GetOrCreate("newer"));
+        Assert.False(registry.TryGet("freshest", out _));
+    }
+
+    [Fact]
+    public async Task DefaultSweepCannotDiscardClientlessAuthoritativeState()
+    {
+        await using var registry = new SessionRegistry(new SessionConfig { IdleEvictAfterMs = 1 }, CreateStartedActor, _ => false, false);
+        var actor = registry.GetOrCreate("room", 0);
+        Assert.Equal(0, await registry.SweepIdleAsync(long.MaxValue));
+        Assert.Same(actor, registry.GetOrCreate("room"));
+        Assert.True(await registry.CloseAsync("room"));
+        Assert.False(await registry.CloseAsync("room"));
     }
 
     [Fact]
@@ -149,7 +156,7 @@ public sealed class SessionRegistryTests
                 return actor;
             },
             _ => false,
-            runSweepLoop: false);
+            runSweepLoop: false, canRelease: _ => true);
 
         registry.GetOrCreate("s-gated", nowMs: 1);
         // The outbound pump is now parked inside the gated send: the victim's
@@ -211,7 +218,7 @@ public sealed class SessionRegistryTests
             },
             sessionId => CreateStartedActor(sessionId),
             _ => false,
-            runSweepLoop: true);
+            runSweepLoop: true, canRelease: _ => true);
 
         // LastSeen=1 (synthetic clock): idle long before the first 1s tick.
         var actor = registry.GetOrCreate("s-loop", nowMs: 1);

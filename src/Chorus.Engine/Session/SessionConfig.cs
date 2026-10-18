@@ -28,5 +28,7 @@ public sealed record SessionConfig(
     /// <summary>Max frames replayed per client-initiated resync (todo.md:156 churn blocker
     /// ③). Snapshots carry full state, so a window larger than this answers with one
     /// forced snapshot instead of multiplying eng→gw volume. 0 disables replay entirely.</summary>
-    int MaxResyncReplayTicks = 128
+    int MaxResyncReplayTicks = 128,
+    /// <summary>Explicit business policy: close idle client-less rooms without retaining state. Off by default.</summary>
+    bool CloseClientlessIdleRooms = false
 );

@@ -13,5 +13,6 @@ public sealed record Envelope(
     string SessionId,
     long CreatedTimeMs,
     JsonElement Body,
-    string? SourceEventId = null
+    string? SourceEventId = null,
+    long? AuthorityEpoch = null
 );

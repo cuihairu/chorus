@@ -1,8 +1,8 @@
 namespace Chorus.Messaging.Ipc;
 
-public sealed record GatewayConnectCmd(string SessionId, string ClientId);
+public sealed record GatewayConnectCmd(string SessionId, string ClientId, string? GatewayId = null, string? GatewayInstance = null, string? Generation = null);
 
-public sealed record GatewayDisconnectCmd(string SessionId, string ClientId);
+public sealed record GatewayDisconnectCmd(string SessionId, string ClientId, string? GatewayId = null, string? GatewayInstance = null, string? Generation = null);
 
 public sealed record GatewayAckCmd(string SessionId, string ClientId, long LastAppliedTickId, long ClientTimeMs);
 
@@ -16,4 +16,4 @@ public sealed record GatewayResyncCmd(string SessionId, string ClientId, long Fr
 /// lets the Gateway's /ready probe distinguish "engine down" from "no
 /// sessions yet" even when no client is connected.
 /// </summary>
-public sealed record EngineHeartbeatCmd(long SentTimeMs);
+public sealed record EngineHeartbeatCmd(long SentTimeMs, string? WorkerId = null, string? InstanceId = null);

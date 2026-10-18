@@ -152,7 +152,7 @@ app.MapGet("/metrics", (SessionManager sessions, FaceCounters faces) => Results.
         faces,
         ipcPublishFailures: 0,
         registry: new Chorus.Gateway.Core.Metrics.SessionRegistryCounters(
-            sessions.StartFailures, sessions.IdleEvictions, sessions.CapacityEvictions)),
+            sessions.StartFailures, sessions.IdleEvictions, sessions.CapacityEvictions, sessions.CapacityRejections)),
     ChorusMetricsText.ContentTypeValue));
 
 // platform-ingress listener face (docs/design/process-topology.md §4): shared

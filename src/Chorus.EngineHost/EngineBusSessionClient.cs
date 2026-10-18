@@ -8,13 +8,15 @@ namespace Chorus.EngineHost;
 public sealed class EngineBusSessionClient : ISessionClient
 {
     private readonly IMessageBus _outgoing;
+    private readonly long? _authorityEpoch;
     private readonly string _sessionId;
     private readonly Func<bool> _isBroadcastOwner;
     private readonly Action<Envelope, Exception> _onPublishFailure;
 
-    public EngineBusSessionClient(IMessageBus outgoing, string sessionId, string clientId, Func<bool> isBroadcastOwner, Action<Envelope, Exception> onPublishFailure)
+    public EngineBusSessionClient(IMessageBus outgoing, string sessionId, string clientId, Func<bool> isBroadcastOwner, Action<Envelope, Exception> onPublishFailure, long? authorityEpoch = null)
     {
         _outgoing = outgoing;
+        _authorityEpoch = authorityEpoch;
         _sessionId = sessionId;
         ClientId = clientId;
         _isBroadcastOwner = isBroadcastOwner;
@@ -58,7 +60,7 @@ public sealed class EngineBusSessionClient : ISessionClient
             FrameEvents: snapshot.FrameEvents is { Count: > 0 } ? new List<FrameEvent>(snapshot.FrameEvents) : null
         );
 
-        var env = EnvelopeFactory.Create(IpcMessageTypes.EngineSnapshot, _sessionId, msg);
+        var env = EnvelopeFactory.Create(IpcMessageTypes.EngineSnapshot, _sessionId, msg) with { AuthorityEpoch = _authorityEpoch };
         return SafePublishAsync(env, cancellationToken);
     }
 

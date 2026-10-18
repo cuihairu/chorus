@@ -244,6 +244,7 @@ public sealed class StateSnapshotStoreTests
             : null;
 
         public void Put(StateSnapshot snapshot) { }
+        public bool TryPutIfNewer(StateSnapshot snapshot) => false;
 
         public bool Delete(string roomId) => false;
 

@@ -10,7 +10,8 @@ namespace Chorus.Gateway.Core.Metrics;
 public sealed record SessionRegistryCounters(
     long StartFailures = 0,
     long IdleEvictions = 0,
-    long CapacityEvictions = 0)
+    long CapacityEvictions = 0,
+    long CapacityRejections = 0)
 {
     public static readonly SessionRegistryCounters None = new();
 }

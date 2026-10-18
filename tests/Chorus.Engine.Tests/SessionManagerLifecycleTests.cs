@@ -18,27 +18,20 @@ public sealed class SessionManagerLifecycleTests
             TickDurationMs = 10,
             SnapshotEveryTicks = 0,
             MaxSessions = maxSessions,
+            CloseClientlessIdleRooms = true,
             IdleEvictAfterMs = idleEvictAfterMs,
         });
 
     [Fact]
-    public async Task CapExceeded_EvictsIdlestSession()
+    public async Task CapExceeded_RejectsNewSessionWithoutDestroyingExistingState()
     {
         await using var manager = CreateManager(maxSessions: 2, idleEvictAfterMs: 600_000);
-
-        var s1 = manager.GetOrCreate("s1");
-        await Task.Delay(30);
+        var first = manager.GetOrCreate("s1");
         manager.GetOrCreate("s2");
-        var s3 = manager.GetOrCreate("s3");
-
+        Assert.Throws<SessionCapacityException>(() => manager.GetOrCreate("s3"));
         Assert.Equal(2, manager.Count);
-        var ids = manager.GetDiagnostics().Select(d => d.SessionId).ToList();
-        Assert.DoesNotContain("s1", ids);
-        Assert.Contains("s2", ids);
-        Assert.Contains("s3", ids);
-
-        // The evicted actor must be stopped.
-        await s1.StopAsync(); // idempotent; must not throw
+        Assert.Same(first, manager.GetOrCreate("s1"));
+        Assert.Equal(1, manager.CapacityRejections);
     }
 
     [Fact]

@@ -13,6 +13,7 @@
     <ProjectReference Include="..\Chorus.Gateway.Core\Chorus.Gateway.Core.csproj" />
     <ProjectReference Include="..\Chorus.Messaging\Chorus.Messaging.csproj" />
     <ProjectReference Include="..\Chorus.Protocol\Chorus.Protocol.csproj" />
+    <ProjectReference Include="..\Chorus.Control\Chorus.Control.csproj" />
   </ItemGroup>
 
 </Project>

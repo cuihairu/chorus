@@ -14,5 +14,7 @@ public sealed record IpcSettings(
     string GatewayId = "",
     /// <summary>The hosting worker's id; suffixes gw-to-eng so one gateway can
     /// route rooms to several workers (empty = legacy single-worker name).</summary>
-    string WorkerId = ""
+    string WorkerId = "",
+    IReadOnlyDictionary<string, IpcNetworkEndpoint>? Workers = null,
+    IReadOnlyDictionary<string, IpcNetworkEndpoint>? Gateways = null
 );

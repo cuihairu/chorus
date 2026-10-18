@@ -2,7 +2,7 @@ namespace Chorus.Messaging.Ipc;
 
 public static class IpcEndpointBuilder
 {
-    public static IpcDuplexEndpoints Build(IpcSettings settings)
+    public static IpcDuplexEndpoints Build(IpcSettings settings, bool forServer = false)
     {
         var dir = string.IsNullOrWhiteSpace(settings.UnixSocketDir) ? "/tmp/chorus" : settings.UnixSocketDir;
         var prefix = string.IsNullOrWhiteSpace(settings.NamedPipePrefix) ? "chorus" : settings.NamedPipePrefix;
@@ -33,7 +33,31 @@ public static class IpcEndpointBuilder
             HttpUrl: NormalizeHttpUrl(settings.HttpEngineToGatewayUrl, "http://127.0.0.1:27601/eng-to-gw/")
         );
 
+        gwToEng = ApplyNetworkEndpoint(gwToEng, settings.Workers, workerId, forServer);
+        engToGw = ApplyNetworkEndpoint(engToGw, settings.Gateways, id, forServer);
         return new IpcDuplexEndpoints(gwToEng, engToGw);
+    }
+
+    private static IpcEndpoint ApplyNetworkEndpoint(IpcEndpoint fallback,
+        IReadOnlyDictionary<string, IpcNetworkEndpoint>? nodes, string id, bool forServer)
+    {
+        if (nodes is null || nodes.Count == 0 || id.Length == 0) return fallback;
+        if (!nodes.TryGetValue(id, out var node))
+            throw new ArgumentException($"Missing IPC endpoint for node '{id}'.");
+        if (string.IsNullOrWhiteSpace(node.Host) || node.Host is "0.0.0.0" or "::" or "*"
+            || node.Port is < 1 or > 65535)
+            throw new ArgumentException($"Invalid advertised endpoint for node '{id}'.");
+        if (nodes.Any(pair => pair.Key != id && pair.Value.Host == node.Host && pair.Value.Port == node.Port))
+            throw new ArgumentException($"Duplicate IPC endpoint for node '{id}'.");
+        if (node.HttpUrl is not null && (!Uri.TryCreate(node.HttpUrl, UriKind.Absolute, out var uri)
+            || uri.Scheme is not ("http" or "https")))
+            throw new ArgumentException($"Invalid HTTP endpoint for node '{id}'.");
+        return fallback with
+        {
+            TcpHost = forServer ? node.ListenHost ?? node.Host : node.Host,
+            TcpPort = node.Port,
+            HttpUrl = node.HttpUrl is null ? fallback.HttpUrl : NormalizeHttpUrl(node.HttpUrl, fallback.HttpUrl),
+        };
     }
 
     private static string ValidatedGatewayId(string gatewayId)

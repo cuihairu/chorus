@@ -62,3 +62,6 @@ yarn-error.log*
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Local control-plane database
+**/data/

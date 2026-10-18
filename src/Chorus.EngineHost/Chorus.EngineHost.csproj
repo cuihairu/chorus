@@ -13,6 +13,8 @@
     <ProjectReference Include="..\Chorus.Gateway.Core\Chorus.Gateway.Core.csproj" />
 
     <ProjectReference Include="..\Chorus.SampleGame\Chorus.SampleGame.csproj" />
+
+    <ProjectReference Include="..\Chorus.Control\Chorus.Control.csproj" />
   </ItemGroup>
 
 </Project>

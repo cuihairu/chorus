@@ -38,6 +38,7 @@ public sealed class EngineSweepTests
         new SessionConfig
         {
             MaxSessions = maxSessions,
+            CloseClientlessIdleRooms = true,
             IdleEvictAfterMs = 100,
             TickDurationMs = 10,
             SnapshotEveryTicks = 1,

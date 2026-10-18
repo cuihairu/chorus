@@ -86,6 +86,8 @@ public static class ChorusMetricsText
         sb.AppendLine($"chorus_session_idle_evictions_total {r.IdleEvictions}");
         sb.AppendLine("# TYPE chorus_session_capacity_evictions_total counter");
         sb.AppendLine($"chorus_session_capacity_evictions_total {r.CapacityEvictions}");
+        sb.AppendLine("# TYPE chorus_session_capacity_rejections_total counter");
+        sb.AppendLine($"chorus_session_capacity_rejections_total {r.CapacityRejections}");
     }
 
     private static void AppendSessionMetrics(StringBuilder sb, IReadOnlyList<SessionDiagnostics> sessions)

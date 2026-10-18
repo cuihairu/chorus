@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chorus · 运行控制台</title><link rel="stylesheet" href="/admin.css"><script src="/admin.js" defer></script></head>
+<body>
+<a class="skip" href="#main">跳到主要内容</a>
+<section id="login" class="login" hidden><form id="login-form"><span class="wordmark">CHORUS <b>OPS</b></span><h1>登录运行控制台</h1><p>查看集群、房间与主播匹配的实时状态。</p><label>管理员账号<input name="name" autocomplete="username" required autofocus></label><label>密码<input name="password" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">登录</button><p id="login-error" role="alert"></p></form></section>
+<div id="app" hidden>
+<aside><a class="wordmark" href="#overview">CHORUS <b>OPS</b></a><span class="nav-label">运行工作区</span><nav aria-label="主导航"><a href="#overview">总览<span>01</span></a><a href="#nodes">机器与节点<span>02</span></a><a href="#rooms">房间<span>03</span></a><a href="#hotspots">热点观察<span>04</span></a><a href="#streamers">主播<span>05</span></a><a href="#matching">匹配<span>06</span></a><a href="#boards">排行榜<span>07</span></a><a href="#audit">操作记录<span>08</span></a></nav><div class="sidebar-foot"><span id="account"></span><button id="logout" class="quiet">退出登录</button></div></aside>
+<div class="workspace"><header><span>运行控制台 <span class="muted">/</span> <strong id="breadcrumb">总览</strong></span><div class="header-right"><span id="updated">等待首次同步</span><button id="refresh">刷新</button></div></header>
+<main id="main" tabindex="-1"><div id="notice" role="status" hidden></div><div class="page-head"><div><span class="eyebrow">CHORUS / LIVE OPERATIONS</span><h1 id="title">总览</h1><p id="description">集群与业务状态，同一个视图。</p></div><span class="live-tag" id="live-status">同步中</span></div><section id="content" aria-busy="true"></section></main>
+<footer>权威控制面 · 连接数与平台观众数分开统计 · 自动刷新间隔 5 秒</footer></div></div>
+<dialog id="detail"><div class="dialog-head"><h2 id="detail-title">详情</h2><button id="close-detail" aria-label="关闭详情">关闭</button></div><div id="detail-body"></div></dialog>
+<dialog id="editor"><form id="edit-form"><div class="dialog-head"><h2 id="editor-title">编辑</h2><button type="button" id="close-editor">取消</button></div><div id="editor-fields"></div><p id="editor-error" role="alert"></p><button class="primary" type="submit">保存并记录审计</button></form></dialog>
+</body></html>

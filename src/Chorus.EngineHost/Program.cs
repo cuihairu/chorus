@@ -31,7 +31,8 @@ builder.Services.AddSingleton(sp =>
         MaxSnapshotBytes: cfg.GetValue("Session:MaxSnapshotBytes", 1_048_576),
         FrameHistoryBytes: cfg.GetValue("Session:FrameHistoryBytes", 8_388_608),
         ResyncRequestCooldownMs: cfg.GetValue("Session:ResyncRequestCooldownMs", 1000),
-        MaxResyncReplayTicks: cfg.GetValue("Session:MaxResyncReplayTicks", 128)
+        MaxResyncReplayTicks: cfg.GetValue("Session:MaxResyncReplayTicks", 128),
+        CloseClientlessIdleRooms: cfg.GetValue("Session:CloseClientlessIdleRooms", false)
     );
 });
 // Register the concrete type (not just IHostedService): the /metrics and
@@ -57,7 +58,7 @@ app.MapGet("/metrics", (EngineIpcService engine) => Results.Text(
         engine.PublishFailures,
         processCpu.Sample(),
         registry: new Chorus.Gateway.Core.Metrics.SessionRegistryCounters(
-            engine.StartFailures, engine.IdleEvictions, engine.CapacityEvictions)),
+            engine.StartFailures, engine.IdleEvictions, engine.CapacityEvictions, engine.CapacityRejections)),
     ChorusMetricsText.ContentTypeValue));
 
 app.Run();

@@ -89,7 +89,7 @@ public sealed class IpcSessionRouter : IStreamerSessionRouter
             => _ipc.PublishResyncAsync(_sessionId, _clientId, fromFrameId, cancellationToken);
 
         public ValueTask DisconnectAsync(CancellationToken cancellationToken)
-            => _ipc.UnregisterClientAsync(_sessionId, _clientId, cancellationToken);
+            => _ipc.UnregisterClientAsync(_sessionId, _clientId, cancellationToken,_conn.Generation);
 
         public ValueTask DisposeAsync() => _conn.DisposeAsync();
     }

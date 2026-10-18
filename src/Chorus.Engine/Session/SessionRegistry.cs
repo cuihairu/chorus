@@ -24,6 +24,7 @@ public sealed class SessionRegistry : IAsyncDisposable
     private readonly object _lock = new();
     private readonly Func<string, SessionActor> _createActor;
     private readonly Func<string, bool> _hasClients;
+    private readonly Func<string, bool> _canRelease;
     private readonly CancellationTokenSource _sweepCts = new();
     private readonly Task _sweepLoop;
     private int _disposed;
@@ -34,11 +35,13 @@ public sealed class SessionRegistry : IAsyncDisposable
         SessionConfig config,
         Func<string, SessionActor> createActor,
         Func<string, bool> hasClients,
-        bool runSweepLoop = true)
+        bool runSweepLoop = true,
+        Func<string, bool>? canRelease = null)
     {
         Config = config;
         _createActor = createActor;
         _hasClients = hasClients;
+        _canRelease = canRelease ?? (_ => config.CloseClientlessIdleRooms);
         _sweepLoop = runSweepLoop ? SweepLoopAsync(_sweepCts.Token) : Task.CompletedTask;
     }
 
@@ -69,30 +72,30 @@ public sealed class SessionRegistry : IAsyncDisposable
     private long _idleEvictions;
 
     /// <summary>Cumulative sessions evicted to make room under MaxSessions.</summary>
-    public long CapacityEvictions => Interlocked.Read(ref _capacityEvictions);
+    public long CapacityEvictions => 0;
 
-    private long _capacityEvictions;
+
 
     public SessionActor GetOrCreate(string sessionId, long? nowMs = null)
     {
         var now = nowMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        SessionActor? evicted = null;
         SessionActor actor;
 
         lock (_lock)
         {
+            ObjectDisposedException.ThrowIf(_disposed != 0, this);
             if (_sessions.TryGetValue(sessionId, out var existing))
             {
                 existing.LastSeenAtMs = now;
                 return existing.Actor;
             }
 
-            // Session cap (review stage-2): make room for new streams by
-            // evicting the least-recently-seen session; the victim's clients
-            // reconnect via a fresh session id.
+            // Authoritative state is not a cache. Reject new admission without
+            // touching existing actors, including client-less business rooms.
             if (Config.MaxSessions > 0 && _sessions.Count >= Config.MaxSessions)
             {
-                evicted = EvictIdlestLocked();
+                Interlocked.Increment(ref _capacityRejections);
+                throw new SessionCapacityException(Config.MaxSessions);
             }
 
             try
@@ -109,11 +112,6 @@ public sealed class SessionRegistry : IAsyncDisposable
             }
 
             _sessions[sessionId] = new Entry { Actor = actor, LastSeenAtMs = now };
-        }
-
-        if (evicted != null)
-        {
-            _ = DisposeQuietlyAsync(evicted);
         }
 
         return actor;
@@ -134,27 +132,9 @@ public sealed class SessionRegistry : IAsyncDisposable
         return false;
     }
 
-    private SessionActor? EvictIdlestLocked()
-    {
-        string? idlestId = null;
-        var idlestSeen = long.MaxValue;
-        foreach (var (id, entry) in _sessions)
-        {
-            if (entry.LastSeenAtMs < idlestSeen)
-            {
-                idlestSeen = entry.LastSeenAtMs;
-                idlestId = id;
-            }
-        }
-
-        if (idlestId == null || !_sessions.Remove(idlestId, out var victim))
-        {
-            return null;
-        }
-
-        Interlocked.Increment(ref _capacityEvictions);
-        return victim.Actor;
-    }
+    private long _capacityRejections;
+    /// <summary>New rooms refused at capacity; existing authority is preserved.</summary>
+    public long CapacityRejections => Interlocked.Read(ref _capacityRejections);
 
     /// <summary>
     /// Idle eviction (review stage-2): removes sessions with no connected
@@ -172,7 +152,7 @@ public sealed class SessionRegistry : IAsyncDisposable
             {
                 var clientless = !_hasClients(id);
                 var idle = now - entry.LastSeenAtMs >= Config.IdleEvictAfterMs;
-                if (clientless && idle)
+                if (clientless && idle && _canRelease(id))
                 {
                     victims.Add(entry.Actor);
                     _sessions.Remove(id);
@@ -195,6 +175,18 @@ public sealed class SessionRegistry : IAsyncDisposable
         }
 
         return victims.Count;
+    }
+
+    /// <summary>Explicit business close; callers must authorize and persist first.</summary>
+    public async Task<bool> CloseAsync(string sessionId)
+    {
+        Entry? entry;
+        lock (_lock)
+        {
+            if (!_sessions.Remove(sessionId, out entry)) return false;
+        }
+        await entry.Actor.DisposeAsync().ConfigureAwait(false);
+        return true;
     }
 
     public IReadOnlyList<SessionDiagnostics> GetDiagnostics()

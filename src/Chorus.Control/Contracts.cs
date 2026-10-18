@@ -1,0 +1,44 @@
+using System.Text.Json;
+using Chorus.Engine.Routing;
+using Chorus.Engine.Session;
+using Chorus.Messaging.Ipc;
+using Chorus.Protocol.Models;
+
+namespace Chorus.Control;
+
+public sealed record NodeReport(string Id, string InstanceId, string MachineId, string Role,
+    IpcNetworkEndpoint Endpoint, int Capacity, long LastHeartbeatMs = 0, bool Draining = false,
+    double CpuPercent = 0, long MemoryBytes = 0, string Version = "", IReadOnlyList<SessionDiagnostics>? Sessions = null);
+public sealed record RoomRecord(string Id, string WorkerId, string WorkerInstance, long Epoch,
+    RoomLifecycleState State, long UpdatedAtMs, string? StreamerId = null, string Platform = "unknown",
+    string Mode = "default", string Region = "default", string? MatchId = null,
+    long TickId = 0, JsonElement? Snapshot = null, long Checksum = 0, int SchemaVersion = 1,
+    IReadOnlyList<AudienceEvent>? Inbox = null, IReadOnlyDictionary<string, long>? Receipts = null,
+    string? MigrationId = null, string? TargetWorker = null, string? PreviousWorker = null,
+    RoomLifecycleState? ResumeState = null);
+public sealed record OwnerRequest(string WorkerId, string InstanceId, long Epoch);
+public sealed record TickCommit(string WorkerId, string InstanceId, long Epoch, long ExpectedTick,
+    long TickId, int SchemaVersion, JsonElement State, IReadOnlyList<string> ConsumedEventKeys);
+public sealed record RoomAssignment(string Id, string? StreamerId = null, string Platform = "unknown", string Mode = "default", string Region = "default");
+public sealed record RoomMove(string TargetWorker, long ExpectedEpoch);
+public sealed record RoomAction(RoomLifecycleAction Action, long ExpectedEpoch);
+public sealed record ConnectionRecord(string SessionId, string ClientId, string UserId, string Role,
+    string GatewayId, string GatewayInstance, string Generation, long LastSeenMs = 0);
+public sealed record StreamerProfile(string Id, string DisplayName, string Platform, string AccountId,
+    long Experience = 0, long Influence = 0, int Rating = 1000, int Games = 0, int Wins = 0,
+    long Version = 1, long UpdatedAtMs = 0);
+public sealed record MatchRules(long Version = 1, string Season = "default", int TierWidth = 200,
+    long WidenAfterMs = 30000, int MaxRatingGap = 400, long TimeoutMs = 120000,
+    bool FillBots = false, int LevelExperience = 100, int StarExperience = 20, long RematchCooldownMs = 60000);
+public sealed record QueueEntry(string StreamerId, string Mode, string Region, string Platform, long JoinedAtMs, string Status = "Queued", string Reason = "Waiting for same-tier opponent");
+public sealed record MatchRecord(string Id, string Mode, string Region, string Season, long RulesVersion,
+    IReadOnlyList<string> StreamerIds, IReadOnlyList<string> RoomIds, long CreatedAtMs, int RatingGap,
+    bool CrossTier, bool FilledWithBots, string Status = "Running", string? WinnerId = null, long? FinishedAtMs = null);
+public sealed record MatchJoin(string Mode = "default", string Region = "default");
+public sealed record MatchFinish(string? WinnerId, string SourceId);
+public sealed record ScoreChange(string ParticipantId, long Delta, string SourceId, string Unit = "points");
+public sealed record StoredBoard(string Id, string Scope, string Unit, string Season,
+    IReadOnlyDictionary<string, long> Scores, IReadOnlySet<string> Sources, long UpdatedAtMs, bool Frozen = false);
+public sealed record AuditRecord(long Id, long AtMs, string Actor, string Action, string Target, string Detail);
+public sealed record SummarySample(long AtMs, int Machines, int Workers, int Gateways, int Rooms, int ActiveRooms, int Connections, int OnlineUsers, int OnlineStreamers, int Queued, int RunningMatches);
+public sealed class ControlConflictException(string message) : Exception(message);

@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using Chorus.Control;
+using Chorus.Data;
 using Chorus.Engine.Abstractions;
 using Chorus.Engine.Session;
 using Chorus.Messaging;
@@ -8,7 +10,7 @@ using Chorus.Protocol.Messages;
 
 namespace Chorus.EngineHost;
 
-public sealed class EngineIpcService : BackgroundService
+public sealed partial class EngineIpcService : BackgroundService
 {
     private readonly ILogger<EngineIpcService> _logger;
     private readonly IGameModuleFactory _gameFactory;
@@ -17,7 +19,7 @@ public sealed class EngineIpcService : BackgroundService
     private readonly ISnapshotRecoverySource? _recoverySource;
 
     private readonly SessionRegistry _registry;
-    private readonly Dictionary<(string SessionId, string ClientId), EngineBusSessionClient> _clients = new();
+    private readonly ConcurrentDictionary<(string SessionId, string ClientId), EngineBusSessionClient> _clients = new();
     /// <summary>Per-session connected-client counts: the registry's sweep
     /// probe reads this from the sweep task on the thread pool while the
     /// receive loop mutates it, and the old probe (scan every client key per
@@ -76,6 +78,19 @@ public sealed class EngineIpcService : BackgroundService
             WorkerId: config["Ipc:WorkerId"] ?? ""
         );
 
+        _ipcSettings = _ipcSettings with
+        {
+            Workers = config.GetSection("Ipc:Workers").Get<Dictionary<string, IpcNetworkEndpoint>>(),
+            Gateways = config.GetSection("Ipc:Gateways").Get<Dictionary<string, IpcNetworkEndpoint>>(),
+        };
+
+        if (!string.IsNullOrWhiteSpace(config["Control:Url"]))
+        {
+            if (string.IsNullOrWhiteSpace(_ipcSettings.WorkerId)) throw new ArgumentException("Control mode requires Ipc:WorkerId.");
+            _control = new ControlClient(config,_ipcSettings.WorkerId);
+            _machineId = config["Control:MachineId"] ?? Environment.MachineName;
+        }
+
         // Liveness ping on the eng->gw channel (docs/reference/deployment.md
         // "split-mode readiness probe"): keeps the Gateway's /ready honest even
         // when no client is connected (no welcomes/snapshots flowing). 0 = off.
@@ -110,12 +125,17 @@ public sealed class EngineIpcService : BackgroundService
     {
         var endpoints = IpcEndpointBuilder.Build(_ipcSettings);
 
-        _incoming = IpcMessageBusFactory.CreateServer(_ipcSettings.Transport, endpoints.GatewayToEngine);
+        _incoming = IpcMessageBusFactory.CreateServer(_ipcSettings.Transport, IpcEndpointBuilder.Build(_ipcSettings, forServer: true).GatewayToEngine);
         // One eng->gw channel per configured gateway (Ipc:GatewayIds, comma
         // separated); each gateway hosts its own suffixed endpoint and the
         // engine fans every message out to all of them (stage-2 transport
         // half). Empty list = legacy single-gateway channel, byte-identical.
-        _outgoing = BuildOutgoing(endpoints);
+        _outgoing = _control is null ? BuildOutgoing(endpoints) : new ControlGatewayBus(_control,_ipcSettings.Transport,_ipcSettings);
+        if (_control is not null)
+        {
+            await ReportControlAsync(stoppingToken);
+            _controlTask = RunControlAsync(stoppingToken);
+        }
         // After the bus exists: it must not outlive it, so start here rather
         // than in the constructor.
         await _welcomePublisher.StartAsync(stoppingToken);
@@ -156,7 +176,7 @@ public sealed class EngineIpcService : BackgroundService
                     EnvelopeFactory.Create(
                         IpcMessageTypes.EngineHeartbeat,
                         "__heartbeat",
-                        new EngineHeartbeatCmd(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())),
+                        new EngineHeartbeatCmd(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), _ipcSettings.WorkerId, _control?.InstanceId)),
                     stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
@@ -175,11 +195,27 @@ public sealed class EngineIpcService : BackgroundService
     private SessionActor CreateActor(string sessionId)
     {
         var game = _gameFactory.Create(sessionId);
-        // Restore before the actor exists: no tick and no ingress event can
-        // reach an unrestored module (parity with the monolith's
-        // SessionManager - both call the same single-point restorer).
-        GameModuleRestorer.Restore(game, sessionId, _recoverySource, _sessionConfig);
-        var actor = new SessionActor(sessionId, _sessionConfig, game);
+        SessionActor actor;
+        try
+        {
+            if (_control is not null)
+            {
+                var room = _controlledRooms[sessionId];
+                if (room.Snapshot is { } snapshot)
+                {
+                    if (room.SchemaVersion != 1 || SnapshotIntegrity.Compute(snapshot.GetRawText()) != room.Checksum)
+                        throw new InvalidOperationException("Corrupt or incompatible controlled checkpoint.");
+                    game.RestoreState(room.SchemaVersion,snapshot);
+                }
+                actor = new SessionActor(sessionId,_sessionConfig,game,durability:new ControlTickDurability(_control,room,_sessionConfig.MaxEventsPerTick),restoredTick:room.TickId);
+            }
+            else
+            {
+                GameModuleRestorer.Restore(game,sessionId,_recoverySource,_sessionConfig);
+                actor = new SessionActor(sessionId,_sessionConfig,game);
+            }
+        }
+        catch { game.Dispose(); throw; }
         actor.Start();
         return actor;
     }
@@ -214,14 +250,24 @@ public sealed class EngineIpcService : BackgroundService
             case IpcMessageTypes.GatewayConnect:
                 {
                     var cmd = EnvelopeFactory.DeserializeBody<GatewayConnectCmd>(env);
-                    var session = GetOrCreateSession(cmd.SessionId);
+                    if (_control is not null)
+                    {
+                        var room = await _control.Room(cmd.SessionId,cancellationToken);
+                        if (env.AuthorityEpoch != room.Epoch) throw new ControlConflictException("Stale connect route.");
+                        var registered = await _control.Get<List<ConnectionRecord>>("connections",cancellationToken);
+                        if (!registered.Any(c => c.SessionId == cmd.SessionId && c.ClientId == cmd.ClientId && c.Generation == cmd.Generation && c.GatewayInstance == cmd.GatewayInstance))
+                            throw new ControlConflictException("Stale connection generation.");
+                    }
+                    var session = await ResolveSessionAsync(cmd.SessionId,cancellationToken);
                     _broadcastOwners.OnConnect(cmd.SessionId, cmd.ClientId);
                     var client = new EngineBusSessionClient(
                         _outgoing, cmd.SessionId, cmd.ClientId,
                         () => _broadcastOwners.IsOwner(cmd.SessionId, cmd.ClientId),
-                        RecordPublishFailure);
-                    _clients[(cmd.SessionId, cmd.ClientId)] = client;
-                    _clientCountBySession.AddOrUpdate(cmd.SessionId, 1, static (_, c) => c + 1);
+                        RecordPublishFailure, _controlledRooms.TryGetValue(cmd.SessionId,out var owner) ? owner.Epoch : null);
+                    var added = _clients.TryAdd((cmd.SessionId,cmd.ClientId),client);
+                    _clients[(cmd.SessionId,cmd.ClientId)] = client;
+                    _clientOrigins[(cmd.SessionId,cmd.ClientId)] = cmd;
+                    if (added) _clientCountBySession.AddOrUpdate(cmd.SessionId,1,static (_,c)=>c+1);
                     await session.AddClientAsync(client);
 
                     var welcome = new ServerWelcome(
@@ -239,18 +285,20 @@ public sealed class EngineIpcService : BackgroundService
                     // up as a publish failure, and the gateway's 2s welcome
                     // budget then surfaces it as a reconnect.
                     _welcomePublisher.TryEnqueue(
-                        EnvelopeFactory.Create(IpcMessageTypes.EngineWelcome, cmd.SessionId, welcome));
+                        EnvelopeFactory.Create(IpcMessageTypes.EngineWelcome, cmd.SessionId, welcome) with { AuthorityEpoch = _controlledRooms.TryGetValue(cmd.SessionId,out var welcomeOwner) ? welcomeOwner.Epoch : null });
                 }
                 break;
 
             case IpcMessageTypes.GatewayDisconnect:
                 {
                     var cmd = EnvelopeFactory.DeserializeBody<GatewayDisconnectCmd>(env);
+                    if (_clientOrigins.TryGetValue((cmd.SessionId,cmd.ClientId),out var origin) && origin.Generation != cmd.Generation) return;
+                    _clientOrigins.TryRemove((cmd.SessionId,cmd.ClientId),out _);
                     if (_registry.TryGet(cmd.SessionId, out var session))
                     {
                         await session!.RemoveClientAsync(cmd.ClientId);
                     }
-                    _clients.Remove((cmd.SessionId, cmd.ClientId));
+                    _clients.TryRemove((cmd.SessionId, cmd.ClientId),out _);
                     // Only the receive loop mutates the count map, so the
                     // read-modify-write here cannot interleave.
                     if (_clientCountBySession.TryGetValue(cmd.SessionId, out var count))
@@ -302,6 +350,7 @@ public sealed class EngineIpcService : BackgroundService
                             "Correlation mismatch: envelope source={SourceEventId} event={EventId} session={SessionId} message={MessageId}",
                             env.SourceEventId, audienceEvent.EventId, audienceEvent.SessionId, env.MessageId);
                     }
+                    if (_control is not null) throw new ControlConflictException("Controlled input must be committed to reliable inbox.");
                     var session = GetOrCreateSession(audienceEvent.SessionId);
                     if (!await session.TryIngestAudienceEventAsync(audienceEvent))
                     {
@@ -327,6 +376,7 @@ public sealed class EngineIpcService : BackgroundService
 
     /// <summary>Cumulative sessions evicted to make room under MaxSessions.</summary>
     public long CapacityEvictions => _registry.CapacityEvictions;
+    public long CapacityRejections => _registry.CapacityRejections;
 
     private void RecordPublishFailure(Envelope env, Exception ex)
     {
@@ -339,6 +389,8 @@ public sealed class EngineIpcService : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
+        _controlStop.Cancel();
+        try { await _controlTask; } catch (OperationCanceledException) { }
         await _registry.DisposeAsync();
         _clients.Clear();
         _clientCountBySession.Clear();

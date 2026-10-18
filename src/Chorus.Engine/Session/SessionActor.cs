@@ -34,6 +34,9 @@ public sealed class SessionActor : IAsyncDisposable
     private readonly SessionConfig _config;
     private readonly IGameModule _game;
     private readonly IAudienceEventReducer _reducer;
+    private readonly ISessionTickDurability? _durability;
+    private readonly HashSet<string> _durableScheduled = new(StringComparer.Ordinal);
+    public bool DurabilityFailed { get; private set; }
     private volatile SessionDiagnostics _diagnostics;
 
     private long _totalIngestedEvents;
@@ -70,7 +73,9 @@ public sealed class SessionActor : IAsyncDisposable
         string sessionId,
         SessionConfig config,
         IGameModule game,
-        IAudienceEventReducer? reducer = null)
+        IAudienceEventReducer? reducer = null,
+        ISessionTickDurability? durability = null,
+        long restoredTick = 0)
     {
         if (string.IsNullOrWhiteSpace(sessionId))
         {
@@ -79,6 +84,8 @@ public sealed class SessionActor : IAsyncDisposable
 
         SessionId = sessionId;
         _config = config;
+        _durability = durability;
+        TickId = restoredTick;
         _game = game;
         _reducer = reducer ?? new DefaultAudienceEventReducer();
 
@@ -501,7 +508,7 @@ public sealed class SessionActor : IAsyncDisposable
     private void ScheduleAudienceEvent(AudienceEvent e)
     {
         Interlocked.Increment(ref _totalIngestedEvents);
-        var targetTick = TickId + _config.InputDelayTicks;
+        var targetTick = TickId + Math.Max(1,_config.InputDelayTicks);
         if (!_scheduledByTick.TryGetValue(targetTick, out var list))
         {
             list = new List<AudienceEvent>();
@@ -513,11 +520,27 @@ public sealed class SessionActor : IAsyncDisposable
     private async Task OnTickAsync(CancellationToken cancellationToken)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
+        if (_durability is not null)
+        {
+            if (DurabilityFailed) return;
+            try
+            {
+                var pending = await _durability.PrepareAsync(cancellationToken).ConfigureAwait(false);
+                foreach (var e in pending)
+                    if (_durableScheduled.Add(JsonSerializer.Serialize(new[] { e.Platform, e.EventId }))) ScheduleAudienceEvent(e);
+            }
+            catch { DurabilityFailed = true; throw; }
+        }
         TickId++;
 
         try
         {
             await TickBodyAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            if (_durability is not null) DurabilityFailed = true;
+            throw;
         }
         finally
         {
@@ -553,7 +576,7 @@ public sealed class SessionActor : IAsyncDisposable
                 return t != 0 ? t : string.CompareOrdinal(a.EventId, b.EventId);
             });
 
-            var reduced = _reducer.Reduce(events, _config.MaxEventsPerTick);
+            var reduced = _reducer.Reduce(events, _durability is null ? _config.MaxEventsPerTick : 0);
             tickEvents = reduced.Events;
             Interlocked.Add(ref _totalAppliedEvents, reduced.Events.Count);
             if (reduced.MergedInputEvents > 0)
@@ -567,6 +590,11 @@ public sealed class SessionActor : IAsyncDisposable
         }
 
         _game.ApplyEvents(TickId, tickEvents);
+        if (_durability is not null)
+        {
+            await _durability.CommitAsync(TickId - 1, TickId, _game.GetStateSnapshot(), events ?? [], cancellationToken).ConfigureAwait(false);
+            foreach (var e in events ?? []) _durableScheduled.Remove(JsonSerializer.Serialize(new[] { e.Platform, e.EventId }));
+        }
 
         // Frame-sync P2: accumulate per-tick events for the frameEvents envelope.
         // Bounded: when the accumulator exceeds MaxPendingFrameEvents the oldest

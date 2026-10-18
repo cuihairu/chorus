@@ -46,6 +46,7 @@ public sealed class GatewayClientConnection : IAsyncDisposable
         _faces = faces;
     }
 
+    public string Generation { get; } = Guid.NewGuid().ToString("N");
     public string SessionId { get; }
     public string ClientId { get; }
 

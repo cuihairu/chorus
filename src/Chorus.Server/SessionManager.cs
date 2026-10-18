@@ -29,6 +29,7 @@ public sealed class SessionManager : IAsyncDisposable
 
     /// <summary>Cumulative sessions evicted to make room under MaxSessions.</summary>
     public long CapacityEvictions => _registry.CapacityEvictions;
+    public long CapacityRejections => _registry.CapacityRejections;
 
     public SessionManager(
         IGameModuleFactory gameFactory,

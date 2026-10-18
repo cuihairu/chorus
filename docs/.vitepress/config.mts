@@ -4,7 +4,7 @@ import { withMermaid } from "vitepress-plugin-mermaid";
 export default withMermaid(defineConfig({
   title: "Chorus",
   description: "An interactive battle game framework driven by live-stream danmaku/gifts",
-  base: process.env.VITEPRESS_BASE || "/",
+  base: process.env.VITEPRESS_BASE || "/chorus/",
   head: [["link", { rel: "icon", href: "/logo.svg" }]],
   locales: {
     root: {
