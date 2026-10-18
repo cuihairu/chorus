@@ -322,3 +322,10 @@
       - [x] 表三只完成评估、未实现：独立多机分区注入与 ControlHost SLO/容量基线列为 ROOM-07/11/12 rollout gates；浏览器 e2e 列为 ADMIN-13；抖音真实协议联调需平台合同/凭据及获准联调；热点历史告警需权威事件聚合源和告警策略。依据：本报告表三及 `todo.md` §19 ROOM-07/11/12、ADMIN-06/13。按审核要求，新增能力均待解锁条件具备后再立项。
       - [x] 复核其余 8 个既有 open：阶段三负载门槛沿用已有受控压测记录（本轮无新可信多 Worker 生产数据）；ROOM-07/09/12 仍无独立机器/隔离网络，ROOM-11 的 RPO/RTO/容量预算已按授权代决、PG provider 已接入但真实负载/WAL 与同步复制未验收；ADMIN-03 仍无历史维度/保留决策，ADMIN-06 仍无权威互动聚合源/告警策略，ADMIN-13 仍无浏览器 e2e 与查询 SLO。逐条证据见 `todo.md:158,250,252,257-258,273,276,292` 和 `docs/architecture/multi-machine-rooms.md` §3–6（R01–R09 处置、扩展边界及 ROOM-07/09/11/12 验收门槛）；其余条目本轮未发现解锁证据。
       门禁：`dotnet test tests/Chorus.Engine.Tests/Chorus.Engine.Tests.csproj --no-restore --filter 'FullyQualifiedName~ControlHostOriginTests|FullyQualifiedName~ControlRoutingSnapshotTests|FullyQualifiedName~IpcAckResyncLoopTests|FullyQualifiedName~MultiWorkerGatewayIpcTests' --verbosity quiet`（31/31 通过）；`pnpm docs:build`（build complete）。当前仅审计保留政策为真卡点；不 bump 版本。
+- [ ] 文档时效性清理（2026-10-18 用户令：很多文档已过时）：
+      在本轮审核整改完成之后执行，避免与整改冲突。
+      1) 通读 README / docs，找出与当前代码不符的描述（能力、配置项、命令、路径、版本）
+      2) 以代码为准修正文档；**禁止为对齐文档去改业务代码**
+      3) 已废弃但仍留在文档里的功能，明确标注「已移除」或删除，不要留成"看起来还能用"
+      4) 命令行示例逐条跑一遍，跑不通的改掉或删掉
+      5) 构建通过后 commit+push，回报改动文件清单
