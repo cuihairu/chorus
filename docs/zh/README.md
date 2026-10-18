@@ -1,16 +1,21 @@
 ---
 home: true
 title: Chorus
-heroImage: /logo.svg
-heroText: Chorus
-tagline: 面向直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）
-actions:
-  - text: 快速开始
-    link: /guide/getting-started.html
-    type: primary
-  - text: 架构设计
-    link: /design/architecture.html
-    type: secondary
+hero:
+  name: Chorus
+  text: 直播互动对战框架
+  tagline: 弹幕/礼物驱动，服务器权威 Tick + 状态快照
+  image:
+    src: /logo.svg
+    width: 96
+    height: 96
+  actions:
+    - text: 快速开始
+      link: /zh/guide/getting-started
+      theme: brand
+    - text: 架构设计
+      link: /zh/design/architecture
+      theme: alt
 features:
   - title: 服务器权威 Tick
     details: 服务器持续推进逻辑帧，不再"等最慢端"，客户端以快照对齐。

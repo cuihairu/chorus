@@ -1,16 +1,21 @@
 ---
 home: true
 title: Chorus
-heroImage: /logo.svg
-heroText: Chorus
-tagline: An interactive battle game framework driven by live-stream danmaku/gifts (server-authoritative tick + state snapshots)
-actions:
-  - text: Getting Started
-    link: /guide/getting-started.html
-    type: primary
-  - text: Architecture
-    link: /design/architecture.html
-    type: secondary
+hero:
+  name: Chorus
+  text: Interactive live battle framework
+  tagline: Danmaku/gift driven, server-authoritative tick + state snapshots
+  image:
+    src: /logo.svg
+    width: 96
+    height: 96
+  actions:
+    - text: Getting Started
+      link: /guide/getting-started
+      theme: brand
+    - text: Architecture
+      link: /design/architecture
+      theme: alt
 features:
   - title: Server-authoritative tick
     details: The server keeps advancing logic frames instead of "waiting for the slowest peer"; clients align to snapshots.

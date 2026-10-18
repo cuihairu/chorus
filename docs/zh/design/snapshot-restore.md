@@ -1,4 +1,7 @@
-> 上游问题见 [process-topology.md §5](./process-topology.md)。
+# 快照恢复：契约、介质与接线边界
+
+> 上游问题见 [进程拓扑 §5](./process-topology.md)。本页拍板模块恢复契约，并评估持久化介质；
+> 生产接线仍按阶段三门控执行。
 
 ## 结论先行
 

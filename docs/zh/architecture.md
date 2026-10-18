@@ -1,4 +1,8 @@
 
+# 架构：分层、决策与取舍
+
+本页回答三个问题：Chorus 怎样分层、为什么这样取舍、这些决策在什么约束下成立。分域细节见：
+
 - 进程拓扑与组件索引：[当前架构总览](./design/architecture-overview.md)
 - 组件图与深挖设计：[架构设计](./design/architecture.md)、[帧同步设计](./design/frame-sync.md)、
   [IPC 设计](./design/ipc.md)、[进程拓扑](./design/process-topology.md)
