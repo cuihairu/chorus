@@ -87,6 +87,25 @@ public sealed class ControlPostgresIntegrationTests
         Assert.Contains(store.Audits(), audit => audit.Action == "room.lifecycle" && audit.Target == room.Id);
     }
 
+    [Fact]
+    public void PostgresProvider_LateDisconnectCannotRemoveNewConnectionGeneration()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var store = NewStore(testDatabase.ConnectionString);
+        store.ReportNode(new("worker", "worker-boot", "worker-host", "worker", new("127.0.0.1", 3101), 10));
+        store.ReportNode(new("gateway", "gateway-boot", "gateway-host", "gateway", new("127.0.0.1", 4101), 0));
+        var room = store.Assign(new("pg-generation-" + Guid.NewGuid().ToString("N")));
+        var oldConnection = new ConnectionRecord(room.Id, "client", "viewer", "viewer", "gateway", "gateway-boot", "old-generation");
+        var newConnection = oldConnection with { Generation = "new-generation" };
+
+        store.Connect(oldConnection);
+        store.Connect(newConnection);
+        store.Disconnect(oldConnection);
+
+        var remaining = Assert.Single(store.Connections());
+        Assert.Equal("new-generation", remaining.Generation);
+    }
+
     private static RoomControlStore NewStore(string connectionString) =>
         new(new ControlDatabase(connectionString, ControlDatabaseProvider.PostgreSql));
 }
