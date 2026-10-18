@@ -4,9 +4,9 @@ title: 当前架构总览（进程拓扑与组件）
 
 # 当前架构总览
 
-以代码为准的组件与进程拓扑（2026-10-13 核对）。单进程形态（`Chorus.Server`）与三进程形态（两个 `Chorus.Gateway` + `Chorus.EngineHost`）共用同一套门面与协议，差别只在进程边界与 IPC 通道。
+以代码为准的组件与进程拓扑（2026-10-19 更新）。独立运行的 `Chorus.Server` 不启用控制面；启用持久控制面的拆分部署由共享 `Chorus.ControlHost`、一个或多个 `Chorus.Gateway` 和 `Chorus.EngineHost` 组成。生产多机故障与容量门槛仍待验收。
 
-## 三进程形态（拆分模式）
+## 启用 ControlHost 的拆分模式
 
 ```mermaid
 flowchart TB
@@ -27,8 +27,12 @@ flowchart TB
     REG["SessionRegistry<br/>房间 → SessionActor 路由"]
     SA["SessionActor × N<br/>单线程邮箱，固定 tick 节拍"]
     GM["IGameModule<br/>权威玩法逻辑"]
-    RT["RoomAffinity / RoomRouteTable<br/>阶段三多 worker 路由（已交付未接线）"]
     CPU["ProcessCpuGauge<br/>worker CPU 水位"]
+  end
+
+  subgraph CONTROL["Chorus.ControlHost（共享控制面）"]
+    ROOMDB["RoomControlStore<br/>owner / epoch / checkpoint / inbox"]
+    ROUTING["ControlRoutingSnapshot<br/>房间与连接路由快照"]
   end
 
   LOADTOOL["Chorus.LoadTool<br/>压测采样 /metrics"]
@@ -37,18 +41,20 @@ flowchart TB
   P -->|"HTTPS 平台回调"| INGRESS
   C <-->|"hello / welcome / ack / snapshot / resync"| WS
   SDK <-->|"同一 /ws 协议"| WS
-  INGRESS -->|"去重 + Tell 投递"| SA
+  INGRESS -->|"快照路由 + 去重投递"| SA
   WS -->|"welcome / snapshot"| GWIPC
   GWIPC <-->|"gw→eng 命令通道（所有网关共享）"| ENGIPC
   ENGIPC <-->|"eng→gw 快照 / 欢迎 / 心跳（按 Gateway:Id 后缀，引擎扇出）"| GWIPC
   ENGIPC --> REG --> SA --> GM
+  GWIPC -.->|"分配 / 新鲜路由快照"| ROOMDB
+  ENGIPC -.->|"worker lease / tick checkpoint"| ROOMDB
+  ROOMDB --> ROUTING
   GM -.->|"每 tick 读状态打包快照 V=1（SessionActor.cs:451 → WireSnapshot）"| SA
-  RT -.->|"等阶段三触发条件"| REG
   ENGIPC -.->|"进程级水位，仅 /metrics 采样"| CPU
   LOADTOOL -.->|"HTTP 采样"| OPS
 ```
 
-实线为已接线通路；虚线为已交付、等触发条件或按需启用。
+实线表示实时执行通路；虚线表示控制面 RPC/快照刷新等非逐消息通路。独立机器故障验收仍未完成。
 
 ## 单进程形态（默认）
 
@@ -71,14 +77,15 @@ flowchart TB
 | `SessionRegistry`（路由 + 生命周期） | `src/Chorus.Engine/Session/SessionRegistry.cs:15` |
 | `SessionActor`（单线程邮箱 + 固定 tick） | `src/Chorus.Engine/Session/SessionActor.cs:8` |
 | `IGameModule`（权威玩法契约） | `src/Chorus.Engine/Abstractions/IGameModule.cs:5` |
-| `RoomAffinity` / `RoomRouteTable`（阶段三，未接线） | `src/Chorus.Engine/Routing/RoomAffinity.cs:12`、同文件 `:53` |
+| 房间分配 / 持久权威 / 路由快照 | `src/Chorus.Control/RoomControlStore.cs`、`src/Chorus.Control/ControlRoutingSnapshot.cs` |
+| 历史 `RoomAffinity` / `RoomRouteTable` 原型（ControlHost 模式不使用） | `src/Chorus.Engine/Routing/RoomAffinity.cs:12`、同文件 `:53` |
 | 快照版本 V（线协议） | `src/Chorus.Protocol/Messages/ServerSnapshot.cs:20` |
 | `ProcessCpuGauge`（worker CPU 水位） | `src/Chorus.EngineHost/ProcessCpuGauge.cs` |
 | `Chorus.LoadTool`（压测与峰值采样） | `src/Chorus.LoadTool/Program.cs` |
 
 ## 快照与恢复契约
 
-引擎每 tick 产出权威快照（全量、JSON、带 schema 版本 `V=1` 上线）。恢复路径（房间进程重启后从快照重建 GameModule 状态）的契约已拍板（方案 A：快照内嵌恢复点，RoomLeader 重启后加载最新快照重建）并实现（`062cc68`），细节见 [snapshot-restore.md](./snapshot-restore.md)，故障接管 e2e 验证见 [overall-architecture.md](./overall-architecture.md) §17.3。
+引擎每 tick 产出线协议快照（全量 JSON，schema `V=1`）。ControlHost 模式还会把已提交 tick 保存为带 fencing 的持久 checkpoint，并由 EngineHost 在分配时恢复；独立运行模式不提供持久化重启恢复。独立主机接管仍是未完成的 rollout gate。详见[多机房间架构](../../architecture/multi-machine-rooms.md)与[存储决策](../../architecture/room-control-storage.md)。
 
 ## 相关页面
 

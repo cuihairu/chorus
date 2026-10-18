@@ -19,10 +19,10 @@ Related docs:
 | Form | Processes | Applicable |
 | --- | --- | --- |
 | Single-process | `Chorus.Server` | Default, debugging, small scale; ingress/WS/engine in the same process |
-| Split (single-gateway process) | `Chorus.Gateway` + `Chorus.EngineHost` | Gateway and authoritative logic on separate machines/containers; goes over IPC |
-| Three-process | `Chorus.Gateway` (`Gateway:Roles=platform`) + `Chorus.Gateway` (`Gateway:Roles=streamer`) + `Chorus.EngineHost` | platform-gw / streamer-gw gateway roles deployed on separate machines, room-worker carries multiple rooms; faces are shared with no duplication, see [Process Topology](../design/process-topology.md) §4 |
+| Split (single-gateway process) | `Chorus.Gateway` + `Chorus.EngineHost`; add `Chorus.ControlHost` when `Control:Url` is configured | Gateway and authoritative logic on separate machines/containers; IPC connects them; ControlHost enables shared room authority and durable checkpoints |
+| Split gateway roles | Two `Chorus.Gateway` instances (`Gateway:Roles=platform` / `streamer`) + `Chorus.EngineHost`; add `Chorus.ControlHost` for controlled rooms | Separate platform and streamer edges share the worker IPC fanout; multi-worker routing and durable recovery use ControlHost, see [Process Topology](../design/process-topology.md) §4 |
 
-The `/ingress`, `/ws`, `/faces`, `/metrics` of both forms are completely identical; `/sessions` and `/matches` are only exposed in the single-process form.
+The Gateway `/ingress`, `/ws`, `/faces`, `/metrics` surfaces are identical across split forms. `/sessions` is a `Chorus.Server` diagnostic endpoint; ControlHost exposes its own authenticated `/api/matches` management API.
 
 ## Build and Run
 
@@ -149,13 +149,13 @@ Logs use structured templates; key fields: `sessionId`, `clientId`, `tickId`, `e
 
 ## State and Restart
 
-- Session state is purely in-memory, no persistence (explicitly a non-goal). Restart means total loss: all clients disconnect and re-hello.
-- No cross-process state sharing: the single-process and split forms are each independent; do not run multiple Gateway/EngineHost groups sharing the same `Ipc:UnixSocketDir` prefix.
+- GameModule state is in memory while a worker is running. When EngineHost uses ControlHost durability, each committed tick also stores a fenced checkpoint and a replacement owner restores it; standalone mode without control durability has no restart recovery.
+- ControlHost is the shared room authority for configured Gateway/EngineHost processes. Gateway instances use distinct `Gateway:Id` channel suffixes and can share one EngineHost; do not run separate deployments on the same IPC channel names.
 - Graceful shutdown: process exit terminates sessions immediately; the upstream should handle reconnection.
 
 ## Split Mode Containerization
 
-- Three-process form: two Gateway containers configured with `Gateway:Roles=platform` / `Gateway:Roles=streamer` respectively (listener endpoints of unselected roles are not registered, returning 404). The two gateways can share the same EngineHost and the same socket directory: each Gateway is configured with a different `Gateway:Id` (e.g. `platform-gw` / `streamer-gw`), EngineHost is configured with `Ipc:GatewayIds=platform-gw,streamer-gw`, and the engine fans out publishing to the two eng→gw channels (`FanOutMessageBus`, 5c5d25c; guard `ThreeProcessEndToEndTests`). UDS/NamedPipe channel names are distinguished by id suffix; TCP/HTTP ports/URLs are not distinguished by id, so multiple gateways on the same machine use UDS/NamedPipe.
+- For split Gateway roles, configure two Gateways with `Gateway:Roles=platform` / `streamer` (unselected listeners return 404) and distinct `Gateway:Id` values to share the EngineHost fanout IPC. Controlled rooms also require `Chorus.ControlHost` and `Control:Url` on Gateway/EngineHost; ControlHost routing can use the TCP/HTTP advertised endpoint reported by each Worker. Static IPC with multiple gateways still needs UDS/NamedPipe to avoid port conflicts.
 - Two containers: Gateway and EngineHost; `Ipc:Transport=Tcp`, map `27500/27501` (HTTP then `27600/27601`).
 - Health checks probe `/health` separately (liveness); **Gateway readiness probes `/ready`** (200 = any engine message arrived within the window),
   on the EngineHost side use `chorus_snapshots_sent_total` in `/metrics` to determine whether the engine is producing snapshots.

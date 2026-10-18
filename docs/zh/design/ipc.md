@@ -48,7 +48,7 @@ title: 通信抽象（进程内/进程间）
 - gw→eng（命令）：`{prefix}_gw_to_eng.sock`（UDS）/ `{prefix}.gw_to_eng`（NamedPipe），不按网关区分，所有网关共享，引擎侧单 server 收口
 - eng→gw（快照/欢迎/心跳）：每个网关各一条。Gateway 配 `Gateway:Id` 后缀自己的通道（`{prefix}_eng_to_gw_{id}.sock` / `{prefix}.eng_to_gw.{id}`），id 为空则用旧名（`{prefix}_eng_to_gw.sock`）。EngineHost 配 `Ipc:GatewayIds` 列出全部网关 id，对每个 id 的通道各建一条客户端并扇出
 
-TCP/HTTP 传输的端口与 URL 不按 id 区分，同机多网关共享 worker 用 UDS/NamedPipe；跨机多网关的端口口径属阶段三（见 [进程拓扑](./process-topology.md) §4）。
+旧式静态 IPC 通道的 TCP/HTTP 端口与 URL 不按网关/Worker id 区分；同机多个网关共享 Worker 时应使用 UDS/NamedPipe。ControlHost 模式下，每个 Worker 上报 advertised endpoint，Gateway 根据路由快照动态建立目标 Worker 通道，也支持 TCP/HTTP。该路径已接线，独立主机网络验收仍未完成（见[进程拓扑](./process-topology.md) §4）。
 
 ### socket 文件生命周期（2026-10-16 决策）
 

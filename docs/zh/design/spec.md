@@ -98,7 +98,7 @@ title: 规格草案
   - 下发 `snapshot(forced=true, reason="lag")` 强制对齐
   - 通过 `resyncCooldownMs` 避免抖动/刷屏式 resync
 
-**快照版本与大小上限（阶段三）**：
+**快照版本与大小上限（已实现）**：
 
 - 每张快照带 `v = 1`（schema 版本）；客户端遇到未知版本必须丢弃该快照并保持现有 ACK 行为（lag 自然增长触发服务器强制 resync，形成闭环）。
 - 序列化后的 state 超过 `maxSnapshotBytes`（默认 1MB）时跳过本 tick 的发送并计入 `chorus_snapshots_oversize_total`；客户端因收不到快照而停止 ACK → lag 超限 → 状态缩回上限后由强制 resync 对齐。

@@ -60,7 +60,7 @@ All inputs of the same room must be ordered within a unique actor (the current s
 
 ### 5.2 Recovery path (recovery half)
 
-A room process restart needs an authoritative snapshot to fall back on. The `IGameModule.RestoreState(version, JsonElement)` and `GameModuleRestorer` provide module restoration; the current EngineHost path uses a ControlHost checkpoint through `ControlCheckpointRestorer`, and tick commits are fenced by the current owner instance and epoch. SQLite is the current default and remains a single-ControlHost recovery path, not a replicated HA store. PostgreSQL is selected but its provider and HA deployment are not yet accepted; independent process/network failure injection and storage-capacity acceptance remain open in todo.md §19 ROOM-07/09/11/12. The earlier in-memory `ISnapshotBackend` discussion below describes the pre-ControlHost design.
+A room process restart needs an authoritative snapshot to fall back on. The `IGameModule.RestoreState(version, JsonElement)` and `GameModuleRestorer` provide module restoration; EngineHost reads a ControlHost checkpoint through `ControlCheckpointRestorer`, and tick commits are fenced by the current owner instance and epoch. PostgreSQL 16+ is selected for the production multi-worker topology and its provider is integrated; SQLite remains the development/single-host default. Capacity, synchronous replication, and independent process/network failure acceptance remain open in todo.md §19 ROOM-07/09/11/12. The earlier in-memory `ISnapshotBackend` discussion below describes the pre-ControlHost design.
 
 ### 5.3 Cross-process routing form (routing table)
 

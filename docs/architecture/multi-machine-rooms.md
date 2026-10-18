@@ -13,9 +13,9 @@ Gateway 负责平台入口和客户端连接，Engine 承载权威状态，`IGam
 | 单机多房间 | 已实现 | `SessionRegistry` + `SessionActor`；达到容量时拒绝创建新 Actor，不淘汰现有房间，见 R01 |
 | 固定集合的多 Worker 路由 | 已接线，生产环境未验收 | 控制面 Room 目录为新房间稳定分配 Worker；Gateway 使用 owner/epoch 路由，EngineHost 校验输入与 tick。跨机部署和长时间负载仍未验收 |
 | TCP/HTTP 通信 | 端点配置已实现 | Worker/Gateway 可分别配置 advertised endpoint 与 listen host；真实跨机网络路径仍未验收，见 R04 |
-| 集群唯一权威 | 控制面 fencing 已接线 | HTTP 控制面租约与 SQLite 事务拒绝旧 epoch 的 tick / commit；分区期间实际 Actor 停止、发布边界和共享数据库高可用仍需验证，见 R03 |
+| 集群唯一权威 | 控制面 fencing 已接线 | HTTP 控制面租约与 SQLite/PostgreSQL 事务拒绝旧 epoch 的 tick / commit；分区期间实际 Actor 停止、发布边界和共享数据库高可用仍需验证，见 R03 |
 | 房间生命周期 | 控制面状态流已接线 | RoomControlStore 管理 Waiting/Active/Migrating/Recovering/Idle/Destroyed 等状态；平台开播/下播事件不会自动改变房间状态 |
-| 持久化与恢复 | 单机权威闭环已实现 | SQLite checkpoint 与 tick fenced commit、ControlCheckpointRestorer 恢复已接线；SQLite 仍是单 ControlHost 本机单写者，不代表 HA |
+| 持久化与恢复 | 控制面 checkpoint 闭环已接线 | SQLite/PostgreSQL checkpoint 与 tick fenced commit、ControlCheckpointRestorer 恢复已接线；生产 PostgreSQL 同步复制与容量尚未验收 |
 | 多 Gateway 事件可靠性 | 共享控制面范围内已实现 | 控制面持久 inbox/receipt 与事务提交确认已接线；不代表多个 ControlHost 间高可用 |
 | Worker 故障检测 | 按节点 lease 判定 | routing snapshot 区分 Worker 实例与 heartbeat lease；网络分区下旧进程恢复测试仍待独立环境 |
 | 动态扩缩容、迁移与自动接管 | 迁移状态流已接线；生产接管未验收 | 新房间容量分配、Move/Handoff/Ready/Abort 与控制路由快照已实现；跨机故障恢复、分区测试和容量门槛仍未形成生产验收闭环 |
@@ -86,8 +86,8 @@ flowchart LR
 | R03 旧 owner 未被 fencing | 部分关闭，ROOM-06/07 | 每 tick durable commit 校验 lease、实例、epoch、连续 tick；真实独立进程网络分区与 ControlHost 重启注入仍未完成。 |
 | R04 节点端点不可独立配置 | 已关闭，ROOM-04 | Worker/Gateway listen 与 advertised endpoint 分开配置；本机独立 TCP 端点已测，远端主机仍待 ROOM-12。 |
 | R05 生命周期未接入生产 | 已关闭，ROOM-02 | 睡眠、恢复、迁移、关闭等准入及控制循环已接入；分区恢复验收依赖 ROOM-07/09。 |
-| R06 恢复和快照缺少原子持久化 | 已关闭，ROOM-06（存储容量除外） | SQLite checkpoint 与 tick 在同一事务并带 fencing；恢复校验已接线。 SQLite 单写者容量/HA 保留为 ROOM-11。 |
-| R07 跨 Gateway 去重/确认不完整 | 已关闭，ROOM-08 | 可靠 inbox、持久 receipt、确认与 checkpoint 消费事务化；边界是当前共享 SQLite 控制权威。 |
+| R06 恢复和快照缺少原子持久化 | 已关闭，ROOM-06（存储容量除外） | SQLite/PostgreSQL checkpoint 与 tick 在同一事务并带 fencing；恢复校验已接线。生产容量/同步复制保留为 ROOM-11。 |
+| R07 跨 Gateway 去重/确认不完整 | 已关闭，ROOM-08 | 可靠 inbox、持久 receipt、确认与 checkpoint 消费事务化；一致性边界是当前共享的单 ControlHost 权威。 |
 | R08 Worker 健康与连接归属不完整 | 已关闭，ROOM-05 | 节点实例 lease、连接租约/generation、drain 已实现；跨机失联行为仍待 ROOM-12。 |
 | R09 全量路由查询压热路径 | 已关闭，ROOM-10 | 周期 routing snapshot 替代逐消息控制面查询，过期 fail-closed；tick checkpoint 仍同步写控制面，其容量属于 ROOM-11。 |
 
@@ -95,7 +95,7 @@ flowchart LR
 
 此架构扩展的是**房间数量**：每个房间同一时刻由一个 Worker 上的 `SessionActor` 权威推进；ControlHost 固定新房间归属，增加 Worker 后主要承接新房间。单个热点房间不会因增加 Worker 自动拆分，必须由该 Worker 的单房间 Actor 能力承载。节点 drain 阻止新分配并保留存量房间；迁移是显式的冻结、handoff、目标恢复/ready 流程，不是改变 Worker 列表就能完成的再均衡。
 
-当前控制权威仍由一个 ControlHost 提供，开发默认使用本机 SQLite WAL。ROOM-11 已按 patrol-1018-chorus.md 用户授权代决为 PostgreSQL 16+ 主库/同步备库；首版容量目标和硬件预算见 [存储决策](room-control-storage.md)。PostgreSQL provider 和 ControlHost 配置已接入，真实多机负载、同步复制、故障切换及性能门槛尚未验收，因此目前不能宣称生产 HA 或线性扩展。实现重放前不降低 checkpoint 频率。
+当前控制权威由一个 ControlHost 提供；SQLite 保留开发与单机默认，ROOM-11 已按用户授权选定 PostgreSQL 16+ 主库/同步备库用于多 Worker 生产拓扑。首版容量目标和硬件预算见 [存储决策](room-control-storage.md)。PostgreSQL provider 和 ControlHost 配置已接入，但本机容量门槛未通过，真实多机负载、同步复制和故障切换也未验收，因此目前不能宣称生产 HA 或线性扩展。实现重放前不降低 checkpoint 频率。
 
 自动故障接管的安全前提是旧 owner 在网络隔离但进程仍运行时也无法成功 durable commit，并且路由/连接状态能在新 owner ready 后收敛。现有 fencing 和迁移状态流有本机 HTTP/SQLite 与 Actor 级测试证据；尚缺独立机器、可控网络分区、进程暂停/恢复及 ControlHost 重启组合测试。ROOM-07、ROOM-09、ROOM-12 是验证门槛，不应被文档或单机测试标成已通过。
 
@@ -107,15 +107,15 @@ flowchart LR
 
 已完成的工程顺序为：容量保护（ROOM-01）→ 稳定分房间及生命周期/节点接线（ROOM-02～ROOM-05）→ 持久恢复、事件确认及权威状态流（ROOM-06～ROOM-09）→ 控制面路由热路径（ROOM-10）。ROOM-11 的后端、初始 SLO 和预算已代决，provider 的 PostgreSQL 集成测试已通过；生产容量基线仍待完成。ROOM-07/09/12 仍需要独立主机网络故障注入。详细验收条件以根目录 `todo.md` §19 为准。
 
-## 7. 2026-10-18 控制面接线复核
+## 7. 2026-10-19 控制面接线与存储复核
 
 当前实现将控制面部署为单独的 `Chorus.ControlHost` HTTP 服务，SQLite WAL 文件只由该进程本机访问；Worker 和 Gateway 通过带共享密钥的 HTTP API 注册、续租、查询目录及登记连接。新房间分配在 SQLite 写事务中完成，`RoomId → WorkerId + WorkerInstance + Epoch` 作为稳定归属；扩容后存量房间不自动搬迁，新房间会分配给有容量的健康 Worker。入口发送带 `AuthorityEpoch` 的 IPC，EngineHost 的 tick commit 在共享控制面核对 Worker lease、实例、epoch 和连续 tick；迁移先进入 Migrating 冻结 commit，handoff 后 epoch 递增并进入 Recovering。关键实现位于 `src/Chorus.Control/RoomControlStore.cs`、`src/Chorus.Control/ControlDatabase.cs`、`src/Chorus.EngineHost/EngineControl.cs`、`src/Chorus.Gateway/GatewayControl.cs` 和 `src/Chorus.ControlHost/Program.cs`。
 
-容量准入已改为满载拒绝新 Actor，不再以 LRU 悄悄销毁房间；可选的空房间清扫默认关闭。控制面待处理事件、去重回执和 checkpoint 已从房间目录 JSON 拆到独立 SQLite 表，事件按 `(room_id,event_key)` 建唯一索引，待处理数/回执数用事务内计数维护。这避免每条事件重写整个回执字典，也让目录读取不携带状态快照。
+容量准入已改为满载拒绝新 Actor，不再以 LRU 悄悄销毁房间；可选的空房间清扫默认关闭。控制面待处理事件、去重回执和 checkpoint 已从房间目录 JSON 拆到独立关系表，事件按 `(room_id,event_key)` 建唯一索引，待处理数/回执数用事务内计数维护。SQLite 保留开发/单机默认，PostgreSQL provider 已接入；房间 checkpoint 与可靠事件写入通过房间行锁降低并发冲突。
 
 ### 生产容量边界
 
-控制面仍是**单个 SQLite 写者**，不具备多副本高可用或写分片。当前 `SessionActor` 每个 tick 都提交一个状态 checkpoint；每个 checkpoint 写入 SQLite，并与输入确认处在同一事务。于是所有 Worker 的 tick 写入都汇聚到 ControlHost 的一个 SQLite 写锁，状态越大写入成本越高。此设计适合作为受控规模的正确性原型，不能仅凭多 Worker 分房间宣称线性扩容。生产放量前必须压测控制面写入延迟、锁等待、WAL 增长和最大 checkpoint，并确定外部数据库/分片或有明确定义恢复损失窗口的持久化策略。不能简单降低 checkpoint 频率：当前没有快照后的确定性事件重放，降低频率会扩大已确认事件对应的状态丢失窗口。
+ROOM-11 已选定 PostgreSQL 16+ 主库与独立物理机同步备库；SQLite 仍是开发/单机默认。当前本机单 PostgreSQL 容量试跑未达基线，尚无同步备库或独立故障域证据。`SessionActor` 每 tick 提交 checkpoint，并与输入确认置于同一事务；在本次 100 房试跑中测得 878.2 checkpoint/s、120.5 durable events/s，checkpoint p95 145.59ms，未满足 ROOM-11 门槛。该试跑不能证明生产容量。不能简单降低 checkpoint 频率：当前没有快照后的确定性事件重放，降低频率会扩大已确认事件对应的状态丢失窗口。
 
 此前发现的逐快照 HTTP 查询已改为控制面一次性返回节点、房间和连接的 routing snapshot；Worker 周期刷新并原子替换本地快照，Gateway 收包路径只读本地 epoch/state 快照，快照超过 1.5 秒即 fail-closed。新连接时 Worker 会主动刷新路由，避免初始欢迎消息因订阅缓存未建立而丢失。该实现消除了每条输出对控制面 API 的读取，但迁移/epoch 更新在节点间是周期传播，仍须通过多机迁移测试确认可接受的传播窗口；完整验收见 `todo.md` §19 ROOM-10/ROOM-12。
 

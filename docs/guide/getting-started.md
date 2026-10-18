@@ -8,7 +8,7 @@ title: Getting Started
 ## Environment
 
 - .NET SDK: `10.0.x` (see `global.json`)
-- Node.js: any supported LTS (used to build the VuePress documentation site; this repo sets no `engines` lower bound)
+- Node.js: a supported LTS release (used to build the VitePress documentation site; see `package.json` for the package manager scripts)
 
 ## Running the Server (Locally)
 
@@ -62,8 +62,8 @@ curl -X POST http://localhost:<serverPort>/ingress/test \
 ## Building the Documentation Site (Static Pages)
 
 ```bash
-npm install
-npm run docs:build
+pnpm install --frozen-lockfile
+pnpm docs:build
 ```
 
 Output directory: `docs/.vuepress/dist`

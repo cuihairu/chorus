@@ -271,7 +271,7 @@ The `Ipc` section maps to `Chorus.Messaging.Ipc.IpcSettings` (port/transport); h
 | `Ipc:ReadinessMaxSilenceMs` (Gateway) | `15000` | Maximum silence window for Gateway `GET /ready` to decide 200; beyond the window 503 (fail-closed) |
 | `Ipc:GatewayIds` (EngineHost) | empty | Comma-separated list of gateway identifiers (e.g. `platform-gw,streamer-gw`); the engine creates one eng→gw client per id and fans out publishing per id. Empty = old single-gateway channel |
 | `Ipc:WorkerId` (EngineHost) | empty | This worker's identifier (ASCII letters/digits/`-` only): suffixes its gateway→engine channel name for multiple workers. Empty = old single-worker channel name. Invalid characters fail at endpoint construction |
-| `Ipc:WorkerIds` (Gateway) | empty | Comma-separated list of worker identifiers; the Gateway creates one gateway→engine client per id and routes every session by stable `RoomAffinity`. Empty = legacy single-worker channel |
+| `Ipc:WorkerIds` (Gateway) | empty | Static worker list for legacy mode without ControlHost; routes by the `RoomAffinity` prototype. ControlHost mode selects workers from the owner/epoch routing snapshot instead |
 
 See the "Split Mode Readiness Probe" section in [Deployment and Security](./deployment.md) for details.
 

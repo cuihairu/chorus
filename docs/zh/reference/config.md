@@ -37,7 +37,7 @@ maxResyncReplayTicks = 128
 - `maxPendingEvents` / `eventEnqueueMaxWaitMs`（阶段二过载保护）
 - `tickTimeoutMs`（阶段二超时检测）
 - `maxSessions` / `idleEvictAfterMs`（阶段二会话生命周期）
-- `maxSnapshotBytes`（阶段三快照体积上限）
+- `maxSnapshotBytes`（序列化快照体积上限；超限跳过发送并计数）
 
 ## 参数说明
 
@@ -252,7 +252,7 @@ maxResyncReplayTicks = 128
 | `Faces:StreamerWs:AckPerMinute` | `600` | 每连接每分钟 ACK 上限，超限静默丢弃（计数 `/faces` → `streamerWs.ackDropped`） |
 | `Faces:StreamerWs:ResyncPerMinute` | `30` | 每连接每分钟 `resync` 补帧请求上限，超限丢弃（计数 `/faces` → `streamerWs.resyncDropped`；2026-10-13 帧同步 P2） |
 
-## Gateway 角色打包（拆分模式，三进程形态）
+## Gateway 角色打包（拆分模式）
 
 | 键 | 默认 | 说明 |
 |---|---|---|
@@ -269,7 +269,7 @@ maxResyncReplayTicks = 128
 | `Ipc:ReadinessMaxSilenceMs`（Gateway） | `15000` | Gateway `GET /ready` 判 200 的最大静默窗口，超窗 503（fail-closed） |
 | `Ipc:GatewayIds`（EngineHost） | 空 | 逗号分隔的网关标识列表（如 `platform-gw,streamer-gw`）；引擎对每个 id 各建一条 eng→gw 客户端并逐条扇出发布。空 = 旧单网关通道 |
 | `Ipc:WorkerId`（EngineHost） | 空 | 本 worker 标识（仅 ASCII 字母/数字/`-`）：后缀 gw→eng 通道名，使多个 worker 可被同一 Gateway 路由。空 = 旧单 worker 通道名。非法字符在端点构造时抛出 |
-| `Ipc:WorkerIds`（Gateway） | 空 | 逗号分隔的 worker 标识列表；Gateway 为每个 id 各建一条 gw→eng 客户端，并按稳定 `RoomAffinity` 路由每个 session。空 = 旧单 worker 通道 |
+| `Ipc:WorkerIds`（Gateway） | 空 | 旧式无 ControlHost 模式的静态 Worker 标识列表；Gateway 为每个 id 建 gw→eng 客户端并按 `RoomAffinity` 路由。ControlHost 模式忽略该静态路由列表，按 owner/epoch 路由快照选择 Worker |
 
 详见 [部署与安全](./deployment.md) 的「拆分模式就绪探针」。
 

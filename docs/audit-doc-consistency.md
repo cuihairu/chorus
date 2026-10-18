@@ -1,6 +1,9 @@
 
 # Docs–code consistency audit (2026-10-13)
 
+> Historical audit snapshot. Its 41-claim counts describe the 2026-10-13 tree, not current debt;
+> bilingual corrections and current documentation status are tracked in the root `todo.md`.
+
 Scope audited: README.md, README.zh.md, all 30 pages under docs/ + .vuepress/config.js + the
 public surface (GitHub About / homepageUrl / topics).
 Method: enumerate the doc surface → extract each claim → verify claim-by-claim with `file:line`

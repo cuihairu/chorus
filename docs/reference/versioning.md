@@ -79,9 +79,9 @@ Related documents:
 | `Session:*` default change | Allowed (noted in release notes) | Cautious (explicit configuration takes precedence) |
 | `IGameModule` contract change | Allowed (0.x, noted in release notes) | Forbidden |
 
-## No Persistence = No Data Migration
+## Persistence and Data Migration
 
-Session state is purely in memory (explicitly out of scope), so there is no data schema and no migration problem. All compatibility risk is concentrated on the **wire protocol** and **configuration** surfaces.
+Standalone Server session state is in memory and has no restart recovery. ControlHost mode persists fenced room checkpoints, so those deployments must keep checkpoint schema and `IGameModule.RestoreState` compatibility in view during upgrades. Wire protocol and configuration compatibility rules still apply independently.
 
 ## Upgrade Flow (Operations Perspective)
 

@@ -99,7 +99,7 @@ Server side:
   - Send down `snapshot(forced=true, reason="lag")` for forced alignment
   - Avoid jitter/spammy resync through `resyncCooldownMs`
 
-**Snapshot Version and Size Cap (phase three)**:
+**Snapshot Version and Size Cap (implemented)**:
 
 - Each snapshot carries `v = 1` (schema version); a client encountering an unknown version must discard that snapshot and keep its existing ACK behavior (lag naturally grows, triggering a forced resync from the server, forming a loop).
 - When the serialized state exceeds `maxSnapshotBytes` (default 1MB), this tick's send is skipped and counted into `chorus_snapshots_oversize_total`; the client stops ACKing because it receives no snapshots -> lag exceeds the limit -> once the state shrinks back below the cap, forced resync aligns it.

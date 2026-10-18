@@ -8,6 +8,8 @@ title: 总体架构与 Code Agent 实施规范
 **项目：** Chorus
 **代码仓库：** [https://github.com/cuihairu/chorus](https://github.com/cuihairu/chorus)
 
+> **历史设计与审计快照（2026-10-14）**：本文中的状态表、阶段门槛和未接线结论记录当时的代码状态，不代表当前实现。当前房间控制面与多 Worker 路径以 [多机房间架构](../../architecture/multi-machine-rooms.md)、[进程拓扑](./process-topology.md) 和 `todo.md` 的验收状态为准；本文保留作设计演进记录。
+
 > **实现状态标注约定：** `Implemented` / `Partial` / `Planned` / `Missing`。每项标注必须有 `file:line` 或测试证据。
 
 ---

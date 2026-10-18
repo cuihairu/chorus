@@ -42,7 +42,8 @@ The single-process mode (Chorus.Server) has no IPC hop, so `chorus_ipc_publish_f
 | `chorus_sessions` | gauge | Current live Session count |
 | `chorus_session_start_failures_total` | counter | Sessions refused to start (snapshot restoration fail-closed / module construction threw). These failures have no actor diagnostics to read and are invisible in `/sessions` — this counter is the only exposed surface (output by both Server and EngineHost) |
 | `chorus_session_idle_evictions_total` | counter | Cumulative evictions by the idle sweeper (no clients and exceeds `IdleEvictAfterMs`). A drop in the `chorus_sessions` gauge cannot distinguish normal endings from evictions; this counter gives the eviction-side ground truth; an abnormal rise means the idle threshold is too aggressive or clients are churning in bulk |
-| `chorus_session_capacity_evictions_total` | counter | Cumulative count of oldest sessions evicted after reaching the `MaxSessions` limit (evicted clients reconnect with a new session id). An abnormal rise means capacity is undersized or a session storm |
+| `chorus_session_capacity_evictions_total` | counter | Compatibility counter; current `SessionRegistry` never evicts at capacity, so it remains 0. `MaxSessions` rejects new sessions instead; monitor `chorus_session_capacity_rejections_total` for refused starts |
+| `chorus_session_capacity_rejections_total` | counter | Cumulative number of new Session requests rejected at `MaxSessions`; rising values mean capacity is undersized or a session storm is occurring |
 | `chorus_events_ingested_total` | counter | Events entering the Session event lane (after dedup, before scheduling) |
 | `chorus_events_applied_total` | counter | Events settled into authoritative state within a tick |
 | `chorus_events_merged_total` | counter | Events merged by coalescing (merging does not lose counts, see [Frame Sync Design](../design/frame-sync.md)) |

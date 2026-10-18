@@ -78,9 +78,9 @@ title: 版本策略与兼容性
 | `Session:*` 默认值变更 | 允许（发布说明标注） | 谨慎（显式配置优先） |
 | `IGameModule` 契约变更 | 允许（0.x，发布说明标注） | 禁止 |
 
-## 无持久化 = 无数据迁移
+## 持久化与数据迁移
 
-会话状态纯内存（明确非目标），不存在数据 schema 与迁移问题。所有兼容性风险集中在**线协议**与**配置**两面。
+独立 Server 模式的会话状态纯内存，不提供重启恢复；配置 ControlHost 的 EngineHost 会持久化 fenced checkpoint，因此部署升级还需遵守 `docs/architecture/room-control-storage.md` 中的存储与恢复约束。所有兼容性风险仍需同时检查**线协议**、**配置**与**checkpoint schema**。
 
 ## 升级流程（运维视角）
 

@@ -80,7 +80,7 @@ The frame sync **skeleton on the engine side is already in the code**; this sect
 | Bounded event channel + bounded wait | `SessionActor.cs:75`（`MaxPendingEvents`）、`:175`（`EventEnqueueMaxWaitMs`） |
 | Per-tick event cap | `SessionConfig.cs:7`（`MaxEventsPerTick = 200`） |
 | Snapshot byte cap | `SessionConfig.cs:21`（`MaxSnapshotBytes = 1_048_576`） |
-| **No persistence = no replay** | `docs/reference/versioning.md:72-74`("session state is pure in-memory, explicitly out of scope") |
+| **Checkpoint persistence is not replay** | ControlHost stores committed room checkpoints, but does not retain/replay a deterministic event/frame log; snapshot history is not a recording stream |
 
 **Conclusion**: frame number generation, delivery with snapshots, ACK, forced resync, backpressure, deduplication — **all implemented**. The gaps are in §3.
 
@@ -93,7 +93,7 @@ The frame sync **skeleton on the engine side is already in the code**; this sect
 | G1 | The client cannot get "which frame each event belongs to" | The snapshot only carries `tickId` (`ServerSnapshot.cs:8`), without per-event frame attribution; events are drained per tick and then deleted (`SessionActor.cs:413-415`) | **Implemented (P2)**: `frameEvents` envelope field (§4.2) |
 | G2 | No frame history buffer | The engine only keeps the current tick's events; no ring buffer | **Implemented (P2)**: `FrameHistory` byte-capped ring buffer (§4.3) |
 | G3 | No client-side "fetch a given frame" message | The wire protocol only has server→client `snapshot`; `ClientAck` only carries `lastAppliedTickId` as a progress field (plus `sessionId`/`clientId`/`clientTimeMs`, `src/Chorus.Protocol/Messages/ClientAck.cs:3-9`) | **Implemented (P2)**: `resync` message + full IPC chain (§4.3) |
-| G4 | No replay/recording alignment | No persistence (`versioning.md:72-74`); snapshots are not persisted to disk | **Explicitly not doing it** (unless the snapshot-restore contract lands first) |
+| G4 | No replay/recording alignment | Checkpoints restore current room state, but no durable frame/event log is stored | **Explicitly not doing it** |
 | G5 | No client SDK | Everything in src in this repo is server-side; no client library | **Implemented (P3)**: `Chorus.Client.ChorusClient` (minimal entry: handshake + callback + ACK sampling + resync cooldown; no auto-reconnect, see [Quickstart](../guide/quickstart-frame-sync.md)) |
 | G6 | Client rhythm/interpolation untested | No runnable client implementation | **Untested** |
 

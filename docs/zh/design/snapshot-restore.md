@@ -1,7 +1,6 @@
 # 快照恢复：契约、介质与接线边界
 
-> 上游问题见 [进程拓扑 §5](./process-topology.md)。本页拍板模块恢复契约，并评估持久化介质；
-> 生产接线仍按阶段三门控执行。
+> 上游设计记录见 [进程拓扑 §5](./process-topology.md)。本文保留模块恢复契约的决策历史；当前 ControlHost checkpoint 接线及存储边界见[多机房间架构](../../architecture/multi-machine-rooms.md)和[存储决策](../../architecture/room-control-storage.md)。
 
 ## 结论先行
 
@@ -9,7 +8,7 @@
 回写入口——这是恢复闭环落地前的第一个契约缺口。本文给出三个接口形状选项 + 必须一并
 拍板的四个语义点，**推荐方案 A**（回写入口进 `IGameModule`，必选成员）。
 
-## 现状盘点（代码事实）
+## 现状盘点（2026-10-14 历史代码事实）
 
 - `IGameModule`（`src/Chorus.Engine/Abstractions/IGameModule.cs`）四成员：
   `Name` / `ApplyEvents(tickId, events)` / `GetStateSnapshot()` / `Dispose`。
@@ -108,12 +107,10 @@ public interface ISnapshotRestorable { void RestoreState(long version, JsonEleme
 - **fail-closed**：未知 `version`（< 1）/ 超 `MaxSnapshotBytes`（复用 tick 侧同口径体积门）/
   模块恢复抛异常，一律抛 `SnapshotRestoreException`（携带 SessionId）→ 会话拒绝启动，
   由 `SessionRegistry.StartFailures` 计入可观测（失败的会话没有 actor 诊断可读）。
-- **无快照 = 全新启动**：`ISnapshotRecoverySource.TryGet` 返回 false 即全新启动，今天的默认行为不变。
+- **无快照 = 全新启动**：`ISnapshotRecoverySource.TryGet` 返回 false 即全新启动；ControlHost 模式由持久 checkpoint recovery source 提供状态。
 - **样本模块**：`SampleGameModule.RestoreState` 只恢复会话私有状态（`tickId`/`matchId` +
   三类 per-user 计数）；`match` 节是跨会话 store 投影，不属模块私有恢复契约（恢复后随新事件重建）。
-- **无生产接线**：两个 `Program.cs` 不注册默认恢复源，构造参数默认 `null` = 今天行为完全
-  不变。持久化介质与写盘时机是独立后续决策（生产接线随拓扑工作）；`ISnapshotRecoverySource`
-  是缝——注入哪个实现由未来决策给。
+- **本文原始未接线结论已过时**：ControlHost 模式现由 EngineHost 从 RoomControlStore checkpoint 恢复；不启用 ControlHost 时仍按全新会话启动。当前验收缺口是独立主机接管与故障注入，见 ROOM-07/09/12。
 
 §7 验收清单 1-6 由 `ModuleRestoreTests`（11 测试）金测覆盖；第 7 条由
 [versioning.md](../reference/versioning.md) 兼容面记录（`IGameModule` 破坏性变更 + 恢复语义）。

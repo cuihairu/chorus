@@ -49,7 +49,7 @@ Layered by "implementation complexity vs performance gain" (the order you mentio
 - gw→eng (commands): `{prefix}_gw_to_eng.sock` (UDS) / `{prefix}.gw_to_eng` (NamedPipe), not distinguished per gateway, shared by all gateways, with a single server on the engine side as the sink
 - eng→gw (snapshots/welcome/heartbeat): one per gateway. The Gateway configures its own channel with a `Gateway:Id` suffix (`{prefix}_eng_to_gw_{id}.sock` / `{prefix}.eng_to_gw.{id}`); if id is empty, use the old name (`{prefix}_eng_to_gw.sock`). EngineHost configures `Ipc:GatewayIds` to list all gateway ids, creating one client per id's channel and fanning out
 
-TCP/HTTP transport ports and URLs are not distinguished by id; multiple gateways on the same machine sharing a worker use UDS/NamedPipe; the port scheme for multi-machine multiple gateways belongs to phase three (see [Process Topology](./process-topology.md) §4).
+Legacy static IPC channels do not distinguish TCP/HTTP ports and URLs by gateway/worker id; multiple local gateways sharing a worker should use UDS/NamedPipe. In ControlHost mode, each Worker reports its advertised endpoint and Gateway builds the selected worker channel from the routing snapshot, including TCP/HTTP endpoints. This path is wired; independent-host network acceptance remains open (see [Process Topology](./process-topology.md) §4).
 
 ### Socket File Lifecycle (2026-10-16 Decision)
 

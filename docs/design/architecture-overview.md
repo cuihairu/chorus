@@ -5,9 +5,9 @@ title: Current Architecture Overview (Process Topology and Components)
 
 # Current Architecture Overview
 
-Code-verified component and process topology (verified 2026-10-13). The single-process form (`Chorus.Server`) and the three-process form (two `Chorus.Gateway` + `Chorus.EngineHost`) share the same set of faces and protocols; the only differences are the process boundaries and the IPC channels.
+Code-verified topology (refreshed 2026-10-19). Standalone `Chorus.Server` runs without the control plane. Durable split mode uses `Chorus.ControlHost` as shared room authority alongside one or more `Chorus.Gateway` instances and `Chorus.EngineHost`; production multi-host failure and capacity gates remain open.
 
-## Three-Process Form (Split Mode)
+## Split Mode With ControlHost
 
 ```mermaid
 flowchart TB
@@ -28,8 +28,12 @@ flowchart TB
     REG["SessionRegistry<br/>房间 → SessionActor 路由"]
     SA["SessionActor × N<br/>单线程邮箱，固定 tick 节拍"]
     GM["IGameModule<br/>权威玩法逻辑"]
-    RT["RoomAffinity / RoomRouteTable<br/>阶段三多 worker 路由（已交付未接线）"]
     CPU["ProcessCpuGauge<br/>worker CPU 水位"]
+  end
+
+  subgraph CONTROL["Chorus.ControlHost（共享控制面）"]
+    ROOMDB["RoomControlStore<br/>owner / epoch / checkpoint / inbox"]
+    ROUTING["ControlRoutingSnapshot<br/>房间与连接路由快照"]
   end
 
   LOADTOOL["Chorus.LoadTool<br/>压测采样 /metrics"]
@@ -38,18 +42,20 @@ flowchart TB
   P -->|"HTTPS 平台回调"| INGRESS
   C <-->|"hello / welcome / ack / snapshot / resync"| WS
   SDK <-->|"同一 /ws 协议"| WS
-  INGRESS -->|"去重 + Tell 投递"| SA
+  INGRESS -->|"快照路由 + 去重投递"| SA
   WS -->|"welcome / snapshot"| GWIPC
   GWIPC <-->|"gw→eng 命令通道（所有网关共享）"| ENGIPC
   ENGIPC <-->|"eng→gw 快照 / 欢迎 / 心跳（按 Gateway:Id 后缀，引擎扇出）"| GWIPC
   ENGIPC --> REG --> SA --> GM
+  GWIPC -.->|"分配 / 新鲜路由快照"| ROOMDB
+  ENGIPC -.->|"worker lease / tick checkpoint"| ROOMDB
+  ROOMDB --> ROUTING
   GM -.->|"每 tick 读状态打包快照 V=1（SessionActor.cs:451 → WireSnapshot）"| SA
-  RT -.->|"等阶段三触发条件"| REG
   ENGIPC -.->|"进程级水位，仅 /metrics 采样"| CPU
   LOADTOOL -.->|"HTTP 采样"| OPS
 ```
 
-Solid lines are wired paths; dashed lines are delivered, awaiting trigger conditions, or enabled on demand.
+Solid lines are realtime execution paths; dashed lines are control-plane RPCs and snapshot refreshes rather than per-message calls. Independent-machine failure acceptance remains open.
 
 ## Single-Process Form (Default)
 
@@ -72,14 +78,15 @@ Solid lines are wired paths; dashed lines are delivered, awaiting trigger condit
 | `SessionRegistry` (routing + lifecycle) | `src/Chorus.Engine/Session/SessionRegistry.cs:15` |
 | `SessionActor` (single-threaded mailbox + fixed tick) | `src/Chorus.Engine/Session/SessionActor.cs:8` |
 | `IGameModule` (authoritative gameplay contract) | `src/Chorus.Engine/Abstractions/IGameModule.cs:5` |
-| `RoomAffinity` / `RoomRouteTable` (phase three, not wired) | `src/Chorus.Engine/Routing/RoomAffinity.cs:12`, same file `:53` |
+| Room assignment / durable authority / routing snapshot | `src/Chorus.Control/RoomControlStore.cs`, `src/Chorus.Control/ControlRoutingSnapshot.cs` |
+| Historical `RoomAffinity` / `RoomRouteTable` prototype (not used by ControlHost mode) | `src/Chorus.Engine/Routing/RoomAffinity.cs:12`, same file `:53` |
 | Snapshot version V (wire protocol) | `src/Chorus.Protocol/Messages/ServerSnapshot.cs:20` |
 | `ProcessCpuGauge` (worker CPU water level) | `src/Chorus.EngineHost/ProcessCpuGauge.cs` |
 | `Chorus.LoadTool` (load testing and peak sampling) | `src/Chorus.LoadTool/Program.cs` |
 
 ## Snapshot and Restore Contract
 
-The engine produces an authoritative snapshot every tick (full, JSON, shipped with schema version `V=1`). The contract for the restore path (rebuilding GameModule state from a snapshot after the room process restarts) has been decided (Option A: the snapshot embeds a restore point; after restart the RoomLeader loads the latest snapshot to rebuild) and implemented (`062cc68`); see [snapshot-restore.md](./snapshot-restore.md) for details, and [overall-architecture.md](./overall-architecture.md) §17.3 for failover e2e verification.
+The engine produces a wire snapshot every tick (full JSON, schema version `V=1`). In ControlHost mode, a committed tick is also stored as a fenced durable checkpoint and restored by EngineHost on assignment; standalone mode has no durable restart recovery. Independent-host failover remains an open rollout gate. See [multi-machine room architecture](../architecture/multi-machine-rooms.md) and [storage decision](../architecture/room-control-storage.md).
 
 ## Related Pages
 

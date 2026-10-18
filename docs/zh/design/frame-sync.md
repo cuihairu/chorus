@@ -79,7 +79,7 @@ title: 帧同步（权威 Tick + 快照）
 | 有界事件通道 + 有界等待 | `SessionActor.cs:75`（`MaxPendingEvents`）、`:175`（`EventEnqueueMaxWaitMs`） |
 | 每 tick 事件上限 | `SessionConfig.cs:7`（`MaxEventsPerTick = 200`） |
 | 快照字节上限 | `SessionConfig.cs:21`（`MaxSnapshotBytes = 1_048_576`） |
-| **无持久化 = 无回放** | `docs/reference/versioning.md:72-74`（「会话状态纯内存，明确非目标」） |
+| **checkpoint 持久化不等于回放** | ControlHost 保存已提交房间状态，但不保留/重放确定性事件帧日志；checkpoint 不是录播流 |
 
 **结论**：帧号产生、随快照下发、ACK、强制 resync、背压、去重——**都已实现**。缺口在 §3。
 
@@ -92,7 +92,7 @@ title: 帧同步（权威 Tick + 快照）
 | G1 | 客户端拿不到「每条事件属于哪一帧」 | 快照只带 `tickId`（`ServerSnapshot.cs:8`），不带 per-event 帧归属；事件按 tick 排空后即删（`SessionActor.cs:413-415`） | **已实现（P2）**：`frameEvents` 信封字段（§4.2） |
 | G2 | 没有帧历史缓冲 | 引擎只保留当前 tick 的事件，无 ring buffer | **已实现（P2）**：`FrameHistory` 按字节上限的 ring buffer（§4.3） |
 | G3 | 没有客户端「拉取某帧」的消息 | 线协议只有 server→client 的 `snapshot`；`ClientAck` 只带 `lastAppliedTickId` 作为进度字段（另有 `sessionId`/`clientId`/`clientTimeMs`，`src/Chorus.Protocol/Messages/ClientAck.cs:3-9`） | **已实现（P2）**：`resync` 消息 + 完整 IPC 链（§4.3） |
-| G4 | 没有回放/录播对齐 | 无持久化（`versioning.md:72-74`），快照不落盘 | **明确不做**（除非先落 snapshot-restore 契约） |
+| G4 | 没有回放/录播对齐 | checkpoint 可恢复当前房间状态，但没有持久化帧/事件日志 | **明确不做** |
 | G5 | 没有客户端 SDK | 仓内 src 全是 server 侧，无 client 库 | **已实现（P3）**：`Chorus.Client.ChorusClient`（最小入口：握手 + 回调 + ACK 抽样 + resync 冷却；无自动重连，见 [快速接入](../guide/quickstart-frame-sync.md)） |
 | G6 | 客户端节拍/插值未实测 | 无客户端实现可跑 | **未实测** |
 
@@ -175,7 +175,7 @@ title: 帧同步（权威 Tick + 快照）
 
 **回放 / 录播对齐**：
 
-- **明确不做**。无持久化（`versioning.md:72-74`），快照不落盘，没有帧序列可对齐。
+- **明确不做**。持久 checkpoint 只保存当前状态，不记录帧/事件历史，无法提供确定性回放或录播对齐。
 - 若未来要回放，前置依赖：先落 snapshot-restore 契约（`docs/design/snapshot-restore.md`），再谈按帧对齐。
 - 录播回放对齐的业界做法（Twitch `reconnect_url`、YouTube 轮询窗口）都是**直播续传**，不是**录播对齐**；录播对齐在弹幕游戏里**未找到公开资料**。
 

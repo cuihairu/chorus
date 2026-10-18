@@ -69,7 +69,7 @@ dotnet run --project src/Chorus.LoadTool -- --url http://127.0.0.1:5168 \
 
 - `ingress.ok` / `dup` / `401` / `429` / `503` / `err`：入口受理、判重、签名拒绝、限流、事件道满、其他错误——对应 `chorus_ingress_*`。健康运行下 `dup` 应约等于配置的 `--dup-rate` 占比；`dup` 远高于它说明 eventId 在客户端侧互撞（2026-10-15 修复的缺陷：producer 各自编号导致大量事件被判重吞掉，事件根本没进引擎——此时 CPU 测量毫无意义）。
 - `ws.snaps` / `acks` / `maxLag` / `reconnects`：客户端收到快照、发出 ACK、最大滞后 tick、断连次数。
-- 结束时汇总；若给了 `--engine-metrics`，另打印引擎侧三个峰值（`engine peaks: sessions=… tickMs=… cpuPercent=…`，对应阶段三触发条件「单 worker 峰值 CPU > 60%」「单机房间数达数百量级」），并可（`PrintEngineMetricsAsync`）打印一次 `/metrics` 原文。注意：`cpuPercent` 依赖 `chorus_process_cpu_percent`，**只有拆分模式的 EngineHost `/metrics` 发该指标**（`RenderEngine`）——指向单体 Server 的 `/metrics` 时恒为 `-`；阶段三门控测量必须跑 Gateway+EngineHost 并把 `--engine-metrics` 指向 EngineHost。
+- 结束时汇总；若给了 `--engine-metrics`，另打印引擎侧三个峰值（`engine peaks: sessions=… tickMs=… cpuPercent=…`），并可（`PrintEngineMetricsAsync`）打印一次 `/metrics` 原文。注意：`cpuPercent` 依赖 `chorus_process_cpu_percent`，**只有拆分模式的 EngineHost `/metrics` 发该指标**（`RenderEngine`）——指向单体 Server 的 `/metrics` 时恒为 `-`。该采样提供单 Worker 资源证据，不替代 `todo.md` 的多机容量与故障验收。
 
 典型用法：先低速率跑通（`--rate 10 --duration 30`），再逐步加到目标速率；观察 `503`（事件道满，说明速率超过引擎消费能力）、`429`（ingress 限流）与 `maxLag`（慢客户端是否靠 resync 追回）。
 

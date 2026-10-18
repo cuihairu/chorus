@@ -41,7 +41,8 @@ scrape_configs:
 | `chorus_sessions` | gauge | 当前存活 Session 数 |
 | `chorus_session_start_failures_total` | counter | 拒绝启动的 Session 数（快照恢复 fail-closed / 模块构造抛异常）。这类失败没有 actor 诊断可读，`/sessions` 看不到——本计数是唯一暴露面（Server 与 EngineHost 均输出） |
 | `chorus_session_idle_evictions_total` | counter | 空闲清扫累计驱逐数（无客户端且超过 `IdleEvictAfterMs`）。`chorus_sessions` gauge 下降无法区分正常结束与被驱逐，本计数给出驱逐侧真值；异常升高说明空闲阈值过激或客户端批量流失 |
-| `chorus_session_capacity_evictions_total` | counter | 达到 `MaxSessions` 上限驱逐最旧会话累计数（被逐客户端按新 session id 重连）。异常升高说明容量配小了或遭遇会话风暴 |
+| `chorus_session_capacity_evictions_total` | counter | 兼容性计数器；当前 `SessionRegistry` 达到上限时不会驱逐，故该值保持 0。容量满会拒绝新 Session，应观察 `chorus_session_capacity_rejections_total` |
+| `chorus_session_capacity_rejections_total` | counter | 达到 `MaxSessions` 后拒绝创建新 Session 的累计数；持续增长说明容量不足或出现会话风暴 |
 | `chorus_events_ingested_total` | counter | 进入 Session 事件道的事件数（去重后、调度前） |
 | `chorus_events_applied_total` | counter | 在 tick 中结算进权威状态的事件数 |
 | `chorus_events_merged_total` | counter | 被归并合并的事件数（归并不丢计数，见 [帧同步设计](../design/frame-sync.md)） |
@@ -53,7 +54,7 @@ scrape_configs:
 | `chorus_tick_duration_ms` | gauge | 最近 tick 处理耗时（取所有 Session 最大值） |
 | `chorus_mailbox_depth` | gauge | 邮箱深度（控制道 + 事件道，取最大值） |
 | `chorus_ack_lag_ticks` | gauge | 客户端 ACK 滞后 tick 数（取所有客户端最大值） |
-| `chorus_process_cpu_percent` | gauge | worker 进程 CPU 占机器总容量百分比（自上次抓取以来的均值，全核忙=100；仅 EngineHost /metrics 输出，首抓无前值时省略该行）。峰值测量仪器（todo §4）：配合 LoadTool `--engine-metrics` 周期采样，进程拓扑阶段三触发条件「单 worker 高峰 CPU > 60%」由此可数 |
+| `chorus_process_cpu_percent` | gauge | worker 进程 CPU 占机器总容量百分比（自上次抓取以来的均值，全核忙=100；仅 EngineHost /metrics 输出，首抓无前值时省略该行）。配合 LoadTool `--engine-metrics` 采样单 Worker 资源；是否扩容与多机验收门槛见 `todo.md`，该指标本身不是生产容量证明 |
 
 ### 快照
 

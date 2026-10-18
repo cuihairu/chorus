@@ -105,7 +105,7 @@ under which it holds.
 - **Rejected alternative**: the gateway builds sessions locally and syncs to the engine — two
   authoritative copies, and every rule written twice in the split shape.
 - **Constraints**: holds within a single worker's session capacity cap (`SessionConfig.cs:17`,
-  default 200, tunable); multi-worker is the planned phase three (see "Known limits" below).
+  default 200, tunable). ControlHost mode routes rooms across workers; production multi-host validation remains open.
 
 ### 3. Single process first, faces split up front (not three processes from day one)
 
@@ -134,20 +134,19 @@ under which it holds.
   transports (latency and throughput budgets to be assessed by the deployer).
   Channel details: [IPC design](./design/ipc.md).
 
-### 5. No database: in-memory state + a snapshot recovery seam (not persistent storage)
+### 5. ControlHost checkpoints for controlled rooms; standalone mode remains in memory
 
-- **Decision**: all runtime state is in memory; a session may restore from a snapshot at birth
-  (the `ISnapshotRecoverySource` seam, `src/Chorus.Engine/Abstractions/SnapshotRecovery.cs`);
-  the current production assembly registers no recovery source (always null).
-- **Reason**: the lifetime of a live-stream interaction session ≈ the lifetime of the stream
-  itself; resuming a session across restarts is not a current requirement. Dropping the storage
-  dependency simplifies the deployment surface, failure modes, and latency.
-- **Rejected alternative**: built-in SQLite/Redis persistence (per-tick write amplification and
-  recovery complexity, in exchange for a resume capability that is not currently needed).
-  Option comparison: [snapshot restore](./design/snapshot-restore.md) (option A shipped).
-- **Constraints**: process restart = session terminated (room leaderboards can be rebuilt via the
-  module restore path, see [leaderboard](./guide/leaderboard.md)); products needing cross-restart
-  settlement must implement it outside.
+- **Decision**: standalone `Chorus.Server` keeps runtime state in memory. With `Control:Url`,
+  EngineHost commits each room tick with an owner/epoch fence and ControlHost stores a durable
+  checkpoint; a replacement owner restores the latest committed checkpoint.
+- **Reason**: controlled multi-worker rooms need shared authority and recoverable state, while
+  standalone development retains a simple no-database path.
+- **Storage choice**: PostgreSQL 16+ primary with a synchronous standby is selected for production
+  multi-worker use; SQLite remains the development/single-host default. Provider capacity and
+  independent-host replication/failover remain open in `todo.md` ROOM-11/12.
+- **Constraints**: checkpoint persistence does not provide event replay or prove cross-host HA.
+  See [Room Control Storage](./architecture/room-control-storage.md) and
+  [Multi-Machine Rooms](./architecture/multi-machine-rooms.md).
 
 ### 6. Platform ingest: fail-closed signature routing (not permissive ingest)
 
@@ -192,23 +191,22 @@ under which it holds.
 
 | Constraint | This architecture | Cost / where it does not apply |
 |---|---|---|
-| Scale | Hundreds of rooms per worker (800 rooms × 3 clients measured with zero loss, peak CPU 27.6, todo.md:156) | Multi-worker not shipped yet (phase three) |
+| Scale | A historical 800-room × 3-client run is functional evidence, not a production capacity claim | ControlHost multi-worker routing is wired; ROOM-07/09/11/12 production gates remain open |
 | Interaction latency | One tick (66ms) + delivery, one snapshot per tick | Not for millisecond-grade competitive adjudication (FPS/fighting) |
-| Consistency | Server-authoritative + fail-closed ingest + idempotent projection | No cross-restart session resume (no persistence) |
+| Consistency | Server-authoritative + fail-closed ingest + idempotent projection | ControlHost restores committed checkpoints; standalone Server has no durable restart recovery; neither mode provides replay |
 | Input surface | Platform callbacks + streamer WS rendering read-only; clients cannot write gameplay | Viewers cannot issue gameplay commands (a small abuse surface — both a benefit and a limit) |
 
-In one sentence: **Chorus trades competitive-grade latency and persistence for strong authority and
-operability under massive, low-frequency audience input.**
-If product constraints change (persistent sessions needed, competitive input needed), the
-corresponding decisions (5, 1) need to be reopened.
+In one sentence: **Chorus trades competitive-grade latency and deterministic replay for strong authority and
+operability under massive, low-frequency audience input.** If product constraints change (durable
+replay or competitive input is needed), the corresponding decisions (5, 1) need to be reopened.
 
 ## Known limits and follow-ups
 
 An honest list of limits (detailed data and fix progress in `todo.md:156`):
 
-- **Phase-three multi-worker not shipped**: a single worker's peak CPU has been observed past the
-  60% trigger line (800 rooms + 800 WS + ~1k events/s); the multi-worker routing/takeover machinery
-  (`RoomAuthorityRegistry` etc.) exists as tested scaffolding, wiring awaits a decision.
+- **Production multi-host acceptance remains open**: ControlHost assignment, owner/epoch fencing,
+  durable checkpoints and routing snapshots are wired. Independent-machine partition/migration
+  tests and selected PostgreSQL capacity/replication gates remain open in `todo.md` ROOM-07/09/11/12.
 - **Concurrent snapshot fan-out at the gateway**: eng→gw is a single socket + single lock with
   serial dispatch; at 2.65M snapshots, dropped frames are recovered by resync (architecture-level
   backlog).
@@ -217,8 +215,8 @@ An honest list of limits (detailed data and fix progress in `todo.md:156`):
 - **Leaderboard `AddDelta` ledger is unbounded**: one dedup record per board per sourceId;
   long-running high-rate sources grow memory. Live projection should always use `UpsertScore`
   (see the [leaderboard](./guide/leaderboard.md) limits).
-- **Matchmaking has no host wiring**: `Matchmaker` is a library capability; the product semantics
-  of join/start are undecided (see the [matchmaking](./guide/matchmaking.md) limits).
+- **The library Matchmaker has no host wiring**: ControlHost separately exposes streamer queue and
+  match APIs; it is distinct from the in-process library. See the [matchmaking](./guide/matchmaking.md) limits.
 
 ## Related pages
 

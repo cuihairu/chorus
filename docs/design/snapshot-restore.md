@@ -3,7 +3,7 @@
 
 > Status: **Option A proxy-decided (2026-10-14) and landed** (`062cc68`, 11 tests). This document retains the options,
 > tradeoffs and recommendation as a decision record; the current implementation is in the "Current Implementation" section at the end, and acceptance is in §7.
-> See the upstream problem in [process-topology.md §5](./process-topology.md).
+> The current ControlHost checkpoint wiring and storage boundary are described in [Multi-Machine Rooms](../architecture/multi-machine-rooms.md) and [Room Control Storage](../architecture/room-control-storage.md). Historical decision sections are labeled below.
 
 ## Conclusion First
 
@@ -11,7 +11,7 @@
 "rebuild module state from an authoritative snapshot"——this is the first contract gap to close before landing the recovery loop. This document gives three interface shape options + the four semantic points that must be
 proxy-decided together, **recommending Option A** (write-back entry goes into `IGameModule`, as a required member).
 
-## Current State Inventory (code facts)
+## Original State Inventory (2026-10-14 code facts)
 
 - `IGameModule` (`src/Chorus.Engine/Abstractions/IGameModule.cs`) has four members:
   `Name` / `ApplyEvents(tickId, events)` / `GetStateSnapshot()` / `Dispose`.
@@ -22,7 +22,7 @@ proxy-decided together, **recommending Option A** (write-back entry goes into `I
   (`JsonElement`); the snapshot already carries schema version `v = 1` (line protocol `ServerSnapshot.v`, 2d157fa).
 - The size gate `Session:MaxSnapshotBytes` (default 1 MB) is in effect on the `SessionActor` encoding path
   (`SessionActor.cs:457`); oversized snapshots are skipped and counted into `SessionDiagnostics`.
-- Snapshots exist only in memory with no persistence——**"where the authoritative snapshot comes from" (persistence medium and write-to-disk timing) is a separate
+- Original finding, now superseded: snapshots existed only in memory——**"where the authoritative snapshot comes from" (persistence medium and write-to-disk timing) was a separate
   next decision, which this document neither chooses nor presupposes**. This document only defines "given an authoritative snapshot, how does the module rebuild".
 - Single-worker current state: a process restart empties everything, and reconnecting clients get a brand-new session. The recovery loop is
   one of the two pre-split prerequisites listed in [process-topology.md §5](./process-topology.md).
@@ -113,9 +113,7 @@ Implementation is in the next section.
 - **No snapshot = fresh start**: `ISnapshotRecoverySource.TryGet` returning false means a fresh start, so today's default behavior is unchanged.
 - **Sample module**: `SampleGameModule.RestoreState` only restores session-private state (`tickId`/`matchId` +
   the three kinds of per-user counters); the `match` section is a cross-session store projection and is not part of the module's private recovery contract (it is rebuilt as new events arrive after recovery).
-- **No production wiring**: the two `Program.cs` files do not register a default recovery source, and the constructor parameter defaults to `null` = today's behavior is completely
-  unchanged. The persistence medium and write-to-disk timing are a separate follow-up decision (production wiring comes with the topology work); `ISnapshotRecoverySource`
-  is the seam——which implementation to inject is given by a future decision.
+- **Original no-wiring conclusion is superseded**: ControlHost mode now restores EngineHost from RoomControlStore checkpoints; without ControlHost, sessions still start fresh. Independent-host takeover and fault injection remain open in ROOM-07/09/12.
 
 The §7 acceptance checklist items 1-6 are gold-covered by `ModuleRestoreTests` (11 tests); item 7 is
 recorded in the compatibility surface of [versioning.md](../reference/versioning.md) (the breaking change to `IGameModule` + recovery semantics).

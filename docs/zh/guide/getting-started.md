@@ -7,7 +7,7 @@ title: 快速开始
 ## 环境
 
 - .NET SDK：`10.0.x`（见 `global.json`）
-- Node.js：任意受支持的 LTS（用于构建 VuePress 文档站；本仓未设 `engines` 下限）
+- Node.js：受支持的 LTS 版本（用于构建 VitePress 文档站；包管理器脚本见 `package.json`）
 
 ## 运行服务器（本地）
 
@@ -61,8 +61,8 @@ curl -X POST http://localhost:<serverPort>/ingress/test \
 ## 构建文档站（静态页面）
 
 ```bash
-npm install
-npm run docs:build
+pnpm install --frozen-lockfile
+pnpm docs:build
 ```
 
 产物目录：`docs/.vuepress/dist`

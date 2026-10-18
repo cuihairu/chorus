@@ -18,10 +18,10 @@ Chorus 有两种部署形态，共用同一套配置模型与安全语义。
 | 形态 | 进程 | 适用 |
 | --- | --- | --- |
 | 单进程 | `Chorus.Server` | 默认、调试、小规模；ingress/WS/引擎同一进程 |
-| 拆分（单网关进程） | `Chorus.Gateway` + `Chorus.EngineHost` | 网关与权威逻辑分机/分容器；走 IPC |
-| 三进程 | `Chorus.Gateway`（`Gateway:Roles=platform`）+ `Chorus.Gateway`（`Gateway:Roles=streamer`）+ `Chorus.EngineHost` | platform-gw / streamer-gw 两个网关角色分机部署，room-worker 承载多房间；门面共用无复制，见 [进程拓扑](../design/process-topology.md) §4 |
+| 拆分（单网关进程） | `Chorus.Gateway` + `Chorus.EngineHost`；配置 `Control:Url` 时再部署 `Chorus.ControlHost` | 网关与权威逻辑分机/分容器并走 IPC；ControlHost 提供共享房间权威和持久 checkpoint |
+| 网关角色拆分 | 两个 `Chorus.Gateway`（`Gateway:Roles=platform` / `streamer`）+ `Chorus.EngineHost`；受控房间还需 `Chorus.ControlHost` | 平台与主播入口分开部署并共享 Worker IPC 扇出；多 Worker 路由和持久恢复由 ControlHost 提供，见[进程拓扑](../design/process-topology.md) §4 |
 
-两种形态的 `/ingress`、`/ws`、`/faces`、`/metrics` 完全一致；`/sessions`、`/matches` 只在单进程形态暴露。
+各拆分形态的 Gateway `/ingress`、`/ws`、`/faces`、`/metrics` 接口一致。`/sessions` 是 `Chorus.Server` 诊断端点；ControlHost 另有需鉴权的 `/api/matches` 管理接口。
 
 ## 构建与运行
 
@@ -125,7 +125,7 @@ Gateway 的 `GET /ready`：
 
 ## 资源与生命周期
 
-- `Session:MaxSessions=200`：超限按最久未见驱逐，被驱逐的 Session 直接消失（客户端需重连 resync）。
+- `Session:MaxSessions=200`：达到上限后拒绝创建新 Session，不驱逐已有 Actor；应降低负载或提高容量后再接收新房间。
 - `Session:IdleEvictAfterMs=600000`：客户端全部断开后空闲 10 分钟回收。
 - `Session:MaxPendingEvents=8000` / `EventEnqueueMaxWaitMs=50`：事件道容量与礼物有界等待，超限 503 可重试。
 - `Session:MaxSnapshotBytes=1048576`：快照超限跳过发送并计 `chorus_snapshots_oversize_total`，客户端 resync 兜底。
@@ -136,13 +136,13 @@ Gateway 的 `GET /ready`：
 
 ## 状态与重启
 
-- 会话状态纯内存，无持久化（明确非目标）。重启即全量丢失：所有客户端断开并重新 hello。
-- 无跨进程状态共享：单进程与拆分两种形态各自独立，勿混用同一 `Ipc:UnixSocketDir` 前缀跑多组 Gateway/EngineHost。
+- EngineHost 运行期间的 GameModule 状态在内存中。配置 ControlHost 持久化时，每个已提交 tick 还会保存带 fencing 的 checkpoint，接管 owner 会恢复该状态；未启用控制面持久化的独立模式不提供重启恢复。
+- 配置了 ControlHost 的 Gateway/EngineHost 共享房间权威；多个 Gateway 使用不同 `Gateway:Id` 通道后缀，可连接同一 EngineHost。不要让互相独立的部署共用相同 IPC 通道名。
 - 优雅停机：进程退出即终止会话；上游应做好重连。
 
 ## 拆分模式容器化
 
-- 三进程形态：两个 Gateway 容器各配 `Gateway:Roles=platform` / `Gateway:Roles=streamer`（未选中角色的 listener 端点不注册，返回 404）。两个网关可共享同一 EngineHost 与同一 socket 目录：各 Gateway 配不同 `Gateway:Id`（如 `platform-gw` / `streamer-gw`），EngineHost 配 `Ipc:GatewayIds=platform-gw,streamer-gw`，引擎对两条 eng→gw 通道扇出发布（`FanOutMessageBus`，5c5d25c；守卫 `ThreeProcessEndToEndTests`）。UDS/NamedPipe 通道名按 id 后缀区分；TCP/HTTP 的端口/URL 不按 id 区分，同机多网关用 UDS/NamedPipe。
+- Gateway 角色拆分时，两个 Gateway 分别配置 `Gateway:Roles=platform` / `streamer`（未选中 listener 端点返回 404），并用不同 `Gateway:Id` 共享 EngineHost 的扇出 IPC。受控房间还要部署 `Chorus.ControlHost` 并在 Gateway/EngineHost 设置 `Control:Url`；ControlHost 路由可使用 Worker 上报的 TCP/HTTP advertised endpoint。静态 IPC 多网关仍需 UDS/NamedPipe 避免端口冲突。
 - 两台容器：Gateway 与 EngineHost；`Ipc:Transport=Tcp`，映射 `27500/27501`（HTTP 则 `27600/27601`）。
 - 健康检查分别探 `/health`（存活）；**Gateway 就绪探 `/ready`**（200 = 任意引擎消息在窗口内到达），
   EngineHost 侧用 `/metrics` 的 `chorus_snapshots_sent_total` 判断引擎是否在出快照。

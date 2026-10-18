@@ -102,11 +102,10 @@ internal sealed class CountingBotFactory : IBotParticipantFactory
 
 ## 边界（不做什么）
 
-- **没有 join / 开局端点，也没有开局路由**：本仓宿主（Server/Gateway/EngineHost）都不注册
-  `Matchmaker`，没有 DI 绑定，也没有"队列 → 会话创建"的接线。原因是这部分需要产品语义
-  （谁能入队、开局用什么模式、开局后房间归属哪个会话/平台绑定），而这些语义与阶段三
-  多 worker 路由一起待定（`todo.md:156`），仓库内设计文档同样把匹配与机器人标为后续项
-  （[总体架构](../design/overall-architecture.md) §6）。库可以先定型，宿主接线等语义明确。
+- **本页的 `Chorus.Engine.Matchmaker` 库没有 join / 开局 HTTP 端点，也不负责创建会话**：它需要调用方驱动。
+  另有独立的 ControlHost 主播排队与匹配 API（`POST /api/streamers/{id}/join`、`GET /api/queue`、
+  `GET /api/matches`），由持久化控制面按评分与层级规则组局。该 API 不等同于本页介绍的进程内库；
+  两者的职责和接口见 [部署参考](../reference/deployment.md) 与 [房间存储架构](../../architecture/room-control-storage.md)。
 - **不做技能评估**：没有 elo/MMR/分段，只有"人数 + 模式 + 等待策略"。
 - **不创建会话/房间**：拿到 `MatchmakingResult` 之后如何把参与者映射到会话，由调用方负责
   （类注释同样明确此职责在外部，`Matchmaker.cs:113-114`）。

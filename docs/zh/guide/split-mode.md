@@ -4,7 +4,7 @@ title: 拆分模式（Gateway + EngineHost）
 
 # 拆分模式（Gateway + EngineHost）
 
-本模式用于验证“单进程/拆分兼容”的架构：
+本文介绍基础 IPC 拆分与控制面多 Worker 两种模式。未配置 `Control:Url` 时，Gateway 使用静态 IPC Worker 配置路由；Gateway 和 EngineHost 配置 `Control:Url` 后，由 `Chorus.ControlHost` 提供共享房间权威、持久 checkpoint 与动态 owner/epoch 路由。
 
 - `Chorus.Gateway`：对外提供 WebSocket `/ws` 与平台入口 `/ingress/{platform}`
 - `Chorus.EngineHost`：运行权威 tick + 状态快照（SessionActor + GameModule），并提供 `GET /health` 与 `GET /metrics`（本机 `http://localhost:5067`）
@@ -65,7 +65,7 @@ curl -X POST http://localhost:5168/ingress/test \
 
 如果要把 Gateway/EngineHost 拆到两个容器里，通常会把 `Ipc:Transport` 设为 `Tcp`，并为上述两个端口做容器端口映射。
 
-## 多网关（三进程形态）
+## 多网关（入口角色拆分）
 
 同一 EngineHost 可挂多个 Gateway 进程（platform-gw / streamer-gw，见 [进程拓扑](../design/process-topology.md) §4）：
 
@@ -76,9 +76,6 @@ curl -X POST http://localhost:5168/ingress/test \
 
 ## 多 Worker
 
-一个 Gateway 可以把房间路由到多个 EngineHost worker：
+受控房间需在 Gateway 和每个 EngineHost 配置相同的 `Control:Url`、`Control:Key`，为每个 EngineHost 设置唯一 `Ipc:WorkerId`，并部署一个共享 ControlHost。ControlHost 按在线 Worker 容量分配房间；Gateway 刷新 owner/epoch 路由快照后选择对应 Worker 通道。这也是持久 checkpoint 与恢复使用的路径。
 
-- 每个 EngineHost 配置唯一 `Ipc:WorkerId`（如 `worker-a` / `worker-b`），gw→eng 通道名自动携带 worker 后缀。
-- Gateway 配置 `Ipc:WorkerIds=worker-a,worker-b`；连接、观众事件、ACK、resync、断开信封都按稳定的 `RoomAffinity` 固定到同一 session 所属 worker。
-- 所有进程必须共享同一 UDS 或 NamedPipe 目录。TCP/HTTP 目前是固定端点，同机多 worker 只能用 UDS 或 NamedPipe。
-- `Ipc:WorkerIds` / `Ipc:WorkerId` 为空时保持旧单 worker 通道与行为。
+旧的无 ControlHost 模式仍支持静态 `Ipc:WorkerIds`/`Ipc:WorkerId` 路由，使用 `RoomAffinity` 原型，但不提供 ControlHost lease、持久 checkpoint 或故障接管 fencing。按所选传输配置互不冲突且可达的 IPC endpoint。

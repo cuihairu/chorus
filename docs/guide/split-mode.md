@@ -5,7 +5,7 @@ title: Split Mode (Gateway + EngineHost)
 
 # Split Mode (Gateway + EngineHost)
 
-This mode is used to verify the "single-process / split compatibility" architecture:
+This guide covers the basic IPC split and the controlled multi-worker mode. Without `Control:Url`, Gateway routes over the statically configured IPC workers; when `Control:Url` is set on Gateway and EngineHost, `Chorus.ControlHost` supplies the shared room authority, durable checkpoints, and dynamic owner/epoch routing.
 
 - `Chorus.Gateway`: exposes WebSocket `/ws` and the platform entry point `/ingress/{platform}` externally
 - `Chorus.EngineHost`: runs the authoritative tick + state snapshots (SessionActor + GameModule), and provides `GET /health` and `GET /metrics` (local `http://localhost:5067`)
@@ -66,7 +66,7 @@ Both sides support the following configuration (see each side's `appsettings.jso
 
 If you want to split Gateway/EngineHost into two containers, you typically set `Ipc:Transport` to `Tcp` and map those two ports in the container port mapping.
 
-## Multiple Gateways (Three-Process Mode)
+## Multiple Gateways (Split Gateway Roles)
 
 A single EngineHost can host multiple Gateway processes (platform-gw / streamer-gw, see [Process Topology](../design/process-topology.md) §4):
 
@@ -77,9 +77,6 @@ A single EngineHost can host multiple Gateway processes (platform-gw / streamer-
 
 ## Multiple Workers
 
-One Gateway can route sessions across multiple EngineHost workers:
+For controlled rooms, configure the same `Control:Url` and `Control:Key` on Gateway and each EngineHost, give every EngineHost a unique `Ipc:WorkerId`, and run one shared ControlHost. ControlHost assigns rooms by live worker capacity; Gateway refreshes the owner/epoch routing snapshot and selects the matching worker endpoint. This is the path used for durable checkpoints and recovery.
 
-- Each EngineHost configures a unique `Ipc:WorkerId` (for example `worker-a` / `worker-b`); its gateway-to-engine channel name automatically carries the worker suffix.
-- The Gateway configures `Ipc:WorkerIds=worker-a,worker-b`; every connect, audience-event, ACK, resync, and disconnect envelope is routed by stable `RoomAffinity` for the session.
-- All processes must share one UDS or named-pipe directory. TCP and HTTP use fixed endpoints, so multi-worker on one machine currently requires UDS or named pipes.
-- Empty `Ipc:WorkerIds` / `Ipc:WorkerId` keeps the legacy single-worker channel and routing behavior.
+The legacy no-ControlHost mode also supports static `Ipc:WorkerIds`/`Ipc:WorkerId` routing. It uses the `RoomAffinity` prototype and does not provide ControlHost leases, durable checkpoints, or failover fencing. Use distinct IPC endpoint IDs and reachable worker endpoints for the selected transport.
