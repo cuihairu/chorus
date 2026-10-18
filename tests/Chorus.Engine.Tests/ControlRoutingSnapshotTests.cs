@@ -49,6 +49,20 @@ public sealed class ControlRoutingSnapshotTests
     }
 
     [Fact]
+    public void CurrentRoomAuthorityForRealtimeControlMessagesRequiresFreshSnapshotAndLiveOwner()
+    {
+        const long now = 1_800_000_000_000;
+        var snapshot = Snapshot(now);
+
+        Assert.True(snapshot.TryGetCurrentAuthority("room", now, out var room));
+        Assert.Equal("worker", room.WorkerId);
+        Assert.False(snapshot.TryGetCurrentAuthority("room", now + ControlRoutingSnapshot.MaxAgeMs, out _));
+        Assert.False(Snapshot(now, workerHeartbeat: now - RoomControlStore.NodeLeaseMs)
+            .TryGetCurrentAuthority("room", now, out _));
+        Assert.False(snapshot.TryGetCurrentAuthority("missing", now, out _));
+    }
+
+    [Fact]
     public void HealthyWorkerDoesNotMaskExpiredOwnerOfAnotherRoom()
     {
         const long now = 1_800_000_000_000;

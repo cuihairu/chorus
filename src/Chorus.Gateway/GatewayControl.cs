@@ -55,15 +55,30 @@ public sealed partial class GatewayIpcService
             await _control!.Send("events",EnvelopeFactory.DeserializeBody<Chorus.Protocol.Models.AudienceEvent>(env),ct);
             return;
         }
+        if (env.Type is IpcMessageTypes.GatewayAck or IpcMessageTypes.GatewayResync)
+        {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var snapshot = Volatile.Read(ref _controlRoutingSnapshot);
+            if (snapshot is null || !snapshot.TryGetCurrentAuthority(env.SessionId, now, out var cachedRoom)
+                || !snapshot.TryGetLiveWorker(cachedRoom, now, out var cachedWorker))
+                throw new ControlConflictException("Fresh room routing authority unavailable.");
+            await PublishToWorkerAsync(cachedRoom, cachedWorker, env, ct);
+            return;
+        }
         var room = await _control!.Assign(env.SessionId,ct);
         var nodes = await _control.Get<List<NodeReport>>("nodes",ct);
         var worker = nodes.FirstOrDefault(n => n.Role == "worker" && n.Id == room.WorkerId && n.InstanceId == room.WorkerInstance)
             ?? throw new ControlConflictException("Room owner unavailable.");
         if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - worker.LastHeartbeatMs >= RoomControlStore.NodeLeaseMs)
             throw new ControlConflictException("Room owner lease expired.");
+        await PublishToWorkerAsync(room, worker, env, ct);
+    }
+
+    private async ValueTask PublishToWorkerAsync(RoomRecord room, NodeReport worker, Envelope env, CancellationToken ct)
+    {
         var key = $"{worker.Id}/{worker.InstanceId}";
-        var outgoing = _controlChannels.GetOrAdd(key,_ => IpcMessageBusFactory.CreateClient(_ipcSettings.Transport,
-            IpcEndpointBuilder.Build(_ipcSettings with { WorkerId = worker.Id,Workers = new Dictionary<string,IpcNetworkEndpoint> { [worker.Id] = worker.Endpoint } }).GatewayToEngine));
+        var outgoing = _controlChannels.GetOrAdd(key, _ => IpcMessageBusFactory.CreateClient(_ipcSettings.Transport,
+            IpcEndpointBuilder.Build(_ipcSettings with { WorkerId = worker.Id, Workers = new Dictionary<string, IpcNetworkEndpoint> { [worker.Id] = worker.Endpoint } }).GatewayToEngine));
         await SafePublishToAsync(outgoing,env with { AuthorityEpoch = room.Epoch },ct);
     }
 }

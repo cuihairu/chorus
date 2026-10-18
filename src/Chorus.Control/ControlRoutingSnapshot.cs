@@ -53,6 +53,27 @@ public sealed class ControlRoutingSnapshot
         return true;
     }
 
+    public bool TryGetCurrentAuthority(string roomId, long nowMs, out RoomRecord room)
+    {
+        room = null!;
+        if (!IsFresh(nowMs) || !_rooms.TryGetValue(roomId, out var found)
+            || found.State is not (RoomLifecycleState.Active or RoomLifecycleState.Waiting or RoomLifecycleState.Idle)
+            || !TryGetLiveWorker(found, nowMs, out _)) return false;
+        room = found;
+        return true;
+    }
+
+    public bool TryGetLiveWorker(RoomRecord room, long nowMs, out NodeReport worker)
+    {
+        worker = null!;
+        if (!IsFresh(nowMs) || !_nodes.TryGetValue(room.WorkerId, out var found)
+            || found.Role != "worker" || found.InstanceId != room.WorkerInstance
+            || nowMs < found.LastHeartbeatMs || nowMs - found.LastHeartbeatMs >= RoomControlStore.NodeLeaseMs)
+            return false;
+        worker = found;
+        return true;
+    }
+
     public bool TryValidateConnect(string roomId,long epoch,string workerId,string workerInstance,
         string clientId,string generation,string gatewayInstance,long nowMs,out RoomRecord room)
     {
@@ -69,9 +90,7 @@ public sealed class ControlRoutingSnapshot
         return true;
     }
 
-    private bool LiveWorker(RoomRecord room,long nowMs) => _nodes.TryGetValue(room.WorkerId,out var worker)
-        && worker.Role == "worker" && worker.InstanceId == room.WorkerInstance && nowMs >= worker.LastHeartbeatMs
-        && nowMs - worker.LastHeartbeatMs < RoomControlStore.NodeLeaseMs;
+    private bool LiveWorker(RoomRecord room,long nowMs) => TryGetLiveWorker(room, nowMs, out _);
 
     public IReadOnlyList<NodeReport> LiveGateways(long nowMs) => !IsFresh(nowMs) ? Array.Empty<NodeReport>()
         : _nodes.Values.Where(n => n.Role == "gateway" && !n.Draining && nowMs >= n.LastHeartbeatMs

@@ -103,12 +103,11 @@ Match-forming rule details: real players FIFO, at most `maxParticipants` per mat
 
 ## Boundaries (What It Doesn't Do)
 
-- **No join / match-start endpoint, and no match-start routing**: none of this repo's hosts (Server/Gateway/EngineHost) register a
-  `Matchmaker`, there are no DI bindings, and there is no "queue → session creation" wiring. The reason is that this part needs product semantics
-  (who can enqueue, which mode a match starts with, which session/platform binding owns the room after the match starts), and these semantics are
-  pending along with phase-three multi-worker routing (`todo.md:156`); the in-repo design documents likewise mark matchmaking and bots as follow-up items
-  ([Overall Architecture](../design/overall-architecture.md) §6). The library can be finalized first; host wiring waits for the semantics to be settled.
-- **No skill rating**: no elo/MMR/divisions, only "headcount + mode + wait strategy".
+- **This `Matchmaker` library has no host join endpoint or room-start routing**: it remains an in-process helper for forming matches. Separately,
+  `Chorus.ControlHost` exposes an authenticated streamer queue and runs durable control-plane matchmaking; that API groups by rating tiers and
+  versioned mode/region/platform rules, and records match results. It does not create gameplay sessions or route match participants into a room.
+- **This library has no skill rating**: its balancing is based on headcount, mode and wait strategy. Rating and tier rules belong to the separate
+  ControlHost matcher (`src/Chorus.Control/MatchControlStore.cs`).
 - **Does not create sessions/rooms**: how to map participants to a session after obtaining a `MatchmakingResult` is the caller's responsibility
   (the class comment likewise makes clear this responsibility is external, `Matchmaker.cs:113-114`).
 - **Does not manage its own time**: all `nowMs` values are passed in by the caller; `Matchmaker` reads no wall clock.

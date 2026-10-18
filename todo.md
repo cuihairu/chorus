@@ -313,10 +313,12 @@
   3) GitHub 链接改为默认带图标版本——用 .vitepress/config 里 socialLinks 的官方写法（icon: 'github'），不要用纯文字链接
   完成后构建通过（pnpm docs:build 或对应脚本）贴输出，勾掉并 commit+push，回报 hash 与三处的 file:line
 硬要求：中文写真中文禁机翻；glob 禁 node_modules/dist/build
-- [ ] 审核整改（2026-10-18 独立审核，见 docs/review/luna-review-2026-10-18.md）：
-      按审核报告的三张表逐项处理，**先核对再动手**，每项给 file:line 证据。
-      1) 表一「缺陷」：按风险排序修，高风险优先
-      2) 表二「文档与实现不一致」：以代码为准改文档，或明确标注为规划中
-         **禁止为对齐文档去改业务代码**
-      3) 表三「值得补的能力」：只做评估与分期建议，**不实现**（需用户拍板）
-      每完成一项勾掉并写证据；全部测试通过后 commit+push；不 bump 版本号。
+- [ ] 审核整改（2026-10-18 独立审核，见 `docs/review/luna-review-2026-10-18.md`）：
+      - [x] 表一高风险：ControlHost 支持显式 `Admin:PublicOrigin`，HTTPS 时强制 Secure cookie，公网 Origin 测试覆盖反代 scheme；证据：`src/Chorus.ControlHost/Program.cs:16-21,28-33,52-54`、`tests/Chorus.Engine.Tests/ControlHostOriginTests.cs:8-67`。
+      - [x] 表一高风险：ACK/resync 使用 Gateway 的新鲜 owner/epoch 快照直达缓存 Worker 通道，不再对每条消息调用 `Assign`/`/nodes`；快照过期或 owner 不可写时 fail-closed。证据：`src/Chorus.Gateway/GatewayControl.cs:58-82`、`src/Chorus.Control/ControlRoutingSnapshot.cs:56-75`、`tests/Chorus.Engine.Tests/ControlRoutingSnapshotTests.cs:42-58`。
+      - 卡点（表一中高）：审计记录保留/归档策略仍未定义；不能自行删除可能受合规要求保留的记录。证据：`src/Chorus.Control/ControlDatabase.cs:141-153` 为追加写及限量读取，`src/Chorus.ControlHost/ControlMaintenance.cs:6-25` 无清理流程。需确认保留期限及归档要求后增加策略与容量告警。
+      - [x] 表一中：明确 `LIVE_START`/`LIVE_END` 只归一化为信息型 `RoomLifecycle` 游戏事件，不自动改变 ControlHost 房间状态；修正文档而不擅自接入生命周期副作用。证据：`src/Chorus.Adapters.Platforms/Bilibili/BilibiliPlatformEventMapper.cs:103-105`、`src/Chorus.SampleGame/SampleGameModule.cs:43-70`、`docs/reference/platform-bilibili.md:43`、`docs/zh/reference/platform-bilibili.md:42`。
+      - [x] 表二按代码修正文档：MaxSessions 满载拒绝新 Actor（`docs/reference/deployment.md:126,130`）；跨机房间架构现状及历史设计标注（`docs/architecture/multi-machine-rooms.md:3,13-21`）；ControlHost 路由/恢复接线及 RoomManager 历史方案（`docs/design/process-topology.md:36-67`）；区分 Matchmaker 库与 ControlHost 主播匹配 API（`docs/guide/matchmaking.md:104-112`）；同步修正 B 站 Enter/LIVE 事件过时描述（`docs/design/bilibili-danmaku-adapter.md:20,119-120`、`docs/zh/design/bilibili-danmaku-adapter.md:19,118-119`）。
+      - [x] 表三只完成评估、未实现：独立多机分区注入与 ControlHost SLO/容量基线列为 ROOM-07/11/12 rollout gates；浏览器 e2e 列为 ADMIN-13；抖音真实协议联调需平台合同/凭据及获准联调；热点历史告警需权威事件聚合源和告警策略。依据：本报告表三及 `todo.md` §19 ROOM-07/11/12、ADMIN-06/13。按审核要求，新增能力均待解锁条件具备后再立项。
+      - [x] 复核其余 8 个既有 open：阶段三负载门槛沿用已有受控压测记录（本轮无新可信多 Worker 生产数据）；ROOM-07/09/12 仍无独立机器/隔离网络，ROOM-11 仍无已批准 RPO/RTO/容量预算，ADMIN-03 仍无历史维度/保留决策，ADMIN-06 仍无权威互动聚合源/告警策略，ADMIN-13 仍无浏览器 e2e 与查询 SLO。逐条证据见 `todo.md:158,250,252,257-258,273,276,292` 和 `docs/architecture/multi-machine-rooms.md:173-184`；本轮未发现解锁证据，未改文件充数。
+      门禁：`dotnet test tests/Chorus.Engine.Tests/Chorus.Engine.Tests.csproj --no-restore --filter 'FullyQualifiedName~ControlHostOriginTests|FullyQualifiedName~ControlRoutingSnapshotTests|FullyQualifiedName~IpcAckResyncLoopTests|FullyQualifiedName~MultiWorkerGatewayIpcTests' --verbosity quiet`（31/31 通过）；`pnpm docs:build`（build complete）。当前仅审计保留政策为真卡点；不 bump 版本。

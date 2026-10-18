@@ -40,7 +40,7 @@ during the design document research period, field-by-field verification was done
   after decompressing a compressed packet body, **recursively re-split the packets**.
 - Event envelope `{"cmd":...,"data":{...},"msg_id":...}`; normalization (P1+P2): `DANMU_MSG`→comment,
   `SEND_GIFT`/`SEND_GIFT_V2` (gray-release tolerance)→gift, `INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter,
-  `LIVE_START`/`LIVE_END`→roomLifecycle (all with flattened `data.open_id`/`msg_id` keys).
+  `LIVE_START`/`LIVE_END`→roomLifecycle (all with flattened `data.open_id`/`msg_id` keys). These are informational game events; they do not automatically activate, idle, close, or destroy a ControlHost room.
 - The protocol is still evolving: unknown cmds do not crash and are dropped as Unknown (SUPER_CHAT_MESSAGE / GUARD_BUY / USER_TOAST_MSG_V2
   normalization is pending, driven by golden tests).
 

@@ -39,7 +39,7 @@ title: 平台对接参考：B 站
   压缩包体解压后**递归再分包**。
 - 事件信封 `{"cmd":...,"data":{...},"msg_id":...}`；归一化（P1+P2）：`DANMU_MSG`→comment、
   `SEND_GIFT`/`SEND_GIFT_V2`（灰度容忍）→gift、`INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter、
-  `LIVE_START`/`LIVE_END`→roomLifecycle（均 `data.open_id`/`msg_id` 扁平键）。
+  `LIVE_START`/`LIVE_END`→roomLifecycle（均 `data.open_id`/`msg_id` 扁平键）。这两类事件仅作为游戏事件流中的信息通知，不会自动激活、转空闲、关闭或销毁 ControlHost 房间。
 - 协议仍在演进：未知 cmd 不崩，按 Unknown 丢弃（SUPER_CHAT_MESSAGE / GUARD_BUY / USER_TOAST_MSG_V2
   归一化待定，金测驱动）。
 

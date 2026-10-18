@@ -123,10 +123,11 @@ The single-process form has no IPC hop and does not expose `/ready` (`/health` i
 - `/ingress` only allows the platform callback source IP whitelist, or put a signature-verification gateway in front.
 - `/metrics`, `/sessions`, `/matches` contain no sensitive state, but internal-network-only access is recommended.
 - Real TLS terminates at the proxy layer; Chorus itself does not listen on HTTPS.
+- For a ControlHost behind TLS termination, set `Admin:PublicOrigin` to the exact public origin (for example `https://admin.example.com`). This value is used for unsafe-request Origin checks and forces Secure admin cookies; do not trust arbitrary forwarded headers for this check.
 
 ## Resources and Lifecycle
 
-- `Session:MaxSessions=200`: beyond the limit, evict the least recently seen; the evicted Session disappears directly (the client must reconnect and resync).
+- `Session:MaxSessions=200`: once at capacity, new Session creation is rejected; existing Actors are not evicted. Reduce load or increase capacity before accepting more rooms.
 - `Session:IdleEvictAfterMs=600000`: reclaimed after 10 minutes idle once all clients disconnect.
 - `Session:MaxPendingEvents=8000` / `EventEnqueueMaxWaitMs=50`: event lane capacity and bounded gift wait, 503 retryable when exceeded.
 - `Session:MaxSnapshotBytes=1048576`: snapshots exceeding the limit skip sending and count `chorus_snapshots_oversize_total`; the client resync is the fallback.

@@ -13,6 +13,12 @@ using System.Threading.RateLimiting;
 var builder = WebApplication.CreateBuilder(args);
 var key = builder.Configuration["Control:Key"] ?? "";
 if (key.Length < 24) throw new InvalidOperationException("Configure Control:Key with at least 24 characters.");
+var publicOrigin = builder.Configuration["Admin:PublicOrigin"]?.TrimEnd('/');
+if (publicOrigin is not null && (!Uri.TryCreate(publicOrigin, UriKind.Absolute, out var parsedOrigin)
+    || parsedOrigin.Scheme is not ("http" or "https") || parsedOrigin.UserInfo.Length != 0
+    || parsedOrigin.AbsolutePath != "/" || parsedOrigin.Query.Length != 0 || parsedOrigin.Fragment.Length != 0))
+    throw new InvalidOperationException("Configure Admin:PublicOrigin as an absolute HTTP(S) origin without a path.");
+var publicOriginIsHttps = publicOrigin?.StartsWith("https://", StringComparison.OrdinalIgnoreCase) == true;
 var users = builder.Configuration.GetSection("Admin:Users").Get<AdminUser[]>() ?? [];
 if (users.Length == 0 || users.Any(u => string.IsNullOrWhiteSpace(u.Name) || string.IsNullOrWhiteSpace(u.PasswordHash) || u.Role is not ("viewer" or "operator" or "admin")))
     throw new InvalidOperationException("Configure Admin:Users with names, PasswordHasher hashes and viewer/operator/admin roles.");
@@ -22,7 +28,7 @@ builder.Services.AddHostedService<ControlMaintenance>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
 {
     options.Cookie.Name = "chorus-admin"; options.Cookie.HttpOnly = true; options.Cookie.SameSite = SameSiteMode.Strict;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest; options.ExpireTimeSpan = TimeSpan.FromHours(8);
+    options.Cookie.SecurePolicy = publicOriginIsHttps ? CookieSecurePolicy.Always : CookieSecurePolicy.SameAsRequest; options.ExpireTimeSpan = TimeSpan.FromHours(8);
     options.Events.OnRedirectToLogin = c => { c.Response.StatusCode = 401; return Task.CompletedTask; };
     options.Events.OnRedirectToAccessDenied = c => { c.Response.StatusCode = 403; return Task.CompletedTask; };
 });
@@ -43,8 +49,9 @@ app.Use(async (context, next) =>
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; frame-ancestors 'none'";
     if (context.Request.Path.StartsWithSegments("/api")) context.Response.Headers.CacheControl = "no-store";
+    var expectedOrigin = publicOrigin ?? $"{context.Request.Scheme}://{context.Request.Host}";
     if (!HttpMethods.IsGet(context.Request.Method) && context.Request.Headers.Origin.Count > 0
-        && context.Request.Headers.Origin != $"{context.Request.Scheme}://{context.Request.Host}") { context.Response.StatusCode = 403; return; }
+        && !string.Equals(context.Request.Headers.Origin.ToString(), expectedOrigin, StringComparison.OrdinalIgnoreCase)) { context.Response.StatusCode = 403; return; }
     try { await next(); }
     catch (ControlConflictException ex) { context.Response.StatusCode = 409; await context.Response.WriteAsJsonAsync(new { error = ex.Message }); }
     catch (KeyNotFoundException ex) { context.Response.StatusCode = 404; await context.Response.WriteAsJsonAsync(new { error = ex.Message }); }

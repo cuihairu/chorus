@@ -17,7 +17,7 @@ This document answers two questions: **whether Bilibili supports danmaku interac
 
 | Side | Support | Notes |
 | --- | --- | --- |
-| **Input side** (danmaku/gift/enter → game state) | **Supported** | The official open-live open platform provides complete events (danmaku/gift/enter/live start/live end); it is currently the **only legally clean** channel |
+| **Input side** (danmaku/gift/enter events into the game event stream) | **Supported** | The official open-live platform provides danmaku/gift/entry/start/end events; each game module decides which kinds affect state, and it is currently the **only legally clean** channel |
 | **Output side** (game screen replayed to the live room) | **Not supported (no official channel)** | The official platform does not provide an API for "pushing the game screen back to the live room's danmaku/comment section"; the community approach is an OBS browser source overlay (local screen capture, not a platform channel) |
 | **Reverse interaction commands** (game actions → live room actions) | **Not supported** | The official platform has no such channel; any reverse operation may only be done after the platform explicitly allows it |
 
@@ -116,8 +116,8 @@ SessionActor（tick 调度 → 快照 → 客户端）            ← 已有
 | `DANMU_MSG` | `kind=comment`、`userId`、`text`、`platformEventId` | P1 |
 | `SEND_GIFT` | `kind=gift`、`userId`、`giftId`、`count` | P2 |
 | `SEND_GIFT_V2` (protobuf gray release) | Same as `SEND_GIFT`, tolerant of the new format | P2 |
-| `INTERACT_WORD_V2` / `LIVE_ROOM_ENTER` | `kind=enter`、`userId`(note: `AudienceEventKind` currently has only `Unknown/Comment/Like/Gift`; the `Enter` member must be added first —`src/Chorus.Protocol/Models/AudienceEvent.cs:3-9`） | P2 |
-| `LIVE_START` / `LIVE_END` | room lifecycle (session start/end) | P2 |
+| `INTERACT_WORD_V2` / `LIVE_ROOM_ENTER` | `kind=enter`、`userId` | P2 |
+| `LIVE_START` / `LIVE_END` | informational `RoomLifecycle` audience event; no automatic ControlHost room state transition | P2 |
 | `SUPER_CHAT_MESSAGE` / `GUARD_BUY` / `USER_TOAST_MSG_V2` | TBD (golden-test driven) | P2 |
 | Unknown event types | **no crash**, dropped + counted (the platform protocol is still evolving) | P1 |
 

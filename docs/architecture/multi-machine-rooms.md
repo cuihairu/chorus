@@ -1,6 +1,6 @@
 # 房间管理与横向扩展架构审查（2026-10-18）
 
-> 整体分层方向合理，单机多房间有可用基础；房间管理尚未形成生产容量与故障闭环，当前不能认为已经支持生产级跨机横向扩容。代码已增加 HTTP 控制面、持久 Room 目录、Worker 端点和 epoch fencing；跨机部署、分区隔离和压力门槛仍未验证。
+> 整体分层方向合理。HTTP 控制面、持久 Room 目录、多 Worker 分配/路由、epoch fencing、checkpoint 恢复和迁移状态流已接线；生产容量、独立跨机部署与网络分区故障闭环仍未验收，因此当前不能据此承诺生产规模或自动故障接管。
 >
 > 本文以生产调用链为准，区分控制面接线、数据面能力与测试证据。实施任务统一登记在仓库根目录 `todo.md` §19；本文为审查结果和建议，未完成事项不代表已实现。2026-10-18 的追加复核见第 7 节。
 
@@ -10,15 +10,15 @@ Gateway 负责平台入口和客户端连接，Engine 承载权威状态，`IGam
 
 | 能力 | 当前结论 | 证据与边界 |
 |---|---|---|
-| 单机多房间 | 已实现 | `SessionRegistry` + `SessionActor`；容量淘汰会丢失状态，见 R01 |
-| 固定集合的多 Worker 路由 | 部分实现 | 控制面 Room 目录为新房间稳定分配 Worker；RoomId/epoch 校验输入与 tick。跨机部署和长时间负载仍未验收 |
+| 单机多房间 | 已实现 | `SessionRegistry` + `SessionActor`；达到容量时拒绝创建新 Actor，不淘汰现有房间，见 R01 |
+| 固定集合的多 Worker 路由 | 已接线，生产环境未验收 | 控制面 Room 目录为新房间稳定分配 Worker；Gateway 使用 owner/epoch 路由，EngineHost 校验输入与 tick。跨机部署和长时间负载仍未验收 |
 | TCP/HTTP 通信 | 端点配置已实现 | Worker/Gateway 可分别配置 advertised endpoint 与 listen host；真实跨机网络路径仍未验收，见 R04 |
 | 集群唯一权威 | 控制面 fencing 已接线 | HTTP 控制面租约与 SQLite 事务拒绝旧 epoch 的 tick / commit；分区期间实际 Actor 停止、发布边界和共享数据库高可用仍需验证，见 R03 |
-| 房间生命周期 | 部分构件 | `RoomLifecycleRegistry` 没有接入生产创建、休眠和关闭路径，见 R05 |
-| 持久化与恢复 | 部分构件 | 有恢复契约与内存后端，没有生产保存/恢复闭环，见 R06 |
-| 多 Gateway 事件可靠性 | 不完整 | 入口去重为实例内状态，IPC 发布成功不等于引擎接收，见 R07 |
-| Worker 故障检测 | 部分 | Gateway 仅记录任意引擎最后来信时间，不能区分各 Worker，见 R08 |
-| 动态扩缩容、迁移与自动接管 | 部分实现 | 有稳定分配、两阶段迁移 API 与 checkpoint 恢复路径；可靠事件语义、跨机恢复、分区测试和运行编排未形成生产闭环 |
+| 房间生命周期 | 控制面状态流已接线 | RoomControlStore 管理 Waiting/Active/Migrating/Recovering/Idle/Destroyed 等状态；平台开播/下播事件不会自动改变房间状态 |
+| 持久化与恢复 | 单机权威闭环已实现 | SQLite checkpoint 与 tick fenced commit、ControlCheckpointRestorer 恢复已接线；SQLite 仍是单 ControlHost 本机单写者，不代表 HA |
+| 多 Gateway 事件可靠性 | 共享控制面范围内已实现 | 控制面持久 inbox/receipt 与事务提交确认已接线；不代表多个 ControlHost 间高可用 |
+| Worker 故障检测 | 按节点 lease 判定 | routing snapshot 区分 Worker 实例与 heartbeat lease；网络分区下旧进程恢复测试仍待独立环境 |
+| 动态扩缩容、迁移与自动接管 | 迁移状态流已接线；生产接管未验收 | 新房间容量分配、Move/Handoff/Ready/Abort 与控制路由快照已实现；跨机故障恢复、分区测试和容量门槛仍未形成生产验收闭环 |
 
 ## 2. 当前生产路径与未接线构件
 

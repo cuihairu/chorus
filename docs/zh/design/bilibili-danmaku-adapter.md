@@ -16,7 +16,7 @@ title: B 站弹幕源适配器（调研 + 接入方案）
 
 | 侧 | 支持情况 | 说明 |
 | --- | --- | --- |
-| **输入侧**（弹幕/礼物/进场 → 游戏状态） | **支持** | 官方 open-live 开放平台提供完整事件（弹幕/礼物/进场/开播/下播），是当前**唯一法律干净**的通道 |
+| **输入侧**（弹幕/礼物/进场等事件进入游戏事件流） | **支持** | 官方 open-live 开放平台提供弹幕/礼物/进场/开播/下播事件；具体是否改变游戏状态由游戏模块决定，是当前**唯一法律干净**的通道 |
 | **输出侧**（游戏画面回播到直播间） | **不支持（无官方通道）** | 官方未提供「把游戏画面推回直播间弹幕/评论区」的 API；社区做法是 OBS 浏览器源叠加（本地画面采集，非平台通道） |
 | **反向互动指令**（游戏操作 → 直播间动作） | **不支持** | 官方无此通道；任何反向操作都需平台明确允许后才可做 |
 
@@ -115,8 +115,8 @@ SessionActor（tick 调度 → 快照 → 客户端）            ← 已有
 | `DANMU_MSG` | `kind=comment`、`userId`、`text`、`platformEventId` | P1 |
 | `SEND_GIFT` | `kind=gift`、`userId`、`giftId`、`count` | P2 |
 | `SEND_GIFT_V2`（protobuf 灰度） | 同 `SEND_GIFT`，容忍新格式 | P2 |
-| `INTERACT_WORD_V2` / `LIVE_ROOM_ENTER` | `kind=enter`、`userId`（注：当前 `AudienceEventKind` 仅 `Unknown/Comment/Like/Gift`，需先扩 `Enter` 成员——`src/Chorus.Protocol/Models/AudienceEvent.cs:3-9`） | P2 |
-| `LIVE_START` / `LIVE_END` | 房间生命周期（开启/结束会话） | P2 |
+| `INTERACT_WORD_V2` / `LIVE_ROOM_ENTER` | `kind=enter`、`userId` | P2 |
+| `LIVE_START` / `LIVE_END` | 信息型 `RoomLifecycle` 游戏事件；不会自动改变 ControlHost 房间状态 | P2 |
 | `SUPER_CHAT_MESSAGE` / `GUARD_BUY` / `USER_TOAST_MSG_V2` | 待定（金测驱动） | P2 |
 | 未知事件类型 | **不崩**，丢弃 + 计数（平台协议仍在演进） | P1 |
 
