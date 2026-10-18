@@ -66,6 +66,27 @@ public sealed class ControlPostgresIntegrationTests
         Assert.False(second.AppendEvent(evt));
     }
 
+    [Fact]
+    public void PostgresProvider_RequiresConnectionsDrainedBeforeClosingRoom()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var store = NewStore(testDatabase.ConnectionString);
+        store.ReportNode(new("worker", "worker-boot", "worker-host", "worker", new("127.0.0.1", 3101), 10));
+        store.ReportNode(new("gateway", "gateway-boot", "gateway-host", "gateway", new("127.0.0.1", 4101), 0));
+        var room = store.Assign(new("pg-drain-" + Guid.NewGuid().ToString("N")));
+        var connection = new ConnectionRecord(room.Id, "client", "viewer", "viewer", "gateway", "gateway-boot", "generation");
+        store.Connect(connection);
+
+        Assert.Throws<ControlConflictException>(() => store.Action(room.Id,
+            new(RoomLifecycleAction.Close, room.Epoch), "operator"));
+        Assert.Equal(RoomLifecycleState.Waiting, store.Room(room.Id)!.State);
+
+        store.Disconnect(connection);
+        Assert.Equal(RoomLifecycleState.Closing, store.Action(room.Id,
+            new(RoomLifecycleAction.Close, room.Epoch), "operator").State);
+        Assert.Contains(store.Audits(), audit => audit.Action == "room.lifecycle" && audit.Target == room.Id);
+    }
+
     private static RoomControlStore NewStore(string connectionString) =>
         new(new ControlDatabase(connectionString, ControlDatabaseProvider.PostgreSql));
 }
