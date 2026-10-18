@@ -44,12 +44,12 @@ public sealed class ControlStoreTests : IDisposable
         var moving=s.Move("room",new("b",room.Epoch),"operator");
         Assert.Throws<ControlConflictException>(()=>s.Commit("room",Commit(room,1)));
         var incoming=s.Handoff("room",moving.Epoch);
-        Assert.Equal(2,incoming.Epoch);Assert.Equal(1,incoming.TickId);Assert.Single(incoming.Inbox!);
+        Assert.Equal(2,incoming.Epoch);Assert.Equal(1,incoming.TickId);Assert.Equal(1,s.PendingCount("room"));
         Assert.Throws<ControlConflictException>(()=>s.Prepare("room",new("b","b-boot",2)));
         s.Ready("room",new("b","b-boot",2));
         Assert.Throws<ControlConflictException>(()=>s.Commit("room",Commit(room,1)));
         Assert.True(s.Commit("room",Commit(incoming,1,"b",RoomControlStore.EventKey(Event("pending")))));
-        Assert.Empty(NewStore().Room("room")!.Inbox!);
+        Assert.Equal(0,NewStore().PendingCount("room"));
         Assert.Throws<ControlConflictException>(()=>s.Commit("room",Commit(incoming,1,"b")));
     }
     [Fact]

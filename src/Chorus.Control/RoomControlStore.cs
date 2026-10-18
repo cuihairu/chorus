@@ -17,7 +17,13 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
     private static bool Live(RoomRecord room) => room.State != RoomLifecycleState.Destroyed;
     public List<NodeReport> Nodes() => database.Read(t => t.List<NodeReport>("node"));
     public List<RoomRecord> Rooms() => database.Read(t => t.List<RoomRecord>("room"));
-    public RoomRecord? Room(string id) => database.Read(t => t.Get<RoomRecord>("room", id));
+    public RoomRecord? Room(string id, bool checkpoint = false) => database.Read(t =>
+    {
+        var r=t.Get<RoomRecord>("room", id); if(r is null) return null;
+        var cp=t.GetCheckpoint(id);
+        return r with { Snapshot=checkpoint ? cp?.State : null, TickId=cp?.Tick ?? 0, Checksum=cp?.Checksum ?? 0, SchemaVersion=cp?.Schema ?? 1 };
+    });
+    public int PendingCount(string id) => database.Read(t=>t.PendingCount(id));
     public NodeReport ReportNode(NodeReport report) => database.Write(t =>
     {
         Id(report.Id); Id(report.InstanceId); Id(report.MachineId);
@@ -68,7 +74,7 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         var r = t.Get<RoomRecord>("room", id) ?? throw new KeyNotFoundException(id);
         if (!Owner(t, r, owner) || r.State is not (RoomLifecycleState.Waiting or RoomLifecycleState.Active or RoomLifecycleState.Idle))
             throw new ControlConflictException("Room is not writable by this owner/epoch.");
-        return r;
+        return r with { Inbox=t.PendingEvents(id,Math.Clamp(MaxInbox,1,MaxInbox)) };
     });
     public RoomRecord Ready(string id, OwnerRequest owner) => database.Write(t =>
     {
@@ -86,13 +92,13 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
             || r.TickId != commit.ExpectedTick || commit.TickId != commit.ExpectedTick + 1)
             throw new ControlConflictException("Checkpoint fenced: stale owner, state or tick.");
         if (commit.SchemaVersion != 1 || commit.State.GetRawText().Length > 1_048_576) throw new ArgumentException("Invalid checkpoint schema/size.");
-        var inbox = r.Inbox ?? [];
         var keys = new HashSet<string>(commit.ConsumedEventKeys, StringComparer.Ordinal);
-        var known = inbox.Select(EventKey).ToHashSet(StringComparer.Ordinal);
-        if (!keys.IsSubsetOf(known)) throw new ControlConflictException("Checkpoint contains unknown input receipts.");
-        var remaining = inbox.Where(e => !keys.Contains(EventKey(e))).ToArray();
-        r = r with { TickId = commit.TickId, Snapshot = commit.State.Clone(), Checksum = SnapshotIntegrity.Compute(commit.State.GetRawText()),
-            SchemaVersion = commit.SchemaVersion, Inbox = remaining, State = keys.Count > 0 ? RoomLifecycleState.Active : r.State };
+        if (keys.Any(key => !t.ReceiptExists(id,key))) throw new ControlConflictException("Checkpoint contains unknown input receipts.");
+        t.DeleteEvents(id,keys.ToArray());
+        var checksum=SnapshotIntegrity.Compute(commit.State.GetRawText());
+        t.PutCheckpoint(id,commit.State,commit.TickId,commit.Epoch,checksum,commit.SchemaVersion);
+        r = r with { TickId = commit.TickId, Snapshot = null, Checksum = checksum,
+            SchemaVersion = commit.SchemaVersion, Inbox = null, State = keys.Count > 0 ? RoomLifecycleState.Active : r.State };
         t.Put("room", id, r);
         return true;
     });
@@ -103,15 +109,11 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         var r = Assign(t, new(e.SessionId, Platform: e.Platform));
         if (r.State is RoomLifecycleState.Closing or RoomLifecycleState.Destroyed) throw new ControlConflictException("Room is closed.");
         var key = EventKey(e);
-        var receipts = new Dictionary<string,long>(r.Receipts ?? new Dictionary<string,long>(), StringComparer.Ordinal);
-        if (receipts.ContainsKey(key)) return false;
-        var pending = (r.Inbox ?? []).ToList();
-        if (pending.Count >= MaxInbox) throw new ControlConflictException("Reliable room inbox is full; retry later.");
-        // Dedup TTL is explicit: 24 hours, bounded to 100k receipts/room. Refuse rather than forget live receipts.
-        foreach (var expired in receipts.Where(p => Now - p.Value >= 86_400_000 && !pending.Any(x => EventKey(x) == p.Key)).Select(p => p.Key).ToArray()) receipts.Remove(expired);
-        if (receipts.Count >= 100000) throw new ControlConflictException("Room receipt capacity reached; retry after dedup window.");
-        pending.Add(e); receipts[key] = Now;
-        r = r with { Inbox = pending, Receipts = receipts, UpdatedAtMs = Now };
+        t.PruneReceipts(r.Id,Now-86_400_000);
+        if(t.ReceiptExists(r.Id,key)) return false;
+        if(t.PendingCount(r.Id)>=MaxInbox) throw new ControlConflictException("Reliable room inbox is full; retry later.");
+        t.AddEvent(r.Id,key,e,Now);
+        r = r with { UpdatedAtMs = Now };
         t.Put("room", r.Id, r);
         return true; // SQLite transaction is committed before HTTP success.
     });
@@ -122,7 +124,7 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
             throw new ControlConflictException("Stale epoch or illegal lifecycle transition.");
         if (request.Action is RoomLifecycleAction.BeginMigration or RoomLifecycleAction.BeginRecovery or RoomLifecycleAction.Recovered)
             throw new ControlConflictException("Use the migration/recovery protocol.");
-        if (request.Action is RoomLifecycleAction.Close or RoomLifecycleAction.Destroyed && r.Inbox is { Count: > 0 })
+        if (request.Action is RoomLifecycleAction.Close or RoomLifecycleAction.Destroyed && t.PendingCount(id) > 0)
             throw new ControlConflictException("Drain reliable input before closing.");
         if (request.Action == RoomLifecycleAction.Sleep && Connections(t).Any(c => c.SessionId == id))
             throw new ControlConflictException("Connected room cannot sleep.");

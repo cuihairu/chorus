@@ -74,7 +74,7 @@ var internalApi = app.MapGroup("/internal").AddEndpointFilter(async (context, ne
 internalApi.MapPost("/nodes/report", (NodeReport report, RoomControlStore s) => s.ReportNode(report));
 internalApi.MapGet("/nodes", (RoomControlStore s) => s.Nodes());
 internalApi.MapGet("/rooms", (RoomControlStore s) => s.Rooms().Select(r => r with { Inbox = null, Receipts = null, Snapshot = null }));
-internalApi.MapGet("/rooms/{id}", (string id, bool? checkpoint, RoomControlStore s) => s.Room(id) is { } r ? Results.Ok(r with { Inbox = null, Receipts = null, Snapshot = checkpoint == true ? r.Snapshot : null }) : Results.NotFound());
+internalApi.MapGet("/rooms/{id}", (string id, bool? checkpoint, RoomControlStore s) => s.Room(id, checkpoint == true) is { } r ? Results.Ok(r with { Inbox = null, Receipts = null }) : Results.NotFound());
 internalApi.MapPost("/rooms/assign", (RoomAssignment request, RoomControlStore s) => s.Assign(request));
 internalApi.MapPost("/rooms/{id}/prepare", (string id, OwnerRequest owner, RoomControlStore s) => s.Prepare(id, owner) with { Snapshot = null, Receipts = null });
 internalApi.MapPost("/rooms/{id}/ready", (string id, OwnerRequest owner, RoomControlStore s) => s.Ready(id, owner));
@@ -89,7 +89,7 @@ admin.MapGet("/summary", (RoomControlStore s) => s.Summary());
 admin.MapGet("/history", (RoomControlStore s) => s.History());
 admin.MapGet("/nodes", (RoomControlStore s) => s.Nodes());
 admin.MapGet("/rooms", (RoomControlStore s) => s.Rooms().Select(r => r with { Inbox = null, Receipts = null, Snapshot = null }));
-admin.MapGet("/rooms/{id}", (string id, RoomControlStore s) => s.Room(id) is { } r ? Results.Ok(new { room = r with { Inbox = null, Receipts = null }, pendingEvents = r.Inbox?.Count ?? 0, connections = s.Connections().Where(c => c.SessionId == id) }) : Results.NotFound());
+admin.MapGet("/rooms/{id}", (string id, RoomControlStore s) => s.Room(id) is { } r ? Results.Ok(new { room = r with { Inbox = null, Receipts = null }, pendingEvents = s.PendingCount(id), connections = s.Connections().Where(c => c.SessionId == id) }) : Results.NotFound());
 admin.MapGet("/connections", (RoomControlStore s) => s.Connections());
 admin.MapGet("/streamers", (RoomControlStore s) => s.Streamers());
 admin.MapGet("/queue", (RoomControlStore s) => s.Queue());

@@ -1,8 +1,8 @@
 # 房间管理与横向扩展架构审查（2026-10-18）
 
-> 整体分层方向合理，单机多房间有可用基础；房间管理尚未形成生产闭环，当前不能认为已经支持安全的跨机横向扩容。已验证的是固定 Worker 集合下、同机 UDS 的多进程分房间。
+> 整体分层方向合理，单机多房间有可用基础；房间管理尚未形成生产容量与故障闭环，当前不能认为已经支持生产级跨机横向扩容。代码已增加 HTTP 控制面、持久 Room 目录、Worker 端点和 epoch fencing；跨机部署、分区隔离和压力门槛仍未验证。
 >
-> 本文以生产调用链为准，区分库级构件、生产接线与测试证据。实施任务统一登记在仓库根目录 `todo.md` §19；本文为审查结果和建议，未完成事项不代表已实现。
+> 本文以生产调用链为准，区分控制面接线、数据面能力与测试证据。实施任务统一登记在仓库根目录 `todo.md` §19；本文为审查结果和建议，未完成事项不代表已实现。2026-10-18 的追加复核见第 7 节。
 
 ## 1. 架构判断与能力边界
 
@@ -11,18 +11,18 @@ Gateway 负责平台入口和客户端连接，Engine 承载权威状态，`IGam
 | 能力 | 当前结论 | 证据与边界 |
 |---|---|---|
 | 单机多房间 | 已实现 | `SessionRegistry` + `SessionActor`；容量淘汰会丢失状态，见 R01 |
-| 固定集合的多 Worker 路由 | 已实现、同机 UDS 已验证 | Gateway 按 `RoomAffinity` 计算归属；集合变化不安全，见 R02 |
-| TCP/HTTP 通信 | transport 库已实现 | 缺少每个 Worker/Gateway 的独立地址配置，见 R04 |
-| 集群唯一权威 | 部分构件 | `RoomAuthorityRegistry` 是进程内注册表，生产 Actor 不校验其权威，见 R03 |
+| 固定集合的多 Worker 路由 | 部分实现 | 控制面 Room 目录为新房间稳定分配 Worker；RoomId/epoch 校验输入与 tick。跨机部署和长时间负载仍未验收 |
+| TCP/HTTP 通信 | 端点配置已实现 | Worker/Gateway 可分别配置 advertised endpoint 与 listen host；真实跨机网络路径仍未验收，见 R04 |
+| 集群唯一权威 | 控制面 fencing 已接线 | HTTP 控制面租约与 SQLite 事务拒绝旧 epoch 的 tick / commit；分区期间实际 Actor 停止、发布边界和共享数据库高可用仍需验证，见 R03 |
 | 房间生命周期 | 部分构件 | `RoomLifecycleRegistry` 没有接入生产创建、休眠和关闭路径，见 R05 |
 | 持久化与恢复 | 部分构件 | 有恢复契约与内存后端，没有生产保存/恢复闭环，见 R06 |
 | 多 Gateway 事件可靠性 | 不完整 | 入口去重为实例内状态，IPC 发布成功不等于引擎接收，见 R07 |
 | Worker 故障检测 | 部分 | Gateway 仅记录任意引擎最后来信时间，不能区分各 Worker，见 R08 |
-| 动态扩缩容、迁移与自动接管 | 未实现生产闭环 | 地址目录、房间目录、写者隔离及恢复编排尚未组合 |
+| 动态扩缩容、迁移与自动接管 | 部分实现 | 有稳定分配、两阶段迁移 API 与 checkpoint 恢复路径；可靠事件语义、跨机恢复、分区测试和运行编排未形成生产闭环 |
 
 ## 2. 当前生产路径与未接线构件
 
-实线表示当前生产调用链；虚线表示已有构件尚未接入。多 Worker 实线按已验证的同机 UDS 绘制，不能据此推断跨机拓扑已可用。
+本节记录最初审查时的同机 UDS 静态路由。2026-10-18 新增控制面接线后，具体现状以第 7 节为准；此图保留为未接入控制面前的拓扑基线。
 
 ```mermaid
 flowchart LR
@@ -166,3 +166,18 @@ dotnet test tests/Chorus.Engine.Tests/Chorus.Engine.Tests.csproj --no-restore --
 - 修正 Worker 健康视图：`Healthy()` 过滤过期节点，`SortedWorkerIds()` 不过滤。
 - 将“快照版本单调可隔离旧写者”收窄为顺序调用的版本检查，跨写者原子条件更新尚未实现。
 - 保留已完成库能力的历史记录，未完成的生产能力在 `todo.md` §19 单独列项；§14/§15/§18 勾选不代表生产接管完成。
+
+
+## 7. 2026-10-18 控制面接线复核
+
+当前实现将控制面部署为单独的 `Chorus.ControlHost` HTTP 服务，SQLite WAL 文件只由该进程本机访问；Worker 和 Gateway 通过带共享密钥的 HTTP API 注册、续租、查询目录及登记连接。新房间分配在 SQLite 写事务中完成，`RoomId → WorkerId + WorkerInstance + Epoch` 作为稳定归属；扩容后存量房间不自动搬迁，新房间会分配给有容量的健康 Worker。入口发送带 `AuthorityEpoch` 的 IPC，EngineHost 的 tick commit 在共享控制面核对 Worker lease、实例、epoch 和连续 tick；迁移先进入 Migrating 冻结 commit，handoff 后 epoch 递增并进入 Recovering。关键实现位于 `src/Chorus.Control/RoomControlStore.cs`、`src/Chorus.Control/ControlDatabase.cs`、`src/Chorus.EngineHost/EngineControl.cs`、`src/Chorus.Gateway/GatewayControl.cs` 和 `src/Chorus.ControlHost/Program.cs`。
+
+容量准入已改为满载拒绝新 Actor，不再以 LRU 悄悄销毁房间；可选的空房间清扫默认关闭。控制面待处理事件、去重回执和 checkpoint 已从房间目录 JSON 拆到独立 SQLite 表，事件按 `(room_id,event_key)` 建唯一索引，待处理数/回执数用事务内计数维护。这避免每条事件重写整个回执字典，也让目录读取不携带状态快照。
+
+### 生产容量边界
+
+控制面仍是**单个 SQLite 写者**，不具备多副本高可用或写分片。当前 `SessionActor` 每个 tick 都提交一个状态 checkpoint；每个 checkpoint 写入 SQLite，并与输入确认处在同一事务。于是所有 Worker 的 tick 写入都汇聚到 ControlHost 的一个 SQLite 写锁，状态越大写入成本越高。此设计适合作为受控规模的正确性原型，不能仅凭多 Worker 分房间宣称线性扩容。生产放量前必须压测控制面写入延迟、锁等待、WAL 增长和最大 checkpoint，并确定外部数据库/分片或有明确定义恢复损失窗口的持久化策略。不能简单降低 checkpoint 频率：当前没有快照后的确定性事件重放，降低频率会扩大已确认事件对应的状态丢失窗口。
+
+此外，EngineHost 的输出广播路径当前会为快照查询控制面房间、连接和节点信息；Gateway 收到每条 Engine 输出也会同步查询房间 epoch。以帧频输出时，这种逐消息 HTTP 验权会把数据库和 API 变成热点。需要按版本缓存/批量刷新并保留过期 fail-closed 的权威语义，再进行高频场景上线评估，见 `todo.md` §19 ROOM-10。
+
+**验收结论：** 本地定向测试覆盖容量拒绝、房间分配稳定、事件去重、连接代次、checkpoint fencing 和迁移状态转换；没有执行真实多主机网络分区、控制面重启恢复或容量压测。固定归属和旧 epoch commit 拒绝有代码路径，跨机安全扩展及生产吞吐仍为未验收。

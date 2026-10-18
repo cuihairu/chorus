@@ -486,14 +486,10 @@ public sealed class IpcAckResyncLoopTests
     }
 
     /// <summary>
-    /// Split-mode lazy sweep (EngineHost topology, runSweepLoop: false): at
-    /// the session cap the engine sweeps client-less idle sessions through the
-    /// gateway-owned client probe - the registry cannot see the gateway's
-    /// client table, so a probe that reported clients would pin the session
-    /// forever. Eviction is observable in the diagnostics surface.
+    /// At capacity, a clientless room remains allocated until explicit policy closes it.
     /// </summary>
     [Fact]
-    public async Task DisconnectThenNewSessionAtCap_SweepsClientlessSession()
+    public async Task DisconnectThenNewSessionAtCap_PreservesClientlessRoomAndRejectsNewRoom()
     {
         var socketDir = $"/tmp/chorus-test-sweep-{Guid.NewGuid():N}";
         Directory.CreateDirectory(socketDir);
@@ -518,17 +514,12 @@ public sealed class IpcAckResyncLoopTests
                     EnvelopeFactory.Create(IpcMessageTypes.GatewayDisconnect, "s-sweep",
                         new GatewayDisconnectCmd("s-sweep", "c-sweep")), cts.Token);
 
-                // Idle window passes, then the second session at cap triggers
-                // the amortized sweep that can see the empty client table.
                 await Task.Delay(200, cts.Token);
 
                 await ConnectAsync(outgoing, "s-next", "c-next", cts.Token);
-                await WaitUntilAsync(
-                    () => engine.GetDiagnostics().Any(d => d.SessionId == "s-next"), cts.Token);
-                await WaitUntilAsync(
-                    () => engine.GetDiagnostics().All(d => d.SessionId != "s-sweep"), cts.Token);
-
-                Assert.DoesNotContain(engine.GetDiagnostics(), d => d.SessionId == "s-sweep");
+                await Task.Delay(100, cts.Token);
+                Assert.Contains(engine.GetDiagnostics(), d => d.SessionId == "s-sweep");
+                Assert.DoesNotContain(engine.GetDiagnostics(), d => d.SessionId == "s-next");
             }
         }
         finally
