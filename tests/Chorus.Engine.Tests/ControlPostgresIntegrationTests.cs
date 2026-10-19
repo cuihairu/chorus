@@ -100,6 +100,33 @@ public sealed class ControlPostgresIntegrationTests
     }
 
     [Fact]
+    public void PostgresProvider_CommitValidatesAndConsumesReceiptsAtomically()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var store = NewStore(testDatabase.ConnectionString);
+        var prefix = "pg-atomic-consume-" + Guid.NewGuid().ToString("N");
+        store.ReportNode(new(prefix + "-worker", prefix + "-boot", prefix + "-machine", "worker", new("127.0.0.1", 3101), 100));
+        var room = store.Assign(new(prefix));
+        var owner = new OwnerRequest(room.WorkerId, room.WorkerInstance, room.Epoch);
+        var evt = new Chorus.Protocol.Models.AudienceEvent("input", "test", prefix, "viewer",
+            Chorus.Protocol.Models.AudienceEventKind.Like, 1);
+        Assert.True(store.AppendEvent(evt));
+        var prepared = store.Prepare(prefix, owner);
+        var state = JsonSerializer.SerializeToElement(new { tick = 1 });
+
+        Assert.Throws<ControlConflictException>(() => store.Commit(prefix, new(room.WorkerId, room.WorkerInstance, room.Epoch,
+            0, 1, 1, state, [RoomControlStore.EventKey(evt), "missing-receipt"])));
+        Assert.Equal(0, store.Room(prefix)!.TickId);
+        Assert.Equal(1, store.PendingCount(prefix));
+        Assert.Null(store.Room(prefix, checkpoint: true)!.Snapshot);
+
+        Assert.True(store.Commit(prefix, new(room.WorkerId, room.WorkerInstance, room.Epoch, 0, 1, 1, state,
+            prepared.Inbox!.Select(RoomControlStore.EventKey).ToArray())));
+        Assert.Equal(0, store.PendingCount(prefix));
+        Assert.Equal(1, store.Room(prefix, checkpoint: true)!.TickId);
+    }
+
+    [Fact]
     public void PostgresProvider_PersistsFencedTickAndReliableEventAcrossStoreInstances()
     {
         using var testDatabase = new PostgresTestDatabase();

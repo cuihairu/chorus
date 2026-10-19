@@ -266,6 +266,34 @@ public sealed class ControlDatabase
                 : Command("SELECT COUNT(*) FROM event_receipts WHERE room_id=@r AND event_key IN (SELECT value FROM json_each(@keys))", ("@r", roomId), ("@keys", JsonSerializer.Serialize(keys, Json)));
             return Convert.ToInt64(cmd.ExecuteScalar() ?? 0L) == keys.Count;
         }
+        public bool TryConsumeEvents(string roomId, IReadOnlyCollection<string> keys)
+        {
+            if (keys.Count == 0) return true;
+            if (!postgres)
+            {
+                if (!ReceiptsExist(roomId, keys)) return false;
+                DeleteEvents(roomId, keys.ToArray());
+                return true;
+            }
+
+            using var cmd = Command("""
+                WITH receipt_status AS MATERIALIZED (
+                    SELECT COUNT(*) = cardinality(@keys)::bigint AS valid
+                    FROM event_receipts WHERE room_id=@r AND event_key=ANY(@keys)
+                ), deleted_events AS (
+                    DELETE FROM room_events e USING receipt_status s
+                    WHERE s.valid AND e.room_id=@r AND e.event_key=ANY(@keys)
+                    RETURNING 1
+                ), pending_updated AS (
+                    UPDATE room_queue_counts q
+                    SET pending=GREATEST(0,q.pending-(SELECT COUNT(*)::integer FROM deleted_events))
+                    WHERE q.room_id=@r AND EXISTS(SELECT 1 FROM deleted_events)
+                    RETURNING q.pending
+                )
+                SELECT valid FROM receipt_status
+                """, ("@r", roomId), ("@keys", keys.ToArray()));
+            return cmd.ExecuteScalar() is true;
+        }
         public void PruneReceipts(string roomId,long cutoff)
         {
             using var cmd=Command("DELETE FROM event_receipts WHERE room_id=@r AND at<@c AND NOT EXISTS(SELECT 1 FROM room_events e WHERE e.room_id=event_receipts.room_id AND e.event_key=event_receipts.event_key)",("@r",roomId),("@c",cutoff)); var removed=cmd.ExecuteNonQuery();
