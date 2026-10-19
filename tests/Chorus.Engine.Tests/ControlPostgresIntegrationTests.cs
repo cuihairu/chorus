@@ -268,11 +268,115 @@ public sealed class ControlPostgresIntegrationTests
         Assert.True(Assert.Single(store.EventHeatAlerts()).Acknowledged);
     }
 
+    [Fact]
+    public void Providers_MatchForSummaryHistoryAuditAndEventHeatRetention()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var sqliteDirectory = Path.Combine(Path.GetTempPath(), "chorus-provider-parity-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(sqliteDirectory);
+        try
+        {
+            var at = 1_800_000_000_000L;
+            var sqliteClock = new MutableTimeProvider(at);
+            var postgresClock = new MutableTimeProvider(at);
+            var sqlite = new RoomControlStore(new ControlDatabase(Path.Combine(sqliteDirectory, "control.db")), sqliteClock);
+            var postgres = NewStore(testDatabase.ConnectionString, postgresClock);
+
+            var sqliteResult = ExerciseProviderContract(sqlite, sqliteClock);
+            var postgresResult = ExerciseProviderContract(postgres, postgresClock);
+
+            Assert.Equal(2, sqliteResult.Summary.Machines);
+            Assert.Equal(1, sqliteResult.Summary.Workers);
+            Assert.Equal(1, sqliteResult.Summary.Gateways);
+            Assert.Equal(1, sqliteResult.Summary.Rooms);
+            Assert.Equal(3, sqliteResult.Summary.Connections);
+            Assert.Equal(2, sqliteResult.Summary.OnlineUsers);
+            Assert.Equal(1, sqliteResult.Summary.OnlineStreamers);
+            Assert.Equal("bilibili=1", sqliteResult.Summary.RoomsByPlatform);
+            Assert.Equal("bilibili=2", sqliteResult.Summary.OnlineUsersByPlatform);
+            Assert.Equal(sqliteResult.Summary, postgresResult.Summary);
+            Assert.Equal(sqliteResult.History, postgresResult.History);
+            Assert.Equal(3, sqliteResult.Audits.Length);
+            Assert.Equal(sqliteResult.Audits, postgresResult.Audits);
+            Assert.Equal(3, sqliteResult.AuditUsage.Rows);
+            Assert.True(sqliteResult.AuditUsage.ApproximatePayloadBytes > 0);
+            Assert.Equal(sqliteResult.AuditUsage, postgresResult.AuditUsage);
+            Assert.Equal(RoomControlStore.EventHeatAlertThreshold, Assert.Single(sqliteResult.HeatBeforePrune).Events);
+            Assert.False(sqliteResult.AlertBeforeAck.Acknowledged);
+            Assert.True(sqliteResult.AlertAfterAck.Acknowledged);
+            Assert.Equal(sqliteResult.HeatBeforePrune, postgresResult.HeatBeforePrune);
+            Assert.Equal(sqliteResult.AlertBeforeAck, postgresResult.AlertBeforeAck);
+            Assert.Equal(sqliteResult.AlertAfterAck, postgresResult.AlertAfterAck);
+            Assert.Equal(1, sqliteResult.PrunedHeatRows);
+            Assert.Equal(sqliteResult.PrunedHeatRows, postgresResult.PrunedHeatRows);
+            Assert.Empty(sqliteResult.HeatAfterPrune);
+            Assert.Empty(sqliteResult.AlertsAfterPrune);
+            Assert.Equal(sqliteResult.HeatAfterPrune, postgresResult.HeatAfterPrune);
+            Assert.Equal(sqliteResult.AlertsAfterPrune, postgresResult.AlertsAfterPrune);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            Directory.Delete(sqliteDirectory, recursive: true);
+        }
+    }
+
+    private static ProviderContractSnapshot ExerciseProviderContract(RoomControlStore store, MutableTimeProvider clock)
+    {
+        store.ReportNode(new("parity-worker", "worker-boot", "machine-worker", "worker", new("127.0.0.1", 3101), 10));
+        store.ReportNode(new("parity-gateway", "gateway-boot", "machine-gateway", "gateway", new("127.0.0.1", 4101), 0));
+        var room = store.Assign(new("parity-room", StreamerId: "streamer", Platform: "bilibili"));
+        store.Connect(new(room.Id, "viewer-1", "viewer", "viewer", "parity-gateway", "gateway-boot", "viewer-gen-1"));
+        store.Connect(new(room.Id, "viewer-2", "viewer", "viewer", "parity-gateway", "gateway-boot", "viewer-gen-2"));
+        store.Connect(new(room.Id, "streamer", "streamer", "streamer", "parity-gateway", "gateway-boot", "streamer-gen"));
+        store.Drain("parity-worker", true, "operator");
+        store.Sample();
+
+        for (var index = 0; index < RoomControlStore.EventHeatAlertThreshold; index++)
+            Assert.True(store.AppendEvent(new($"parity-{index}", "bilibili", room.Id, $"viewer-{index}",
+                Chorus.Protocol.Models.AudienceEventKind.Comment, clock.GetUtcNow().ToUnixTimeMilliseconds())));
+
+        var heatBeforePrune = store.EventHeat().ToArray();
+        var alertBeforeAck = Assert.Single(store.EventHeatAlerts());
+        var alertAfterAck = store.AcknowledgeEventHeatAlert(alertBeforeAck.Platform, alertBeforeAck.BucketAtMs, "operator");
+        var audits = store.Audits().ToArray();
+        var auditUsage = store.AuditUsage();
+        var summary = Project(store.Summary());
+        var history = store.History("bilibili").Select(Project).ToArray();
+
+        clock.Advance(61 * 60_000L);
+        var prunedHeatRows = store.PruneEventHeat(clock.GetUtcNow().ToUnixTimeMilliseconds() - 60 * 60_000L);
+        return new(summary, history, audits, auditUsage, heatBeforePrune, alertBeforeAck, alertAfterAck,
+            prunedHeatRows, store.EventHeat().ToArray(), store.EventHeatAlerts().ToArray());
+    }
+
+    private static SummaryProjection Project(SummarySample summary) => new(
+        summary.AtMs, summary.Machines, summary.Workers, summary.Gateways, summary.Rooms, summary.ActiveRooms,
+        summary.Connections, summary.OnlineUsers, summary.OnlineStreamers, summary.Queued, summary.RunningMatches,
+        string.Join(',', (summary.RoomsByPlatform ?? new Dictionary<string, int>()).OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}={pair.Value}")),
+        string.Join(',', (summary.OnlineUsersByPlatform ?? new Dictionary<string, int>()).OrderBy(pair => pair.Key).Select(pair => $"{pair.Key}={pair.Value}")));
+
+    private sealed record ProviderContractSnapshot(SummaryProjection Summary, SummaryProjection[] History,
+        AuditRecord[] Audits, AuditStoreUsage AuditUsage, EventHeatSample[] HeatBeforePrune,
+        EventHeatAlert AlertBeforeAck, EventHeatAlert AlertAfterAck, int PrunedHeatRows,
+        EventHeatSample[] HeatAfterPrune, EventHeatAlert[] AlertsAfterPrune);
+
+    private sealed record SummaryProjection(long AtMs, int Machines, int Workers, int Gateways, int Rooms,
+        int ActiveRooms, int Connections, int OnlineUsers, int OnlineStreamers, int Queued, int RunningMatches,
+        string RoomsByPlatform, string OnlineUsersByPlatform);
+
     private static RoomControlStore NewStore(string connectionString, TimeProvider? timeProvider = null) =>
         new(new ControlDatabase(connectionString, ControlDatabaseProvider.PostgreSql), timeProvider);
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class MutableTimeProvider(long nowMs) : TimeProvider
+    {
+        private long _nowMs = nowMs;
+        public void Advance(long milliseconds) => Interlocked.Add(ref _nowMs, milliseconds);
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.FromUnixTimeMilliseconds(Interlocked.Read(ref _nowMs));
     }
 }
