@@ -154,6 +154,43 @@ public sealed class ControlDatabase
         }
         public bool AddEvent(string roomId, string key, Chorus.Protocol.Models.AudienceEvent value, long at)
         {
+            if (postgres)
+            {
+                var pgBucket = at - at % 60_000;
+                var pgGiftUnits = value.Kind == Chorus.Protocol.Models.AudienceEventKind.Gift ? Math.Max(0, value.GiftCount ?? 0) : 0;
+                using var pgCommand = Command("""
+                    WITH receipt_added AS (
+                        INSERT INTO event_receipts(room_id,event_key,at) VALUES(@r,@k,@a)
+                        ON CONFLICT(room_id,event_key) DO NOTHING
+                        RETURNING event_key
+                    ), capacity_bumped AS (
+                        INSERT INTO room_queue_counts(room_id,pending,receipts)
+                        SELECT @r,1,1 FROM receipt_added WHERE TRUE
+                        ON CONFLICT(room_id) DO UPDATE SET pending=room_queue_counts.pending+1,receipts=room_queue_counts.receipts+1
+                        WHERE room_queue_counts.receipts<100000
+                        RETURNING room_id
+                    ), event_added AS (
+                        INSERT INTO room_events(room_id,event_key,body,at)
+                        SELECT @r,@k,@b,@a FROM capacity_bumped
+                        RETURNING event_key
+                    ), heat_added AS (
+                        INSERT INTO event_heat(bucket_at,room_id,platform,kind,events,gift_units)
+                        SELECT @bucket,@r,@p,@kind,1,@g FROM event_added
+                        ON CONFLICT(bucket_at,room_id,platform,kind) DO UPDATE
+                        SET events=event_heat.events+1,gift_units=event_heat.gift_units+excluded.gift_units
+                    )
+                    SELECT EXISTS(SELECT 1 FROM receipt_added), EXISTS(SELECT 1 FROM capacity_bumped)
+                    """, ("@r", roomId), ("@k", key), ("@a", at), ("@b", JsonSerializer.Serialize(value, Json)),
+                    ("@bucket", pgBucket), ("@p", ControlDimensions.PlatformBucket(value.Platform)), ("@kind", (int)value.Kind), ("@g", pgGiftUnits));
+                using var reader = pgCommand.ExecuteReader();
+                if (!reader.Read()) throw new InvalidOperationException("PostgreSQL event insertion returned no outcome.");
+                var receiptAdded = reader.GetBoolean(0);
+                var capacityAvailable = reader.GetBoolean(1);
+                if (receiptAdded && !capacityAvailable)
+                    throw new ControlConflictException("Room receipt capacity reached; retry after dedup window.");
+                return receiptAdded;
+            }
+
             using var receipt = Command("INSERT INTO event_receipts(room_id,event_key,at) VALUES(@r,@k,@a) ON CONFLICT(room_id,event_key) DO NOTHING", ("@r",roomId), ("@k",key), ("@a",at));
             if(receipt.ExecuteNonQuery() == 0) return false;
             using var bump = Command("INSERT INTO room_queue_counts(room_id,pending,receipts) VALUES(@r,1,1) " +

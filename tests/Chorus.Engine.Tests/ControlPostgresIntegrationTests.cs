@@ -42,6 +42,64 @@ public sealed class ControlPostgresIntegrationTests
     }
 
     [Fact]
+    public async Task PostgresProvider_ConcurrentDuplicateEventIsAcceptedOnce()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var store = NewStore(testDatabase.ConnectionString);
+        var prefix = "pg-duplicate-event-" + Guid.NewGuid().ToString("N");
+        store.ReportNode(new(prefix + "-worker", prefix + "-boot", prefix + "-machine", "worker", new("127.0.0.1", 3101), 100));
+        var room = store.Assign(new(prefix));
+        var evt = new Chorus.Protocol.Models.AudienceEvent("same-event", "test", prefix, "viewer",
+            Chorus.Protocol.Models.AudienceEventKind.Like, 1);
+
+        var accepted = await Task.WhenAll(Enumerable.Range(0, 32).Select(_ => Task.Run(() => store.AppendEvent(evt))));
+
+        Assert.Single(accepted.Where(value => value));
+        Assert.Equal(31, accepted.Count(value => !value));
+        Assert.Equal(1, store.PendingCount(prefix));
+        Assert.Single(store.Prepare(prefix, new(room.WorkerId, room.WorkerInstance, room.Epoch)).Inbox!);
+        Assert.Equal(1, store.EventHeat().Single().Events);
+    }
+
+    [Fact]
+    public async Task PostgresProvider_EventReceiptCapacityConflictRollsBackNewReceipt()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var store = NewStore(testDatabase.ConnectionString);
+        var prefix = "pg-receipt-capacity-" + Guid.NewGuid().ToString("N");
+        store.ReportNode(new(prefix + "-worker", prefix + "-boot", prefix + "-machine", "worker", new("127.0.0.1", 3101), 100));
+        store.Assign(new(prefix));
+        await using var connection = new Npgsql.NpgsqlConnection(testDatabase.ConnectionString);
+        await connection.OpenAsync();
+        await using (var seed = new Npgsql.NpgsqlCommand(
+            "INSERT INTO room_queue_counts(room_id,pending,receipts) VALUES(@room,0,100000)", connection))
+        {
+            seed.Parameters.AddWithValue("room", prefix);
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        var evt = new Chorus.Protocol.Models.AudienceEvent("at-capacity", "test", prefix, "viewer",
+            Chorus.Protocol.Models.AudienceEventKind.Like, 1);
+        Assert.Throws<ControlConflictException>(() => store.AppendEvent(evt));
+        await using (var count = new Npgsql.NpgsqlCommand(
+            "SELECT COUNT(*) FROM event_receipts WHERE room_id=@room AND event_key=@key", connection))
+        {
+            count.Parameters.AddWithValue("room", prefix);
+            count.Parameters.AddWithValue("key", RoomControlStore.EventKey(evt));
+            Assert.Equal(0L, (long)(await count.ExecuteScalarAsync())!);
+        }
+
+        await using (var makeRoom = new Npgsql.NpgsqlCommand(
+            "UPDATE room_queue_counts SET receipts=99999 WHERE room_id=@room", connection))
+        {
+            makeRoom.Parameters.AddWithValue("room", prefix);
+            await makeRoom.ExecuteNonQueryAsync();
+        }
+        Assert.True(store.AppendEvent(evt));
+        Assert.Equal(1, store.PendingCount(prefix));
+    }
+
+    [Fact]
     public void PostgresProvider_PersistsFencedTickAndReliableEventAcrossStoreInstances()
     {
         using var testDatabase = new PostgresTestDatabase();
