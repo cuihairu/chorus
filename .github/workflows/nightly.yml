@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: nightly
@@ -49,13 +49,30 @@ jobs:
       - name: Test
         run: dotnet test Chorus.sln -c Release --no-build
 
-      - name: Publish server
-        run: dotnet publish src/Chorus.Server -c Release -o ./publish
+      - name: Publish server (self-contained linux-x64)
+        run: dotnet publish src/Chorus.Server -c Release -r linux-x64 --self-contained true -o ./publish
+
+      - name: Package nightly build
+        run: tar -czf chorus-nightly-linux-x64.tar.gz -C publish .
 
       - name: Upload nightly artifact (rolling, no tag)
         uses: actions/upload-artifact@v6
         with:
           name: chorus-nightly
-          path: publish/
+          path: chorus-nightly-linux-x64.tar.gz
           retention-days: 14
           if-no-files-found: error
+
+      - name: Publish rolling nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="Rolling nightly build of main at ${GITHUB_SHA}. Updated automatically by the nightly workflow."
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload nightly chorus-nightly-linux-x64.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit nightly --prerelease --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create nightly chorus-nightly-linux-x64.tar.gz --prerelease \
+              --title "Nightly build" --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
+          fi
+          gh release view nightly --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease -q '"nightly release: " + .tagName + " prerelease=" + (.isPrerelease|tostring)'
