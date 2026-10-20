@@ -54,6 +54,17 @@ public sealed record LoadToolOptions(
         ? $" shard{shardIndex + 1}"
         : string.Empty;
 
+    /// <summary>
+    /// True when this driver process owns the zero-based session slot. A
+    /// single-process driver owns every slot; a multi-process child owns
+    /// slot % shardCount == shardIndex, so the shards partition the session
+    /// set (distinct rooms per shard) instead of every shard recreating the
+    /// full set and multiplying the WS fan-out without lifting the rate.
+    /// </summary>
+    public bool OwnsShardIndex(int zeroBasedIndex) => DriverShardIndex is null
+        || DriverShardCount is null
+        || zeroBasedIndex % DriverShardCount.Value == DriverShardIndex.Value;
+
     public static string WsEndpoint(string baseUrl, string? explicitUrl = null)
     {
         if (!string.IsNullOrWhiteSpace(explicitUrl))

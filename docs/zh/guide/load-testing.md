@@ -36,7 +36,7 @@ WS 侧需要 `--token`，或 Gateway/Server 配置 `Faces:StreamerWs:AllowAnonym
 | `--rate` | 50 | 事件/秒，**全部 Session 合计**（跨 producer 摊分，round-robin 覆盖所有 Session）。`RatePacer` 按绝对时刻表对齐每个 producer 的发送节奏（2026-10-16 前是整除间隔，≥1000/s/producer 时截断为 0、`--rate` 静默失效）；producer 跟不上目标节奏时按实际响应速度发送，长程速率趋近于目标。要实际打到目标速率，producer 数需 ≥ 目标速率 × 单请求平均延迟 |
 | `--clients` | 3 | 每 Session WS 客户端数 |
 | `--producers` | 4 | 并行 HTTP 生产者连接数 |
-| `--driver-processes` | 1 | 独立驱动进程数。父进程均分 `--rate`，并为每个分片的 event/client id 加前缀；用于移除 LoadTool 单进程这一侧的瓶颈 |
+| `--driver-processes` | 1 | 独立驱动进程数。父进程均分 `--rate`、为每个分片的 event/client id 加前缀，并把 session 集合按分片划分（分片 k 拥有 slot % n = k 的 session 槽位；分不到 session 的分片不发事件）。既移除 LoadTool 单进程侧瓶颈，也不再放大 WS 扇出（2026-10-20；此前每个分片都会重建整套 session） |
 | `--ack-mix` | `fast,normal,slow` | ACK 档位混合（fast≈实时 / normal≈几 tick / slow≈十几 tick 滞后） |
 | `--disconnect-every` | 20 | 客户端平均断连间隔（秒，0=不断） |
 | `--reconnect-ms` | 1000 | 断连后重连退避 |

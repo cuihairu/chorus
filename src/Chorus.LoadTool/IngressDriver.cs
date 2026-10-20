@@ -37,12 +37,23 @@ public sealed class IngressDriver
         _platform = platform;
         _options = options;
         _sessions = Enumerable.Range(1, Math.Max(1, options.Sessions))
+            .Where(n => options.OwnsShardIndex(n - 1))
             .Select(n => $"load-s{n}")
             .ToArray();
     }
 
+    /// <summary>Session ids this driver targets (test/observability helper).</summary>
+    public IReadOnlyList<string> SessionIds => _sessions;
+
     public async Task RunAsync(CancellationToken cancellationToken)
     {
+        if (_sessions.Length == 0)
+        {
+            // A starved shard (fewer sessions than driver processes) owns no
+            // rooms: run no producers rather than crash on the empty round-robin.
+            return;
+        }
+
         var producers = Enumerable.Range(0, Math.Max(1, _options.ProducerConnections))
             .Select(n => Task.Run(() => ProduceAsync(n, cancellationToken), cancellationToken))
             .ToArray();

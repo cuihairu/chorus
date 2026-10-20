@@ -213,6 +213,65 @@ public sealed class LoadToolTests
     }
 
     [Fact]
+    public void Options_OwnsShardIndexPartitionsSessions()
+    {
+        var shard0 = new LoadToolOptions(DriverShardIndex: 0, DriverShardCount: 3);
+        var shard1 = new LoadToolOptions(DriverShardIndex: 1, DriverShardCount: 3);
+        var shard2 = new LoadToolOptions(DriverShardIndex: 2, DriverShardCount: 3);
+
+        // Every zero-based session slot is owned by exactly one shard.
+        for (var index = 0; index < 12; index++)
+        {
+            Assert.Equal(1,
+                new[] { shard0.OwnsShardIndex(index), shard1.OwnsShardIndex(index), shard2.OwnsShardIndex(index) }
+                    .Count(owned => owned));
+        }
+
+        Assert.True(shard0.OwnsShardIndex(0) && shard0.OwnsShardIndex(3) && shard0.OwnsShardIndex(9));
+        Assert.True(shard1.OwnsShardIndex(1) && shard1.OwnsShardIndex(4));
+        Assert.True(shard2.OwnsShardIndex(2) && shard2.OwnsShardIndex(5));
+    }
+
+    [Fact]
+    public void Options_OwnsShardIndexSingleProcessOwnsAll()
+    {
+        var options = new LoadToolOptions();
+        Assert.True(options.OwnsShardIndex(0));
+        Assert.True(options.OwnsShardIndex(7));
+    }
+
+    [Fact]
+    public void IngressDriver_ShardsPartitionSessionSet()
+    {
+        using var http = new HttpClient();
+
+        var single = new IngressDriver(http, "http://stub", "test", new LoadToolOptions(Sessions: 9));
+        Assert.Equal(9, single.SessionIds.Count);
+        Assert.Equal("load-s1", single.SessionIds[0]);
+
+        var shard1 = new IngressDriver(http, "http://stub", "test",
+            new LoadToolOptions(Sessions: 9, DriverShardIndex: 1, DriverShardCount: 3));
+        Assert.Equal(new[] { "load-s2", "load-s5", "load-s8" }, shard1.SessionIds);
+
+        // Fewer sessions than shards: a starved shard owns none.
+        var starved = new IngressDriver(http, "http://stub", "test",
+            new LoadToolOptions(Sessions: 2, DriverShardIndex: 2, DriverShardCount: 3));
+        Assert.Empty(starved.SessionIds);
+    }
+
+    [Fact]
+    public async Task IngressDriver_StarvedShardRunsNoProducers()
+    {
+        using var http = new HttpClient();
+        var driver = new IngressDriver(http, "http://127.0.0.1:1", "test",
+            new LoadToolOptions(Sessions: 2, DriverShardIndex: 2, DriverShardCount: 3));
+
+        var exception = await Record.ExceptionAsync(() => driver.RunAsync(new CancellationToken(canceled: true)));
+        Assert.Null(exception);
+        Assert.Equal(0, driver.EventsSent);
+    }
+
+    [Fact]
     public void MultiProcessDriver_DotnetDllExecutableRequiresAssemblyArgument()
     {
         var args = MultiProcessDriver.BuildProcessArgs(

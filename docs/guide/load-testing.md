@@ -37,7 +37,7 @@ The WS side requires `--token`, or configuring `Faces:StreamerWs:AllowAnonymous=
 | `--rate` | 50 | events/second, **total across all Sessions** (spread across producers, round-robin covering all Sessions). `RatePacer` aligns each producer's send cadence to an absolute schedule (before 2026-10-16 it was evenly divided intervals, truncated to 0 at ≥1000/s/producer, silently disabling `--rate`); when a producer can't keep up with the target cadence it sends at its actual response speed, and the long-run rate approaches the target. To actually hit the target rate, the number of producers must be ≥ target rate × average per-request latency |
 | `--clients` | 3 | number of WS clients per Session |
 | `--producers` | 4 | number of parallel HTTP producer connections |
-| `--driver-processes` | 1 | number of independent driver processes. The parent splits `--rate` evenly and prefixes event/client ids per shard; this removes the single LoadTool process as the driver-side bottleneck |
+| `--driver-processes` | 1 | number of independent driver processes. The parent splits `--rate` evenly, prefixes event/client ids per shard, and partitions the session set across shards (shard k owns session slots where slot % n = k; a starved shard with no owned sessions sends no events). This removes the single LoadTool process as the driver-side bottleneck without multiplying the WS fan-out (2026-10-20; before this, every shard recreated the full session set) |
 | `--ack-mix` | `fast,normal,slow` | ACK tier mix (fast≈real-time / normal≈a few ticks / slow≈lag of ten-plus ticks) |
 | `--disconnect-every` | 20 | average client disconnect interval (seconds, 0=never) |
 | `--reconnect-ms` | 1000 | reconnect backoff after disconnect |

@@ -38,6 +38,12 @@ var simulations = new List<ClientSimulation>();
 var clientTasks = new List<Task>();
 for (var s = 1; s <= Math.Max(1, options.Sessions); s++)
 {
+    // Multi-process shards partition the session set; single-process owns all.
+    if (!options.OwnsShardIndex(s - 1))
+    {
+        continue;
+    }
+
     var sessionId = $"load-s{s}";
     for (var c = 1; c <= Math.Max(1, options.ClientsPerSession); c++)
     {
