@@ -20,6 +20,15 @@ Do not start fault scenarios until all of these are true:
 
 Use disposable infrastructure only. Never inject partitions or promote a database in a production environment. Keep automatic failover disabled throughout these tests; the selected initial recovery mode is manual.
 
+### Known candidate environment assessment (2026-10-20, re-probed 22:29 +0800)
+
+The only reachable infrastructure today does not meet the entry criteria; recorded here so the same path is not re-proposed:
+
+- The workspace host `coding` is VM 101 on hypervisor `shanghai-pve` (i9-10880H, 16 vCPU / 62 GiB; `qm list` shows VM 101 as the only running guest). A second VM on that hypervisor would satisfy "two machines" but **fails entry criterion 1 by definition** — same physical host, same failure domain.
+- Hypervisor headroom: local-lvm 94.21% used, ~100.9 GiB free, ~12 GiB RAM available — an order of magnitude below the ROOM-11 storage budget (2 TiB NVMe + 24 TiB seven-day WAL/object storage per node).
+- Fleet peer `win-worker` (Windows) exposes a DM channel only, no shell; a read-only capability probe went unanswered, so its ability to host any role is unverified.
+- A user-approved same-hypervisor lab may still exercise migration/fencing mechanics, but its results must be reported as same-failure-domain evidence and can never close the independent-host, synchronous-replication, capacity, or partition gates (see [Reporting](#reporting-and-gate-closure)).
+
 ## Run protocol
 
 1. Record the commit, configuration, host map, UTC start time, and baseline health. Verify all Workers have distinct node and instance IDs and that each room has exactly one owner/epoch.
