@@ -285,4 +285,117 @@ public sealed class WireSnapshotTests
         Assert.Equal("lag", roundTripped.Reason);
         Assert.Single(roundTripped.FrameEvents);
     }
+
+    [Fact]
+    public async Task MixedTick_NonForcedClientsShareBroadcastBytes()
+    {
+        // Churn path (periodic tick plus some lagging clients): a non-forced
+        // client receives exactly the broadcast payload, so all non-forced
+        // clients must share ONE encoded wire - only the forced client's
+        // payload differs (targetClientId / lag fields are per client).
+        var received = new List<WireSnapshot>();
+        var gate = new SemaphoreSlim(1, 1);
+        await using var actor = new SessionActor("s-mixed", new SessionConfig
+        {
+            TickDurationMs = 10,
+            SnapshotEveryTicks = 1,
+            MaxLagTicks = 5,
+        }, new TinyGameModule());
+        using var stop = new CancellationTokenSource();
+
+        await actor.AddClientAsync(new WireCapturingClient("c-ack1", received, gate));
+        await actor.AddClientAsync(new WireCapturingClient("c-ack2", received, gate));
+        await actor.AddClientAsync(new WireCapturingClient("c-lag", received, gate));
+        actor.Start();
+
+        // Ackers keep up; c-lag never acks, so its lag crosses MaxLagTicks and
+        // it gets the forced (targeted) snapshot while the others stay on the
+        // broadcast wire.
+        var acker = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                var tick = actor.Diagnostics.TickId;
+                await actor.AckAsync("c-ack1", tick, 0);
+                await actor.AckAsync("c-ack2", tick, 0);
+                await Task.Delay(5, stop.Token);
+            }
+        });
+
+        try
+        {
+            (long tickId, WireSnapshot ack1, WireSnapshot ack2, WireSnapshot lag) mixed = default;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < 5000)
+            {
+                gate.Wait();
+                List<WireSnapshot> snapshot;
+                try
+                {
+                    snapshot = received.ToList();
+                }
+                finally
+                {
+                    gate.Release();
+                }
+
+                foreach (var group in snapshot.GroupBy(w => w.Snapshot.TickId))
+                {
+                    // Identify by payload shape: the forced wire is the one
+                    // carrying a targetClientId, broadcast wires carry none.
+                    var wires = group.ToList();
+                    var forced = wires.Where(w =>
+                    {
+                        var json = JsonSerializer.Deserialize<JsonElement>(w.EncodedJson);
+                        return json.TryGetProperty("targetClientId", out _);
+                    }).ToList();
+                    var broadcast = wires.Where(w =>
+                    {
+                        var json = JsonSerializer.Deserialize<JsonElement>(w.EncodedJson);
+                        return !json.TryGetProperty("targetClientId", out _);
+                    }).ToList();
+
+                    if (forced.Count >= 1 && broadcast.Count >= 2)
+                    {
+                        mixed = (group.Key, broadcast[0], broadcast[1], forced[0]);
+                        break;
+                    }
+                }
+
+                if (mixed.ack1 is not null)
+                {
+                    break;
+                }
+
+                await Task.Delay(10, stop.Token);
+            }
+
+            Assert.True(mixed.ack1 is not null, "no mixed tick (forced + broadcast) observed within 5s");
+
+            // The two non-forced clients received the SAME encoded wire object:
+            // encode once, reuse everywhere.
+            Assert.Same(mixed.ack1, mixed.ack2);
+
+            var forcedJson = JsonSerializer.Deserialize<JsonElement>(mixed.lag.EncodedJson);
+            Assert.True(forcedJson.GetProperty("forced").GetBoolean());
+            Assert.Equal("lag", forcedJson.GetProperty("reason").GetString());
+            Assert.Equal("c-lag", forcedJson.GetProperty("targetClientId").GetString());
+            Assert.True(forcedJson.TryGetProperty("clientLagTicks", out _));
+
+            var ackJson = JsonSerializer.Deserialize<JsonElement>(mixed.ack1.EncodedJson);
+            Assert.False(ackJson.TryGetProperty("forced", out var forcedField) && forcedField.GetBoolean());
+            Assert.False(ackJson.TryGetProperty("targetClientId", out _));
+        }
+        finally
+        {
+            stop.Cancel();
+            try
+            {
+                await acker;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
 }

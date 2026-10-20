@@ -651,14 +651,7 @@ public sealed class SessionActor : IAsyncDisposable
                     // wire bytes once per tick and let each transport reuse them.
                     // Forced stays explicitly false - the wire omits nulls, so a
                     // null here would change the payload shape clients parse.
-                    var snapshot = new SessionSnapshot(
-                        SessionId: SessionId,
-                        TickId: TickId,
-                        ServerTimeMs: now,
-                        State: state,
-                        Forced: false,
-                        FrameEvents: frameEvents);
-                    var wire = WireSnapshot.Encode(snapshot);
+                    var wire = WireSnapshot.Encode(NewBroadcastSnapshot(now, state, frameEvents));
                     RecordSnapshotBytes(wire);
                     _frameHistory.Add(wire);
                     foreach (var (client, _) in _clients.Values)
@@ -670,42 +663,47 @@ public sealed class SessionActor : IAsyncDisposable
                     return;
                 }
 
+                // Mixed path: non-forced clients receive exactly the broadcast
+                // payload, so encode it once and share the wire across them and
+                // the frame-history entry; only forced clients need their own
+                // encode (targetClientId / lag metadata differ per client).
+                WireSnapshot? broadcastWire = null;
                 if (_config.FrameHistoryBytes > 0)
                 {
-                    _frameHistory.Add(WireSnapshot.Encode(new SessionSnapshot(
-                        SessionId: SessionId,
-                        TickId: TickId,
-                        ServerTimeMs: now,
-                        State: state,
-                        Forced: false,
-                        FrameEvents: frameEvents)));
+                    broadcastWire = WireSnapshot.Encode(NewBroadcastSnapshot(now, state, frameEvents));
+                    _frameHistory.Add(broadcastWire);
                 }
 
                 foreach (var (client, stateInfo) in _clients.Values)
                 {
-                    var force = forceClients.TryGetValue(stateInfo.ClientId, out var forceInfo);
+                    if (!forceClients.TryGetValue(stateInfo.ClientId, out var forceInfo))
+                    {
+                        broadcastWire ??= WireSnapshot.Encode(NewBroadcastSnapshot(now, state, frameEvents));
+                        RecordSnapshotBytes(broadcastWire);
+                        await client.SendSnapshotAsync(broadcastWire, cancellationToken).ConfigureAwait(false);
+                        Interlocked.Increment(ref _totalSnapshotsSent);
+                        continue;
+                    }
+
                     var snapshot = new SessionSnapshot(
                         SessionId: SessionId,
                         TickId: TickId,
                         ServerTimeMs: now,
                         State: state,
-                        Forced: force ? true : false,
-                        Reason: force ? "lag" : null,
-                        TargetClientId: force ? stateInfo.ClientId : null,
-                        ClientLagTicks: force ? forceInfo!.LagTicks : null,
-                        ClientLastAckTickId: force ? forceInfo!.LastAckTickId : null,
+                        Forced: true,
+                        Reason: "lag",
+                        TargetClientId: stateInfo.ClientId,
+                        ClientLagTicks: forceInfo.LagTicks,
+                        ClientLastAckTickId: forceInfo.LastAckTickId,
                         FrameEvents: frameEvents
                     );
-                    var perClientWire = WireSnapshot.Encode(snapshot);
-                    RecordSnapshotBytes(perClientWire);
-                    await client.SendSnapshotAsync(perClientWire, cancellationToken).ConfigureAwait(false);
+                    var forcedWire = WireSnapshot.Encode(snapshot);
+                    RecordSnapshotBytes(forcedWire);
+                    await client.SendSnapshotAsync(forcedWire, cancellationToken).ConfigureAwait(false);
                     Interlocked.Increment(ref _totalSnapshotsSent);
-                    if (force)
-                    {
-                        stateInfo.LastResyncTimeMs = now;
-                        stateInfo.ResyncCount++;
-                        Interlocked.Increment(ref _totalResyncSnapshotsSent);
-                    }
+                    stateInfo.LastResyncTimeMs = now;
+                    stateInfo.ResyncCount++;
+                    Interlocked.Increment(ref _totalResyncSnapshotsSent);
                 }
             }
             else
@@ -740,6 +738,19 @@ public sealed class SessionActor : IAsyncDisposable
         }
 
     }
+
+    /// <summary>
+    /// Broadcast-shaped snapshot shared by the frame-history entry and every
+    /// non-forced client on a mixed tick. The wire omits nulls, so this is
+    /// byte-identical to what the per-client loop used to encode for them.
+    /// </summary>
+    private SessionSnapshot NewBroadcastSnapshot(long now, object state, List<FrameEvent>? frameEvents) => new(
+        SessionId: SessionId,
+        TickId: TickId,
+        ServerTimeMs: now,
+        State: state,
+        Forced: false,
+        FrameEvents: frameEvents);
 
     /// <summary>
     /// True when the state's serialized length is within MaxSnapshotBytes.

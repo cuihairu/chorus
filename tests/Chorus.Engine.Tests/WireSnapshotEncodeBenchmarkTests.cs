@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Chorus.Engine.Abstractions;
 using Chorus.Engine.Session;
 using Chorus.Protocol;
 using Chorus.Protocol.Messages;
+using Chorus.Protocol.Models;
 using Xunit.Abstractions;
 
 namespace Chorus.Engine.Tests;
@@ -146,5 +148,118 @@ public sealed class WireSnapshotEncodeBenchmarkTests(ITestOutputHelper output)
     {
         var sorted = samples.OrderBy(x => x).ToList();
         return (sorted[sorted.Count / 2], sorted[0], sorted[^1]);
+    }
+
+    /// <summary>
+    /// Steady ~6 KiB state shared across ticks, so allocation is attributable
+    /// to encoding (not per-tick state construction).
+    /// </summary>
+    private sealed class FixedStateGameModule : IGameModule
+    {
+        private readonly object _state;
+
+        public FixedStateGameModule(int players) => _state = new ModuleState(
+            1000, 1234,
+            Enumerable.Range(1, players).Select(i => new Player(i, i * 0.5, -i * 0.25, $"p{i:D3}-甲{i}")).ToArray(),
+            Enumerable.Range(1, 25).ToDictionary(i => (long)i, i => $"in-{i:D3}"),
+            Enumerable.Range(1, 20).Select(i => $"ev-{i:D3}").ToList());
+
+        public string Name => "fixed-state-bench";
+        public object GetStateSnapshot() => _state;
+        public void ApplyEvents(long tickId, IReadOnlyList<AudienceEvent> events) { }
+        public void RestoreState(long version, System.Text.Json.JsonElement state) { }
+        public void Dispose() { }
+    }
+
+    private sealed class DiscardClient : ISessionClient
+    {
+        public string ClientId { get; }
+        public DiscardClient(string clientId) => ClientId = clientId;
+        public ValueTask SendSnapshotAsync(SessionSnapshot snapshot, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask SendSnapshotAsync(WireSnapshot wire, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// A/B recorder for the mixed tick path (periodic snapshot tick while a
+    /// lagging client is in the session): reports process-wide allocated bytes
+    /// per tick with 3 acking clients + 1 never-acking client. Run the same
+    /// recorder on the tree before and after the shared-broadcast encode; the
+    /// delta per tick is the serialization saving.
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Capacity")]
+    public async Task RecordMixedTickAllocation_ThreeBroadcastOneForced()
+    {
+        if (Environment.GetEnvironmentVariable(OptIn) != "1")
+        {
+            output.WriteLine($"Mixed tick benchmark not run; set {OptIn}=1 to opt in.");
+            return;
+        }
+
+        var seconds = int.TryParse(Environment.GetEnvironmentVariable("CHORUS_MIXED_TICK_SECONDS"), out var configured)
+            ? Math.Clamp(configured, 2, 60) : 5;
+
+        await using var actor = new SessionActor("s-mixed-bench", new SessionConfig
+        {
+            TickDurationMs = 1,
+            SnapshotEveryTicks = 1,
+            MaxLagTicks = 5,
+            // No cooldown: the lagging client is forced on EVERY tick, so the
+            // whole window is the mixed path (3 broadcast + 1 forced), not the
+            // pure-broadcast fast path.
+            ResyncCooldownMs = 0,
+        }, new FixedStateGameModule(100));
+
+        for (var i = 0; i < 3; i++)
+        {
+            await actor.AddClientAsync(new DiscardClient($"ack{i}"));
+        }
+        await actor.AddClientAsync(new DiscardClient("lag"));
+        actor.Start();
+
+        using var stop = new CancellationTokenSource();
+        var acker = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                var tick = actor.Diagnostics.TickId;
+                for (var i = 0; i < 3; i++)
+                {
+                    await actor.AckAsync($"ack{i}", tick, 0);
+                }
+                await Task.Delay(2, stop.Token);
+            }
+        });
+
+        try
+        {
+            await Task.Delay(500); // settle: let the lagging client cross MaxLagTicks first
+            var startTicks = actor.Diagnostics.TickId;
+            var startSent = actor.Diagnostics.TotalSnapshotsSent;
+            var startAlloc = GC.GetTotalAllocatedBytes(precise: true);
+            await Task.Delay(TimeSpan.FromSeconds(seconds));
+            var endAlloc = GC.GetTotalAllocatedBytes(precise: true);
+            var endTicks = actor.Diagnostics.TickId;
+            var endSent = actor.Diagnostics.TotalSnapshotsSent;
+
+            var ticks = endTicks - startTicks;
+            var sent = endSent - startSent;
+            var bytes = endAlloc - startAlloc;
+            output.WriteLine($"mixed-tick (3 broadcast + 1 forced client): ticks={ticks} snapshotsSent={sent} allocTotal={bytes}B allocPerTick={(double)bytes / Math.Max(1, ticks):F0}B allocPerSnapshot={(double)bytes / Math.Max(1, sent):F0}B");
+            output.WriteLine("A/B: run this same recorder on the tree before the shared broadcast encode; the per-tick delta is the saved serialization.");
+            Assert.True(ticks > 100, $"too few ticks executed: {ticks}");
+            Assert.True(sent > 100, $"too few snapshots sent: {sent}");
+        }
+        finally
+        {
+            stop.Cancel();
+            try
+            {
+                await acker;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
     }
 }
