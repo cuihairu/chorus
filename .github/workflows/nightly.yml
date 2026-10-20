@@ -16,6 +16,22 @@ concurrency:
 jobs:
   nightly:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: chorus
+          POSTGRES_PASSWORD: chorus-ci-test-only
+          POSTGRES_DB: chorus_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chorus -d chorus_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CHORUS_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Database=chorus_test;Username=chorus;Password=chorus-ci-test-only
     steps:
       - uses: actions/checkout@v5
 
