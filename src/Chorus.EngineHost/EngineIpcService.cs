@@ -75,7 +75,8 @@ public sealed partial class EngineIpcService : BackgroundService
             TcpEngineToGatewayPort: int.TryParse(config["Ipc:TcpEngineToGatewayPort"], out var p2) ? p2 : 27501,
             HttpGatewayToEngineUrl: config["Ipc:HttpGatewayToEngineUrl"] ?? "http://127.0.0.1:27600/gw-to-eng/",
             HttpEngineToGatewayUrl: config["Ipc:HttpEngineToGatewayUrl"] ?? "http://127.0.0.1:27601/eng-to-gw/",
-            WorkerId: config["Ipc:WorkerId"] ?? ""
+            WorkerId: config["Ipc:WorkerId"] ?? "",
+            EngineToGatewayShards: int.TryParse(config["Ipc:EngToGwShards"], out var engToGwShards) ? Math.Max(1, engToGwShards) : 1
         );
 
         _ipcSettings = _ipcSettings with
@@ -105,18 +106,40 @@ public sealed partial class EngineIpcService : BackgroundService
     }
 
     /// <summary>Per-gateway eng->gw clients wrapped in a fan-out; empty id
-    /// list keeps the legacy single-gateway client untouched.</summary>
+    /// list keeps the legacy single-gateway client untouched. Ipc:EngToGwShards
+    /// &gt; 1 splits each gateway's channel into per-session-hash shards
+    /// (ShardedMessageBus) so ticks stop serialising every snapshot behind one
+    /// socket write while per-session order and synchronous publishes hold.</summary>
     private IMessageBus BuildOutgoing(IpcDuplexEndpoints endpoints)
     {
-        if (_gatewayIds.Length == 0)
+        var shards = Math.Max(1, _ipcSettings.EngineToGatewayShards);
+        if (shards == 1)
         {
-            return IpcMessageBusFactory.CreateClient(_ipcSettings.Transport, endpoints.EngineToGateway);
+            if (_gatewayIds.Length == 0)
+            {
+                return IpcMessageBusFactory.CreateClient(_ipcSettings.Transport, endpoints.EngineToGateway);
+            }
+
+            return new FanOutMessageBus(_gatewayIds.Select(id =>
+                IpcMessageBusFactory.CreateClient(
+                    _ipcSettings.Transport,
+                    IpcEndpointBuilder.Build(_ipcSettings with { GatewayId = id }).EngineToGateway)));
         }
 
-        return new FanOutMessageBus(_gatewayIds.Select(id =>
-            IpcMessageBusFactory.CreateClient(
-                _ipcSettings.Transport,
-                IpcEndpointBuilder.Build(_ipcSettings with { GatewayId = id }).EngineToGateway)));
+        // One shard per session-hash bucket; each shard still reaches every
+        // configured gateway, so the fan-out and the sharding compose.
+        return new ShardedMessageBus(Enumerable.Range(0, shards).Select(shard =>
+        {
+            var shardSettings = _ipcSettings with { EngineToGatewayShardIndex = shard };
+            return _gatewayIds.Length == 0
+                ? IpcMessageBusFactory.CreateClient(
+                    _ipcSettings.Transport,
+                    IpcEndpointBuilder.Build(shardSettings).EngineToGateway)
+                : new FanOutMessageBus(_gatewayIds.Select(id =>
+                    IpcMessageBusFactory.CreateClient(
+                        _ipcSettings.Transport,
+                        IpcEndpointBuilder.Build(shardSettings with { GatewayId = id }).EngineToGateway)));
+        }));
     }
 
     private readonly int _heartbeatIntervalMs;
@@ -141,8 +164,8 @@ public sealed partial class EngineIpcService : BackgroundService
         // than in the constructor.
         await _welcomePublisher.StartAsync(stoppingToken);
 
-        _logger.LogInformation("EngineHost IPC started: transport={Transport} gw->eng={GwToEngUds} eng->gw={EngToGwUds} gatewayIds={GatewayIds} heartbeatMs={HeartbeatMs}",
-            _ipcSettings.Transport, endpoints.GatewayToEngine.UnixSocketPath, endpoints.EngineToGateway.UnixSocketPath, string.Join(",", _gatewayIds), _heartbeatIntervalMs);
+        _logger.LogInformation("EngineHost IPC started: transport={Transport} gw->eng={GwToEngUds} eng->gw={EngToGwUds} gatewayIds={GatewayIds} engToGwShards={EngToGwShards} heartbeatMs={HeartbeatMs}",
+            _ipcSettings.Transport, endpoints.GatewayToEngine.UnixSocketPath, endpoints.EngineToGateway.UnixSocketPath, string.Join(",", _gatewayIds), Math.Max(1, _ipcSettings.EngineToGatewayShards), _heartbeatIntervalMs);
 
         var heartbeatLoop = _heartbeatIntervalMs > 0
             ? Task.Run(() => HeartbeatLoopAsync(stoppingToken), stoppingToken)

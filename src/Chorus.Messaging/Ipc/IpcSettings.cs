@@ -15,6 +15,15 @@ public sealed record IpcSettings(
     /// <summary>The hosting worker's id; suffixes gw-to-eng so one gateway can
     /// route rooms to several workers (empty = legacy single-worker name).</summary>
     string WorkerId = "",
+    /// <summary>Number of engine-to-gateway sockets (configured as
+    /// Ipc:EngToGwShards; 1 = legacy single channel). Each shard carries the
+    /// sessions hashing to its index, so engine ticks stop serialising every
+    /// snapshot behind one socket write.</summary>
+    int EngineToGatewayShards = 1,
+    /// <summary>Which engine-to-gateway shard this endpoint belongs to
+    /// (0..EngineToGatewayShards-1); internal build parameter, set by the
+    /// endpoints that split or merge the channel.</summary>
+    int EngineToGatewayShardIndex = 0,
     IReadOnlyDictionary<string, IpcNetworkEndpoint>? Workers = null,
     IReadOnlyDictionary<string, IpcNetworkEndpoint>? Gateways = null
 );

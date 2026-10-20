@@ -67,7 +67,10 @@ public sealed partial class GatewayIpcService : BackgroundService
             HttpEngineToGatewayUrl: _config["Ipc:HttpEngineToGatewayUrl"] ?? "http://127.0.0.1:27601/eng-to-gw/",
             // This gateway's own identity: suffixes its eng->gw endpoint so
             // several gateways can share one worker (stage-2 transport half).
-            GatewayId: _config["Gateway:Id"] ?? ""
+            GatewayId: _config["Gateway:Id"] ?? "",
+            // Eng->gw shard count shared with the engine (Ipc:EngToGwShards):
+            // the gateway hosts one server socket per shard.
+            EngineToGatewayShards: int.TryParse(_config["Ipc:EngToGwShards"], out var engToGwShards) ? Math.Max(1, engToGwShards) : 1
         );
 
         _ipcSettings = _ipcSettings with
@@ -215,7 +218,22 @@ public sealed partial class GatewayIpcService : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var endpoints = IpcEndpointBuilder.Build(_ipcSettings);
-        _incoming = IpcMessageBusFactory.CreateServer(_ipcSettings.Transport, IpcEndpointBuilder.Build(_ipcSettings, forServer: true).EngineToGateway);
+        // One eng->gw server per shard (Ipc:EngToGwShards, todo §10 blocker ②):
+        // the engine publishes each session's frames to the shard its id
+        // hashes to; here every shard socket gets its own reader and
+        // FanInMessageBus merges them back into the single-consumer loop
+        // below, so dispatch semantics stay exactly as before. Shard count 1
+        // keeps the legacy single-server path untouched.
+        var shardCount = Math.Max(1, _ipcSettings.EngineToGatewayShards);
+        var incomingShards = Enumerable.Range(0, shardCount)
+            .Select(shard => IpcMessageBusFactory.CreateServer(
+                _ipcSettings.Transport,
+                IpcEndpointBuilder.Build(
+                    _ipcSettings with { EngineToGatewayShardIndex = shard }, forServer: true).EngineToGateway))
+            .ToArray();
+        _incoming = incomingShards.Length == 1
+            ? incomingShards[0]
+            : new FanInMessageBus(incomingShards);
 
         if (_control is not null) _controlTask = RunControlAsync(stoppingToken);
         if (_workerIds.Length == 0)
@@ -237,9 +255,10 @@ public sealed partial class GatewayIpcService : BackgroundService
         }
 
         _logger.LogInformation(
-            "Gateway IPC started: transport={Transport} eng->gw={EngToGwUds} gw->eng={GwToEngUds} workerIds={WorkerIds}",
+            "Gateway IPC started: transport={Transport} eng->gw={EngToGwUds} engToGwShards={EngToGwShards} gw->eng={GwToEngUds} workerIds={WorkerIds}",
             _ipcSettings.Transport,
             endpoints.EngineToGateway.UnixSocketPath,
+            shardCount,
             endpoints.GatewayToEngine.UnixSocketPath,
             string.Join(",", _workerIds));
 
