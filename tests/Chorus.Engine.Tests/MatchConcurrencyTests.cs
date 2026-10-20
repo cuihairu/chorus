@@ -50,6 +50,7 @@ public sealed class MatchConcurrencyTests
             $"unexpected status {(int)r.StatusCode}"));
 
         var matches = await client.GetFromJsonAsync<List<MatchDiagnostics>>("/matches");
+        Assert.NotNull(matches);
         var match = Assert.Single(matches, m => m.Match.MatchId == "m-conc");
 
         Assert.Equal(2 * eventsPerSession, match.TotalEvents);
@@ -69,6 +70,7 @@ public sealed class MatchConcurrencyTests
         while (DateTime.UtcNow < deadline)
         {
             var sessions = await client.GetFromJsonAsync<List<SessionDiagnostics>>("/sessions");
+            Assert.NotNull(sessions);
             ingested = sessions.Where(s => s.SessionId.StartsWith("s-match-")).Sum(s => s.TotalIngestedEvents);
             if (ingested >= 2 * eventsPerSession)
             {

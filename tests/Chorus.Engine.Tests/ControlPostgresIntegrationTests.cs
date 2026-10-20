@@ -20,7 +20,7 @@ public sealed class ControlPostgresIntegrationTests
             NewStore(connectionString).Assign(new(roomId)))));
 
         Assert.All(assignments, room => Assert.Equal("worker-a", room.WorkerId));
-        Assert.Single(setup.Rooms().Where(room => room.Id == roomId));
+        Assert.Single(setup.Rooms(), room => room.Id == roomId);
     }
 
     [Fact]
@@ -54,7 +54,7 @@ public sealed class ControlPostgresIntegrationTests
 
         var accepted = await Task.WhenAll(Enumerable.Range(0, 32).Select(_ => Task.Run(() => store.AppendEvent(evt))));
 
-        Assert.Single(accepted.Where(value => value));
+        Assert.Single(accepted, value => value);
         Assert.Equal(31, accepted.Count(value => !value));
         Assert.Equal(1, store.PendingCount(prefix));
         Assert.Single(store.Prepare(prefix, new(room.WorkerId, room.WorkerInstance, room.Epoch)).Inbox!);

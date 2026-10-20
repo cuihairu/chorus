@@ -40,14 +40,14 @@ public sealed class MetricsEndpointTests
     }
 
     [Fact]
-    public void ServerMetrics_ExposeSessionAndFaceCounters()
+    public async Task ServerMetrics_ExposeSessionAndFaceCounters()
     {
         using var factory = new ServerFactory();
         var client = factory.CreateClient();
 
         PostIngressEvent(client, "metrics-ev-1");
 
-        var metrics = client.GetStringAsync("/metrics").GetAwaiter().GetResult();
+        var metrics = await client.GetStringAsync("/metrics");
 
         Assert.Contains("chorus_sessions", metrics);
         Assert.Contains("chorus_events_ingested_total", metrics);
@@ -61,7 +61,7 @@ public sealed class MetricsEndpointTests
     }
 
     [Fact]
-    public void ServerMetrics_DuplicateCounted()
+    public async Task ServerMetrics_DuplicateCounted()
     {
         using var factory = new ServerFactory();
         var client = factory.CreateClient();
@@ -69,17 +69,17 @@ public sealed class MetricsEndpointTests
         PostIngressEvent(client, "metrics-dup-1");
         PostIngressEvent(client, "metrics-dup-1");
 
-        var metrics = client.GetStringAsync("/metrics").GetAwaiter().GetResult();
+        var metrics = await client.GetStringAsync("/metrics");
         Assert.Contains("chorus_ingress_duplicates_total 1", metrics);
     }
 
     [Fact]
-    public void GatewayMetrics_ExposeFacesAndIpcFailures()
+    public async Task GatewayMetrics_ExposeFacesAndIpcFailures()
     {
         using var factory = new GatewayFactory();
         var client = factory.CreateClient();
 
-        var metrics = client.GetStringAsync("/metrics").GetAwaiter().GetResult();
+        var metrics = await client.GetStringAsync("/metrics");
 
         Assert.Contains("chorus_ingress_accepted_total", metrics);
         Assert.Contains("chorus_ws_acks_dropped_total", metrics);
@@ -88,12 +88,12 @@ public sealed class MetricsEndpointTests
     }
 
     [Fact]
-    public void EngineHostMetrics_ExposeIpcFailuresAndSnapshotBytes()
+    public async Task EngineHostMetrics_ExposeIpcFailuresAndSnapshotBytes()
     {
         using var factory = new EngineHostFactory();
         var client = factory.CreateClient();
 
-        var metrics = client.GetStringAsync("/metrics").GetAwaiter().GetResult();
+        var metrics = await client.GetStringAsync("/metrics");
 
         Assert.Contains("chorus_sessions", metrics);
         Assert.Contains("chorus_ipc_publish_failures_total", metrics);
@@ -104,14 +104,14 @@ public sealed class MetricsEndpointTests
     }
 
     [Fact]
-    public void EngineHostSessions_ExposedForSplitModeParity()
+    public async Task EngineHostSessions_ExposedForSplitModeParity()
     {
         using var factory = new EngineHostFactory();
         var client = factory.CreateClient();
 
         // The engine is the session-state authority in split mode; /sessions
         // restores the monolith's per-client lag/ack diagnostics.
-        var sessions = client.GetStringAsync("/sessions").GetAwaiter().GetResult();
+        var sessions = await client.GetStringAsync("/sessions");
 
         Assert.Equal("[]", sessions.Trim());
     }

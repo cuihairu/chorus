@@ -39,7 +39,7 @@ public sealed class GatewayClientConnectionTests
 
         // 写入槽已 complete：不得假成功，必须计入 dropped。
         Assert.Equal(1, conn.Dropped);
-        Assert.Equal(0, ws.Sent.Count);
+        Assert.Empty(ws.Sent);
     }
 
     [Fact]
@@ -63,14 +63,14 @@ public sealed class GatewayClientConnectionTests
         await conn.SendSnapshotAsync(Snapshot(1), CancellationToken.None);
         await WaitForAsync(() => ws.SendAttempts == 1, TimeSpan.FromSeconds(5));
 
-        Assert.Equal(0, ws.Sent.Count);
+        Assert.Empty(ws.Sent);
         Assert.Equal(0, conn.Dropped); // TryWrite 成功入槽，断开不算 dropped。
 
         await conn.DisposeAsync();
         await conn.SendSnapshotAsync(Snapshot(2), CancellationToken.None);
 
         Assert.Equal(1, conn.Dropped); // 泵已死 + 槽已完结：只可能计 dropped。
-        Assert.Equal(0, ws.Sent.Count);
+        Assert.Empty(ws.Sent);
     }
 
     [Fact]
@@ -84,7 +84,7 @@ public sealed class GatewayClientConnectionTests
         await conn.DisposeAsync(); // DisposeAsync 等待 pump 退出：此后断言无竞态。
 
         Assert.Equal(0, ws.SendAttempts);
-        Assert.Equal(0, ws.Sent.Count);
+        Assert.Empty(ws.Sent);
     }
 
     [Fact]
@@ -161,7 +161,7 @@ public sealed class GatewayClientConnectionTests
 
         await conn.DisposeAsync();
 
-        Assert.Equal(0, ws.Sent.Count);
+        Assert.Empty(ws.Sent);
     }
 
     private static async Task WaitForAsync(Func<bool> condition, TimeSpan timeout)

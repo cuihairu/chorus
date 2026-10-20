@@ -236,7 +236,7 @@ public sealed class IpcAckResyncLoopTests
                     d => d is not null, cts.Token);
 
                 Assert.NotNull(diag);
-                Assert.Empty(engine.GetDiagnostics().Where(d => d.SessionId == "s-ghost"));
+                Assert.DoesNotContain(engine.GetDiagnostics(), d => d.SessionId == "s-ghost");
             }
         }
         finally
@@ -312,7 +312,7 @@ public sealed class IpcAckResyncLoopTests
             cts.Cancel();
             await gateway.StopAsync(CancellationToken.None);
             await server.DisposeAsync();
-            try { collect.Wait(TimeSpan.FromSeconds(5)); } catch { }
+            try { await collect.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
             try { Directory.Delete(socketDir, recursive: true); } catch { }
         }
     }

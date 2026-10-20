@@ -117,34 +117,34 @@ public sealed class LeaderboardEndpointTests
     }
 
     [Fact]
-    public void ServerEndpoint_UnknownScope_Returns400()
+    public async Task ServerEndpoint_UnknownScope_Returns400()
     {
         using var factory = new ServerFactory();
-        var response = factory.CreateClient().GetAsync("/leaderboard/week/s-1").GetAwaiter().GetResult();
+        var response = await factory.CreateClient().GetAsync("/leaderboard/week/s-1");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        var body = response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+        var body = await response.Content.ReadAsStringAsync();
         Assert.Contains("unknown_scope", body);
     }
 
     [Fact]
-    public void ServerEndpoint_TopOutOfRange_Returns400()
+    public async Task ServerEndpoint_TopOutOfRange_Returns400()
     {
         using var factory = new ServerFactory();
         var client = factory.CreateClient();
 
-        Assert.Equal(HttpStatusCode.BadRequest, client.GetAsync("/leaderboard/room/s-1?top=0").GetAwaiter().GetResult().StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/leaderboard/room/s-1?top=0")).StatusCode);
         Assert.Equal(HttpStatusCode.BadRequest,
-            client.GetAsync($"/leaderboard/room/s-1?top={Chorus.Gateway.Core.Leaderboard.LeaderboardHttp.MaxTop + 1}").GetAwaiter().GetResult().StatusCode);
+            (await client.GetAsync($"/leaderboard/room/s-1?top={Chorus.Gateway.Core.Leaderboard.LeaderboardHttp.MaxTop + 1}")).StatusCode);
     }
 
     [Fact]
-    public void ServerEndpoint_UnknownBoard_ReturnsEmptyEntries()
+    public async Task ServerEndpoint_UnknownBoard_ReturnsEmptyEntries()
     {
         using var factory = new ServerFactory();
 
-        var json = JsonDocument.Parse(factory.CreateClient()
-            .GetStringAsync("/leaderboard/room/s-never").GetAwaiter().GetResult());
+        var json = JsonDocument.Parse(await factory.CreateClient()
+            .GetStringAsync("/leaderboard/room/s-never"));
 
         Assert.Equal("room", json.RootElement.GetProperty("scope").GetString());
         Assert.Equal("s-never", json.RootElement.GetProperty("scopeId").GetString());
@@ -153,7 +153,7 @@ public sealed class LeaderboardEndpointTests
     }
 
     [Fact]
-    public void ServerEndpoint_SeededBoard_ReturnsCompetitionRanking()
+    public async Task ServerEndpoint_SeededBoard_ReturnsCompetitionRanking()
     {
         using var factory = new ServerFactory();
         var store = factory.Services.GetRequiredService<LeaderboardStore>();
@@ -161,8 +161,8 @@ public sealed class LeaderboardEndpointTests
         store.UpsertScore(LeaderboardScope.Room, "s-rank", "u3", 50);
         store.UpsertScore(LeaderboardScope.Room, "s-rank", "u1", 30);
 
-        var json = JsonDocument.Parse(factory.CreateClient()
-            .GetStringAsync("/leaderboard/room/s-rank?top=2").GetAwaiter().GetResult());
+        var json = JsonDocument.Parse(await factory.CreateClient()
+            .GetStringAsync("/leaderboard/room/s-rank?top=2"));
 
         var entries = json.RootElement.GetProperty("entries").EnumerateArray().ToArray();
         Assert.Equal(2, entries.Length);
@@ -174,7 +174,7 @@ public sealed class LeaderboardEndpointTests
     }
 
     [Fact]
-    public void EngineHostEndpoint_SharesTheProjectedStore()
+    public async Task EngineHostEndpoint_SharesTheProjectedStore()
     {
         using var factory = new EngineHostFactory();
         // Seed through the same singleton the module factory writes to: the
@@ -182,8 +182,8 @@ public sealed class LeaderboardEndpointTests
         var store = factory.Services.GetRequiredService<LeaderboardStore>();
         store.UpsertScore(LeaderboardScope.Room, "s-eh", "u1", 10);
 
-        var json = JsonDocument.Parse(factory.CreateClient()
-            .GetStringAsync("/leaderboard/room/s-eh").GetAwaiter().GetResult());
+        var json = JsonDocument.Parse(await factory.CreateClient()
+            .GetStringAsync("/leaderboard/room/s-eh"));
 
         var entries = json.RootElement.GetProperty("entries").EnumerateArray().ToArray();
         Assert.Single(entries);

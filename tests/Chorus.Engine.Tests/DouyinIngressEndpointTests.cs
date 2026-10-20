@@ -52,7 +52,7 @@ public sealed class DouyinIngressEndpointTests : IClassFixture<DouyinIngressEndp
     }
 
     [Fact]
-    public void Ingress_CorrectSignature_Accepts()
+    public async Task Ingress_CorrectSignature_Accepts()
     {
         var client = _factory.CreateClient();
         var body = """{"event":"comment","event_id":"e2e-ok-1","session_id":"s-e2e-1","user_id":"u1","content":"hi"}""";
@@ -60,7 +60,7 @@ public sealed class DouyinIngressEndpointTests : IClassFixture<DouyinIngressEndp
         using var response = PostDouyin(client, body);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = response.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("ok").GetBoolean());
         Assert.Equal("s-e2e-1", payload.GetProperty("sessionId").GetString());
     }
@@ -79,7 +79,7 @@ public sealed class DouyinIngressEndpointTests : IClassFixture<DouyinIngressEndp
     }
 
     [Fact]
-    public void Ingress_DuplicateEventId_Deduplicated()
+    public async Task Ingress_DuplicateEventId_Deduplicated()
     {
         var client = _factory.CreateClient();
         var body = """{"event":"like","event_id":"e2e-dup-1","session_id":"s-e2e-3","user_id":"u1"}""";
@@ -89,12 +89,12 @@ public sealed class DouyinIngressEndpointTests : IClassFixture<DouyinIngressEndp
 
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-        var payload = second.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await second.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("duplicated").GetBoolean());
     }
 
     [Fact]
-    public void Ingress_UnknownEventType_DoesNotCrash()
+    public async Task Ingress_UnknownEventType_DoesNotCrash()
     {
         var client = _factory.CreateClient();
         var body = """{"event":"share","event_id":"e2e-unknown-1","session_id":"s-e2e-4","user_id":"u1"}""";
@@ -102,7 +102,7 @@ public sealed class DouyinIngressEndpointTests : IClassFixture<DouyinIngressEndp
         using var response = PostDouyin(client, body);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = response.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("ok").GetBoolean());
     }
 

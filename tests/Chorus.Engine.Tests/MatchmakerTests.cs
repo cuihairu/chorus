@@ -92,7 +92,7 @@ public sealed class MatchmakerTests
         Assert.True(result.Started);
         Assert.True(result.FilledWithBots);
         Assert.Equal(3, result.Participants.Count);
-        Assert.Single(result.Participants.Where(p => !p.IsBot));
+        Assert.Single(result.Participants, p => !p.IsBot);
         Assert.Equal(2, result.Participants.Count(p => p.IsBot));
         Assert.All(result.Participants.Where(p => p.IsBot), p =>
         {
@@ -138,7 +138,7 @@ public sealed class MatchmakerTests
 
         Assert.True(result.Started);
         Assert.True(result.FilledWithBots);
-        Assert.Single(result.Participants.Where(p => !p.IsBot));
+        Assert.Single(result.Participants, p => !p.IsBot);
     }
 
     [Fact]

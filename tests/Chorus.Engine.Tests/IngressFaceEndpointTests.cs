@@ -97,7 +97,7 @@ public sealed class IngressFaceEndpointTests
     }
 
     [Fact]
-    public void Ingress_RateLimitCounter_ExposedViaFacesEndpoint()
+    public async Task Ingress_RateLimitCounter_ExposedViaFacesEndpoint()
     {
         using var factory = CreateFactory();
         var client = factory.CreateClient();
@@ -107,16 +107,16 @@ public sealed class IngressFaceEndpointTests
         PostDouyin(client, """{"event":"like","event_id":"face-ctr-3","session_id":"s-face-3","user_id":"u1"}""");
         PostDouyin(client, """{"event":"like","event_id":"face-ctr-4","session_id":"s-face-3","user_id":"u1"}"""); // 429
 
-        using var response = client.GetAsync("/faces").GetAwaiter().GetResult();
+        using var response = await client.GetAsync("/faces");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = response.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
 
         Assert.Equal(3, payload.GetProperty("ingress").GetProperty("accepted").GetInt64());
         Assert.Equal(1, payload.GetProperty("ingress").GetProperty("rateLimited").GetInt64());
     }
 
     [Fact]
-    public void Ingress_TestPlatform_UsesFallbackAndIngests()
+    public async Task Ingress_TestPlatform_UsesFallbackAndIngests()
     {
         using var factory = CreateFactory();
         var client = factory.CreateClient();
@@ -124,7 +124,7 @@ public sealed class IngressFaceEndpointTests
         using var response = PostTest(client, """{"sessionId":"s-face-4","eventId":"e-face-1","userId":"u1","kind":"Like"}""");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = response.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("ok").GetBoolean());
     }
 }

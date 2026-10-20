@@ -312,7 +312,7 @@ public sealed class SplitModeEndToEndTests
             await Task.WhenAll(tasks);
             foreach (var task in tasks)
             {
-                Assert.Equal("s-e2e-duo", task.Result.GetProperty("sessionId").GetString());
+                Assert.Equal("s-e2e-duo", (await task).GetProperty("sessionId").GetString());
             }
 
             foreach (var ws in sockets)

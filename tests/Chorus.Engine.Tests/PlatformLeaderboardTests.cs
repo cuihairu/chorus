@@ -58,7 +58,7 @@ public sealed class PlatformLeaderboardTests
         registry.Register(second);
 
         Assert.Same(second, registry.TryGet("douyin"));
-        Assert.Equal(1, registry.Snapshot().Count);
+        Assert.Single(registry.Snapshot());
     }
 
     [Fact]

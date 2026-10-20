@@ -62,14 +62,14 @@ public sealed class BilibiliIngressEndpointTests : IClassFixture<BilibiliIngress
             Guid.NewGuid().ToString("N"));
 
     [Fact]
-    public void Ingress_CorrectSignature_Accepts()
+    public async Task Ingress_CorrectSignature_Accepts()
     {
         var client = _factory.CreateClient();
 
         using var response = PostBilibili(client, DanmuBody);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = response.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("ok").GetBoolean());
         Assert.Equal("s-bili", payload.GetProperty("sessionId").GetString());
         Assert.Equal("m-1", payload.GetProperty("eventId").GetString());
@@ -88,7 +88,7 @@ public sealed class BilibiliIngressEndpointTests : IClassFixture<BilibiliIngress
     }
 
     [Fact]
-    public void Ingress_DuplicateEventId_Deduplicated()
+    public async Task Ingress_DuplicateEventId_Deduplicated()
     {
         var client = _factory.CreateClient();
         const string body =
@@ -99,12 +99,12 @@ public sealed class BilibiliIngressEndpointTests : IClassFixture<BilibiliIngress
 
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-        var payload = second.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await second.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("duplicated").GetBoolean());
     }
 
     [Fact]
-    public void Ingress_UnknownEventType_DoesNotCrash()
+    public async Task Ingress_UnknownEventType_DoesNotCrash()
     {
         var client = _factory.CreateClient();
         const string body = """{"cmd":"LIVE_START","msg_id":"m-unknown","data":{}}""";
@@ -112,7 +112,7 @@ public sealed class BilibiliIngressEndpointTests : IClassFixture<BilibiliIngress
         using var response = PostBilibili(client, body);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = response.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("ok").GetBoolean());
     }
 

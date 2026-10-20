@@ -14,7 +14,7 @@ public sealed class ControlPostgresCapacityBenchmarkTests(ITestOutputHelper outp
 {
     [Fact]
     [Trait("Category", "Capacity")]
-    public void RecordPostgres100RoomCapacityBaseline()
+    public async Task RecordPostgres100RoomCapacityBaseline()
     {
         if (Environment.GetEnvironmentVariable("CHORUS_RUN_CONTROL_CAPACITY") != "1")
         {
@@ -42,7 +42,7 @@ public sealed class ControlPostgresCapacityBenchmarkTests(ITestOutputHelper outp
         var failures = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
         var checkpointCount = 0;
         var eventCount = 0;
-        var walBefore = ReadWalBytes(postgresConnection).GetAwaiter().GetResult();
+        var walBefore = await ReadWalBytes(postgresConnection);
         using var stop = new ManualResetEvent(false);
         using var start = new ManualResetEvent(false);
         using var ready = new CountdownEvent(rooms.Length + 20);
@@ -93,7 +93,7 @@ public sealed class ControlPostgresCapacityBenchmarkTests(ITestOutputHelper outp
         measured.Stop();
         stop.Set();
         foreach (var thread in threads) thread.Join();
-        var walAfter = ReadWalBytes(postgresConnection).GetAwaiter().GetResult();
+        var walAfter = await ReadWalBytes(postgresConnection);
         var checkpointSamples = checkpointLatencies.Order().ToArray();
         var eventSamples = eventLatencies.Order().ToArray();
         double P(double[] samples, double percentile) => samples.Length == 0 ? double.NaN

@@ -77,7 +77,7 @@ public sealed class KuaishouIngressEndpointTests : IClassFixture<KuaishouIngress
     }
 
     [Fact]
-    public void Ingress_CorrectSignature_Accepts()
+    public async Task Ingress_CorrectSignature_Accepts()
     {
         var client = _factory.CreateClient();
         var (body, signature) = BuildCallback("e2e-ks-1", """{"event":"comment","session_id":"ks-e2e-1","user_id":"u1","content":"hi"}""");
@@ -85,7 +85,7 @@ public sealed class KuaishouIngressEndpointTests : IClassFixture<KuaishouIngress
         using var response = PostKuaishou(client, body, signature);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = response.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("ok").GetBoolean());
         Assert.Equal("ks-e2e-1", payload.GetProperty("sessionId").GetString());
         Assert.Equal("e2e-ks-1", payload.GetProperty("eventId").GetString());
@@ -126,7 +126,7 @@ public sealed class KuaishouIngressEndpointTests : IClassFixture<KuaishouIngress
     }
 
     [Fact]
-    public void Ingress_DuplicateMsgId_Deduplicated()
+    public async Task Ingress_DuplicateMsgId_Deduplicated()
     {
         var client = _factory.CreateClient();
         var (body, signature) = BuildCallback("e2e-ks-dup", """{"event":"like","session_id":"ks-e2e-5","user_id":"u1"}""");
@@ -136,12 +136,12 @@ public sealed class KuaishouIngressEndpointTests : IClassFixture<KuaishouIngress
 
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-        var payload = second.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await second.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("duplicated").GetBoolean());
     }
 
     [Fact]
-    public void Ingress_UnknownEventType_DoesNotCrash()
+    public async Task Ingress_UnknownEventType_DoesNotCrash()
     {
         var client = _factory.CreateClient();
         var (body, signature) = BuildCallback("e2e-ks-6", """{"event":"follow","session_id":"ks-e2e-6","user_id":"u1"}""");
@@ -149,7 +149,7 @@ public sealed class KuaishouIngressEndpointTests : IClassFixture<KuaishouIngress
         using var response = PostKuaishou(client, body, signature);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = response.Content.ReadFromJsonAsync<JsonElement>().GetAwaiter().GetResult();
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(payload.GetProperty("ok").GetBoolean());
     }
 

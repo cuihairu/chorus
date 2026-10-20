@@ -126,8 +126,8 @@ public sealed class MiniGamePlatformCapabilitiesTests
     public void Entry_DefaultCapability_IsRegistered()
     {
         // LoginClientCode 是枚举 0；默认值也是已登记能力，行为一致。
-        Assert.Equal(
-            MiniGameCapability.LoginClientCode,
-            MiniGamePlatformCapabilities.Douyin.Entry(default).Capability);
+        var entry = MiniGamePlatformCapabilities.Douyin.Entry(default);
+        Assert.NotNull(entry);
+        Assert.Equal(MiniGameCapability.LoginClientCode, entry.Capability);
     }
 }

@@ -55,14 +55,14 @@ public sealed class IngressAllowAllEndpointTests
     }
 
     [Fact]
-    public void ExplicitAllowAll_AcceptsUnsignedCallback()
+    public async Task ExplicitAllowAll_AcceptsUnsignedCallback()
     {
         using var factory = new AllowAllFactory();
 
         using var response = PostTestEvent(factory);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var payload = response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>().GetAwaiter().GetResult();
+        var payload = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.True(payload.GetProperty("ok").GetBoolean());
         Assert.Equal("s-allowall", payload.GetProperty("sessionId").GetString());
     }

@@ -308,7 +308,7 @@ public sealed class BotStrategyTests
     {
         public string StrategyId => "null-decide";
 
-        public IReadOnlyList<BotAction>? Decide(BotWorldView view) => null;
+        public IReadOnlyList<BotAction> Decide(BotWorldView view) => null!;
 
         public string? ExportState() => null;
 

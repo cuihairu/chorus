@@ -361,7 +361,7 @@ public sealed class BilibiliOpenLiveClientTests
         await client.DisposeAsync();
 
         var end = http.Requests.FirstOrDefault(r => r.Path.EndsWith("app/end"));
-        Assert.NotNull(end);
+        Assert.NotEqual(default, end);
         Assert.Contains("\"g-end\"", end.Body);
         Assert.True(BilibiliSigner.VerifyHeaders(
             end.Body, KeyId, Secret, end.Headers, DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
@@ -492,7 +492,7 @@ public sealed class BilibiliOpenLiveClientTests
         await client.DisposeAsync();
 
         var end = http.Requests.FirstOrDefault(r => r.Path.EndsWith("app/end"));
-        Assert.NotNull(end);
+        Assert.NotEqual(default, end);
         // game_id 数字型（12345）→ app/end 体里同样序列化为数字。
         Assert.Contains("12345", end.Body);
     }
