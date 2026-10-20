@@ -45,7 +45,7 @@ public sealed class SessionManager : IAsyncDisposable
         _registry = new SessionRegistry(
             config,
             CreateActor,
-            id => _registry.TryGet(id, out var actor) && actor!.Diagnostics.Clients.Count > 0);
+            id => _registry!.TryGet(id, out var actor) && actor!.Diagnostics.Clients.Count > 0);
     }
 
     private SessionActor CreateActor(string sessionId)

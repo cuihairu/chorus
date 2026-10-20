@@ -169,7 +169,9 @@ public sealed class EventDeduplicator
         // window ends soonest; bounded memory wins over one id's remaining window.
         if (_entries.Count >= _capacity && soonestKey != null)
         {
-            ((ICollection<KeyValuePair<string, Entry>>)_entries).Remove(new KeyValuePair<string, Entry>(soonestKey, soonestEntry));
+            // soonestKey and soonestEntry are only ever assigned together in the
+            // sweep above, so a non-null key implies a non-null entry.
+            ((ICollection<KeyValuePair<string, Entry>>)_entries).Remove(new KeyValuePair<string, Entry>(soonestKey, soonestEntry!));
         }
     }
 }
