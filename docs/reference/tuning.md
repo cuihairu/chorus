@@ -127,6 +127,8 @@ Suggestions:
 
 Periodic broadcast snapshots in the single-process form are **serialized only once per tick** (`WireSnapshot.Encode`, where serialization produces the UTF-8 bytes of the wire protocol `snapshot` message); all clients reuse the same bytes — adding more clients no longer linearly amplifies JSON serialization overhead. Forced resync snapshots (with target client metadata) are still encoded per client (rare path).
 
+Since 2026-10-20 the module state is also visited only **once per encode**: `ServerSnapshot.State` is `object` and the encoder writes it inline into the payload stream, instead of materializing a `JsonElement` DOM first and serializing it a second time. The wire bytes are unchanged (a byte-for-byte guard test compares against the old DOM path), and the state still deserializes as a `JsonElement` on the gateway and module-restore sides. Measured on a 6,004-byte payload: 62,991 ns/encode and 6,584 bytes allocated, against 155,883 ns and 25,656 bytes for the DOM path — 2.47× faster and 3.90× less allocated. The snapshot size cap is measured with a reused `Utf8JsonWriter` over `Stream.Null`, so the tick body reads the state's length without allocating its bytes.
+
 Binary formats (MessagePack/FlatBuffers) — **evaluation conclusion: not introducing for now**:
 
 - Benefit: further saves CPU/bandwidth (about 30–60%), but requires clients to switch decoding libraries in sync;

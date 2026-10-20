@@ -112,6 +112,77 @@ public sealed class SessionActorSnapshotTests
     }
 
     [Fact]
+    public async Task OversizeState_BeyondProbeBuffer_StillRejected()
+    {
+        // The cap probe measures into a reused 64 KiB buffer; a state larger
+        // than that buffer takes the one-off measurement fallback and must
+        // still be rejected rather than passing unmeasured.
+        var received = new List<SessionSnapshot>();
+        await using var actor = new SessionActor("s-huge", new SessionConfig
+        {
+            TickDurationMs = 10,
+            SnapshotEveryTicks = 1,
+            MaxSnapshotBytes = 1024,
+        }, new BigStateGameModule(payloadKilobytes: 256));
+
+        await actor.AddClientAsync(new CapturingClient("c1", received));
+        actor.Start();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while ((actor.Diagnostics.TotalSnapshotsOversize == 0 || actor.Diagnostics.TickId < 2)
+               && sw.ElapsedMilliseconds < 5000)
+        {
+            await Task.Delay(10);
+        }
+
+        Assert.True(actor.Diagnostics.TotalSnapshotsOversize >= 1);
+        Assert.Equal(0, actor.Diagnostics.TotalSnapshotsSent);
+        lock (received)
+        {
+            Assert.Empty(received);
+        }
+        Assert.True(actor.Diagnostics.TickId >= 2);
+    }
+
+    [Fact]
+    public async Task UnderCapState_MeasuredInProbe_Sent()
+    {
+        // Cap far below the 64 KiB probe buffer: a state inside the cap is
+        // measured in the reused probe and accepted.
+        var received = new List<SessionSnapshot>();
+        await using var actor = new SessionActor("s-under", new SessionConfig
+        {
+            TickDurationMs = 10,
+            SnapshotEveryTicks = 1,
+            MaxSnapshotBytes = 64 * 1024,
+        }, new BigStateGameModule(payloadKilobytes: 1));
+
+        await actor.AddClientAsync(new CapturingClient("c1", received));
+        actor.Start();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 5000)
+        {
+            lock (received)
+            {
+                if (received.Count > 0)
+                {
+                    break;
+                }
+            }
+
+            await Task.Delay(10);
+        }
+
+        lock (received)
+        {
+            Assert.NotEmpty(received);
+        }
+        Assert.Equal(0, actor.Diagnostics.TotalSnapshotsOversize);
+        Assert.True(actor.Diagnostics.TotalSnapshotsSent >= 1);
+    }
+
+    [Fact]
     public async Task CapDisabled_NeverDrops()
     {
         var received = new List<SessionSnapshot>();

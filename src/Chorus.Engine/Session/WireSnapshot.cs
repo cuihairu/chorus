@@ -10,6 +10,10 @@ namespace Chorus.Engine.Session;
 /// path so client count no longer multiplies JSON serialization; each client
 /// just writes the same bytes to its transport.
 /// </summary>
+/// State is written inline into the payload stream: the old shape built a
+/// JsonElement DOM first and serialized it again, so the tick body visited
+/// the state twice per snapshot. The inline write keeps the wire bytes
+/// identical and cuts the passes in half.
 public sealed record WireSnapshot(SessionSnapshot Snapshot, byte[] EncodedJson)
 {
     public static WireSnapshot Encode(SessionSnapshot snapshot)
@@ -19,7 +23,7 @@ public sealed record WireSnapshot(SessionSnapshot Snapshot, byte[] EncodedJson)
             SessionId: snapshot.SessionId,
             TickId: snapshot.TickId,
             ServerTimeMs: snapshot.ServerTimeMs,
-            State: JsonSerializer.SerializeToElement(snapshot.State, ProtocolJson.SerializerOptions),
+            State: snapshot.State,
             Forced: snapshot.Forced,
             Reason: snapshot.Reason,
             TargetClientId: snapshot.TargetClientId,

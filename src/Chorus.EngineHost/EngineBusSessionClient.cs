@@ -50,7 +50,9 @@ public sealed class EngineBusSessionClient : ISessionClient
             SessionId: snapshot.SessionId,
             TickId: snapshot.TickId,
             ServerTimeMs: snapshot.ServerTimeMs,
-            State: System.Text.Json.JsonSerializer.SerializeToElement(snapshot.State, Chorus.Protocol.ProtocolJson.SerializerOptions),
+            // Written inline, not via SerializeToElement: the DOM copy made the
+            // state serialize twice per snapshot on the eng→gw path too.
+            State: snapshot.State,
             Forced: snapshot.Forced,
             Reason: snapshot.Reason,
             TargetClientId: snapshot.TargetClientId,

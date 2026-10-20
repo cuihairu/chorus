@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using Chorus.Engine.Abstractions;
 using Chorus.Engine.Session;
+using Chorus.Protocol;
+using Chorus.Protocol.Messages;
 using Chorus.Protocol.Models;
 using Chorus.Server;
 using Microsoft.AspNetCore.Hosting;
@@ -195,5 +197,92 @@ public sealed class WireSnapshotTests
         Assert.True(snap.TryGetProperty("state", out var state));
         Assert.Equal(JsonValueKind.Object, state.ValueKind);
         ws.Dispose();
+    }
+
+    // ---- State encoding (2026-10-20, todo.md:159 tick-body CPU) ----
+    // The payload's State used to be materialized as a JsonElement DOM and then
+    // serialized again, so every snapshot visited the state twice. The inline
+    // write must produce the exact same wire bytes.
+
+    private static object RichState() => new
+    {
+        counter = 12,
+        flag = true,
+        missing = (string?)null,
+        players = new[]
+        {
+            new { id = 7, x = 1.5, name = "甲" },
+            new { id = 8, x = -0.25, name = "b" },
+        },
+        empty = Array.Empty<int>(),
+    };
+
+    /// <summary>The pre-optimization encoder: State built as a DOM, then serialized.</summary>
+    private static ServerSnapshot LegacyPayload(SessionSnapshot snapshot) => new(
+        Type: ProtocolTypes.Snapshot,
+        SessionId: snapshot.SessionId,
+        TickId: snapshot.TickId,
+        ServerTimeMs: snapshot.ServerTimeMs,
+        State: JsonSerializer.SerializeToElement(snapshot.State, ProtocolJson.SerializerOptions),
+        Forced: snapshot.Forced,
+        Reason: snapshot.Reason,
+        TargetClientId: snapshot.TargetClientId,
+        ClientLagTicks: snapshot.ClientLagTicks,
+        ClientLastAckTickId: snapshot.ClientLastAckTickId,
+        V: snapshot.V,
+        FrameEvents: snapshot.FrameEvents is { Count: > 0 } ? new List<FrameEvent>(snapshot.FrameEvents) : null);
+
+    [Fact]
+    public void Encode_StateWrittenInline_MatchesLegacyDomPath_ByteForByte()
+    {
+        var states = new object[] { RichState(), new { }, new { a = 1, b = "x" }, new { list = new[] { 1, 2, 3 } } };
+        foreach (var state in states)
+        {
+            foreach (var forced in new bool?[] { null, false, true })
+            {
+                var snapshot = new SessionSnapshot(
+                    SessionId: "s-enc", TickId: 5, ServerTimeMs: 1000, State: state, Forced: forced);
+
+                var actual = WireSnapshot.Encode(snapshot).EncodedJson;
+                var legacy = JsonSerializer.SerializeToUtf8Bytes(LegacyPayload(snapshot), ProtocolJson.SerializerOptions);
+
+                Assert.True(legacy.SequenceEqual(actual),
+                    $"wire bytes drifted (forced={forced}): legacy={Encoding.UTF8.GetString(legacy)}"
+                    + $" actual={Encoding.UTF8.GetString(actual)}");
+            }
+        }
+    }
+
+    [Fact]
+    public void Encode_RoundTrip_StateStillDeserializesAsJsonElement()
+    {
+        // ServerSnapshot crosses eng→gw IPC and the gateway re-serializes it, and
+        // module restore reads SnapshotRecovery.State as a JsonElement. An
+        // object-typed field materializes as a JsonElement when deserialized, so
+        // every read site keeps its current runtime shape.
+        var snapshot = new SessionSnapshot(
+            SessionId: "s-rt",
+            TickId: 3,
+            ServerTimeMs: 0,
+            State: RichState(),
+            Forced: true,
+            Reason: "lag",
+            FrameEvents: new List<FrameEvent> { new(3, "e-1", "input", "u-1") });
+
+        var roundTripped = JsonSerializer.Deserialize<ServerSnapshot>(
+            WireSnapshot.Encode(snapshot).EncodedJson, ProtocolJson.SerializerOptions)!;
+
+        // The runtime shape at every read site is still a JsonElement.
+        var state = Assert.IsType<JsonElement>(roundTripped.State);
+
+        Assert.Equal(JsonValueKind.Object, state.ValueKind);
+        Assert.Equal(12, state.GetProperty("counter").GetInt32());
+        Assert.Equal(2, state.GetProperty("players").GetArrayLength());
+        Assert.Equal("甲", state.GetProperty("players")[0].GetProperty("name").GetString());
+        Assert.Equal("snapshot", roundTripped.Type);
+        Assert.Equal(3, roundTripped.TickId);
+        Assert.True(roundTripped.Forced);
+        Assert.Equal("lag", roundTripped.Reason);
+        Assert.Single(roundTripped.FrameEvents);
     }
 }

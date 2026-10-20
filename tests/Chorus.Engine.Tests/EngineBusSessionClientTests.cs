@@ -1,7 +1,9 @@
+using System.Text.Json;
 using Chorus.Engine.Session;
 using Chorus.EngineHost;
 using Chorus.Messaging;
 using Chorus.Messaging.Ipc;
+using Chorus.Protocol;
 using Chorus.Protocol.Messages;
 
 namespace Chorus.Engine.Tests;
@@ -102,6 +104,28 @@ public sealed class EngineBusSessionClientTests
         var env = Assert.Single(bus.Published);
         var body = EnvelopeFactory.DeserializeBody<ServerSnapshot>(env);
         Assert.Equal("c2", body.TargetClientId);
+    }
+
+    [Fact]
+    public async Task Snapshot_StateJson_RidesTheBusUnchanged()
+    {
+        // The bus path used to materialize the state as a JsonElement DOM before
+        // publishing, so every snapshot visited the state twice. The envelope
+        // body must carry the same state JSON either way.
+        var bus = new RecordingBus();
+        var client = new EngineBusSessionClient(bus, "s-bus", "c1", isBroadcastOwner: () => true, onPublishFailure: (_, _) => { });
+        var snapshot = BroadcastSnapshot() with
+        {
+            State = new { players = new[] { new { id = 7, x = 1.5, name = "甲" } } }
+        };
+
+        await client.SendSnapshotAsync(snapshot, CancellationToken.None);
+
+        var body = EnvelopeFactory.DeserializeBody<ServerSnapshot>(Assert.Single(bus.Published));
+        var state = Assert.IsType<JsonElement>(body.State);
+        Assert.Equal(
+            JsonSerializer.Serialize(snapshot.State, ProtocolJson.SerializerOptions),
+            state.GetRawText());
     }
 
     [Fact]

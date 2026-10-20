@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using System.Threading.Channels;
 using Chorus.Engine.Abstractions;
@@ -30,6 +31,10 @@ public sealed class SessionActor : IAsyncDisposable
     private readonly FrameHistory _frameHistory;
     private readonly List<(long TickId, IReadOnlyList<AudienceEvent> Events)> _pendingFrameEvents = new();
     private const int MaxPendingFrameEvents = 4096;
+
+    // Reused across ticks: the snapshot size cap only needs the state's
+    // serialized length, so the tick body must not allocate the state's bytes.
+    private Utf8JsonWriter? _stateProbe;
 
     private readonly SessionConfig _config;
     private readonly IGameModule _game;
@@ -625,14 +630,10 @@ public sealed class SessionActor : IAsyncDisposable
             // dominates wire size. An oversize state skips the send entirely -
             // clients fall back to their resync loop (no ACK -> forced resync
             // once the state shrinks back under the cap).
-            if (_config.MaxSnapshotBytes > 0)
+            if (_config.MaxSnapshotBytes > 0 && !StateWithinCap(state))
             {
-                var stateBytes = JsonSerializer.SerializeToUtf8Bytes(state);
-                if (stateBytes.Length > _config.MaxSnapshotBytes)
-                {
-                    Interlocked.Increment(ref _totalSnapshotsOversize);
-                    return;
-                }
+                Interlocked.Increment(ref _totalSnapshotsOversize);
+                return;
             }
 
             // Frame-sync P2: build the frameEvents envelope once per snapshot
@@ -740,6 +741,22 @@ public sealed class SessionActor : IAsyncDisposable
 
     }
 
+    /// <summary>
+    /// True when the state's serialized length is within MaxSnapshotBytes.
+    /// Measured with a reused writer over Stream.Null, which counts the bytes
+    /// without materializing the state's array - the tick body only needs the
+    /// length. Same predicate and same default options as the previous byte[]
+    /// probe, so the cap decision is unchanged.
+    /// </summary>
+    private bool StateWithinCap(object state)
+    {
+        var probe = _stateProbe ??= new Utf8JsonWriter(Stream.Null);
+        probe.Reset();
+        JsonSerializer.Serialize(probe, state);
+        probe.Flush();
+        return probe.BytesCommitted <= _config.MaxSnapshotBytes;
+    }
+
     private sealed record ForceInfo(long LagTicks, long LastAckTickId);
 
     private Dictionary<string, ForceInfo> GetClientsNeedingResync(long nowMs)
@@ -838,5 +855,6 @@ public sealed class SessionActor : IAsyncDisposable
 
         await StopAsync().ConfigureAwait(false);
         _game.Dispose();
+        _stateProbe?.Dispose();
     }
 }

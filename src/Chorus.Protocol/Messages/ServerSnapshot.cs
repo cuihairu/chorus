@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 namespace Chorus.Protocol.Messages;
 
 public sealed record ServerSnapshot(
@@ -7,7 +5,15 @@ public sealed record ServerSnapshot(
     string SessionId,
     long TickId,
     long ServerTimeMs,
-    JsonElement State,
+    /// <summary>
+    /// The module's state snapshot, written inline into the payload stream.
+    /// Object-typed so the encoder does not have to materialize a JsonElement
+    /// DOM first and serialize it a second time - the state is visited once.
+    /// Serialization bytes are unchanged; deserialization still yields a
+    /// JsonElement (System.Text.Json's default for object), so every read site
+    /// keeps its runtime shape.
+    /// </summary>
+    object State,
     bool? Forced = null,
     string? Reason = null,
     string? TargetClientId = null,
