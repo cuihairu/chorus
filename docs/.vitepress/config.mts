@@ -7,14 +7,7 @@ export default withMermaid(defineConfig({
   base: process.env.VITEPRESS_BASE || "/chorus/",
   head: [["link", { rel: "icon", href: "/logo.svg" }]],
   locales: {
-    root: {
-      label: "English",
-      lang: "en-US"
-    },
-    zh: {
-      label: "简体中文",
-      lang: "zh-CN"
-    }
+    root: { label: "简体中文", lang: "zh-CN" }
   },
   themeConfig: {
     logo: "/logo.svg",
@@ -76,62 +69,6 @@ export default withMermaid(defineConfig({
             "/reference/deployment",
             "/reference/versioning",
             "/reference/api"
-          ]
-        }
-      },
-      zh: {
-        selectText: "语言",
-        nav: [
-          { text: "指南", link: "/zh/guide/getting-started" },
-          { text: "架构", link: "/zh/architecture" },
-          { text: "设计", link: "/zh/design/architecture" },
-          { text: "参考", link: "/zh/reference/protocol" }
-        ],
-        sidebar: {
-          "/zh/": ["/zh/architecture", "/zh/decisions"],
-          "/zh/guide/": [
-            "/zh/guide/getting-started",
-            "/zh/guide/split-mode",
-            "/zh/guide/load-testing",
-            "/zh/guide/battle",
-            "/zh/guide/matchmaking",
-            "/zh/guide/leaderboard",
-            "/zh/guide/game-module",
-            "/zh/guide/quickstart-frame-sync"
-          ],
-          "/zh/design/": [
-            "/zh/design/architecture",
-            "/zh/design/architecture-overview",
-            "/zh/design/frame-sync",
-            "/zh/design/frame-sync-best-practices",
-            "/zh/design/client-resync-state-machine",
-            "/zh/design/ipc",
-            "/zh/design/shared-memory-transport",
-            "/zh/design/spec",
-            "/zh/design/legacy-real-server-analysis",
-            "/zh/design/review-2026-10-12-chatgpt",
-            "/zh/design/process-topology",
-            "/zh/design/snapshot-restore",
-            "/zh/design/bilibili-danmaku-adapter",
-            "/zh/design/overall-architecture",
-            "/zh/audit-doc-consistency"
-          ],
-          "/zh/reference/": [
-            "/zh/reference/protocol",
-            "/zh/reference/config",
-            "/zh/reference/operations",
-            "/zh/reference/observability",
-            "/zh/reference/platform-douyin",
-            "/zh/reference/platform-douyin-mini-game",
-            "/zh/reference/platform-kuaishou",
-            "/zh/reference/platform-kuaishou-mini-game",
-            "/zh/reference/platform-bilibili",
-            "/zh/reference/tuning",
-            "/zh/reference/troubleshooting",
-            "/zh/reference/adapter-contract",
-            "/zh/reference/deployment",
-            "/zh/reference/versioning",
-            "/zh/reference/api"
           ]
         }
       }
