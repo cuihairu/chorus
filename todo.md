@@ -339,3 +339,4 @@
 
 
 - [ ] **BLOCKED (2026-10-20): 禁机翻纪律下无授权译文来源，需人工/评审级撰写与用户拍板后再开 en locale。** 英文文档版（2026-10-20 用户令缘起：zh 切英文失败）——实况核查：仓内**零英文页**，root 曾标 English 装中文、zh/ 是 41 张重复中文树且缺首页（/zh/ 404 真凶）。已代决处置：先落诚实单语（root=简体中文，URL 全稳，重复树去重退役，死切换器移除）；英文版按仓纪律**禁机翻**，待人工/评审级撰写后再开 en locale（届时照官方 locales 方案 root=en /zh=中文，同 servify 形态）
+- [x] Dependabot 清零（2026-10-21，#172–#176）：package overrides 迁至 pnpm-workspace.yaml 并锁定 decode-uri-component 0.5.0、esbuild 0.25.0、vite 6.4.3；上一单 .NET 全量 1117/1117 与浏览器 E2E 100 房/500 连接/720 趋势点已绿，本轮补跑 pnpm install --frozen-lockfile 与 docs:build 通过。
