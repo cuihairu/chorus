@@ -74,5 +74,7 @@ export default withMermaid(defineConfig({
       }
     }
   },
-  mermaid: {}
+  mermaid: {},
+  // esbuild 0.28 (安全覆盖) 不再降级解构到 es2015 目标，构建目标抬到 es2022。
+  vite: { build: { target: "es2022" } }
 }));
