@@ -4,7 +4,7 @@
 </p>
 
 <h1 align="center">Chorus</h1>
-[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/chorus/releases)
+<p align="center">[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/chorus/releases)</p>
 
 <p align="center">
   面向直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）
