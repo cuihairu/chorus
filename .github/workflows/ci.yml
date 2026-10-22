@@ -42,15 +42,15 @@ jobs:
     env:
       CHORUS_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Database=chorus_test;Username=chorus;Password=chorus-ci-test-only
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.1
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6.1.0
         with:
           version: 10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
           cache: "pnpm"
@@ -62,7 +62,7 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6.0.0
         with:
           dotnet-version: "10.0.x"
 
@@ -79,14 +79,14 @@ jobs:
         run: pnpm test:admin:e2e
 
       - name: Upload coverage artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage
           path: TestResults/**/coverage.cobertura.xml
           if-no-files-found: warn
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7.1.1
         with:
           files: TestResults/**/coverage.cobertura.xml
           fail_ci_if_error: false
