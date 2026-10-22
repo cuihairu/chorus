@@ -1,10 +1,10 @@
-[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/chorus/releases)
 
 <p align="center">
   <img src="docs/public/logo.svg" width="64" height="64" alt="Chorus logo" />
 </p>
 
 <h1 align="center">Chorus</h1>
+[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/chorus/releases)
 
 <p align="center">
   A live-stream chat/gift-driven interactive battle game framework (server-authoritative tick + state snapshots)
