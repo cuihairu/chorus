@@ -3,7 +3,7 @@ using Chorus.Engine.Routing;
 
 namespace Chorus.ControlHost;
 
-public sealed class ControlMaintenance(RoomControlStore store, ILogger<ControlMaintenance> logger) : BackgroundService
+public sealed class ControlMaintenance(RoomControlStore store, ILogger<ControlMaintenance> logger, IConfiguration configuration) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -18,6 +18,13 @@ public sealed class ControlMaintenance(RoomControlStore store, ILogger<ControlMa
                     try { store.Handoff(room.Id, room.Epoch); }
                     catch (ControlConflictException ex) { logger.LogWarning("Handoff pending for {RoomId}: {Reason}",room.Id,ex.Message); }
                 }
+                if (configuration.GetValue<bool>("Control:AutomaticRecovery"))
+                    foreach (var room in store.Rooms().Where(r => r.State is RoomLifecycleState.Waiting or RoomLifecycleState.Active or RoomLifecycleState.Idle or RoomLifecycleState.Recovering))
+                    {
+                        try { store.RecoverStaleRoom(room.Id, room.Epoch, "system"); }
+                        catch (ControlConflictException) { /* Healthy owner or no recovery capacity; retry next sweep. */ }
+                    }
+                store.MaintainMatches();
                 store.FormMatches();
                 if (++iteration % 5 == 0) store.Sample();
                 if (iteration % 60 == 0) store.PruneEventHeat(DateTimeOffset.UtcNow.AddMinutes(-60).ToUnixTimeMilliseconds());

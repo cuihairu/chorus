@@ -11,6 +11,13 @@ This guide covers the basic IPC split and the controlled multi-worker mode. With
 - `Chorus.EngineHost`: runs the authoritative tick + state snapshots (SessionActor + GameModule), and provides `GET /health` and `GET /metrics` (local `http://localhost:5067`)
 - The two communicate over local IPC (default: prefer UDS, fall back to NamedPipe on failure; optional: TCP)
 
+
+> Current deployment: use **Chorus.PlatformGateway** (`/ingress/{platform}`) and
+> **Chorus.StreamerGateway** (`/ws`) as separate executables. Both use the
+> `Chorus.Gateway.Runtime` library; neither depends on the other executable or
+> uses `Gateway:Roles`. See [independent gateway deployment](./independent-gateways.md).
+> The combined `Chorus.Gateway` and role-switch examples below remain for compatibility.
+
 ## 1) Start EngineHost
 
 ```bash

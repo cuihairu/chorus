@@ -132,6 +132,7 @@ admin.MapPost("/streamers", (StreamerProfile r, HttpContext c, RoomControlStore 
 admin.MapPost("/rules", (MatchRules r, HttpContext c, RoomControlStore s) => s.SetRules(r,c.User.Identity!.Name!)).RequireAuthorization("configure");
 admin.MapPost("/streamers/{id}/join", (string id, MatchJoin r, HttpContext c, RoomControlStore s) => s.Join(id,r,c.User.Identity!.Name!)).RequireAuthorization("operate");
 admin.MapPost("/streamers/{id}/leave", (string id, HttpContext c, RoomControlStore s) => new { removed = s.Leave(id,c.User.Identity!.Name!) }).RequireAuthorization("operate");
+admin.MapPost("/matches/{id}/cancel", (string id, HttpContext c, RoomControlStore s) => s.CancelMatch(id,c.User.Identity!.Name!)).RequireAuthorization("operate");
 admin.MapPost("/matches/{id}/finish", (string id, MatchFinish r, HttpContext c, RoomControlStore s) => s.Finish(id,r,c.User.Identity!.Name!)).RequireAuthorization("operate");
 admin.MapPost("/boards/{id}/score", (string id, BoardScoreRequest r, HttpContext c, RoomControlStore s) => s.ChangeScore(id,r.Scope,r.Season,r.Change,c.User.Identity!.Name!)).RequireAuthorization("configure");
 admin.MapPost("/boards/{id}/freeze", (string id, HttpContext c, RoomControlStore s) => s.Freeze(id,c.User.Identity!.Name!)).RequireAuthorization("configure");

@@ -5,6 +5,7 @@ import { withMermaid } from "vitepress-plugin-mermaid";
 const guideLinks = [
   "/guide/getting-started",
   "/guide/split-mode",
+  "/guide/independent-gateways",
   "/guide/load-testing",
   "/guide/battle",
   "/guide/matchmaking",

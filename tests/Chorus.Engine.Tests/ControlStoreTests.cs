@@ -394,6 +394,39 @@ public sealed class ControlStoreTests : IDisposable
         Assert.Equal(RoomLifecycleState.Destroyed,s.Assign(new("room")).State);
         Assert.Throws<ControlConflictException>(()=>s.AppendEvent(Event("late")));
     }
+    [Fact]
+    public void RecoveryReassignsOnlyStaleOwnerAndPreservesCheckpointAndInput()
+    {
+        var s = NewStore(); s.ReportNode(Worker("a", 1));
+        var room = s.Assign(new("room"));
+        s.Commit("room", Commit(room)); s.AppendEvent(Event());
+        Assert.Throws<ControlConflictException>(() => s.RecoverStaleRoom("room", room.Epoch, "test"));
+        _clock.Advance(RoomControlStore.NodeLeaseMs);
+        Assert.Throws<ControlConflictException>(() => s.RecoverStaleRoom("room", room.Epoch, "test"));
+        s.ReportNode(Worker("b", 1));
+        var recovered = s.RecoverStaleRoom("room", room.Epoch, "test");
+        Assert.Equal("b", recovered.WorkerId);
+        Assert.Equal(room.Epoch + 1, recovered.Epoch);
+        Assert.Equal(RoomLifecycleState.Recovering, recovered.State);
+        Assert.Equal(1, recovered.TickId); Assert.Equal(1, s.PendingCount("room"));
+        Assert.Throws<ControlConflictException>(() => s.Commit("room", Commit(room, 1)));
+        Assert.Throws<ControlConflictException>(() => s.RecoverStaleRoom("room", room.Epoch, "test"));
+        s.Ready("room", new("b", "b-boot", recovered.Epoch));
+        Assert.True(s.Commit("room", Commit(recovered, 1, "b", RoomControlStore.EventKey(Event()))));
+    }
+
+    [Fact]
+    public void RestartedProcessCanRecoverItsOwnRoomEvenAtCapacity()
+    {
+        var s = NewStore(); s.ReportNode(Worker("a", 1));
+        var room = s.Assign(new("room"));
+        _clock.Advance(RoomControlStore.NodeLeaseMs);
+        s.ReportNode(Worker("a", 1) with { InstanceId = "replacement" });
+        var recovered = s.RecoverStaleRoom("room", room.Epoch, "test");
+        Assert.Equal("replacement", recovered.WorkerInstance);
+        Assert.Equal(2, recovered.Epoch);
+    }
+
     public void Dispose() { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); if(Directory.Exists(_dir))Directory.Delete(_dir,true); }
     private sealed class FakeClock:TimeProvider
     {

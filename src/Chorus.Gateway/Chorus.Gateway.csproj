@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../Chorus.Gateway.Runtime/Chorus.Gateway.Runtime.csproj" />
     <ProjectReference Include="..\Chorus.Adapters.Abstractions\Chorus.Adapters.Abstractions.csproj" />
     <ProjectReference Include="..\Chorus.Adapters.Platforms\Chorus.Adapters.Platforms.csproj" />
     <ProjectReference Include="..\Chorus.Engine\Chorus.Engine.csproj" />

@@ -78,11 +78,16 @@ trigger a full build.
 ## Split Mode (Gateway + EngineHost)
 
 ```bash
-dotnet run --project src/Chorus.EngineHost
-dotnet run --project src/Chorus.Gateway
+# Run each command in a separate terminal (local IPC).
+Ipc__GatewayIds=platform-gw,streamer-gw dotnet run --project src/Chorus.EngineHost
+Gateway__Id=platform-gw dotnet run --project src/Chorus.PlatformGateway -- --urls http://localhost:5168
+Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --urls http://localhost:5169
 ```
 
-- Gateway: exposes `/ws` and `/ingress/{platform}`
+- `Chorus.PlatformGateway`: platform ingress only, `/ingress/{platform}` on port 5168 in this example.
+- `Chorus.StreamerGateway`: streamer WebSocket only, `/ws` on port 5169.
+- Shared transport/control discovery lives in `Chorus.Gateway.Runtime`; shared protocol faces live in `Chorus.Gateway.Core`.
+- Hosts publish and scale independently without `Gateway:Roles`. `Chorus.Gateway` remains a compatibility host. See [Independent gateways](docs/guide/independent-gateways.md).
 - EngineHost: runs the authoritative tick + snapshots, talking to the Gateway over local IPC
   (UDS first, NamedPipe fallback)
 

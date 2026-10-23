@@ -3,6 +3,13 @@
 
 > Status: design finalized on 2026-10-12 (user proposal + review cross-check). This is a **target shape and cadence**; implementation advances with the todo.md phases; physical split is not landed until trigger conditions are met.
 
+
+> Current deployment: use **Chorus.PlatformGateway** (`/ingress/{platform}`) and
+> **Chorus.StreamerGateway** (`/ws`) as separate executables. Both use the
+> `Chorus.Gateway.Runtime` library; neither depends on the other executable or
+> uses `Gateway:Roles`. See [independent gateway deployment](../guide/independent-gateways.md).
+> The combined `Chorus.Gateway` and role-switch examples below remain for compatibility.
+
 ## 1. Proposal and Conclusion
 
 The proposed form has four roles:

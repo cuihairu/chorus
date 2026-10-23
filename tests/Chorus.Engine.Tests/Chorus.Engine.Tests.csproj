@@ -8,6 +8,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../src/Chorus.StreamerGateway/Chorus.StreamerGateway.csproj" />
+    <ProjectReference Include="../../src/Chorus.PlatformGateway/Chorus.PlatformGateway.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\..\src\Chorus.Adapters.Abstractions\Chorus.Adapters.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Client\Chorus.Client.csproj" />

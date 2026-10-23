@@ -23,6 +23,11 @@ public sealed class ControlRoutingSnapshot
             .ToDictionary(g => g.Key, g => g.Select(c => c.GatewayId).Distinct(StringComparer.Ordinal).ToArray(), StringComparer.Ordinal);
     }
 
+    /// <summary>A failed room owner must not withdraw gateways serving healthy rooms.</summary>
+    public bool CanServeRooms(long nowMs) => IsFresh(nowMs) && _nodes.Values.Any(n =>
+        n.Role == "worker" && nowMs >= n.LastHeartbeatMs
+        && nowMs - n.LastHeartbeatMs < RoomControlStore.NodeLeaseMs);
+
     public bool IsFresh(long nowMs) => nowMs >= CreatedAtMs && nowMs - CreatedAtMs < MaxAgeMs;
 
     public bool TryGetTargets(string roomId, long? epoch, string workerId, string workerInstance,

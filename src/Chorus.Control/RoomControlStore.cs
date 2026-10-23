@@ -45,13 +45,13 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         t.Put("node", id, node); t.Audit(Now, actor, "node.drain", id, new { draining });
         return node;
     });
-    private NodeReport SelectWorker(ControlDatabase.Transaction t, string? target = null)
+    private NodeReport SelectWorker(ControlDatabase.Transaction t, string? target = null, string? replacingRoom = null)
     {
         var rooms = t.List<RoomRecord>("room");
         return t.List<NodeReport>("node").Where(n => n.Role == "worker" && Healthy(n) && !n.Draining && (target is null || n.Id == target))
-            .Select(n => (Node: n, Count: rooms.Count(r => Live(r) && r.WorkerId == n.Id)))
+            .Select(n => (Node: n, Count: rooms.Count(r => Live(r) && r.Id != replacingRoom && r.WorkerId == n.Id)))
             .Where(x => x.Node.Capacity == 0 || x.Count < x.Node.Capacity)
-            .OrderBy(x => x.Count).ThenBy(x => x.Node.Id, StringComparer.Ordinal).Select(x => x.Node).FirstOrDefault()
+            .OrderBy(x => x.Node.Capacity > 0 ? (double)x.Count / x.Node.Capacity : x.Count).ThenBy(x => x.Node.Id, StringComparer.Ordinal).Select(x => x.Node).FirstOrDefault()
             ?? throw new ControlConflictException("No healthy worker with available capacity.");
     }
     private RoomRecord WakeSleeping(ControlDatabase.Transaction t, RoomRecord room)
@@ -132,7 +132,7 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
     }
     private bool AppendEvent(ControlDatabase.Transaction t, Chorus.Protocol.Models.AudienceEvent e, RoomRecord r)
     {
-        if (r.State is RoomLifecycleState.Closing or RoomLifecycleState.Destroyed) throw new ControlConflictException("Room is closed.");
+        if (r.RetirementRequested || r.State is RoomLifecycleState.Closing or RoomLifecycleState.Destroyed) throw new ControlConflictException("Room is closed.");
         var key = EventKey(e);
         t.PruneReceipts(r.Id,Now-86_400_000);
         if(t.ReceiptExists(r.Id,key)) return false;
@@ -205,7 +205,7 @@ public sealed partial class RoomControlStore(ControlDatabase database, TimeProvi
         var gateway = t.Get<NodeReport>("node", connection.GatewayId);
         if (!Healthy(gateway) || gateway!.InstanceId != connection.GatewayInstance) throw new ControlConflictException("Unknown gateway lease.");
         var r = Assign(t, new(connection.SessionId, connection.Role == "streamer" ? connection.UserId : null));
-        if (r.State is RoomLifecycleState.Closing or RoomLifecycleState.Destroyed) throw new ControlConflictException("Room closed.");
+        if (r.RetirementRequested || r.State is RoomLifecycleState.Closing or RoomLifecycleState.Destroyed) throw new ControlConflictException("Room closed.");
         if (r.State == RoomLifecycleState.Migrating) throw new ControlConflictException("Room is migrating; retry connection.");
         r = WakeSleeping(t, r);
         if (connection.Role == "streamer" && r.StreamerId is null) t.Put("room", r.Id, r with { StreamerId = connection.UserId });

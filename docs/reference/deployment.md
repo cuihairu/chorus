@@ -14,6 +14,13 @@ Related docs:
 - [Observability](./observability.md)
 - [Troubleshooting](./troubleshooting.md)
 
+
+> Current deployment: use **Chorus.PlatformGateway** (`/ingress/{platform}`) and
+> **Chorus.StreamerGateway** (`/ws`) as separate executables. Both use the
+> `Chorus.Gateway.Runtime` library; neither depends on the other executable or
+> uses `Gateway:Roles`. See [independent gateway deployment](../guide/independent-gateways.md).
+> The combined `Chorus.Gateway` and role-switch examples below remain for compatibility.
+
 ## Forms
 
 | Form | Processes | Applicable |

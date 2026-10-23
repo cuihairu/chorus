@@ -76,11 +76,16 @@ CI 与本地开发按改动面三路分流——改一行文档不该全量编�
 ## 拆分模式（Gateway + EngineHost）
 
 ```bash
-dotnet run --project src/Chorus.EngineHost
-dotnet run --project src/Chorus.Gateway
+# Run each command in a separate terminal (local IPC).
+Ipc__GatewayIds=platform-gw,streamer-gw dotnet run --project src/Chorus.EngineHost
+Gateway__Id=platform-gw dotnet run --project src/Chorus.PlatformGateway -- --urls http://localhost:5168
+Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --urls http://localhost:5169
 ```
 
-- Gateway：对外提供 `/ws` 与 `/ingress/{platform}`
+- `Chorus.PlatformGateway`（平台网关）：只提供 `/ingress/{platform}`，本地示例端口 5168。
+- `Chorus.StreamerGateway`（主播网关）：只提供 `/ws`，本地示例端口 5169。
+- 公共 IPC、控制面路由、健康检查在 `Chorus.Gateway.Runtime`；共享入口协议在 `Chorus.Gateway.Core`。
+- 两个宿主独立发布、部署和扩容，不需要 `Gateway:Roles`。旧 `Chorus.Gateway` 保留兼容入口。详见[独立网关部署](docs/guide/independent-gateways.md)。
 - EngineHost：运行权威 tick + 快照，通过本机 IPC 与 Gateway 通信（优先 UDS，失败降级 NamedPipe）
 
 ## 架构概览

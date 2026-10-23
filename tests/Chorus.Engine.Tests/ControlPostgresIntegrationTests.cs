@@ -8,6 +8,20 @@ namespace Chorus.Engine.Tests;
 public sealed class ControlPostgresIntegrationTests
 {
     [Fact]
+    public async Task PostgresProvider_BoardReceiptsSurviveConcurrentRetryAndReopen()
+    {
+        using var testDatabase = new PostgresTestDatabase();
+        var store = NewStore(testDatabase.ConnectionString);
+        var change = new ScoreChange("player", 1, "first", "wins");
+        store.ChangeScore("global:all", "global", "default", change, "test");
+        await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+            store.ChangeScore("global:all", "global", "default", change with { SourceId = "second" }, "test"))));
+        var reopened = NewStore(testDatabase.ConnectionString);
+        Assert.Equal(2, reopened.ChangeScore("global:all", "global", "default", change, "test").Scores["player"]);
+        Assert.Equal(2, Assert.Single(reopened.Boards()).Scores["player"]);
+    }
+
+    [Fact]
     public async Task PostgresProvider_ConcurrentAssignmentsKeepOneAuthoritativeRoomRecord()
     {
         using var testDatabase = new PostgresTestDatabase();

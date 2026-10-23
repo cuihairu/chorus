@@ -10,6 +10,7 @@ public sealed partial class RoomControlStore
         if (request.TierWidth < 1 || request.MaxRatingGap < 0 || request.WidenAfterMs < 0 || request.TimeoutMs <= request.WidenAfterMs
             || request.LevelExperience < 1 || request.StarExperience < 1 || request.RematchCooldownMs < 0 || string.IsNullOrWhiteSpace(request.Season))
             throw new ArgumentException("Invalid matchmaking/growth thresholds.");
+        if (request.FillBots) throw new ArgumentException("Control-plane bot matches require a game-runtime adapter; use real-player matching.");
         var rules = request with { Version = old.Version + 1 };
         t.Put("system", "rules", rules); t.Audit(Now, actor, "rules.update", "matchmaking", new { before = old, after = rules });
         return rules;
@@ -35,7 +36,7 @@ public sealed partial class RoomControlStore
         Id(request.Mode); Id(request.Region);
         var profile = t.Get<StreamerProfile>("streamer", streamerId) ?? throw new KeyNotFoundException("Streamer profile required.");
         if (!Connections(t).Any(c => c.Role == "streamer" && c.UserId == streamerId)) throw new ControlConflictException("Streamer must be online to queue.");
-        if (t.List<MatchRecord>("match").Any(m => m.Status == "Running" && m.StreamerIds.Contains(streamerId))) throw new ControlConflictException("Streamer already in a match.");
+        if (t.List<MatchRecord>("match").Any(m => m.Status is "AwaitingReady" or "Running" && m.StreamerIds.Contains(streamerId))) throw new ControlConflictException("Streamer already in a match.");
         var old = t.Get<QueueEntry>("queue", streamerId);
         if (old is not null) return old;
         var entry = new QueueEntry(streamerId, request.Mode, request.Region, profile.Platform, Now);
@@ -55,7 +56,11 @@ public sealed partial class RoomControlStore
         var online = Connections(t).Where(c => c.Role == "streamer").Select(c => c.UserId).ToHashSet(StringComparer.Ordinal);
         var queue = t.List<QueueEntry>("queue").OrderBy(q => q.JoinedAtMs).ThenBy(q => q.StreamerId, StringComparer.Ordinal).ToList();
         var profiles = t.List<StreamerProfile>("streamer").ToDictionary(p => p.Id, StringComparer.Ordinal);
-        var history = t.List<MatchRecord>("match");
+        var now = Now;
+        var recentOpponents = t.List<MatchRecord>("match")
+            .Where(m => m.Status != "Cancelled" && now - (m.FinishedAtMs ?? m.CreatedAtMs) < rules.RematchCooldownMs)
+            .SelectMany(m => m.StreamerIds.SelectMany(a => m.StreamerIds.Where(b => b != a).Select(b => (a, b))))
+            .ToHashSet();
         List<MatchRecord> created = [];
         foreach (var first in queue.ToArray())
         {
@@ -70,28 +75,29 @@ public sealed partial class RoomControlStore
                     var sameTier = a.Rating / rules.TierWidth == b.Rating / rules.TierWidth;
                     return Math.Abs(a.Rating - b.Rating) <= rules.MaxRatingGap
                         && (sameTier || waited >= rules.WidenAfterMs && Now - q.JoinedAtMs >= rules.WidenAfterMs)
-                        && !history.Any(m => m.StreamerIds.Contains(a.Id) && m.StreamerIds.Contains(b.Id) && Now - m.CreatedAtMs < rules.RematchCooldownMs);
+                        && !recentOpponents.Contains((a.Id, b.Id));
                 }).OrderBy(q => Math.Abs(a.Rating - profiles[q.StreamerId].Rating)).ThenBy(q => q.JoinedAtMs).FirstOrDefault();
-            var bot = second is null && waited >= rules.TimeoutMs && rules.FillBots;
-            if (second is null && !bot)
+            // No bot runtime adapter is wired into this host: timeout cannot fabricate a match.
+            if (second is null)
             {
                 if (waited >= rules.TimeoutMs) { t.Delete("queue", first.StreamerId); queue.Remove(first); t.Audit(Now,"system","match.timeout",first.StreamerId,first); }
                 continue;
             }
             var id = Guid.NewGuid().ToString("N");
-            var ids = second is null ? new[] { first.StreamerId } : new[] { first.StreamerId, second.StreamerId };
+            var ids = new[] { first.StreamerId, second.StreamerId };
             var roomId = $"match-{id}";
             // Assignment and queue consumption share one transaction. Capacity failure leaves both queued.
             RoomRecord room;
             try { room = Assign(t, new(roomId, first.StreamerId, first.Platform, first.Mode, first.Region)); }
             catch (ControlConflictException) { continue; }
             t.Put("room", roomId, room with { MatchId = id });
-            var gap = second is null ? 0 : Math.Abs(a.Rating - profiles[second.StreamerId].Rating);
+            var gap = Math.Abs(a.Rating - profiles[second.StreamerId].Rating);
             var match = new MatchRecord(id, first.Mode, first.Region, rules.Season, rules.Version, ids, [roomId], Now, gap,
-                second is not null && a.Rating / rules.TierWidth != profiles[second.StreamerId].Rating / rules.TierWidth, bot);
-            t.Put("match", id, match); created.Add(match); history.Add(match);
+                a.Rating / rules.TierWidth != profiles[second.StreamerId].Rating / rules.TierWidth, false, Status: "AwaitingReady",
+                ReadyDeadlineMs: now + 120_000, QueueEntries: queue.Where(q => ids.Contains(q.StreamerId)).ToArray());
+            t.Put("match", id, match); created.Add(match);
             foreach (var player in ids) { t.Delete("queue", player); queue.RemoveAll(q => q.StreamerId == player); }
-            t.Audit(Now,"system","match.formed",id,new { match, reason = bot ? "Timeout bot fill" : "Compatible tier/rating, mode, region and platform" });
+            t.Audit(Now,"system","match.formed",id,new { match, reason = "Compatible tier/rating, mode, region and platform" });
         }
         return created;
     });
@@ -100,11 +106,12 @@ public sealed partial class RoomControlStore
         Id(result.SourceId);
         var match = t.Get<MatchRecord>("match", id) ?? throw new KeyNotFoundException(id);
         if (result.WinnerId is not null && !match.StreamerIds.Contains(result.WinnerId)) throw new ArgumentException("Winner is not a match participant.");
-        if (match.Status != "Running")
+        if (match.Status == "Finished")
         {
             if (match.WinnerId != result.WinnerId) throw new ControlConflictException("Result already settled differently.");
             return match;
         }
+        if (match.Status != "Running") throw new ControlConflictException("Only a running match can settle.");
         match = match with { Status = "Finished", WinnerId = result.WinnerId, FinishedAtMs = Now };
         t.Put("match", id, match);
         foreach (var player in match.StreamerIds)
@@ -122,6 +129,7 @@ public sealed partial class RoomControlStore
         }
         var board = t.Get<StoredBoard>("board", $"match:{id}");
         if (board is not null) t.Put("board", board.Id, board with { Frozen = true });
+        RetireMatchRooms(t, match);
         t.Audit(Now, actor, "match.finish", id, result);
         return match;
     });
@@ -129,15 +137,14 @@ public sealed partial class RoomControlStore
     private StoredBoard ChangeScore(ControlDatabase.Transaction t, string id, string scope, string season, ScoreChange change)
     {
         Id(id); Id(change.ParticipantId); Id(change.SourceId);
-        var board = t.Get<StoredBoard>("board", id) ?? new(id, scope, change.Unit, season, new Dictionary<string,long>(), new HashSet<string>(), Now);
-        if (board.Sources.Contains(change.SourceId)) return board;
+        var board = t.GetForUpdate<StoredBoard>("board", id) ?? new(id, scope, change.Unit, season, new Dictionary<string,long>(), new HashSet<string>(), Now);
+        if (board.Sources.Contains(change.SourceId) || !t.TryRecordBoardSource(id, change.SourceId)) return board;
         if (board.Frozen) throw new ControlConflictException("Leaderboard is frozen.");
         if (board.Unit != change.Unit) throw new ControlConflictException("Leaderboard units differ.");
-        var scores = new Dictionary<string,long>(board.Scores); var sources = new HashSet<string>(board.Sources);
-        if (sources.Count >= 100000) throw new ControlConflictException("Board source ledger full; seal this period and start a new board.");
+        // Legacy embedded receipts remain readable; new receipts use the indexed table.
+        var scores = new Dictionary<string,long>(board.Scores);
         scores[change.ParticipantId] = checked(scores.GetValueOrDefault(change.ParticipantId) + change.Delta);
-        sources.Add(change.SourceId);
-        board = board with { Scores = scores, Sources = sources, UpdatedAtMs = Now };
+        board = board with { Scores = scores, UpdatedAtMs = Now };
         t.Put("board", id, board); return board;
     }
     public StoredBoard ChangeScore(string id, string scope, string season, ScoreChange change, string actor) => database.Write(t =>

@@ -75,6 +75,8 @@ public sealed class ControlRoutingSnapshotTests
             [new ConnectionRecord("room-a","client-a","user-a","streamer","gateway","g-boot","a",now),
              new ConnectionRecord("room-b","client-b","user-b","streamer","gateway","g-boot","b",now)]);
 
+        Assert.True(snapshot.CanServeRooms(now));
+        Assert.False(snapshot.CanServeRooms(now + ControlRoutingSnapshot.MaxAgeMs));
         Assert.False(snapshot.TryGetTargets("room-a",1,"worker-a","a-boot",now,out _));
         Assert.True(snapshot.TryGetTargets("room-b",1,"worker-b","b-boot",now,out var targets));
         Assert.Equal("gateway",Assert.Single(targets).Id);

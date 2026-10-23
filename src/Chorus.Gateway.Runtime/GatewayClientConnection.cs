@@ -50,6 +50,9 @@ public sealed class GatewayClientConnection : IAsyncDisposable
     public string SessionId { get; }
     public string ClientId { get; }
 
+    /// <summary>Unblocks the receive loop when the authority retires this room.</summary>
+    public void Abort() => _ws.Abort();
+
     public bool IsOpen => _ws.State == WebSocketState.Open;
 
     /// <summary>

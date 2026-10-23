@@ -35,7 +35,8 @@ public sealed partial class GatewayIpcService : BackgroundService
     /// </summary>
     public bool IsEngineReady(long nowMs)
     {
-        if (_control is not null) return _controlReady;
+        if (_control is not null) return _controlReady
+            && Volatile.Read(ref _controlRoutingSnapshot)?.CanServeRooms(nowMs) == true;
         if (_workerIds.Length > 0) return _workerIds.All(id => _workerLastSeen.TryGetValue(id,out var at) && nowMs - at <= _readinessMaxSilenceMs);
         var last = Interlocked.Read(ref _lastEngineMessageMs);
         return last != 0 && nowMs - last <= _readinessMaxSilenceMs;

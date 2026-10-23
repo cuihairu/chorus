@@ -29,6 +29,7 @@ public sealed class ControlDatabase
         cmd.CommandText = provider == ControlDatabaseProvider.Sqlite ? """
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=FULL;
+            CREATE TABLE IF NOT EXISTS board_receipts(board_id TEXT NOT NULL, source_id TEXT NOT NULL, PRIMARY KEY(board_id,source_id));
             CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(kind,id));
             CREATE TABLE IF NOT EXISTS room_events(room_id TEXT NOT NULL, event_key TEXT NOT NULL, body TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(room_id,event_key));
             CREATE INDEX IF NOT EXISTS ix_room_events_order ON room_events(room_id,at,event_key);
@@ -41,6 +42,7 @@ public sealed class ControlDatabase
             CREATE TABLE IF NOT EXISTS checkpoints(room_id TEXT PRIMARY KEY, body TEXT NOT NULL, tick_id INTEGER NOT NULL, epoch INTEGER NOT NULL, checksum INTEGER NOT NULL, schema_version INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL);
             """ : """
+            CREATE TABLE IF NOT EXISTS board_receipts(board_id TEXT NOT NULL, source_id TEXT NOT NULL, PRIMARY KEY(board_id,source_id));
             CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(kind,id));
             CREATE TABLE IF NOT EXISTS room_events(room_id TEXT NOT NULL, event_key TEXT NOT NULL, body TEXT NOT NULL, at BIGINT NOT NULL, PRIMARY KEY(room_id,event_key));
             CREATE INDEX IF NOT EXISTS ix_room_events_order ON room_events(room_id,at,event_key);
@@ -139,6 +141,13 @@ public sealed class ControlDatabase
             using var cmd = Command("INSERT INTO records(kind,id,body) VALUES(@k,@i,@b) ON CONFLICT(kind,id) DO UPDATE SET body=excluded.body", ("@k", kind), ("@i", id), ("@b", JsonSerializer.Serialize(value, Json)));
             cmd.ExecuteNonQuery();
         }
+        public bool TryRecordBoardSource(string boardId, string sourceId)
+        {
+            using var cmd = Command("INSERT INTO board_receipts(board_id,source_id) VALUES(@b,@s) ON CONFLICT(board_id,source_id) DO NOTHING",
+                ("@b", boardId), ("@s", sourceId));
+            return cmd.ExecuteNonQuery() == 1;
+        }
+
         public int PendingCount(string roomId)
         {
             using var cmd = Command("SELECT pending FROM room_queue_counts WHERE room_id=@r", ("@r", roomId));

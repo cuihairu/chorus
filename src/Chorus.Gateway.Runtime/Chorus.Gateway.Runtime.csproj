@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Using Include="Microsoft.Extensions.Hosting" />
+    <Using Include="Microsoft.Extensions.Logging" />
+    <Using Include="Microsoft.Extensions.Configuration" />
+    <ProjectReference Include="../Chorus.Gateway.Core/Chorus.Gateway.Core.csproj" />
+    <ProjectReference Include="../Chorus.Control/Chorus.Control.csproj" />
+    <ProjectReference Include="../Chorus.Messaging/Chorus.Messaging.csproj" />
+  </ItemGroup>
+</Project>

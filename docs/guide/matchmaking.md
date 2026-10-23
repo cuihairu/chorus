@@ -105,7 +105,10 @@ Match-forming rule details: real players FIFO, at most `maxParticipants` per mat
 
 - **This `Matchmaker` library has no host join endpoint or room-start routing**: it remains an in-process helper for forming matches. Separately,
   `Chorus.ControlHost` exposes an authenticated streamer queue and runs durable control-plane matchmaking; that API groups by rating tiers and
-  versioned mode/region/platform rules, and records match results. It does not create gameplay sessions or route match participants into a room.
+  versioned mode/region/platform rules, and records match results. It allocates a room in `AwaitingReady`; the caller reads `GET /api/matches` using its authorized
+  management session, then connects participants to the returned `roomIds[0]` via `/ws`.
+  Match start requires both streamer connections and a committed Worker checkpoint. There is no
+  automatic WebSocket redirect or platform-session rebinding; callers must route those inputs explicitly.
 - **This library has no skill rating**: its balancing is based on headcount, mode and wait strategy. Rating and tier rules belong to the separate
   ControlHost matcher (`src/Chorus.Control/MatchControlStore.cs`).
 - **Does not create sessions/rooms**: how to map participants to a session after obtaining a `MatchmakingResult` is the caller's responsibility
@@ -120,3 +123,27 @@ Match-forming rule details: real players FIFO, at most `maxParticipants` per mat
 - [Overall Architecture](../design/overall-architecture.md) §6 Matchmaking and Bots
 - [Battle](./battle.md) (how sessions and snapshots go after a match starts)
 - [Architecture Overview](../architecture.md) (session authority and multi-worker boundaries)
+
+## Control-plane admission and settlement
+
+New control matches start in `AwaitingReady`, not `Running`. The one-second maintenance loop
+starts a match only when both participants are connected to its room, its owner lease is valid,
+and a durable tick exists. Admission expires after 120 seconds. `POST /api/matches/{id}/cancel`
+requires the `operate` permission and can cancel only pending matches. Cancellation requeues
+participants still online outside the retiring room, preserving their original queue age.
+Offline participants must reconnect and join again. Cancelled proposals do not trigger opponent cooldown.
+
+`finish` rejects unstarted/cancelled matches. Settlement is idempotent by match and winner;
+a conflicting winner is rejected. Opponent cooldown is measured from settlement for finished matches.
+Retirement blocks new input and connections, disconnects clients through Gateway reconciliation,
+and waits for accepted input and connection leases to drain before closing/destroying the room.
+It never discards pending durable input to free capacity.
+
+Control-plane `FillBots=true` is rejected until a game-runtime bot adapter is integrated.
+The independent in-process `Matchmaker` bot factory remains supported. Existing stored bot settings
+cannot produce fictional bot matches. The FIFO/nearest-rating policy, tier boundary and fixed score
+increments are unchanged; this is not an optimal-cardinality or Elo matcher.
+
+New board idempotency receipts are stored in `board_receipts(board_id, source_id)` in the same
+transaction as score updates. Legacy embedded `Sources` remain recognized. There is no 100,000-source
+hard stop on new settlements; receipt retention requires a separate lifecycle policy.

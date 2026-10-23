@@ -26,7 +26,7 @@ namespace Chorus.Engine.Tests;
 /// </summary>
 public sealed class ThreeProcessEndToEndTests
 {
-    private sealed class ThreeProcessGatewayFactory : WebApplicationFactory<Chorus.Gateway.Program>
+    private sealed class ThreeProcessGatewayFactory<TProgram> : WebApplicationFactory<TProgram> where TProgram : class
     {
         private readonly string _socketDir;
         private readonly string _roles;
@@ -75,7 +75,7 @@ public sealed class ThreeProcessEndToEndTests
         public IGameModule Create(string sessionId) => Module;
     }
 
-    private static async Task WaitReadyAsync(WebApplicationFactory<Chorus.Gateway.Program> factory, CancellationToken ct)
+    private static async Task WaitReadyAsync<TProgram>(WebApplicationFactory<TProgram> factory, CancellationToken ct) where TProgram : class
     {
         // Two hosts + the engine spin up together on a box shared with other
         // tenants; don't assume startup latency — wide window, poll /ready.
@@ -121,8 +121,18 @@ public sealed class ThreeProcessEndToEndTests
         }
     }
 
-    [Fact]
-    public async Task PlatformGwIngress_SurfacesOnStreamerGwClient()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PlatformGwIngress_SurfacesOnStreamerGwClient(bool independentHosts)
+    {
+        if (independentHosts)
+            await RunTopology<Chorus.PlatformGateway.Program, Chorus.StreamerGateway.Program>();
+        else
+            await RunTopology<Chorus.Gateway.Program, Chorus.Gateway.Program>();
+    }
+
+    private static async Task RunTopology<TPlatform, TStreamer>() where TPlatform : class where TStreamer : class
     {
         var socketDir = $"/tmp/chorus-test-3proc-{Guid.NewGuid():N}";
         Directory.CreateDirectory(socketDir);
@@ -145,8 +155,8 @@ public sealed class ThreeProcessEndToEndTests
         await engine.StartAsync(cts.Token);
         try
         {
-            using var platformGw = new ThreeProcessGatewayFactory(socketDir, "platform", "platform-gw");
-            using var streamerGw = new ThreeProcessGatewayFactory(socketDir, "streamer", "streamer-gw");
+            using var platformGw = new ThreeProcessGatewayFactory<TPlatform>(socketDir, "platform", "platform-gw");
+            using var streamerGw = new ThreeProcessGatewayFactory<TStreamer>(socketDir, "streamer", "streamer-gw");
             await WaitReadyAsync(platformGw, cts.Token);
             await WaitReadyAsync(streamerGw, cts.Token);
 

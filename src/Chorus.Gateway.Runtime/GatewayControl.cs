@@ -36,12 +36,13 @@ public sealed partial class GatewayIpcService
                 var connections = _clientsBySession.Values.SelectMany(m => m.Values).Select(Connection).ToArray();
                 await _control.Send("connections/renew",new { gatewayId = _control.NodeId, instanceId = _control.InstanceId, connections },ct);
                 var routing = await _control.Routing(ct);
-                var workers = routing.Nodes.Where(n => n.Role == "worker").ToArray();
                 var rooms = routing.Rooms;
+                foreach (var room in rooms.Where(r => r.RetirementRequested))
+                    if (_clientsBySession.TryGetValue(room.Id, out var clients))
+                        foreach (var client in clients.Values) client.Abort();
                 var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 Volatile.Write(ref _controlRoutingSnapshot,new ControlRoutingSnapshot(routing.SnapshotAtMs,routing.Nodes,rooms,Array.Empty<ConnectionRecord>()));
-                _controlReady = workers.Any(n => now - n.LastHeartbeatMs < RoomControlStore.NodeLeaseMs && !n.Draining)
-                    && rooms.Where(r => r.State != Chorus.Engine.Routing.RoomLifecycleState.Destroyed).All(r => workers.Any(n => n.Id == r.WorkerId && n.InstanceId == r.WorkerInstance && now - n.LastHeartbeatMs < RoomControlStore.NodeLeaseMs));
+                _controlReady = true;
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { _controlReady = false; _logger.LogWarning(ex,"Control discovery unavailable"); }
             if (!await timer.WaitForNextTickAsync(ct)) break;
