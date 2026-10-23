@@ -4,9 +4,6 @@
 </p>
 
 <h1 align="center">Chorus</h1>
-<p align="center">
-<a href="https://github.com/cuihairu/chorus/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a>
-</p>
 
 <p align="center">
   面向直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）
@@ -17,6 +14,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/cuihairu/chorus/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a>
   <a href="https://github.com/cuihairu/chorus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/chorus/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://github.com/cuihairu/chorus/actions/workflows/nightly.yml"><img alt="Nightly" src="https://github.com/cuihairu/chorus/actions/workflows/nightly.yml/badge.svg" /></a>
   <a href="https://codecov.io/gh/cuihairu/chorus"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/chorus/branch/main/graph/badge.svg" /></a>
