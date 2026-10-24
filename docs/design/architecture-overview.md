@@ -11,48 +11,48 @@ Code-verified topology (refreshed 2026-10-19). Standalone `Chorus.Server` runs w
 
 ```mermaid
 flowchart TB
-  subgraph EXT["外部"]
-    P["抖音 / 快手 / B站 open-live"]
-    C["主播 / 直播伴侣客户端"]
+  subgraph EXT["External"]
+    P["Douyin / Kuaishou / Bilibili open-live"]
+    C["Streamer / Live Companion client"]
   end
 
-  subgraph GW["Chorus.Gateway 进程（可多实例，Gateway:Id 区分）"]
+  subgraph GW["Chorus.Gateway process (multiple instances, distinguished by Gateway:Id)"]
     INGRESS["PlatformIngressFace<br/>POST /ingress/{platform}"]
     WS["StreamerWsFace<br/>WS /ws"]
     OPS["/health /ready /faces /metrics"]
-    GWIPC["GatewayIpcService<br/>eng→gw 通道 server（每实例一条）<br/>gw→eng 通道 client"]
+    GWIPC["GatewayIpcService<br/>eng→gw channel server (one per instance)<br/>gw→eng channel client"]
   end
 
-  subgraph WORKER["Chorus.EngineHost（room-worker）"]
-    ENGIPC["EngineIpcService<br/>gw→eng 通道 server（共享）<br/>FanOutMessageBus → 每网关一条 eng→gw client"]
-    REG["SessionRegistry<br/>房间 → SessionActor 路由"]
-    SA["SessionActor × N<br/>单线程邮箱，固定 tick 节拍"]
-    GM["IGameModule<br/>权威玩法逻辑"]
-    CPU["ProcessCpuGauge<br/>worker CPU 水位"]
+  subgraph WORKER["Chorus.EngineHost (room-worker)"]
+    ENGIPC["EngineIpcService<br/>gw→eng channel server (shared)<br/>FanOutMessageBus → one eng→gw client per gateway"]
+    REG["SessionRegistry<br/>room → SessionActor routing"]
+    SA["SessionActor × N<br/>single-threaded mailbox, fixed tick cadence"]
+    GM["IGameModule<br/>authoritative gameplay logic"]
+    CPU["ProcessCpuGauge<br/>worker CPU level"]
   end
 
-  subgraph CONTROL["Chorus.ControlHost（共享控制面）"]
+  subgraph CONTROL["Chorus.ControlHost (shared control plane)"]
     ROOMDB["RoomControlStore<br/>owner / epoch / checkpoint / inbox"]
-    ROUTING["ControlRoutingSnapshot<br/>房间与连接路由快照"]
+    ROUTING["ControlRoutingSnapshot<br/>room and connection routing snapshot"]
   end
 
-  LOADTOOL["Chorus.LoadTool<br/>压测采样 /metrics"]
-  SDK["Chorus.Client<br/>ChorusClient + FramePlayer<br/>客户端 SDK（帧同步 P3）"]
+  LOADTOOL["Chorus.LoadTool<br/>load-test sampling /metrics"]
+  SDK["Chorus.Client<br/>ChorusClient + FramePlayer<br/>client SDK (frame sync P3)"]
 
-  P -->|"HTTPS 平台回调"| INGRESS
+  P -->|"HTTPS platform callback"| INGRESS
   C <-->|"hello / welcome / ack / snapshot / resync"| WS
-  SDK <-->|"同一 /ws 协议"| WS
-  INGRESS -->|"快照路由 + 去重投递"| SA
+  SDK <-->|"same /ws protocol"| WS
+  INGRESS -->|"snapshot routing + deduplicated delivery"| SA
   WS -->|"welcome / snapshot"| GWIPC
-  GWIPC <-->|"gw→eng 命令通道（所有网关共享）"| ENGIPC
-  ENGIPC <-->|"eng→gw 快照 / 欢迎 / 心跳（按 Gateway:Id 后缀，引擎扇出）"| GWIPC
+  GWIPC <-->|"gw→eng command channel (shared by all gateways)"| ENGIPC
+  ENGIPC <-->|"eng→gw snapshots / welcomes / heartbeats (suffixed by Gateway:Id, fanned out by the engine)"| GWIPC
   ENGIPC --> REG --> SA --> GM
-  GWIPC -.->|"分配 / 新鲜路由快照"| ROOMDB
+  GWIPC -.->|"assignment / fresh routing snapshot"| ROOMDB
   ENGIPC -.->|"worker lease / tick checkpoint"| ROOMDB
   ROOMDB --> ROUTING
-  GM -.->|"每 tick 读状态打包快照 V=1（SessionActor.cs:451 → WireSnapshot）"| SA
-  ENGIPC -.->|"进程级水位，仅 /metrics 采样"| CPU
-  LOADTOOL -.->|"HTTP 采样"| OPS
+  GM -.->|"read state every tick and package snapshot V=1 (SessionActor.cs:451 → WireSnapshot)"| SA
+  ENGIPC -.->|"process-level level, sampled only by /metrics"| CPU
+  LOADTOOL -.->|"HTTP sampling"| OPS
 ```
 
 Solid lines are realtime execution paths; dashed lines are control-plane RPCs and snapshot refreshes rather than per-message calls. Independent-machine failure acceptance remains open.

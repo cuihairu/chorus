@@ -237,8 +237,8 @@ counters are exposed via `GET /faces`.
 | `Ingress:FactionRules:GiftIds` | empty | Gift ID → faction mapping |
 | `Ingress:Douyin:AppSecret` | none | Douyin callback signature verification secret; when missing, `/ingress/douyin` rejects everything (fail-closed) |
 | `Ingress:Douyin:SignatureHeader` | `X-Douyin-Signature` | Signature header name (pending joint debugging confirmation, see platform reference docs) |
-| `Ingress:Kuaishou:VerifyToken` | none | Kuaishou "消息验证Token"; when missing, `/ingress/kuaishou` rejects everything (fail-closed) |
-| `Ingress:Kuaishou:MsgEncryptKey` | none | Kuaishou "消息加密解密KEY" (base64, 32 bytes); when missing, events cannot be decrypted (400) |
+| `Ingress:Kuaishou:VerifyToken` | none | Kuaishou message verification Token; when missing, `/ingress/kuaishou` rejects everything (fail-closed) |
+| `Ingress:Kuaishou:MsgEncryptKey` | none | Kuaishou message encryption/decryption KEY (base64, 32 bytes); when missing, events cannot be decrypted (400) |
 | `Ingress:Kuaishou:SignatureHeader` | `kwaisign` | Official signature header name |
 | `Ingress:Bilibili:AccessKeyId` / `AccessKeySecret` | none | Bilibili open-live signature credentials (authorized by the streamer personally, never in the repo or logs); when missing, `/ingress/bilibili` rejects everything (fail-closed) |
 | `Ingress:Bilibili:AppId` | none | open-live project app_id; prerequisite for bridge startup |

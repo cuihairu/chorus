@@ -7,7 +7,7 @@ title: Frame Sync (Authoritative Tick + Snapshot)
 
 This document gives chorus's **frame sync semantic plan**: where the frame number comes from, how it is delivered with messages, the client using the frame number as the basis for rendering/ordering, how out-of-order and dropped frames are backfilled, how reconnection and replay are aligned, and how the client's rhythm catches up.
 
-> Status: **plan documented first, no code written in this round**. Every claim in this document carries a `file:line` or source; parts not measured in this repo are explicitly marked `未实测`.
+> Status: **plan documented first, no code written in this round**. Every claim in this document carries a `file:line` or source; parts not measured in this repo are explicitly marked `not measured`.
 
 ---
 
@@ -20,7 +20,7 @@ Live danmaku systems generally **do not natively have a "frame number"** — dan
 - **Web reverse-engineering channel** (unofficial, legal risk see §1.4): danmaku messages carry a **millisecond timestamp**. blivedm's `DanmakuMessage` has `timestamp: int`, with the docstring "timestamp (milliseconds)", taken from the protocol's `info[0][4]`.
   Source: [blivedm models/web.py](https://raw.githubusercontent.com/xfgryujk/blivedm/dev/blivedm/models/web.py) (`DanmakuMessage` dataclass field table).
 - **Open platform channel** (official): [open-live.bilibili.com](https://open-live.bilibili.com/); blivedm's `open_live` interface connects to that platform's WebSocket (`wss://live-open.biliapi.com`), with events including `DANMU_MSG`/`SEND_GIFT`/`INTERACT_WORD_V2` etc.
-  Source: [blivedm README](https://github.com/xfgryujk/blivedm) (lists the two interfaces `web端` and `B站直播开放平台`).
+  Source: [blivedm README](https://github.com/xfgryujk/blivedm) (lists the two interfaces `web client` and `Bilibili live open platform`).
 - **Ordering guarantee**: the Bilibili danmaku protocol itself **has no frame number/sequence number**, only timestamps; ordering is inferred by the client from timestamps + arrival order. This is exactly why chorus introduces the frame number at the game layer (see §2.1).
 
 ### 1.2 YouTube Live Chat (Official API)

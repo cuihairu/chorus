@@ -9,19 +9,19 @@ title: Architecture Design
 
 ```mermaid
 flowchart LR
-  subgraph Platform["抖音/快手等平台"]
-    P1["弹幕/礼物/点赞事件"]
+  subgraph Platform["Douyin/Kuaishou and other platforms"]
+    P1["Danmaku/gift/like events"]
   end
 
   subgraph Chorus["Chorus Server"]
     Ingress["Platform Ingress (HTTP/Webhook)"]
     GW["Client Gateway (WebSocket)"]
     SM["SessionManager"]
-    SA["SessionActor (单线程邮箱)"]
-    GM["GameModule (权威逻辑)"]
+    SA["SessionActor (single-threaded mailbox)"]
+    GM["GameModule (authoritative logic)"]
   end
 
-  subgraph Clients["主播客户端/直播伴侣"]
+  subgraph Clients["Streamer client/Live Companion"]
     C1["Client A"]
     C2["Client B"]
   end

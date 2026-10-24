@@ -32,7 +32,7 @@ Field descriptions:
 
 ### hello Authentication (Since 2026-10-12, fail-closed)
 
-After receiving hello, the server verifies the `token` (config `Faces:StreamerWs:AuthTokens`, supports `token@unixMs过期时间`,
+After receiving hello, the server verifies the `token` (config `Faces:StreamerWs:AuthTokens`, supports `token@unixMs-expiry`,
 multiple tokens separated by semicolons):
 
 - Token missing / unknown / expired → the server first replies `error` (`unauthorized: missing_token | invalid_token | token_expired`),
@@ -148,7 +148,7 @@ Since 2026-10-13 (frame sync P2). When the client discovers missing frames or af
 
 Field descriptions:
 
-- `fromFrameId`: the last frame number the client has applied; the server feeds back the snapshot sequence within the `[fromFrameId, 当前 tickId]` window
+- `fromFrameId`: the last frame number the client has applied; the server feeds back the snapshot sequence within the `[fromFrameId, current tickId]` window
 - `sessionId` / `clientId`: binding fields, used to verify and locate the target client (requests with unknown `clientId` are counted and then ignored)
 
 Server response semantics (two kinds, mutually exclusive):

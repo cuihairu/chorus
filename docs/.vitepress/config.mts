@@ -1,7 +1,7 @@
 import { defineConfig } from "vitepress";
 import { withMermaid } from "vitepress-plugin-mermaid";
 
-// 侧栏/导航条目（en locale 全部挂 /en/ 前缀，与 root 镜像）。
+// 侧栏/导航条目（zh locale 全部挂 /zh/ 前缀，与 root=英文 镜像）。
 const guideLinks = [
   "/guide/getting-started",
   "/guide/split-mode",
@@ -57,8 +57,8 @@ export default withMermaid(defineConfig({
   base: process.env.VITEPRESS_BASE || "/chorus/",
   head: [["link", { rel: "icon", href: "/logo.svg" }]],
   locales: {
-    root: { label: "简体中文", lang: "zh-CN" },
-    en: { label: "English", lang: "en-US", link: "/en/" },
+    root: { label: "English", lang: "en-US" },
+    zh: { label: "简体中文", lang: "zh-CN", link: "/zh/" },
   },
   themeConfig: {
     logo: "/logo.svg",
@@ -82,20 +82,20 @@ export default withMermaid(defineConfig({
           "/reference/": referenceLinks,
         }
       },
-      en: {
-        label: "English",
+      zh: {
+        label: "简体中文",
         selectText: "Languages",
         nav: [
-          { text: "Guides", link: "/en/guide/getting-started" },
-          { text: "Architecture", link: "/en/architecture" },
-          { text: "Design", link: "/en/design/architecture" },
-          { text: "Reference", link: "/en/reference/protocol" }
+          { text: "指南", link: "/zh/guide/getting-started" },
+          { text: "架构", link: "/zh/architecture" },
+          { text: "设计", link: "/zh/design/architecture" },
+          { text: "参考", link: "/zh/reference/protocol" }
         ],
         sidebar: {
-          "/en/": ["/en/architecture", "/en/decisions"],
-          "/en/guide/": prefix(guideLinks, "/en"),
-          "/en/design/": prefix(designLinks, "/en"),
-          "/en/reference/": prefix(referenceLinks, "/en"),
+          "/zh/": ["/zh/architecture", "/zh/decisions"],
+          "/zh/guide/": prefix(guideLinks, "/zh"),
+          "/zh/design/": prefix(designLinks, "/zh"),
+          "/zh/reference/": prefix(referenceLinks, "/zh"),
         }
       }
     }

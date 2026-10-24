@@ -21,7 +21,7 @@ title: "Platform Integration Reference: Kuaishou Mini-Game"
     response `result` (1 = success) / `session_key` (24h) / `open_id`
     (unified across mini programs under the same developer entity, based on the unified social credit code); `js_code` valid for 10 minutes.
     Source: `https://open.kuaishou.com/docs/develop/server/code2Session.html`
-  - Message encryption/decryption and signature: `sha1Hex(rawBody + 消息验证Token) == 请求头 kwaisign`,
+  - Message encryption/decryption and signature: `sha1Hex(rawBody + message verification Token) == request header kwaisign`,
     AES-256-CBC/PKCS7 (Key = base64-decoded message encryption/decryption KEY, IV = first 16 bytes of Key).
     Source: `https://open.kuaishou.com/docs/saas/develop/api/encryptedMsg.html`
     (landed as live callback signature verification and envelope decryption, see `KuaishouPlatformEventVerifier` /
