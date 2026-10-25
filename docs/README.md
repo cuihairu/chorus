@@ -28,6 +28,8 @@ footer: Apache-2.0 License
 
 ## Documentation index
 
+- Target redesign (Chinese, 2026-10-25): [Complete distributed live-game server design](./architecture/architecture.md), including contracts, recovery, deployment, decisions and acceptance criteria. This describes the proposed target, not the currently implemented feature set.
+
 - New to the project: start with [Getting Started](./guide/getting-started.md)
 - Understand the architecture and the trade-offs (why it is designed this way): read [Architecture](./architecture.md)
 - Use the three capability areas — battle / matchmaking / leaderboard: read [Battle](./guide/battle.md) /

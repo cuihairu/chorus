@@ -19,6 +19,8 @@
 
 ## 文档（VuePress）
 
+**重设计方案（2026-10-25）**：[分布式直播游戏服务器完整设计](docs/architecture/architecture.md)。这是新的目标方案，含协议、持久化、集群恢复、双系统部署与验收计划；下文仍是当前代码的使用说明，不代表新方案已实现。
+
 - 站点（GitHub Pages）：`https://cuihairu.github.io/chorus/`
 - 源码：`docs/`
 - 本地预览：`npm install && npm run docs:dev`

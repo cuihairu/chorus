@@ -77,6 +77,7 @@ export default withMermaid(defineConfig({
         ],
         sidebar: {
           "/": ["/architecture", "/decisions"],
+          "/architecture/": ["/architecture/architecture", "/architecture/redesign-contracts", "/architecture/redesign-operations", "/architecture/redesign-decisions", "/architecture/redesign-acceptance"],
           "/guide/": guideLinks,
           "/design/": designLinks,
           "/reference/": referenceLinks,
@@ -89,6 +90,7 @@ export default withMermaid(defineConfig({
           { text: "指南", link: "/zh/guide/getting-started" },
           { text: "架构", link: "/zh/architecture" },
           { text: "设计", link: "/zh/design/architecture" },
+          { text: "重设计方案", link: "/architecture/architecture" },
           { text: "参考", link: "/zh/reference/protocol" }
         ],
         sidebar: {
