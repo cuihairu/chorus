@@ -375,6 +375,10 @@ public sealed class RedesignM0HostTests
                 // Synchronous bounded wait: seed hosts inherit the redirected pipes, so an
                 // unbounded WaitForExitAsync could block on output EOF until they die.
                 process.WaitForExit(TimeSpan.FromSeconds(10));
+                if (Environment.GetEnvironmentVariable("CHORUS_TEST_DUMP_HOST_OUTPUT") is not null
+                    && _hostOutput.TryGetValue(process, out var captured))
+                    Console.Error.WriteLine(
+                        $"--- {_projectByProcess[process]} output ---\n{captured}");
                 process.Dispose();
             }
             await KillOrphanedSeedHostsAsync();

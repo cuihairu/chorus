@@ -46,6 +46,7 @@ builder.Services.AddGrpc();
 
 var app = builder.Build();
 app.MapGrpcService<GameHostGrpcService>();
+app.MapGrpcService<RoundSyncGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

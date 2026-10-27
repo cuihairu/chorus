@@ -18,6 +18,9 @@ internal sealed class RoomActor : IAsyncDisposable
 {
     private const int MaxInputsPerTick = 200;
     private const int MaxConsecutiveModuleFailures = 3;
+    // Durable client commands ride the inbox on this platform; their dedup key is the
+    // command id the subscriber correlates receipts against (architecture 6.3).
+    private const string ClientCommandPlatform = "@chorus";
 
     private readonly RoomRuntime _runtime;
     private readonly FrameStore.FrameStoreClient _frames;
@@ -29,13 +32,21 @@ internal sealed class RoomActor : IAsyncDisposable
     private readonly string _configHash;
     private readonly IReadOnlyDictionary<string, string> _participantByBinding;
     private readonly CancellationTokenSource _cancellation = new();
+    // Publishing and head reads share one gate: subscribers always see a coherent
+    // (state, tick, version) triple of committed frames (architecture 8.3).
+    private readonly object _publishGate = new();
+    private readonly Dictionary<Guid, RoomSubscriber> _subscribers = new();
     private Task _run = Task.CompletedTask;
     private ExampleGameState _state;
     private long _lastTick;
     private long _stateVersion;
+    private string? _finalResultJson;
     private int _consecutiveModuleFailures;
     private volatile bool _stopped;
     private volatile bool _finalCommitted;
+    // Set under the publish gate when the loop exits: Subscribe must never register
+    // against an actor whose publishing loop is gone.
+    private bool _loopEnded;
 
     public RoomActor(RoomRuntime runtime, FrameStore.FrameStoreClient frames, ExampleGameModule module,
         string gameId, string roomId, string ownerInstanceId, long epoch, string configHash,
@@ -67,11 +78,49 @@ internal sealed class RoomActor : IAsyncDisposable
             using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(_module.Manifest.TickMs));
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
-                if (_stopped) return;
+                if (_stopped) break;
                 await TickOnceAsync(cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { }
+        catch (Exception error)
+        {
+            // The loop must never die silently (architecture 10.3, fail-visible): park the
+            // room and leave the evidence behind. The finally resolves every subscriber.
+            _stopped = true;
+            Console.Error.WriteLine($"room {_roomId} actor faulted: {error}");
+            try
+            {
+                await _runtime.SuspendRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch,
+                    $"the actor loop failed: {error.Message}", CancellationToken.None).ConfigureAwait(false);
+            }
+            catch { /* best-effort from a faulting host; the room stays inspectable */ }
+        }
+        finally
+        {
+            // However the loop ends, no stream may outlive it (architecture 8.3): a room
+            // that stopped without committing its result — suspended, fenced or disposed —
+            // answers every remaining subscriber with a resync instead of waiting for
+            // frames that will never come. A finished room already delivered its result;
+            // its subscribers only drain and end.
+            lock (_publishGate)
+            {
+                SyncMessage? resync = null;
+                if (!_finalCommitted)
+                    resync = new SyncMessage { ResyncRequired = new ResyncRequiredMessage
+                    {
+                        RoomId = _roomId, CurrentEpoch = _epoch,
+                        Reason = "the room stopped before committing a round result"
+                    } };
+                foreach (var subscriber in _subscribers.Values)
+                {
+                    if (resync is not null) subscriber.Offer(resync);
+                    subscriber.Complete();
+                }
+                _subscribers.Clear();
+                _loopEnded = true;
+            }
+        }
     }
 
     private async Task TickOnceAsync(CancellationToken cancellationToken)
@@ -172,8 +221,12 @@ internal sealed class RoomActor : IAsyncDisposable
             is StatusCode.FailedPrecondition or StatusCode.InvalidArgument)
         {
             // The room left Running or the tick chain diverged; both need replay-based
-            // recovery (M2-4). Park the room visibly instead of guessing forward.
+            // recovery (M2-4). Park the room visibly instead of guessing forward. The
+            // suspension itself may be fenced out too (an expired owner lease), so the
+            // evidence line must not depend on it landing.
             _stopped = true;
+            Console.Error.WriteLine(
+                $"room {_roomId} stopping: frame commit rejected at tick {tick}: {error.Status.Detail}");
             await _runtime.SuspendRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch,
                 $"frame commit rejected at tick {tick}: {error.Status.Detail}",
                 cancellationToken).ConfigureAwait(false);
@@ -183,18 +236,151 @@ internal sealed class RoomActor : IAsyncDisposable
         {
             return; // outcome unknown: the same commit id replays its receipt next wake (8.2)
         }
-        _state = outcome.State;
-        _lastTick = receipt.Tick;
-        _stateVersion = receipt.StateVersion;
+        // Publish under the gate also advances the actor head there, so subscribers only
+        // ever observe a coherent committed triple (8.3).
+        PublishCommittedFrame(_stateVersion, inbox, outcome, receipt);
         if (outcome.Final)
         {
             // The room is Finishing; settle the committed manifest now. Settlement is
             // idempotent per grant, so a lost reply just means recovery retries it.
-            _finalCommitted = true;
             _stopped = true;
             await _runtime.SettleRoomAsync(_gameId, _roomId, cancellationToken).ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Fans the just-committed frame out to every subscriber (architecture 8.3): a coherent
+    /// head, a delta with its base version, command receipts for consumed client commands.
+    /// A subscriber whose queue overflowed is re-baselined with a snapshot of this committed
+    /// state — never a delta with a base it never applied. The final frame publishes the
+    /// frozen result and ends every stream. Never blocks the tick loop.
+    /// </summary>
+    private void PublishCommittedFrame(long baseVersion, ReadInboxReply inbox, TickOutcome outcome,
+        FrameReceiptReply receipt)
+    {
+        lock (_publishGate)
+        {
+            _state = outcome.State;
+            _lastTick = receipt.Tick;
+            _stateVersion = receipt.StateVersion;
+            if (_subscribers.Count == 0 && !outcome.Final) return;
+            var delta = new SyncMessage { Delta = new DeltaMessage
+            {
+                RoomId = _roomId, Epoch = _epoch, Tick = receipt.Tick, StateVersion = receipt.StateVersion,
+                BaseVersion = baseVersion, ModuleVersion = _module.Manifest.ModuleVersion,
+                ConfigHash = _configHash,
+                StateHash = ByteString.CopyFrom(_module.ComputeStateHash(outcome.State))
+            } };
+            delta.Delta.InputEventIds.AddRange(inbox.Items.Select(item => item.EventId));
+            delta.Delta.Effects.AddRange(outcome.Effects.Select(effect => new FrameEffectProto
+            {
+                Kind = effect.Kind, PayloadJson = effect.PayloadJson
+            }));
+            delta.Delta.Commands.AddRange(inbox.Items
+                .Where(item => item.Platform == ClientCommandPlatform)
+                .Select(item => new CommandReceiptProto
+                {
+                    CommandId = item.SourceDedupKey, Sequence = item.Sequence
+                }));
+            SyncMessage? result = null;
+            if (outcome.Final)
+            {
+                _finalResultJson = outcome.ResultJson;
+                // Set inside the gate: a subscriber attaching after the result still gets
+                // the finished-room answer instead of registering against a dead loop.
+                _finalCommitted = true;
+                result = new SyncMessage { RoundResult = new RoundResultMessage
+                {
+                    RoomId = _roomId, Epoch = _epoch, Tick = receipt.Tick,
+                    StateVersion = receipt.StateVersion, ResultJson = outcome.ResultJson
+                } };
+            }
+            foreach (var subscriber in _subscribers.Values)
+            {
+                if (subscriber.NeedsSnapshot)
+                {
+                    // The queue overflowed earlier: this committed state is the new
+                    // baseline — the snapshot subsumes this frame's delta, and the frozen
+                    // result never arrives over a gap.
+                    subscriber.NeedsSnapshot = false;
+                    subscriber.Offer(SnapshotOf(receipt.Tick, receipt.StateVersion, outcome.State));
+                }
+                else
+                {
+                    subscriber.Offer(delta);
+                }
+                if (result is not null)
+                {
+                    subscriber.Offer(result);
+                    subscriber.Complete();
+                }
+            }
+        }
+    }
+
+    private SyncMessage SnapshotOf(long tick, long stateVersion, ExampleGameState state)
+    {
+        var payload = _module.Serialize(state);
+        return new SyncMessage { Snapshot = new SnapshotMessage
+        {
+            RoomId = _roomId, Epoch = _epoch, Tick = tick, StateVersion = stateVersion,
+            ModuleVersion = _module.Manifest.ModuleVersion, ConfigHash = _configHash,
+            StatePayload = ByteString.CopyFrom(payload), StateSchemaVersion = state.SchemaVersion
+        } };
+    }
+
+    /// <summary>
+    /// Attaches a subscriber (architecture 8.3). A baseline at the committed head continues
+    /// with deltas alone; an older baseline first receives the head snapshot. A finished
+    /// room answers its final snapshot and frozen result, then ends the stream.
+    /// </summary>
+    public RoomSubscriber Subscribe(long lastAppliedTick, long lastAppliedVersion)
+    {
+        var subscriber = new RoomSubscriber();
+        lock (_publishGate)
+        {
+            if (_finalCommitted)
+            {
+                subscriber.Offer(SnapshotOf(_lastTick, _stateVersion, _state));
+                subscriber.Offer(new SyncMessage { RoundResult = new RoundResultMessage
+                {
+                    RoomId = _roomId, Epoch = _epoch, Tick = _lastTick,
+                    StateVersion = _stateVersion, ResultJson = _finalResultJson
+                } });
+                subscriber.Complete();
+                return subscriber;
+            }
+            if (_loopEnded)
+            {
+                // The loop is gone without a committed result (suspended, fenced, disposed):
+                // registering here would wait forever for frames that will never come.
+                subscriber.Offer(new SyncMessage { ResyncRequired = new ResyncRequiredMessage
+                {
+                    RoomId = _roomId, CurrentEpoch = _epoch,
+                    Reason = "the room stopped before committing a round result"
+                } });
+                subscriber.Complete();
+                return subscriber;
+            }
+            if (lastAppliedTick != _lastTick || lastAppliedVersion != _stateVersion)
+                subscriber.Offer(SnapshotOf(_lastTick, _stateVersion, _state));
+            _subscribers.Add(Guid.NewGuid(), subscriber);
+            return subscriber;
+        }
+    }
+
+    /// <summary>Detaches a departed subscriber; its pump ends through cancellation.</summary>
+    public void Detach(RoomSubscriber subscriber)
+    {
+        lock (_publishGate)
+        {
+            var key = _subscribers.FirstOrDefault(pair => pair.Value == subscriber).Key;
+            if (key != Guid.Empty) _subscribers.Remove(key);
+        }
+    }
+
+    /// <summary>The room epoch subscribers validate against (architecture 8.3).</summary>
+    internal long Epoch => _epoch;
 
     /// <summary>True once the final frame committed: the room is Finishing on the data plane.</summary>
     public bool Completed => _finalCommitted;

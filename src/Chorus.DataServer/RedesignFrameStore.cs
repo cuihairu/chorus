@@ -35,7 +35,8 @@ public sealed record FrameReceipt(
     string CommitId, string RoomId, long Tick, long StateVersion, long Watermark, bool Duplicate);
 
 public sealed record InboxItem(
-    string EventId, long Sequence, long RouteVersion, string? BindingId, string PayloadJson);
+    string EventId, long Sequence, long RouteVersion, string? BindingId, string PayloadJson,
+    string Platform, string SourceDedupKey);
 
 public sealed record RoundInbox(long Watermark, IReadOnlyList<InboxItem> Items);
 
@@ -337,7 +338,8 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
         }
         var items = new List<InboxItem>();
         await using (var inbox = new NpgsqlCommand("""
-            SELECT d.event_id,d.sequence,d.route_version,e.binding_id,e.payload::text
+            SELECT d.event_id,d.sequence,d.route_version,e.binding_id,e.payload::text,
+                e.platform,e.source_dedup_key
             FROM input.delivery d JOIN input.event e ON e.event_id=d.event_id
             WHERE d.consumer_scope=@scope AND d.room_id=@room AND d.state='Pending'
             ORDER BY d.sequence LIMIT @max
@@ -349,7 +351,8 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
             await using var reader = await inbox.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
                 items.Add(new InboxItem(reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2),
-                    reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetString(4)));
+                    reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetString(4),
+                    reader.GetString(5), reader.GetString(6)));
         }
         return new RoundInbox(watermark, items);
     }

@@ -108,6 +108,10 @@ public sealed class RoomRuntime : IAsyncDisposable
         };
     }
 
+    /// <summary>The actor of a room this host runs, or null — subscribers attach to it.</summary>
+    internal RoomActor? FindRoom(string roomId) =>
+        _actors.TryGetValue(roomId, out var actor) ? actor : null;
+
     /// <summary>
     /// Recovers a room this process does not know (architecture 10.3): load the recovery plan,
     /// walk the newest usable snapshot forward through the committed frames — verifying every

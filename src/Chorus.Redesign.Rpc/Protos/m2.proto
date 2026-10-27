@@ -162,6 +162,10 @@ message InboxItemProto {
   int64 route_version = 3;
   string binding_id = 4;
   string payload_json = 5;
+  // Client commands (platform @chorus) carry the command id as their dedup key so the
+  // host can acknowledge the exact command a committed frame consumed.
+  string platform = 6;
+  string source_dedup_key = 7;
 }
 
 message ReadInboxReply {
@@ -289,6 +293,14 @@ service GameHost {
   rpc RecoverRoom(RecoverRoomRequest) returns (RecoverRoomReply);
 }
 
+// Client sync fan-out on the game host (architecture 8.3). Only committed frames are
+// published: a fresh or lagging subscriber receives a full snapshot before any delta, a
+// subscriber current at the head continues with deltas alone, and a subscriber whose queue
+// overflowed is re-baselined with a snapshot instead of a discontinuous delta.
+service RoundSync {
+  rpc Subscribe(SubscribeRequest) returns (stream SyncMessage);
+}
+
 message PrepareRoundRequest {
   string room_id = 1;
   string owner_instance_id = 2;
@@ -413,4 +425,75 @@ message ReadLeaderboardRequest {
 message LeaderboardReply {
   string board_id = 1;
   repeated LeaderboardEntryProto entries = 2;
+}
+
+message SubscribeRequest {
+  string room_id = 1;
+  string game_id = 2;
+  // The epoch the subscriber last knew. A room that moved on answers ResyncRequired
+  // instead of streaming an epoch the client cannot validate (architecture 8.3).
+  int64 epoch = 3;
+  // The subscriber's applied baseline: (tick, state version) of the last message it
+  // applied. A baseline at the current head continues with deltas alone; anything
+  // older receives a full snapshot first.
+  int64 last_applied_tick = 4;
+  int64 last_applied_state_version = 5;
+}
+
+message SyncMessage {
+  oneof kind {
+    SnapshotMessage snapshot = 1;
+    DeltaMessage delta = 2;
+    RoundResultMessage round_result = 3;
+    ResyncRequiredMessage resync_required = 4;
+  }
+}
+
+// Every message carries the room identity the client validates: room, epoch, tick,
+// state version, module version and config hash (architecture 8.3).
+message SnapshotMessage {
+  string room_id = 1;
+  int64 epoch = 2;
+  int64 tick = 3;
+  int64 state_version = 4;
+  string module_version = 5;
+  string config_hash = 6;
+  bytes state_payload = 7;
+  int32 state_schema_version = 8;
+}
+
+message DeltaMessage {
+  string room_id = 1;
+  int64 epoch = 2;
+  int64 tick = 3;
+  int64 state_version = 4;
+  // The version this delta applies to — the client rejects a delta whose base it never
+  // applied instead of guessing the gap.
+  int64 base_version = 5;
+  string module_version = 6;
+  string config_hash = 7;
+  bytes state_hash = 8;
+  repeated string input_event_ids = 9;
+  repeated FrameEffectProto effects = 10;
+  repeated CommandReceiptProto commands = 11;
+}
+
+// Acknowledges that a client command became part of the authoritative frame record.
+message CommandReceiptProto {
+  string command_id = 1;
+  int64 sequence = 2;
+}
+
+message RoundResultMessage {
+  string room_id = 1;
+  int64 epoch = 2;
+  int64 tick = 3;
+  int64 state_version = 4;
+  string result_json = 5;
+}
+
+message ResyncRequiredMessage {
+  string room_id = 1;
+  int64 current_epoch = 2;
+  string reason = 3;
 }

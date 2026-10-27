@@ -79,7 +79,8 @@ public sealed class FrameGrpcService(
                     inbox.Items.Select(item => new InboxItemProto
                     {
                         EventId = item.EventId, Sequence = item.Sequence, RouteVersion = item.RouteVersion,
-                        BindingId = item.BindingId ?? "", PayloadJson = item.PayloadJson
+                        BindingId = item.BindingId ?? "", PayloadJson = item.PayloadJson,
+                        Platform = item.Platform, SourceDedupKey = item.SourceDedupKey
                     })
                 }
             };

@@ -705,12 +705,14 @@ public sealed class RedesignM2HostTests
         using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
         var gameHost = new GameHost.GameHostClient(hostChannel);
 
-        // The victim round runs long enough to pass its tick-100 checkpoint before the crash.
-        var owner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        // The victim round runs long enough to pass its tick-100 checkpoint before the crash;
+        // the recovered tail plus the concurrent twin can outlast a bare lease under load.
+        using var victimClaim = await RenewableClaim.ClaimAsync(control, new OwnershipRequest
         {
             TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-6",
             OwnerInstanceId = "game-1", LeaseSeconds = 60
         });
+        var owner = victimClaim.Owner;
         Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
         {
             RoomId = "room-m2-6", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
@@ -790,11 +792,12 @@ public sealed class RedesignM2HostTests
 
         // An untouched twin with the same module configuration and the same gifts is the
         // determinism reference: crash and recovery must not move the outcome.
-        var twinOwner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        using var twinClaim = await RenewableClaim.ClaimAsync(control, new OwnershipRequest
         {
             TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-7",
             OwnerInstanceId = "game-1", LeaseSeconds = 60
         });
+        var twinOwner = twinClaim.Owner;
         Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
         {
             RoomId = "room-m2-7", OwnerInstanceId = "game-1", Epoch = twinOwner.Epoch, GameId = "game-a",
@@ -947,11 +950,12 @@ public sealed class RedesignM2HostTests
 
         // A long round first; once it passes tick 130 a short round joins so both are
         // mid-battle at the shared crash.
-        var owner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        using var longClaim = await RenewableClaim.ClaimAsync(control, new OwnershipRequest
         {
             TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-8",
             OwnerInstanceId = "game-1", LeaseSeconds = 60
         });
+        var owner = longClaim.Owner;
         Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
         {
             RoomId = "room-m2-8", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
@@ -1376,6 +1380,558 @@ public sealed class RedesignM2HostTests
         }).ResponseAsync);
         Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
     }
+
+    [Fact]
+    public async Task SlowSubscribersAreRebaselinedWhileFastSubscribersStreamContiguousDeltas()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (simulatorKey, accessKey) = (RandomNumberGenerator.GetBytes(32),
+            RandomNumberGenerator.GetBytes(32));
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-sync-a", "live-m2-12-a");
+        var (guest, guestBinding) = await MountAsync(environment, simulator, "open-m2-sync-b", "live-m2-12-b");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        // The 600-tick room is work-bound (two data-plane calls per tick) and can outrun the
+        // 60-second lease cap: an expired lease fences the owner's frame commits out mid-round.
+        // The control-plane claimant renews the active owner's lease (architecture 4.2).
+        using var roundClaim = await RenewableClaim.ClaimAsync(control, new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-12",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        var owner = roundClaim.Owner;
+        await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-12", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-12",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
+            }
+        });
+        using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
+        var gameHost = new GameHost.GameHostClient(hostChannel);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-12", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-12", DurationTicks = 600, RandomSeed = 2424, TickMs = 5,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-12" };
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-12a", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-12-a", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-12b", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-12-b", PayloadJson = """{"kind":"gift","amount":30}"""
+        });
+        await new PlatformIngest.PlatformIngestClient(gatewayChannel).IngestBatchAsync(batch);
+        await new RoundInput.RoundInputClient(gameChannel).RouteEventsAsync(new RouteEventsRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "route-12", MaxEvents = 50
+        });
+
+        // Two subscribers on the streamer edge: one reads continuously, one stays silent
+        // past the bounded queue's capacity — the room may not wait for either (AT15).
+        using var edgeCertificate = environment.Certificate("tenant-a", "streamer-server", "edge-1");
+        using var edgeChannel = environment.Channel(environment.GamePort, edgeCertificate, "game-server");
+        var sync = new RoundSync.RoundSyncClient(edgeChannel);
+        using var fastCall = sync.Subscribe(new SubscribeRequest
+        {
+            RoomId = "room-m2-12", GameId = "game-a", Epoch = owner.Epoch,
+            LastAppliedTick = 0, LastAppliedStateVersion = 0
+        });
+        using var slowCall = sync.Subscribe(new SubscribeRequest
+        {
+            RoomId = "room-m2-12", GameId = "game-a", Epoch = owner.Epoch,
+            LastAppliedTick = 0, LastAppliedStateVersion = 0
+        });
+        var fast = new List<SyncMessage>();
+        while (await fastCall.ResponseStream.MoveNext())
+        {
+            fast.Add(fastCall.ResponseStream.Current);
+            if (fast[^1].KindCase == SyncMessage.KindOneofCase.RoundResult) break;
+        }
+        // The fast reader saw exactly one baseline snapshot and a gapless delta chain into
+        // the frozen result — its chain contiguity is the evidence the room never stalled.
+        Assert.Equal(SyncMessage.KindOneofCase.Snapshot, fast[0].KindCase);
+        Assert.Equal(600L, fast[^1].RoundResult.Tick);
+        using (var document = System.Text.Json.JsonDocument.Parse(fast[^1].RoundResult.ResultJson))
+            Assert.Equal("red", document.RootElement.GetProperty("winner").GetString());
+        var fastFinal = WalkSyncChain(fast, out var fastSnapshots, out var fastDeltas);
+        Assert.Equal(1, fastSnapshots);
+        Assert.True(fastDeltas >= 400, $"the fast reader saw {fastDeltas} deltas");
+        Assert.Equal(601L, fastFinal);
+
+        // The silent reader's transport window exhausts and its 64-message queue
+        // overflows while the round kept ticking; the backlog is dropped and a snapshot
+        // of the then-current head re-baselines it. The room never waited for it — the
+        // fast reader's chain already reached the frozen result.
+        var slow = new List<SyncMessage>();
+        while (await slowCall.ResponseStream.MoveNext())
+        {
+            slow.Add(slowCall.ResponseStream.Current);
+            if (slow[^1].KindCase == SyncMessage.KindOneofCase.RoundResult) break;
+        }
+        var slowFinal = WalkSyncChain(slow, out var slowSnapshots, out _);
+        Assert.True(slowSnapshots >= 2,
+            $"a lagging subscriber must be re-baselined with a snapshot, saw {slowSnapshots}");
+        Assert.Equal(601L, slowFinal);
+        using (var document = System.Text.Json.JsonDocument.Parse(slow[^1].RoundResult.ResultJson))
+            Assert.Equal("red", document.RootElement.GetProperty("winner").GetString());
+    }
+
+    [Fact]
+    public async Task DisconnectedSubscriberReconnectsToAHeadSnapshotAndTheSameResult()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (simulatorKey, accessKey) = (RandomNumberGenerator.GetBytes(32),
+            RandomNumberGenerator.GetBytes(32));
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-sync-c", "live-m2-13-a");
+        var (guest, guestBinding) = await MountAsync(environment, simulator, "open-m2-sync-d", "live-m2-13-b");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        using var reconnectClaim = await RenewableClaim.ClaimAsync(control, new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-13",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        var owner = reconnectClaim.Owner;
+        await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-13", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-13",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
+            }
+        });
+        using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
+        var gameHost = new GameHost.GameHostClient(hostChannel);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-13", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-13", DurationTicks = 140, RandomSeed = 1313, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-13" };
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-13a", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-13-a", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-13b", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-13-b", PayloadJson = """{"kind":"gift","amount":30}"""
+        });
+        await new PlatformIngest.PlatformIngestClient(gatewayChannel).IngestBatchAsync(batch);
+        await new RoundInput.RoundInputClient(gameChannel).RouteEventsAsync(new RouteEventsRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "route-13", MaxEvents = 50
+        });
+
+        using var edgeCertificate = environment.Certificate("tenant-a", "streamer-server", "edge-2");
+        using var edgeChannel = environment.Channel(environment.GamePort, edgeCertificate, "game-server");
+        var sync = new RoundSync.RoundSyncClient(edgeChannel);
+        // A subscriber on a stale epoch learns the current one and resubscribes — it is
+        // never streamed frames it cannot validate (8.3).
+        using (var stale = sync.Subscribe(new SubscribeRequest
+        {
+            RoomId = "room-m2-13", GameId = "game-a", Epoch = owner.Epoch + 7
+        }))
+        {
+            Assert.True(await stale.ResponseStream.MoveNext());
+            Assert.Equal(SyncMessage.KindOneofCase.ResyncRequired, stale.ResponseStream.Current.KindCase);
+            Assert.Equal(owner.Epoch, stale.ResponseStream.Current.ResyncRequired.CurrentEpoch);
+            Assert.False(await stale.ResponseStream.MoveNext());
+        }
+
+        // The client applies a few deltas, then its connection dies mid-round.
+        long appliedTick = 0, appliedVersion = 0;
+        using (var connection = sync.Subscribe(new SubscribeRequest
+        {
+            RoomId = "room-m2-13", GameId = "game-a", Epoch = owner.Epoch,
+            LastAppliedTick = 0, LastAppliedStateVersion = 0
+        }))
+        {
+            while (await connection.ResponseStream.MoveNext())
+            {
+                var message = connection.ResponseStream.Current;
+                if (message.KindCase == SyncMessage.KindOneofCase.Snapshot)
+                {
+                    appliedTick = message.Snapshot.Tick;
+                    appliedVersion = message.Snapshot.StateVersion;
+                }
+                else if (message.KindCase == SyncMessage.KindOneofCase.Delta)
+                {
+                    appliedTick = message.Delta.Tick;
+                    appliedVersion = message.Delta.StateVersion;
+                }
+                if (appliedTick >= 12) break;
+            }
+        }
+        // The round continues without the departed subscriber (AT06 reconnect half).
+        await using (var probe = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await probe.OpenAsync();
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            var (frames, maxTick) = (0L, 0L);
+            while (DateTime.UtcNow < deadline)
+            {
+                (frames, maxTick) = await FrameStatsAsync(probe, "room-m2-13");
+                if (maxTick > appliedTick + 10) break;
+                await Task.Delay(200);
+            }
+            Assert.True(maxTick > appliedTick + 10, $"the round stalled at {maxTick}");
+        }
+
+        // The reconnect carries its applied baseline; a baseline behind the head answers
+        // with a full snapshot and the chain runs gapless into the frozen result.
+        var reconnected = new List<SyncMessage>();
+        using (var resumed = sync.Subscribe(new SubscribeRequest
+        {
+            RoomId = "room-m2-13", GameId = "game-a", Epoch = owner.Epoch,
+            LastAppliedTick = appliedTick, LastAppliedStateVersion = appliedVersion
+        }))
+        {
+            while (await resumed.ResponseStream.MoveNext())
+            {
+                reconnected.Add(resumed.ResponseStream.Current);
+                if (resumed.ResponseStream.Current.KindCase == SyncMessage.KindOneofCase.RoundResult) break;
+            }
+        }
+        Assert.Equal(SyncMessage.KindOneofCase.Snapshot, reconnected[0].KindCase);
+        Assert.True(reconnected[0].Snapshot.Tick > appliedTick,
+            "a baseline behind the head must re-baseline with a snapshot");
+        var finalVersion = WalkSyncChain(reconnected, out _, out _);
+        Assert.Equal(141L, finalVersion);
+        Assert.Equal(140L, reconnected[^1].RoundResult.Tick);
+        var result = reconnected[^1].RoundResult.ResultJson;
+        await using (var probe = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await probe.OpenAsync();
+            await using var committed = new NpgsqlCommand(
+                "SELECT result::text FROM game.result WHERE room_id='room-m2-13'", probe);
+            // The streamed result and the committed result agree entry for entry — both
+            // normalized through the same parser before the comparison.
+            using var committedDocument = System.Text.Json.JsonDocument.Parse(
+                (await committed.ExecuteScalarAsync())!.ToString()!);
+            using var streamedDocument = System.Text.Json.JsonDocument.Parse(result);
+            // Structural comparison: Postgres re-serializes jsonb with its own key order;
+            // the ranking entries and their order are what must agree.
+            Assert.Equal(RankingOf(committedDocument), RankingOf(streamedDocument));
+        }
+        // A late subscriber to the finished room receives the final snapshot and result.
+        using (var late = sync.Subscribe(new SubscribeRequest
+        {
+            RoomId = "room-m2-13", GameId = "game-a", Epoch = owner.Epoch,
+            LastAppliedTick = 0, LastAppliedStateVersion = 0
+        }))
+        {
+            Assert.True(await late.ResponseStream.MoveNext());
+            Assert.Equal(SyncMessage.KindOneofCase.Snapshot, late.ResponseStream.Current.KindCase);
+            Assert.True(await late.ResponseStream.MoveNext());
+            Assert.Equal(SyncMessage.KindOneofCase.RoundResult, late.ResponseStream.Current.KindCase);
+            Assert.False(await late.ResponseStream.MoveNext());
+        }
+    }
+
+    [Fact]
+    public async Task ClientCommandsSurfaceAsReceiptsInTheDeltaStream()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (simulatorKey, accessKey) = (RandomNumberGenerator.GetBytes(32),
+            RandomNumberGenerator.GetBytes(32));
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-sync-e", "live-m2-14-a");
+        var (guest, guestBinding) = await MountAsync(environment, simulator, "open-m2-sync-f", "live-m2-14-b");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        using var commandsClaim = await RenewableClaim.ClaimAsync(control, new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-14",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        var owner = commandsClaim.Owner;
+        await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-14", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-14",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
+            }
+        });
+        using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
+        var gameHost = new GameHost.GameHostClient(hostChannel);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-14", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-14", DurationTicks = 120, RandomSeed = 777, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-14" };
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-14a", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-14-a", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-14b", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-14-b", PayloadJson = """{"kind":"gift","amount":30}"""
+        });
+        await new PlatformIngest.PlatformIngestClient(gatewayChannel).IngestBatchAsync(batch);
+        await new RoundInput.RoundInputClient(gameChannel).RouteEventsAsync(new RouteEventsRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "route-14", MaxEvents = 50
+        });
+
+        using var edgeCertificate = environment.Certificate("tenant-a", "streamer-server", "edge-3");
+        using var edgeChannel = environment.Channel(environment.GamePort, edgeCertificate, "game-server");
+        var sync = new RoundSync.RoundSyncClient(edgeChannel);
+        using var stream = sync.Subscribe(new SubscribeRequest
+        {
+            RoomId = "room-m2-14", GameId = "game-a", Epoch = owner.Epoch,
+            LastAppliedTick = 0, LastAppliedStateVersion = 0
+        });
+        var messages = new List<SyncMessage>();
+        // The host's client command mid-round: a durable boost through the streamer edge
+        // (architecture 6.3); the same command id retried answers duplicate.
+        await Task.Delay(600);
+        using var clientEdge = environment.Channel(environment.DataPort,
+            environment.Certificate("tenant-a", "streamer-server", "edge-3-data"), "data-server");
+        var input = new RoundInput.RoundInputClient(clientEdge);
+        var command = new ClientInputRequest
+        {
+            SessionId = host.SessionId, RoomId = "room-m2-14", RoomEpoch = owner.Epoch,
+            GameId = "game-a", CommandId = "cmd-boost-1",
+            PayloadJson = """{"action":"boost","level":3}"""
+        };
+        var accepted = await input.AcceptClientInputAsync(command);
+        Assert.False(accepted.Duplicate);
+        Assert.True(accepted.Sequence > 0);
+        var retried = await input.AcceptClientInputAsync(command);
+        Assert.True(retried.Duplicate);
+
+        while (await stream.ResponseStream.MoveNext())
+        {
+            messages.Add(stream.ResponseStream.Current);
+            if (stream.ResponseStream.Current.KindCase == SyncMessage.KindOneofCase.RoundResult) break;
+        }
+        // The command lands exactly once: one receipt on the delta that consumed it, with
+        // the boost visible in that frame's score effect and in the frozen ranking.
+        var receiptDeltas = messages.Where(message =>
+            message.KindCase == SyncMessage.KindOneofCase.Delta
+            && message.Delta.Commands.Any(receipt => receipt.CommandId == "cmd-boost-1")).ToList();
+        Assert.Single(receiptDeltas);
+        var receiptDelta = receiptDeltas[0].Delta;
+        Assert.Contains(receiptDelta.InputEventIds, eventId => eventId.Length > 0);
+        Assert.Contains(receiptDelta.Effects, effect =>
+            effect.Kind == "score" && effect.PayloadJson.Contains("\"red\""));
+        WalkSyncChain(messages, out _, out _);
+        var ranking = messages[^1].RoundResult.ResultJson;
+        // red = gift 100 + boost 30..34 (the seed term varies, the range does not); blue
+        // keeps its 30 — the command credited exactly the host's faction.
+        using (var document = System.Text.Json.JsonDocument.Parse(ranking))
+        {
+            var scores = new Dictionary<string, long>();
+            foreach (var entry in document.RootElement.GetProperty("ranking").EnumerateArray())
+                scores[entry.GetProperty("faction").GetString()!] = entry.GetProperty("score").GetInt64();
+            Assert.InRange(scores["red"], 130, 134);
+            Assert.Equal(30L, scores["blue"]);
+        }
+    }
+
+    /// <summary>
+    /// A claimed ownership with background renewal: the control plane extends an active
+    /// owner's lease every 20 seconds without bumping the epoch (architecture 4.2), so a
+    /// work-bound room cannot outlive its fence under load. Disposing stops the renewal.
+    /// </summary>
+    private sealed class RenewableClaim : IDisposable
+    {
+        private readonly CancellationTokenSource cancellation;
+        private readonly Task renewal;
+        public OwnershipReply Owner { get; }
+
+        private RenewableClaim(OwnershipReply owner, Task renewal, CancellationTokenSource cancellation)
+        {
+            Owner = owner;
+            this.renewal = renewal;
+            this.cancellation = cancellation;
+        }
+
+        public static async Task<RenewableClaim> ClaimAsync(
+            ControlService.ControlServiceClient control, OwnershipRequest request)
+        {
+            var owner = await control.ClaimOwnershipAsync(request,
+                deadline: DateTime.UtcNow.AddSeconds(10));
+            var cancellation = new CancellationTokenSource();
+            var renewal = RenewAsync(control, request, cancellation.Token);
+            return new RenewableClaim(owner, renewal, cancellation);
+        }
+
+        private static async Task RenewAsync(
+            ControlService.ControlServiceClient control, OwnershipRequest request,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                while (true)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(20), cancellationToken);
+                    await control.ClaimOwnershipAsync(request,
+                        deadline: DateTime.UtcNow.AddSeconds(5), cancellationToken: cancellationToken);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Grpc.Core.RpcException) { /* the environment is disposing; renewal ends */ }
+        }
+
+        public void Dispose()
+        {
+            cancellation.Cancel();
+            try { renewal.Wait(TimeSpan.FromSeconds(5)); } catch (AggregateException) { }
+            cancellation.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Walks a subscriber's stream validating the 8.3 chain: every delta applies to exactly
+    /// the version last applied, a snapshot re-baselines, the result freezes the chain.
+    /// Returns the final applied version.
+    /// </summary>
+    private static long WalkSyncChain(List<SyncMessage> messages, out int snapshots, out int deltas)
+    {
+        var applied = -1L;
+        snapshots = 0;
+        deltas = 0;
+        foreach (var message in messages)
+        {
+            switch (message.KindCase)
+            {
+                case SyncMessage.KindOneofCase.Snapshot:
+                    snapshots++;
+                    applied = message.Snapshot.StateVersion;
+                    break;
+                case SyncMessage.KindOneofCase.Delta:
+                    deltas++;
+                    Assert.Equal(applied, message.Delta.BaseVersion);
+                    applied = message.Delta.StateVersion;
+                    break;
+                case SyncMessage.KindOneofCase.RoundResult:
+                    Assert.Equal(applied, message.RoundResult.StateVersion);
+                    break;
+                default:
+                    Assert.Fail($"Unexpected sync message kind {message.KindCase}.");
+                    break;
+            }
+        }
+        return applied;
+    }
+
+    /// <summary>The ranking entries of a round result in order: (faction, score).</summary>
+    private static List<(string Faction, long Score)> RankingOf(System.Text.Json.JsonDocument document) =>
+        document.RootElement.GetProperty("ranking").EnumerateArray()
+            .Select(entry => (entry.GetProperty("faction").GetString()!,
+                entry.GetProperty("score").GetInt64()))
+            .ToList();
 
     private static async Task<(long Count, long MaxTick)> FrameStatsAsync(NpgsqlConnection connection,
         string roomId)
