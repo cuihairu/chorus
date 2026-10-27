@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package chorus.redesign.m2;
+option csharp_namespace = "Chorus.Redesign.Rpc";
+
+import "Protos/m0.proto";
+
+// Round admission and routing boundaries (architecture 6.2, 6.3). The tenant and the caller
+// role come from the client certificate; every mutating call is one store transaction, so a
+// reply always reflects a committed state.
+
+message RoundParticipantProto {
+  string binding_id = 1;
+  string participant_id = 2;
+  string role = 3;
+}
+
+message StartRoundRequest {
+  string room_id = 1;
+  string owner_instance_id = 2;
+  int64 epoch = 3;
+  string game_id = 4;
+  string module_version = 5;
+  string config_hash = 6;
+  string package_hash = 7;
+  string operation_id = 8;
+  repeated RoundParticipantProto participants = 9;
+}
+
+message AbortRoundRequest {
+  string room_id = 1;
+  string owner_instance_id = 2;
+  int64 epoch = 3;
+  string game_id = 4;
+  string reason = 5;
+  string operation_id = 6;
+}
+
+message RoundAdmissionReply {
+  string room_id = 1;
+  int64 round_generation = 2;
+  string status = 3;
+  int64 epoch = 4;
+  bool duplicate = 5;
+}
+
+message GetRoundRequest { string room_id = 1; string game_id = 2; }
+
+message RoundParticipantStateProto {
+  string participant_id = 1;
+  string binding_id = 2;
+  string role = 3;
+  string state = 4;
+}
+
+message RoundStatusReply {
+  bool found = 1;
+  string room_id = 2;
+  string status = 3;
+  int64 epoch = 4;
+  int64 last_tick = 5;
+  int64 state_version = 6;
+  repeated RoundParticipantStateProto participants = 7;
+}
+
+message RouteEventsRequest {
+  string platform = 1;
+  string app_id = 2;
+  string operation_id = 3;
+  int32 max_events = 4;
+}
+
+message RoutedEventProto {
+  string event_id = 1;
+  string room_id = 2;
+  int64 sequence = 3;
+  string disposition = 4;
+}
+
+message RouteEventsReply {
+  bool duplicate = 1;
+  repeated RoutedEventProto events = 2;
+}
+
+message ClientInputRequest {
+  string session_id = 1;
+  string room_id = 2;
+  int64 room_epoch = 3;
+  string game_id = 4;
+  string command_id = 5;
+  string payload_json = 6;
+}
+
+message ClientInputReply {
+  string command_id = 1;
+  string room_id = 2;
+  int64 sequence = 3;
+  int64 route_version = 4;
+  bool duplicate = 5;
+}
+
+service RoundStore {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  rpc StartRound(StartRoundRequest) returns (RoundAdmissionReply);
+  rpc AbortRound(AbortRoundRequest) returns (RoundAdmissionReply);
+  rpc GetRound(GetRoundRequest) returns (RoundStatusReply);
+}
+
+service RoundInput {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  rpc RouteEvents(RouteEventsRequest) returns (RouteEventsReply);
+  rpc AcceptClientInput(ClientInputRequest) returns (ClientInputReply);
+}

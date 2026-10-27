@@ -11,7 +11,8 @@ public sealed record PlatformEventInput(
     string SourceDedupKey, string Durability, string CanonicalRoomKey, string PayloadJson);
 
 public sealed record PlatformEventReceipt(
-    string SourceDedupKey, bool Duplicate, string Disposition, string? BindingId, long? BindingGeneration);
+    string SourceDedupKey, bool Duplicate, string Disposition, string? BindingId, long? BindingGeneration,
+    string? RoomId = null);
 
 public sealed record IngestResult(IReadOnlyList<PlatformEventReceipt> Receipts, bool Duplicate);
 
@@ -157,8 +158,9 @@ public sealed class RedesignInputEventStore(string connectionString, Action? cra
             byte[]? storedHash = null;
             string? storedBinding = null;
             long? storedGeneration = null;
+            string? storedRoom = null;
             await using (var existing = new NpgsqlCommand("""
-                SELECT payload_hash, disposition, binding_id, binding_generation
+                SELECT payload_hash, disposition, binding_id, binding_generation, attributed_room_id
                 FROM input.event
                 WHERE platform=@platform AND app_id=@app AND source_dedup_key=@key
                 """, connection, transaction))
@@ -173,16 +175,18 @@ public sealed class RedesignInputEventStore(string connectionString, Action? cra
                     storedDisposition = reader.GetString(1);
                     storedBinding = reader.IsDBNull(2) ? null : reader.GetString(2);
                     storedGeneration = reader.IsDBNull(3) ? null : reader.GetInt64(3);
+                    storedRoom = reader.IsDBNull(4) ? null : reader.GetString(4);
                 }
             }
             if (storedDisposition is not null)
             {
                 // The same platform event must carry the same payload; "looks similar" is not
-                // a duplicate (two legal same-amount gifts have different dedup keys).
+                // a duplicate (two legal same-amount gifts have different dedup keys). The
+                // reply keeps the original round attribution, not a re-derived one.
                 if (storedHash is null || !storedHash.AsSpan().SequenceEqual(hash))
                     throw new IdempotencyConflictException();
                 receipts.Add(new PlatformEventReceipt(input.SourceDedupKey, true, storedDisposition,
-                    storedBinding, storedGeneration));
+                    storedBinding, storedGeneration, storedRoom));
                 continue;
             }
 
