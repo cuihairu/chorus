@@ -348,5 +348,9 @@
 
 ## 21. 重设计方案（2026-10-25 目标架构，M0 进行中）
 
-- [ ] **M0 进行中（2026-10-27）**：操作身份/指纹协议（`0c2bd82`、`56a95a6`）与 PostgreSQL 持久收据迁移、同事务业务回调、冲突/回滚/并发重试（`a8523f4`、`857af82`）已落地；3 项新 PostgreSQL 集成测试和完整解决方案 1143/1143 通过。此处仅是通用事务收据能力，尚无新 DataServer、ControlServer 服务边界、默认完整 schema/迁移、NodeAgent 双 OS 骨架、平台模拟器与安装配置；M0 的 AT18/22/23/27 基础部分及 AT32 身份隔离出口均未验收，不能标记 M0 完成。旧 ControlHost 能力不得按新目标架构折算。
+- [ ] **M0 总出口仍 open（2026-10-27）**：Linux 空库 PostgreSQL + 两个真实 gRPC host 的基础验收已通过；完整双系统 Agent 冷启动、Windows 实机与计划中的平台模拟器/安装包尚未完成。不得将部分验收标记为 M0 完成；证据见 `docs/architecture/redesign-m0-evidence.md`。
+- [x] 操作身份/指纹协议、持久收据及 SchemaMigrator 收口（`0c2bd82`、`56a95a6`、`a8523f4`、`857af82`、`bc2363a`）：包含 schema 版本 1–4、事务迁移/校验和以及 stored fingerprint 验证。
+- [x] 新 DataServer / ControlServer 边界和 mTLS 身份隔离（`bc2363a`）：真实 host 集成覆盖 profile/asset/receipt、tenant/role、ownership epoch 及进程报告。
+- [x] NodeAgent 双系统骨架、SchemaTool/BootstrapTool 和 M0 验收记录（`bc2363a`）：Linux Release build、Windows `win-x64` 交叉编译通过；测试结果和未运行证据按平台分列。
+- [x] M0 定向集成组 7/7、Release 全量 1150/1150，Release solution build 0 errors（`bc2363a`）。旧 ControlHost 能力不按新目标架构折算。
   历史基线：2026-10-27 登记时新方案只有设计文件（`223e5c4`），没有新角色代码；用户本轮已明确授权续做。后续逐项以验收计划 `docs/architecture/redesign-acceptance.md` 为准，不以文档或协议类型存在宣称阶段通过。

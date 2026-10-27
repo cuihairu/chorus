@@ -194,3 +194,21 @@
   round vs 4,706 rps recorded in R1015D); absolute rates are not comparable across rounds;
   cross-tree comparisons must use same-round A/B normalized counters (per `snapshots_sent`, per
   reconnect).
+
+### D10 M0 process identity is cached only after TLS chain validation
+
+- **Context**: Kestrel validates the complete client chain during the TLS handshake, but the leaf
+  certificate exposed to a gRPC request may not carry the intermediate certificate. Rebuilding
+  the chain from that request-scoped certificate fails with `PartialChain`, even though the TLS
+  handshake already accepted it.
+- **Decision**: each internal HTTPS host validates chain, cluster, node grant, role, tenant and
+  process identity in the TLS client-certificate callback; it then retains the identity keyed by
+  the leaf thumbprint until certificate expiry. gRPC handlers accept only a request certificate
+  whose thumbprint resolves in that process-local registry, then enforce method role and tenant
+  constraints.
+- **Rejected**: disabling chain validation or trusting SAN fields directly in the handler would
+  weaken the boundary; requiring the request context to rebuild an unavailable intermediate
+  chain makes valid mTLS calls fail.
+- **Impact**: the registry is process-local and prunes expired entries after it grows beyond 2,048
+  identities. It does not provide revocation before certificate expiry; certificate lifetime and
+  node grant scope remain the M0 controls. Revocation and rotation are later requirements.

@@ -19,7 +19,7 @@
 
 ## Documentation (VuePress)
 
-**Target redesign (2026-10-25):** [distributed live-game server design](docs/architecture/architecture.md) and [acceptance plan](docs/architecture/redesign-acceptance.md). M0 protocol and durable receipt work has started; the architecture below describes the current implementation.
+**Target redesign (2026-10-25):** [distributed live-game server design](docs/architecture/architecture.md), [acceptance plan](docs/architecture/redesign-acceptance.md), and [M0 implementation/evidence](docs/architecture/redesign-m0-implementation.md). The M0 PostgreSQL schema, DataServer/ControlServer hosts, certificate boundary, and dual-OS NodeAgent skeleton are in progress; this is not a claim that the full M0 exit gate has passed.
 
 - Site (GitHub Pages): `https://cuihairu.github.io/chorus/`
 - Source: `docs/`

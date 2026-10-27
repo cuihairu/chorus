@@ -19,7 +19,7 @@
 
 ## 文档（VuePress）
 
-**重设计方案（2026-10-25）**：[分布式直播游戏服务器完整设计](docs/architecture/architecture.md)。这是新的目标方案，含协议、持久化、集群恢复、双系统部署与验收计划；M0 已开始实现协议与持久收据，下文仍是当前代码的使用说明，不代表新方案已完成。
+**重设计方案（2026-10-25）**：[分布式直播游戏服务器完整设计](docs/architecture/architecture.md)、[验收计划](docs/architecture/redesign-acceptance.md)与 [M0 实现/证据](docs/architecture/redesign-m0-implementation.md)。M0 的 PostgreSQL schema、DataServer/ControlServer、证书边界和双系统 NodeAgent 骨架正在落地；这不代表 M0 出口已全部通过。下文仍是当前代码的使用说明。
 
 - 站点（GitHub Pages）：`https://cuihairu.github.io/chorus/`
 - 源码：`docs/`
