@@ -48,12 +48,30 @@ AT 台账增量（不标满过，只记闭合半边）：
 - **AT13 隔离半边闭合**：模块故障按房隔离——连续 3 败→可见挂起，同进程他房跑到终局；故障经模块缝注入。分布与压力证据待 M2-7。
 - **AT14/AT27 帧链半边推进**：tick 链由真实 actor 连续提交驱动、final 帧冻结 Result；快照恢复链属 M2-4。
 
+## M2-4 已落地：快照与恢复（409f677）
+
+按架构 §8.2「恢复=最新可用快照+其后帧逐帧验哈希重放，重放只读、绝不重触发已提交效果」与 §10.3「恢复保状态：最新快照损坏回退前一可用；反复失败→可见 Suspended；结束阶段恢复尾不重启战斗 tick」：
+
+- `RedesignRecoveryStore`（DataServer）：PutSnapshotAsync——回执 "snapshot.put"，canonical 承诺 {RoomId,Tick,Hash,SchemaVersion}；store 自验 SHA256(payload)==hash，哈希不符不入库（可见即完整）；锁序 ownership FOR UPDATE→room FOR UPDATE（须 Running 且 tick==last_tick，快照只钉头部）→plain INSERT verified=true，故意不 upsert——同 tick 异快照是真实分歧，以约束冲突暴露而非静默丢；crashAfterSnapshotInsert 注入缝（插入后提交前死亡→整事务回滚，半写快照不可见、无回执）。LoadRecoveryAsync——只读恢复计划一次成读：房间头（status/epoch/last_tick/state_version）+全部快照 newest-first（含 verified 标志）+投递日志按 sequence（event_id/binding/payload/consumed）+最旧快照之后的帧（input_refs 保序反序列化、state_hash、module_version、config_hash）+参与映射；未知房间 null。
+- m2.proto：FrameStore 增 PutSnapshot（←game-server）/LoadRecovery（←game-server+control-server 诊断）；GameHost.RecoverRoom 由占位转正（←control-server、game-server），Reply 增 status/last_tick/snapshot_tick/replayed_frames；FrameGrpcService 映射 StaleOwner/FrameConflict→FailedPrecondition、冲突/参数→InvalidArgument。
+- RoomRuntime.RecoverRoomAsync：注册表命中分两答——已终局 actor（Completed 标志）答 Finishing 尾、在跑 actor 答 already running，都不重启 tick；否则 LoadRecovery→未知房/epoch 不符/非 Running 可见拒；Finishing 直接 Recovered=true 收尾（M2-5 补结算尾）；Running 走重放：快照 newest→oldest 逐候选——Restore fail-closed 拒识或 ComputeStateHash 与库中哈希失配即跳过（失配是证据不是猜测）→其后帧逐个 tick 连续性校验、InputRef 经投递日志映射回参与者（deliveryByEvent+participantByBinding）、ApplyTick 重算、帧哈希比对，全链达头→PutSnapshot 钉 store-verified 头部快照（确定性 op id {owner}/snapshot/{room}/{tick}，被拒 Recovered=false 可见）→actor 自 (state, lastTick, stateVersion) 续 tick；全部候选失败→SuspendRoom 可见挂起。重放只读：帧与效果已提交一次。
+- RoomActor：ctor 增 lastTick/stateVersion 恢复锚；final 帧提交后置 Completed——RecoverRoom 据此答尾不答跑。
+- 证据：store 级 `RedesignRecoveryStoreTests` 2 例（崩溃缝半写不可见且无回执、同 op 重试收敛单行 verified、哈希不符拒、非头部 tick/挂起房 FrameConflict、错实例 StaleOwner、同 op 异内容 IdempotencyConflict；恢复计划全形状——头部字段、快照 desc 含 verified、投递序号/绑定/payload/consumed、帧引用+哈希+模块与配置版本、参与映射、未知房 null）；宿主级 `RedesignM2HostTests` 增 2 例并更新 M2-3 例断言——
+  - `KilledGameServerRecoversAtTheHeadAndRunsToTheSameResult`：200 tick@25ms 跑过 tick-100 检查点后 Kill GameServer（头部以 Kill 后 DB 实况为准，杀进程与轮询读数之间仍会落几帧）→同端口重启→RecoverRoom Recovered=true、SnapshotTick=100、ReplayedFrames=head−100→头部 store-verified 快照行落库→续跑到 Finishing（200 帧连续、last_tick 200/state_version 201）；同配置同礼物的未受扰孪生房（Kill 后才 Prepare、从未被杀）与恢复房 result 逐字节相等——崩溃+恢复不移动确定性结局；快照链恰 {0(prep,false),100(checkpoint,false),head(verified,true),200(checkpoint,false)}，投递恰一次消费。
+  - `CorruptSnapshotsFallBackToTheAnchorOrSuspendVisibly`：长房 tick-100 快照 payload_hash 损毁（哈希失配路径）→回退 tick-0 锚全量重放（SnapshotTick=0、ReplayedFrames=head）仍完赛 winner=red；短房唯一 tick-0 锚 payload 损毁（Restore 拒识路径）→Recovered=false、房间 Suspended、round.suspended outbox、帧数冻结在崩溃头部。
+  - M2-3 例 RecoverRoom 断言由 Unimplemented 转：Finishing 房恢复为尾（Recovered=true、帧数仍 40，不重启战斗 tick）。
+
+AT 台账增量（不标满过，只记闭合半边）：
+
+- **AT19 闭合**：快照写一半→事务原子+store 自验哈希，可见即完整；最新快照损坏→回退前一可用（哈希失配与拒识两路都有据）；旧快照重放→逐帧验哈希到头+未受扰孪生结局逐字节相等；Finishing 恢复→尾恢复不重启战斗 tick。四条验收词全部落地。
+- **AT14/AT27 帧链推进**：恢复链与帧哈希互证闭合（帧哈希在恢复中被逐帧校验）；终局与结算部分仍属 M2-5。
+
 ## M2 后续顺序
 
 1. ~~局准入与 RoundGeneration、事件按局路由、AbortRound~~（已落地，见上）。
 2. ~~FrameStore：CommitFrame（§8.2 全事务）、ReadInbox、消费连续水位~~（已落地，见上）。
 3. ~~§7 示例玩法 + Chorus.GameServer 宿主 + RoomActor tick + Prepare/激活~~（已落地，见上）。
-4. 快照与恢复：PutSnapshot/LoadRecovery、确定性重放、坏快照回退（AT19）。
+4. ~~快照与恢复：PutSnapshot/LoadRecovery、确定性重放、坏快照回退（AT19）~~（已落地，见上）。
 5. 结算 §6.4 + FinalizeRound §6.6 + 排行榜投影 + 默认资产库存守卫（AT18、AT20、AT27 结算部分）。
 6. 客户端同步协议（Subscribe）+ 双主播示例（AT15、AT06 重连半边）。
 7. 全局出口证据：全流程场景测试、可选单节点基准、保留/清理守卫、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）。
