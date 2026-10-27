@@ -359,4 +359,5 @@
 - [x] Release 全量 1152/1152，Release solution build 0 errors，win-x64 交叉编译 0 errors（`087fc4a`）。
 - [x] 开发平台模拟器（M0 交付件之一，`4c8e898`）：`RedesignPlatformGateway` VerifyLaunch 按平台路由 + `DevelopmentPlatformSimulator` HMAC 凭据签发/验证 + Douyin/Kuaishou `NotProductionReady` 失败关闭桩；契约测试 5/5，全量 1157/1157。真实平台适配器仍属 M1 且保持 NotProductionReady。
 - [x] 双 OS 可复现安装配置（`8a0a116`）：`deploy/linux/` systemd 单元（systemd-analyze verify 通过）+ 安装脚本（shellcheck 零告警；受限账号/0700 状态目录/占位符 dotnet 路径）+ `deploy/windows/` 服务安装脚本（PowerShell 解析通过，随机服务密码不落盘）；实机安装与启动验收保持 NOT RUN。
+- [x] M1 StreamerServer 登录/恢复宿主（`a72b447`）：StreamerSession/StreamerIdentity 双 gRPC 边界（tenant 入请求并对照 auth.identity 归属校验、Resume 先栅栏后轮换）、协调器次序（VerifyLaunch→Resolve→实体加载→Login，实体未就绪不发 LoginReady 且不建会话）、HMAC 短时访问凭据、DataServer 侧幂等 profile 初始化；真实三宿主集成 + 协调器单测 5/5，Release 全量 1163/1163。Attach generation、access credential 消费端接线、StreamerGateway 宿主与 AT01–AT09 仍 open。
   历史基线：2026-10-27 登记时新方案只有设计文件（`223e5c4`），没有新角色代码；用户本轮已明确授权续做。后续逐项以验收计划 `docs/architecture/redesign-acceptance.md` 为准，不以文档或协议类型存在宣称阶段通过。
