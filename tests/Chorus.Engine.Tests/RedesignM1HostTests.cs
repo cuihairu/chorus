@@ -450,6 +450,179 @@ public sealed class RedesignM1HostTests
         Assert.Equal(StatusCode.PermissionDenied, stale.StatusCode);
     }
 
+    /// <summary>
+    /// AT03: a committed rotation whose reply is lost across a StreamerServer crash must replay
+    /// as one precise duplicate — no second rotation, old-terminal commands stay fenced, and the
+    /// new connection is never marked offline by a late stale close.
+    /// </summary>
+    [Fact]
+    public async Task RotationResponseLossAcrossRestartKeepsSingleRotationAndFencesOldCommands()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            streamerEnvironment);
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var credential = simulator.IssueCredential("app-1", "open-at03", "live-at03", TimeSpan.FromMinutes(10));
+        using var clientCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-client-1");
+        using var channel = environment.Channel(environment.StreamerPort, clientCertificate, "streamer-server");
+        var session = new StreamerSession.StreamerSessionClient(channel);
+
+        // Terminal A logs in; a new platform login takes over as terminal B.
+        var secretA = RandomNumberGenerator.GetBytes(32);
+        var loginA = await session.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential, LoginAttemptId = "attempt-1",
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(secretA),
+            GatewayInstanceId = "gateway-1", ConnectionId = "connection-1"
+        });
+        Assert.Equal(1, loginA.SessionVersion);
+        var secretB = RandomNumberGenerator.GetBytes(32);
+        var takeover = await session.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential, LoginAttemptId = "attempt-2",
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(secretB),
+            GatewayInstanceId = "gateway-2", ConnectionId = "connection-2"
+        });
+        Assert.Equal(loginA.StreamerId, takeover.StreamerId);
+        Assert.Equal(2, takeover.SessionVersion);
+
+        // A's late command from the dead terminal is fenced (session revoked by takeover).
+        var lateFromA = await Assert.ThrowsAsync<RpcException>(() => session.ResumeAsync(new ResumeRequest
+        {
+            PreviousSessionId = loginA.SessionId, ResumeOperationId = "late-op-a",
+            PreviousSecret = Google.Protobuf.ByteString.CopyFrom(secretA),
+            NextSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            GatewayInstanceId = "gateway-1", ConnectionId = "connection-1"
+        }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, lateFromA.StatusCode);
+
+        // B rotates: the rotation commits in DataServer — this is the reply the client will lose.
+        var secretC = RandomNumberGenerator.GetBytes(32);
+        var rotation = await session.ResumeAsync(new ResumeRequest
+        {
+            PreviousSessionId = takeover.SessionId, ResumeOperationId = "resume-rot-1",
+            PreviousSecret = Google.Protobuf.ByteString.CopyFrom(secretB),
+            NextSecret = Google.Protobuf.ByteString.CopyFrom(secretC),
+            GatewayInstanceId = "gateway-2", ConnectionId = "connection-2"
+        });
+        Assert.Equal(3, rotation.SessionVersion);
+        Assert.False(rotation.Duplicate);
+        Assert.Equal(loginA.StreamerId, rotation.StreamerId);
+
+        // StreamerServer dies after the rotation was committed; its in-memory actors are gone.
+        environment.Kill("Chorus.StreamerServer");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            streamerEnvironment);
+
+        // The client never saw the rotation reply, so it replays the exact same operation.
+        using var retryCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-client-2");
+        using var retryChannel = environment.Channel(environment.StreamerPort, retryCertificate, "streamer-server");
+        var retryClient = new StreamerSession.StreamerSessionClient(retryChannel);
+        var replay = await retryClient.ResumeAsync(new ResumeRequest
+        {
+            PreviousSessionId = takeover.SessionId, ResumeOperationId = "resume-rot-1",
+            PreviousSecret = Google.Protobuf.ByteString.CopyFrom(secretB),
+            NextSecret = Google.Protobuf.ByteString.CopyFrom(secretC),
+            GatewayInstanceId = "gateway-2", ConnectionId = "connection-2"
+        });
+        Assert.True(replay.Duplicate);
+        Assert.Equal(rotation.SessionId, replay.SessionId);
+        Assert.Equal(3, replay.SessionVersion); // single valid session — no second rotation
+
+        // The same operation with a different request must not rotate to a second secret.
+        var changedRequest = await Assert.ThrowsAsync<RpcException>(() => retryClient.ResumeAsync(new ResumeRequest
+        {
+            PreviousSessionId = takeover.SessionId, ResumeOperationId = "resume-rot-1",
+            PreviousSecret = Google.Protobuf.ByteString.CopyFrom(secretB),
+            NextSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            GatewayInstanceId = "gateway-2", ConnectionId = "connection-2"
+        }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, changedRequest.StatusCode);
+
+        // The old secret can never start a fresh rotation either.
+        var replayedSecret = await Assert.ThrowsAsync<RpcException>(() => retryClient.ResumeAsync(new ResumeRequest
+        {
+            PreviousSessionId = takeover.SessionId, ResumeOperationId = "resume-rot-2",
+            PreviousSecret = Google.Protobuf.ByteString.CopyFrom(secretB),
+            NextSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            GatewayInstanceId = "gateway-2", ConnectionId = "connection-2"
+        }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, replayedSecret.StatusCode);
+
+        // The rotated secret attaches the live connection on a new terminal.
+        var attach = await retryClient.AttachConnectionAsync(new AttachConnectionRequest
+        {
+            SessionId = replay.SessionId, OperationId = "attach-op-1",
+            CurrentSecret = Google.Protobuf.ByteString.CopyFrom(secretC),
+            GatewayInstanceId = "gateway-3", ConnectionId = "connection-3"
+        });
+        Assert.Equal(2, attach.ConnectionGeneration);
+        Assert.False(attach.Duplicate);
+
+        // A late stale close from the dead terminal never marks the new connection offline.
+        var staleClose = await retryClient.ConnectionClosedAsync(new ConnectionClosedRequest
+        {
+            SessionId = replay.SessionId, GatewayInstanceId = "gateway-1",
+            ConnectionId = "connection-1", ConnectionGeneration = 1
+        });
+        Assert.False(staleClose.Applied);
+        var access = await retryClient.ValidateAccessAsync(
+            new ValidateAccessRequest { AccessCredential = replay.AccessCredential });
+        Assert.True(access.Online);
+        Assert.Equal("gateway-3", access.GatewayInstanceId);
+        Assert.Equal(2, access.ConnectionGeneration);
+
+        // Exactly one rotation row exists — the crash could not double-rotate.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var rotations = new NpgsqlCommand(
+                "SELECT count(*) FROM auth.rotation WHERE streamer_id=@streamer AND operation_id='resume-rot-1'",
+                connection))
+            {
+                rotations.Parameters.AddWithValue("streamer", rotation.StreamerId);
+                Assert.Equal(1L, Convert.ToInt64(await rotations.ExecuteScalarAsync()));
+            }
+            await using (var state = new NpgsqlCommand(
+                "SELECT current_session_version FROM auth.streamer_state WHERE streamer_id=@streamer", connection))
+            {
+                state.Parameters.AddWithValue("streamer", rotation.StreamerId);
+                Assert.Equal(3L, Convert.ToInt64(await state.ExecuteScalarAsync()));
+            }
+        }
+
+        // A new platform login retires the rotation's retry window.
+        var secretD = RandomNumberGenerator.GetBytes(32);
+        var takeoverAgain = await retryClient.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential, LoginAttemptId = "attempt-3",
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(secretD),
+            GatewayInstanceId = "gateway-4", ConnectionId = "connection-4"
+        });
+        Assert.Equal(4, takeoverAgain.SessionVersion);
+        var windowClosed = await Assert.ThrowsAsync<RpcException>(() => retryClient.ResumeAsync(new ResumeRequest
+        {
+            PreviousSessionId = takeover.SessionId, ResumeOperationId = "resume-rot-1",
+            PreviousSecret = Google.Protobuf.ByteString.CopyFrom(secretB),
+            NextSecret = Google.Protobuf.ByteString.CopyFrom(secretC),
+            GatewayInstanceId = "gateway-2", ConnectionId = "connection-2"
+        }).ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, windowClosed.StatusCode);
+    }
+
     [Fact]
     public async Task PlatformEventsIngestDurablyAcrossRealHostsAndSurviveDataServerRestart()
     {
