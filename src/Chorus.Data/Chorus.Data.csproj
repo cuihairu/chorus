@@ -18,6 +18,7 @@
     <EmbeddedResource Include="Redesign/0007_input_event_attribution.sql" />
     <EmbeddedResource Include="Redesign/0008_platform_task_coordination.sql" />
     <EmbeddedResource Include="Redesign/0009_round_generation.sql" />
+    <EmbeddedResource Include="Redesign/0010_settlement_manifest_leaderboard.sql" />
   </ItemGroup>
 
 </Project>

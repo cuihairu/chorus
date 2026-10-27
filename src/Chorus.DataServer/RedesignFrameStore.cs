@@ -9,7 +9,8 @@ public sealed class FrameConflictException(string message) : Exception(message);
 
 public sealed record FrameEffect(string Kind, string PayloadJson);
 
-public sealed record PlannedGrant(string PlayerId, string GrantKey, string OperationId);
+public sealed record PlannedGrant(string PlayerId, string GrantKey, string OperationId,
+    string AssetId, long Delta);
 
 /// <summary>
 /// One authoritative tick commit (architecture 8.2): everything a tick changed — the frame
@@ -95,7 +96,9 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
             foreach (var grant in commit.Grants)
             {
                 Require(grant.PlayerId, "Grants.PlayerId"); Require(grant.GrantKey, "Grants.GrantKey");
-                Require(grant.OperationId, "Grants.OperationId");
+                Require(grant.OperationId, "Grants.OperationId"); Require(grant.AssetId, "Grants.AssetId");
+                if (grant.Delta == 0)
+                    throw new ArgumentException("A grant carries a non-zero amount.", nameof(commit));
             }
         }
 
@@ -111,7 +114,7 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
             Grants = commit.Final
                 ? commit.Grants!.Select(grant => new
                 {
-                    grant.PlayerId, grant.GrantKey, grant.OperationId
+                    grant.PlayerId, grant.GrantKey, grant.OperationId, grant.AssetId, grant.Delta
                 }) : null
         }));
         var receipt = await _receipts.ExecuteAsync(
@@ -285,13 +288,16 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
             foreach (var grant in commit.Grants!)
             {
                 await using var planned = new NpgsqlCommand("""
-                    INSERT INTO settlement.grant(room_id,result_version,player_id,grant_key,status,operation_id)
-                    VALUES (@room,1,@player,@key,'Planned',@operation)
+                    INSERT INTO settlement.grant(room_id,result_version,player_id,grant_key,status,operation_id,
+                        asset_id,delta)
+                    VALUES (@room,1,@player,@key,'Planned',@operation,@asset,@delta)
                     """, connection, transaction);
                 planned.Parameters.AddWithValue("room", roomId);
                 planned.Parameters.AddWithValue("player", grant.PlayerId);
                 planned.Parameters.AddWithValue("key", grant.GrantKey);
                 planned.Parameters.AddWithValue("operation", grant.OperationId);
+                planned.Parameters.AddWithValue("asset", grant.AssetId);
+                planned.Parameters.AddWithValue("delta", grant.Delta);
                 await planned.ExecuteNonQueryAsync(cancellationToken);
             }
             await using (var finish = new NpgsqlCommand(

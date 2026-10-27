@@ -18,6 +18,7 @@ public sealed class RoomRuntime : IAsyncDisposable
     private readonly Grpc.Net.Client.GrpcChannel _dataChannel;
     private readonly RoundStore.RoundStoreClient _rounds;
     private readonly FrameStore.FrameStoreClient _frames;
+    private readonly Settlement.SettlementClient _settlement;
     private readonly ConcurrentDictionary<string, RoomActor> _actors = new(StringComparer.Ordinal);
 
     public RoomRuntime(Grpc.Net.Client.GrpcChannel dataChannel)
@@ -25,6 +26,7 @@ public sealed class RoomRuntime : IAsyncDisposable
         _dataChannel = dataChannel;
         _rounds = new RoundStore.RoundStoreClient(dataChannel);
         _frames = new FrameStore.FrameStoreClient(dataChannel);
+        _settlement = new Settlement.SettlementClient(dataChannel);
     }
 
     /// <summary>
@@ -158,15 +160,19 @@ public sealed class RoomRuntime : IAsyncDisposable
                 RoomId = request.RoomId, Recovered = false, Status = plan.Status,
                 Note = $"The room head epoch is {plan.Epoch}, not {request.Epoch}."
             };
-        // Finishing rooms recover their result and settlement tail only (M2-5); battle ticks
-        // are never restarted for a round that already froze its result.
+        // Finishing rooms recover their result and settlement tail only; battle ticks are
+        // never restarted for a round that already froze its result. The settle call is
+        // idempotent per grant: it applies whatever the manifest still owes (9.3).
         if (plan.Status == "Finishing")
+        {
+            await SettleRoomAsync(request.GameId, request.RoomId, cancellationToken);
             return new RecoverRoomReply
             {
                 RoomId = request.RoomId, Recovered = true, Status = plan.Status,
                 LastTick = plan.LastTick,
                 Note = "The round is finishing: the result tail recovers without battle ticks."
             };
+        }
         if (plan.Status != "Running")
             return new RecoverRoomReply
             {
@@ -279,6 +285,26 @@ public sealed class RoomRuntime : IAsyncDisposable
             RoomId = request.RoomId, Recovered = false, Status = "Suspended",
             Note = "No snapshot replays to the head with matching frame hashes; the room is suspended."
         };
+    }
+
+    /// <summary>
+    /// Applies the room's committed reward manifest. Each grant is its own idempotent
+    /// transaction on the data plane; a failure here leaves the manifest's progress
+    /// intact and the next call (recovery or a retry) continues where it stopped.
+    /// </summary>
+    public async Task SettleRoomAsync(string gameId, string roomId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _settlement.CommitResultAsync(new CommitResultRequest
+            {
+                RoomId = roomId, GameId = gameId, OperationId = roomId + "/settle"
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+        }
+        catch (RpcException)
+        {
+            // The manifest keeps its committed progress; the room stays inspectable.
+        }
     }
 
     /// <summary>

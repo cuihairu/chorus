@@ -144,6 +144,22 @@ internal sealed class RoomActor : IAsyncDisposable
             commit.ResultJson = outcome.ResultJson;
             commit.PlanHash = ByteString.CopyFrom(
                 SHA256.HashData(Encoding.UTF8.GetBytes(outcome.ResultJson!)));
+            // The immutable reward manifest (architecture 9.3): each participant earns the
+            // final score of their faction. It derives from the module state — the factions
+            // ride inside the snapshot — so a recovered actor commits the identical manifest.
+            using var document = System.Text.Json.JsonDocument.Parse(outcome.ResultJson!);
+            var scoreByFaction = new Dictionary<string, long>(StringComparer.Ordinal);
+            foreach (var entry in document.RootElement.GetProperty("ranking").EnumerateArray())
+                scoreByFaction[entry.GetProperty("faction").GetString()!] =
+                    entry.GetProperty("score").GetInt64();
+            foreach (var (player, faction) in outcome.State.FactionByParticipant
+                         .OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                if (scoreByFaction.TryGetValue(faction, out var score) && score > 0)
+                    commit.Grants.Add(new PlannedGrantProto
+                    {
+                        PlayerId = player, GrantKey = "round-score",
+                        OperationId = $"{_roomId}/grant/{player}", AssetId = "points", Delta = score
+                    });
         }
 
         FrameReceiptReply receipt;
@@ -172,10 +188,11 @@ internal sealed class RoomActor : IAsyncDisposable
         _stateVersion = receipt.StateVersion;
         if (outcome.Final)
         {
-            // The room is Finishing; settlement is M2-5. Recovery asks must answer the
-            // tail, never restart battle ticks.
+            // The room is Finishing; settle the committed manifest now. Settlement is
+            // idempotent per grant, so a lost reply just means recovery retries it.
             _finalCommitted = true;
             _stopped = true;
+            await _runtime.SettleRoomAsync(_gameId, _roomId, cancellationToken).ConfigureAwait(false);
         }
     }
 

@@ -111,6 +111,10 @@ message PlannedGrantProto {
   string player_id = 1;
   string grant_key = 2;
   string operation_id = 3;
+  // The immutable reward manifest (architecture 9.3): each grant carries its own asset
+  // and amount, so the settler applies committed values, never re-derived ones.
+  string asset_id = 4;
+  int64 delta = 5;
 }
 
 message CommitFrameRequest {
@@ -250,6 +254,18 @@ service RoundInput {
   rpc AcceptClientInput(ClientInputRequest) returns (ClientInputReply);
 }
 
+// Settlement and round finalization (architecture 9.3). The final frame commits the
+// immutable reward manifest; CommitResult applies every planned grant as its own
+// idempotent transaction — a crash mid-settlement only ever retries the incomplete
+// grants. FinalizeRound is the persistent terminator: it verifies the preconditions
+// and atomically settles the room, frees the mounts and withdraws the ownership.
+service Settlement {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  rpc CommitResult(CommitResultRequest) returns (CommitResultReply);
+  rpc FinalizeRound(FinalizeRoundRequest) returns (FinalizeRoundReply);
+  rpc ReadLeaderboard(ReadLeaderboardRequest) returns (LeaderboardReply);
+}
+
 // Authoritative frame commits and round inbox reads (architecture 8.2, 6.1.6). Only the
 // room owner commits; reads belong to the owner and the control plane for diagnostics.
 service FrameStore {
@@ -347,4 +363,54 @@ message RecoverRoomReply {
   int64 last_tick = 5;
   int64 snapshot_tick = 6;
   int32 replayed_frames = 7;
+}
+
+message CommitResultRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string operation_id = 3;
+  // Cluster-scope callers (control plane) name the tenant they act for; tenant-scope
+  // callers inherit their certificate tenant and must not name another one.
+  string tenant_id = 4;
+}
+
+message CommitResultReply {
+  string room_id = 1;
+  int64 result_version = 2;
+  int32 grants_total = 3;
+  int32 grants_granted = 4;
+  int32 grants_pending = 5;
+  bool duplicate = 6;
+}
+
+message FinalizeRoundRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string operation_id = 3;
+  string tenant_id = 4;
+}
+
+message FinalizeRoundReply {
+  string room_id = 1;
+  string status = 2;
+  int64 epoch = 3;
+  bool duplicate = 4;
+  string note = 5;
+}
+
+message LeaderboardEntryProto {
+  string player_id = 1;
+  int64 score = 2;
+}
+
+message ReadLeaderboardRequest {
+  string game_id = 1;
+  string board_id = 2;
+  int32 max_entries = 3;
+  string tenant_id = 4;
+}
+
+message LeaderboardReply {
+  string board_id = 1;
+  repeated LeaderboardEntryProto entries = 2;
 }

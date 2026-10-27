@@ -1130,6 +1130,253 @@ public sealed class RedesignM2HostTests
         }
     }
 
+    [Fact]
+    public async Task SettledRoundFinalizesFreesMountsAndOpensTheNextRound()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-run-k", "live-m2-10-a");
+        var (guest, guestBinding) = await MountAsync(environment, simulator, "open-m2-run-l", "live-m2-10-b");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        var routing = new RoundInput.RoundInputClient(gameChannel);
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var ingest = new PlatformIngest.PlatformIngestClient(gatewayChannel);
+        using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
+        var gameHost = new GameHost.GameHostClient(hostChannel);
+        using var controlDataChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
+
+        var owner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-10",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-10", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-10",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
+            }
+        })).Status);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-10", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-10", DurationTicks = 40, RandomSeed = 4242, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-10" };
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-10a", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-10-a", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-10b", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-10-b", PayloadJson = """{"kind":"gift","amount":30}"""
+        });
+        await ingest.IngestBatchAsync(batch);
+        await routing.RouteEventsAsync(new RouteEventsRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "route-10", MaxEvents = 50
+        });
+
+        // The round finishes and the host settles the manifest: every grant lands its one
+        // ledger line and the projection follows (AT20 settlement half).
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        long grantedCount = 0;
+        while (DateTime.UtcNow < deadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var grants = new NpgsqlCommand("""
+                    SELECT count(*) FROM settlement.grant WHERE room_id='room-m2-10' AND status='Granted'
+                    """, connection);
+                grantedCount = Convert.ToInt64(await grants.ExecuteScalarAsync());
+            }
+            if (grantedCount == 2) break;
+            await Task.Delay(200);
+        }
+        Assert.Equal(2L, grantedCount);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var ledger = new NpgsqlCommand("""
+                SELECT count(DISTINCT operation_id),count(*) FROM player.ledger
+                WHERE reason LIKE 'settlement:room-m2-10/%'
+                """, connection))
+            {
+                await using var reader = await ledger.ExecuteReaderAsync();
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(2L, reader.GetInt64(0));
+                Assert.Equal(2L, reader.GetInt64(1));
+            }
+            await using (var balances = new NpgsqlCommand("""
+                SELECT balance FROM player.asset
+                WHERE tenant_id='tenant-a' AND game_id='game-a' AND asset_id='points' AND player_id=@player
+                """, connection))
+            {
+                balances.Parameters.AddWithValue("player", host.StreamerId);
+                Assert.Equal(100L, Convert.ToInt64(await balances.ExecuteScalarAsync()));
+            }
+        }
+        var board = await new Settlement.SettlementClient(controlDataChannel).ReadLeaderboardAsync(
+            new ReadLeaderboardRequest
+            {
+                GameId = "game-a", BoardId = "points", MaxEntries = 10, TenantId = "tenant-a"
+            });
+        Assert.Equal(2, board.Entries.Count);
+        Assert.Equal(host.StreamerId, board.Entries[0].PlayerId);
+        Assert.Equal(100L, board.Entries[0].Score);
+        Assert.Equal(30L, board.Entries[1].Score);
+
+        // A data-plane restart between settlement and finalization changes nothing: the
+        // repeated result send replays the manifest progress (AT27 settlement part).
+        environment.Kill("Chorus.DataServer");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        var settleRetry = await new Settlement.SettlementClient(gameChannel).CommitResultAsync(
+            new CommitResultRequest { RoomId = "room-m2-10", GameId = "game-a", OperationId = "settle-10" });
+        Assert.True(settleRetry.Duplicate);
+        Assert.Equal(0, settleRetry.GrantsPending);
+        Assert.Equal(2, settleRetry.GrantsGranted);
+        // A tenant caller cannot act for another tenant, and a cluster caller must name one.
+        var foreignTenant = await Assert.ThrowsAsync<RpcException>(() =>
+            new Settlement.SettlementClient(gameChannel).CommitResultAsync(new CommitResultRequest
+            {
+                RoomId = "room-m2-10", GameId = "game-a", OperationId = "settle-foreign",
+                TenantId = "tenant-b"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, foreignTenant.StatusCode);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var ledger = new NpgsqlCommand("""
+                SELECT count(*) FROM player.ledger WHERE reason LIKE 'settlement:room-m2-10/%'
+                """, connection);
+            Assert.Equal(2L, Convert.ToInt64(await ledger.ExecuteScalarAsync()));
+        }
+
+        // The control plane finalizes: Settled, participations closed, mounts freed,
+        // ownership withdrawn — and the same mounts open the next round (AT20).
+        var finalized = await new Settlement.SettlementClient(controlDataChannel).FinalizeRoundAsync(
+            new FinalizeRoundRequest
+            {
+                RoomId = "room-m2-10", GameId = "game-a", OperationId = "finalize-10", TenantId = "tenant-a"
+            });
+        Assert.Equal("Settled", finalized.Status);
+        Assert.Equal(owner.Epoch + 1, finalized.Epoch);
+        var nextOwner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-11",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-11", OwnerInstanceId = "game-1", Epoch = nextOwner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-11",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
+            }
+        })).Status);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-11", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = nextOwner.Epoch,
+            OperationId = "run-op-11", DurationTicks = 20, RandomSeed = 4242, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        var nextDeadline = DateTime.UtcNow.AddSeconds(20);
+        string next = "";
+        while (DateTime.UtcNow < nextDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                next = await RoomStatusAsync(connection, "room-m2-11");
+                await using var binding = new NpgsqlCommand(
+                    "SELECT round_generation FROM live.binding WHERE binding_id=@binding", connection);
+                binding.Parameters.AddWithValue("binding", hostBinding);
+                if (Convert.ToInt64(await binding.ExecuteScalarAsync()) != 2L) next = "";
+            }
+            if (next == "Finishing") break;
+            await Task.Delay(200);
+        }
+        Assert.Equal("Finishing", next);
+
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var room = new NpgsqlCommand(
+                "SELECT status FROM game.room WHERE room_id='room-m2-10'", connection);
+            Assert.Equal("Settled", await room.ExecuteScalarAsync());
+            await using var participation = new NpgsqlCommand("""
+                SELECT count(*) FROM game.participation WHERE room_id='room-m2-10' AND state<>'Closed'
+                """, connection);
+            Assert.Equal(0L, Convert.ToInt64(await participation.ExecuteScalarAsync()));
+            await using var ownership = new NpgsqlCommand(
+                "SELECT status,epoch FROM control.ownership WHERE kind='room' AND entity_id='room-m2-10'",
+                connection);
+            await using (var reader = await ownership.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("Released", reader.GetString(0));
+                Assert.Equal(owner.Epoch + 1, reader.GetInt64(1));
+            }
+            await using var outbox = new NpgsqlCommand(
+                "SELECT kind FROM infra.outbox WHERE effect_id='room-m2-10/0/settle'", connection);
+            Assert.Equal("round.settled", await outbox.ExecuteScalarAsync());
+        }
+        // Only the control plane and game hosts finalize; a streamer role is denied.
+        using var streamerCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-role");
+        using var streamerChannel = environment.Channel(environment.DataPort, streamerCertificate, "data-server");
+        var denied = await Assert.ThrowsAsync<RpcException>(() => new Settlement.SettlementClient(
+            streamerChannel).FinalizeRoundAsync(new FinalizeRoundRequest
+        {
+            RoomId = "room-m2-10", GameId = "game-a", OperationId = "finalize-denied"
+        }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
+    }
+
     private static async Task<(long Count, long MaxTick)> FrameStatsAsync(NpgsqlConnection connection,
         string roomId)
     {

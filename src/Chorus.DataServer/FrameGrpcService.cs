@@ -39,7 +39,8 @@ public sealed class FrameGrpcService(
                     request.Final, request.ResultJson.Length > 0 ? request.ResultJson : null,
                     request.PlanHash.Length > 0 ? request.PlanHash.ToByteArray() : null,
                     request.Grants.Select(grant => new PlannedGrant(
-                        grant.PlayerId, grant.GrantKey, grant.OperationId)).ToArray()),
+                        grant.PlayerId, grant.GrantKey, grant.OperationId, grant.AssetId,
+                        grant.Delta)).ToArray()),
                 context.CancellationToken);
             return new FrameReceiptReply
             {

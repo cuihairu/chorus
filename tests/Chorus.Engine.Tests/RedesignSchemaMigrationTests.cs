@@ -30,10 +30,10 @@ public sealed class RedesignSchemaMigrationTests
                 WHERE table_schema IN ('control','auth','live','player','match','game','input','settlement','infra')
                   AND table_type='BASE TABLE'
                 """, database))
-                Assert.Equal(31, Convert.ToInt32(await count.ExecuteScalarAsync()));
+                Assert.Equal(32, Convert.ToInt32(await count.ExecuteScalarAsync()));
 
             await using (var versions = new NpgsqlCommand("SELECT count(*) FROM infra.schema_migration", database))
-                Assert.Equal(9, Convert.ToInt32(await versions.ExecuteScalarAsync()));
+                Assert.Equal(10, Convert.ToInt32(await versions.ExecuteScalarAsync()));
 
             await using (var slot = new NpgsqlCommand("""
                 INSERT INTO live.slot(platform,canonical_live_session_key,tenant_id)

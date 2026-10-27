@@ -240,8 +240,8 @@ public sealed class RedesignFrameStoreTests
             new FrameCommit("final-commit-1", "gs-1", finale.Epoch, 0, 0, [finalIds[0]],
                 [3, 3], [], "1.0.0", "cfg-1",
                 Final: true, ResultJson: """{"winner":"p1","score":[10,5]}""", PlanHash: [9, 9],
-                Grants: [new PlannedGrant("p1", "champion", "grant-1"),
-                    new PlannedGrant("p2", "consolation", "grant-2")]));
+                Grants: [new PlannedGrant("p1", "champion", "grant-1", "points", 100),
+                    new PlannedGrant("p2", "consolation", "grant-2", "points", 30)]));
         Assert.Equal(1, result.Tick);
         await using (var connection = new NpgsqlConnection(finale.Database.ConnectionString))
         {
@@ -278,8 +278,8 @@ public sealed class RedesignFrameStoreTests
             new FrameCommit("final-commit-1", "gs-1", finale.Epoch, 0, 0, [finalIds[0]],
                 [3, 3], [], "1.0.0", "cfg-1",
                 Final: true, ResultJson: """{"winner":"p1","score":[10,5]}""", PlanHash: [9, 9],
-                Grants: [new PlannedGrant("p1", "champion", "grant-1"),
-                    new PlannedGrant("p2", "consolation", "grant-2")]));
+                Grants: [new PlannedGrant("p1", "champion", "grant-1", "points", 100),
+                    new PlannedGrant("p2", "consolation", "grant-2", "points", 30)]));
         Assert.True(finalRetry.Duplicate);
         await Assert.ThrowsAsync<FrameConflictException>(() => finale.FrameStore.CommitFrameAsync(
             "tenant-a", "game-a", "room-1",
