@@ -63,4 +63,14 @@ public sealed record OperationFingerprint
         request.CopyTo(bytes.AsSpan(sizeof(int)));
         return new OperationFingerprint(canonicalVersion, Convert.ToHexString(SHA256.HashData(bytes)));
     }
+
+    public static OperationFingerprint FromStored(int canonicalVersion, string sha256Hex)
+    {
+        if (canonicalVersion <= 0)
+            throw new ArgumentOutOfRangeException(nameof(canonicalVersion));
+        if (sha256Hex is null || sha256Hex.Length != 64 ||
+            sha256Hex.Any(c => !((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))))
+            throw new ArgumentException("Expected an uppercase SHA-256 hex digest.", nameof(sha256Hex));
+        return new OperationFingerprint(canonicalVersion, sha256Hex);
+    }
 }

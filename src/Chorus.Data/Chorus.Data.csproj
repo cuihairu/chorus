@@ -11,6 +11,8 @@
     <ProjectReference Include="../Chorus.Protocol/Chorus.Protocol.csproj" />
     <EmbeddedResource Include="Redesign/0001_operation_receipt.sql" />
     <EmbeddedResource Include="Redesign/0002_core_schema.sql" />
+    <EmbeddedResource Include="Redesign/0003_ledger_target_scope.sql" />
+    <EmbeddedResource Include="Redesign/0004_ownership_scope.sql" />
   </ItemGroup>
 
 </Project>

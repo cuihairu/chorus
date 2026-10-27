@@ -10,7 +10,9 @@ public static class RedesignSchemaMigrator
     private static readonly (int Version, string Resource)[] Steps =
     [
         (1, "Chorus.Data.Redesign.0001_operation_receipt.sql"),
-        (2, "Chorus.Data.Redesign.0002_core_schema.sql")
+        (2, "Chorus.Data.Redesign.0002_core_schema.sql"),
+        (3, "Chorus.Data.Redesign.0003_ledger_target_scope.sql"),
+        (4, "Chorus.Data.Redesign.0004_ownership_scope.sql")
     ];
 
     public static async Task ApplyAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)
@@ -60,5 +62,32 @@ public static class RedesignSchemaMigrator
         }
 
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    public static async Task VerifyAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        if (connection.State != System.Data.ConnectionState.Open)
+            throw new InvalidOperationException("Open the database connection before checking schema compatibility.");
+
+        foreach (var (version, resource) in Steps)
+        {
+            await using var stream = typeof(RedesignSchemaMigrator).Assembly.GetManifestResourceStream(resource)
+                ?? throw new InvalidOperationException($"Migration resource {resource} is missing.");
+            using var reader = new StreamReader(stream);
+            var sql = await reader.ReadToEndAsync(cancellationToken);
+            var checksum = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sql)));
+            await using var command = new NpgsqlCommand(
+                "SELECT checksum FROM infra.schema_migration WHERE version = @version", connection);
+            command.Parameters.AddWithValue("version", version);
+            if (!StringComparer.Ordinal.Equals(await command.ExecuteScalarAsync(cancellationToken) as string, checksum))
+                throw new InvalidOperationException($"Required redesign migration {version} is missing or changed.");
+        }
+
+        await using var newer = new NpgsqlCommand(
+            "SELECT EXISTS(SELECT 1 FROM infra.schema_migration WHERE version > @latest)", connection);
+        newer.Parameters.AddWithValue("latest", Steps[^1].Version);
+        if (await newer.ExecuteScalarAsync(cancellationToken) is true)
+            throw new InvalidOperationException("Database schema is newer than this service build.");
     }
 }
