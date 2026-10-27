@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Chorus.RoundDemo</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Chorus.Data/Chorus.Data.csproj" />
+    <ProjectReference Include="../Chorus.Redesign.Platform/Chorus.Redesign.Platform.csproj" />
+    <ProjectReference Include="../Chorus.Redesign.Rpc/Chorus.Redesign.Rpc.csproj" />
+  </ItemGroup>
+
+</Project>
