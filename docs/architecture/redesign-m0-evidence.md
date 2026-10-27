@@ -10,13 +10,13 @@ title: M0 验收证据
 
 | 证据 | 结果 | 实际覆盖 |
 |---|---|---|
-| 空库 SchemaTool | PASS | 在独立 PostgreSQL 数据库执行 `Chorus.SchemaTool`，迁移版本 1–4 全部落表且含 SHA-256 checksum；随后删除临时数据库。 |
+| 空库 SchemaTool | PASS | 在独立 PostgreSQL 数据库以 `CHORUS_DATABASE_CONNECTION_STRING` 执行 `Chorus.SchemaTool`，迁移版本 1–4 全部落表且各含 64 位 SHA-256 checksum；随后删除临时数据库。 |
 | 真实 host 集成 | PASS | `RedesignM0HostTests.EmptyDatabase_RealGrpcHostsEnforceRoleTenantEpochAndDurableReceipt` 为每次运行创建空数据库、应用迁移并启动 ControlServer/DataServer 两个独立 dotnet 进程；通过 mTLS gRPC 验证 readiness、streamer/game 角色隔离、租户隔离、资产提交/原 key 查收据/重试、owner epoch handoff 后拒绝旧 owner，以及 NodeAgent 进程报告。 |
 | 事务存储 | PASS | `RedesignM0StoreTests` 覆盖 profile CAS、资产账本与幂等冲突、owner fencing/接管及 EntityRecovery 与 ProcessReady 分离。 |
 | 身份证书 | PASS | `RedesignProcessCertificateTests` 覆盖节点授权范围及进程 SPIFFE 身份校验。 |
-| Release 全量测试 | PASS | `CHORUS_TEST_POSTGRES=… dotnet test Chorus.sln -c Release -m:1 --verbosity minimal`，1150/1150。 |
+| Release 全量测试 | PASS | `CHORUS_TEST_POSTGRES=… dotnet test Chorus.sln -c Release --verbosity minimal`，1152/1152。Chorus.sln 仅含 Chorus.Engine.Tests 一个测试工程，故等价于该工程全量运行；结果含 M0 定向集成组 7/7、两个真实 host 集成用例与身份存储用例。 |
 | Release 全解方案构建 | PASS | `dotnet build Chorus.sln -c Release -m:1 --verbosity minimal`，0 errors；仅现有 NU1510 包引用提示。 |
-| Linux NodeAgent 安装/冷启动 | NOT RUN | Agent 的 systemd host 和 Linux 进程树代码已构建；本轮未以 BootstrapTool 产物运行完整离线冷启动、Agent 崩溃回收验收。 |
+| Linux NodeAgent 离线冷启动/崩溃恢复 | PASS | `RedesignM0HostTests.SignedBootstrapManifest_StartsAndReclaimsSeedHostsAfterAgentCrash` 使用 BootstrapTool 生成签名 manifest；NodeAgent 启动真实 Control/Data seed host 并报告 Ready，强杀 Agent 后新 incarnation 回收旧 slot 进程并重新注册两个 Ready 进程。本轮修复了测试对 stdout EOF 的无界等待（setsid 子进程继承重定向管道导致挂起），并为 dispose 增加基于 process-journal 的孤儿 seed 进程回收，两用例实跑通过（20 s）。 |
 
 ## Windows
 
@@ -30,8 +30,7 @@ title: M0 验收证据
 
 M0 总体验收仍保持 open。关闭前还需要：
 
-1. 在 Linux 用离线签名 manifest + BootstrapTool 实际冷启动 NodeAgent，验证 Control/Data seed slots、ControlServer 离线时本地监管、Agent 崩溃/重启回收和状态恢复。
-2. 在 Windows 主机执行空库启动、Windows Service、Job Object 子进程树、受限状态目录 ACL 与证书保护验收。
-3. 补齐计划中列出的平台模拟器和可复现安装配置；目前有 BootstrapTool/SchemaTool 骨架，没有完整安装/升级包或平台模拟器。
+1. Windows 主机执行空库启动、Windows Service、Job Object 子进程树、受限状态目录 ACL 与证书保护验收。
+2. 补齐计划中的平台模拟器和可复现安装配置；当前有 BootstrapTool/SchemaTool 与 Linux 离线 seed 冷启动，但没有完整双 OS 安装/升级包或平台模拟器。
 
 其余 AT18/23/27 的基础部分及 AT32 身份隔离已有上述 Linux PostgreSQL/真实宿主进程证据，但不替代以上缺项或 M0 完整出口。详情见[验收计划](redesign-acceptance.md)与[M0 实现边界](redesign-m0-implementation.md)。
