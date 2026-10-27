@@ -183,7 +183,7 @@ NormalizedEvent {
 | game.result | RoomId+ResultVersion UNIQUE、FinalFrame、PlanHash、Result | DataServer |
 | settlement.grant | RoomId+ResultVersion+PlayerId+GrantKey UNIQUE、Status | DataServer |
 | infra.outbox | EffectId UNIQUE、Kind、Payload、Status、NextAttempt | DataServer |
-| infra.receipt | TenantId+GameId+OperationKind+TargetId+OperationId UNIQUE、RequestHash、CanonicalVersion、Result | 事务执行端；与业务效果同事务 |
+| infra.operation_receipt | TenantId+GameId+OperationKind+TargetId+OperationId PK、RequestHash、CanonicalVersion、ResultJson | 事务执行端；与业务效果同事务；首个迁移见 `src/Chorus.Data/Redesign/0001_operation_receipt.sql` |
 | infra.audit | AuditId、Actor、OperationId、Reason、Before/AfterHash | ControlServer / DataServer |
 
 不在 JSON 字段里暗藏影响唯一性或授权的关键索引。大二进制快照首期存 PostgreSQL；将来外置对象存储必须使用“先写不可变 blob、验证可读，再提交引用”协议，并处理孤儿对象，不能先引用未上传文件。
