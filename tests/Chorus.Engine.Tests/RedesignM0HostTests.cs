@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Chorus.ControlServer;
@@ -15,6 +16,26 @@ namespace Chorus.Engine.Tests;
 
 public sealed class RedesignM0HostTests
 {
+    [Fact]
+    public async Task SignedBootstrapManifest_StartsAndReclaimsSeedHostsAfterAgentCrash()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        await using var environment = await HostEnvironment.CreateAsync();
+        var first = await environment.StartBootstrapAgentAsync();
+        var firstAgent = await environment.WaitForAgentReportsAsync(first, expectedPreviousAgent: null);
+        Assert.Equal(2, firstAgent.ReadyProcesses);
+
+        first.Kill(); // Simulate an abrupt Agent crash; the independently sessioned children survive.
+        // The setsid seed hosts inherit the agent's redirected pipes, so WaitForExitAsync would
+        // block on output EOF forever; only the synchronous bounded wait returns on exit alone.
+        if (!first.WaitForExit(TimeSpan.FromSeconds(10)))
+            throw new InvalidOperationException("NodeAgent did not exit after kill.");
+        var second = await environment.StartBootstrapAgentAsync();
+        var secondAgent = await environment.WaitForAgentReportsAsync(second, firstAgent.AgentInstanceId);
+        Assert.NotEqual(firstAgent.AgentInstanceId, secondAgent.AgentInstanceId);
+        Assert.Equal(2, secondAgent.ReadyProcesses);
+    }
+
     [Fact]
     public async Task EmptyDatabase_RealGrpcHostsEnforceRoleTenantEpochAndDurableReceipt()
     {
@@ -117,6 +138,7 @@ public sealed class RedesignM0HostTests
     {
         private readonly string _databaseName = "chorus_m0_host_" + Guid.NewGuid().ToString("N");
         private readonly List<Process> _processes = [];
+        private readonly List<Process> _agents = [];
         private readonly Dictionary<Process, System.Text.StringBuilder> _hostOutput = [];
         private readonly string _directory = Path.Combine(Path.GetTempPath(), "chorus-m0-host-" + Guid.NewGuid().ToString("N"));
         private NpgsqlConnectionStringBuilder _admin = null!;
@@ -217,14 +239,104 @@ public sealed class RedesignM0HostTests
             throw new TimeoutException(project + " did not become ready.\n" + output);
         }
 
+        public async Task<Process> StartBootstrapAgentAsync()
+        {
+            var root = FindRoot();
+            var configuration = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))!.Name;
+            var tool = Path.Combine(root, "src", "Chorus.BootstrapTool", "bin", configuration, "net10.0", "Chorus.BootstrapTool.dll");
+            var control = Path.Combine(root, "src", "Chorus.ControlServer", "bin", configuration, "net10.0", "Chorus.ControlServer.dll");
+            var data = Path.Combine(root, "src", "Chorus.DataServer", "bin", configuration, "net10.0", "Chorus.DataServer.dll");
+            var bootstrapDirectory = Path.Combine(_directory, "bootstrap");
+            var rootPassword = "test-root-password-" + Guid.NewGuid().ToString("N");
+            var nodePassword = "test-node-password-" + Guid.NewGuid().ToString("N");
+            var prepare = new ProcessStartInfo("dotnet") { UseShellExecute = false, RedirectStandardError = true };
+            prepare.ArgumentList.Add(tool);
+            foreach (var argument in new[] { bootstrapDirectory, "cluster-a", "node-bootstrap", control, data })
+                prepare.ArgumentList.Add(argument);
+            prepare.Environment["CHORUS_ROOT_PFX_PASSWORD"] = rootPassword;
+            prepare.Environment["CHORUS_NODE_AUTHORITY_PFX_PASSWORD"] = nodePassword;
+            prepare.Environment["CHORUS_CONTROL_PORT"] = ControlPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            prepare.Environment["CHORUS_DATA_PORT"] = DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            using (var toolProcess = Process.Start(prepare) ?? throw new InvalidOperationException("BootstrapTool did not start."))
+            {
+                var error = await toolProcess.StandardError.ReadToEndAsync();
+                await toolProcess.WaitForExitAsync();
+                if (toolProcess.ExitCode != 0) throw new InvalidOperationException("BootstrapTool failed: " + error);
+            }
+
+            var agentPath = Path.Combine(root, "src", "Chorus.NodeAgent", "bin", configuration, "net10.0", "Chorus.NodeAgent.dll");
+            var state = Path.Combine(_directory, "agent-state");
+            Directory.CreateDirectory(state);
+            var agentStart = new ProcessStartInfo("dotnet") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            agentStart.ArgumentList.Add(agentPath);
+            agentStart.Environment["CHORUS_DATABASE_CONNECTION_STRING"] = _connectionString;
+            agentStart.Environment["CHORUS_BOOTSTRAP_MANIFEST"] = Path.Combine(bootstrapDirectory, "node", "bootstrap.json");
+            agentStart.Environment["CHORUS_ROOT_CA_PEM"] = Path.Combine(bootstrapDirectory, "node", "root-ca.pem");
+            agentStart.Environment["CHORUS_NODE_AUTHORITY_PFX_PASSWORD"] = nodePassword;
+            agentStart.Environment["CHORUS_AGENT_STATE_DIR"] = state;
+            var process = Process.Start(agentStart) ?? throw new InvalidOperationException("NodeAgent did not start.");
+            var output = new System.Text.StringBuilder();
+            _hostOutput.Add(process, output);
+            process.OutputDataReceived += (_, eventArgs) => { if (eventArgs.Data is not null) lock (output) output.AppendLine(eventArgs.Data); };
+            process.ErrorDataReceived += (_, eventArgs) => { if (eventArgs.Data is not null) lock (output) output.AppendLine(eventArgs.Data); };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            _processes.Add(process);
+            _agents.Add(process);
+            return process;
+        }
+
+        public async Task<(string AgentInstanceId, int ReadyProcesses)> WaitForAgentReportsAsync(
+            Process agent, string? expectedPreviousAgent)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(35);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (agent.HasExited)
+                    throw new InvalidOperationException("NodeAgent exited: " + AgentOutput(agent));
+                await using var connection = new NpgsqlConnection(_connectionString);
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT node.agent_instance_id, count(*) FILTER (
+                        WHERE process.lifecycle='Running' AND process.readiness='Ready')::int
+                    FROM control.node AS node
+                    LEFT JOIN control.process AS process
+                      ON process.node_id=node.node_id AND process.agent_instance_id=node.agent_instance_id
+                    WHERE node.node_id='node-bootstrap'
+                    GROUP BY node.agent_instance_id
+                    """, connection);
+                await using var reader = await command.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    var instance = reader.GetString(0);
+                    var ready = reader.GetInt32(1);
+                    if (ready == 2 && (expectedPreviousAgent is null || instance != expectedPreviousAgent))
+                        return (instance, ready);
+                }
+                await Task.Delay(200);
+            }
+            throw new TimeoutException("NodeAgent did not report two ready seed processes. " + AgentOutput(agent));
+        }
+
+        private string AgentOutput(Process agent) => _hostOutput.TryGetValue(agent, out var output) ? output.ToString() : "";
+
         public async ValueTask DisposeAsync()
         {
             foreach (var process in _processes)
             {
+                if (!process.HasExited && _agents.Contains(process) && OperatingSystem.IsLinux())
+                {
+                    _ = kill(process.Id, 15);
+                    var grace = DateTime.UtcNow.AddSeconds(8);
+                    while (!process.HasExited && DateTime.UtcNow < grace) await Task.Delay(100);
+                }
                 if (!process.HasExited) process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync();
+                // Synchronous bounded wait: seed hosts inherit the redirected pipes, so an
+                // unbounded WaitForExitAsync could block on output EOF until they die.
+                process.WaitForExit(TimeSpan.FromSeconds(10));
                 process.Dispose();
             }
+            await KillOrphanedSeedHostsAsync();
             await using var admin = new NpgsqlConnection(_admin.ConnectionString);
             await admin.OpenAsync();
             await using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{_databaseName}\" WITH (FORCE)", admin);
@@ -234,6 +346,33 @@ public sealed class RedesignM0HostTests
             Directory.Delete(_directory, recursive: true);
         }
 
+        /// <summary>A crashed agent leaves its setsid seed hosts alive; they hold the database and ports.</summary>
+        private async Task KillOrphanedSeedHostsAsync()
+        {
+            if (!OperatingSystem.IsLinux()) return;
+            var journalPath = Path.Combine(_directory, "agent-state", "process-journal.json");
+            if (!File.Exists(journalPath)) return;
+            JournalEntry[] entries;
+            try { entries = JsonSerializer.Deserialize<JournalEntry[]>(File.ReadAllText(journalPath)) ?? []; }
+            catch (JsonException) { return; }
+            foreach (var entry in entries)
+            {
+                try
+                {
+                    using var host = Process.GetProcessById(entry.Pid);
+                    if (host.HasExited ||
+                        Math.Abs((host.StartTime.ToUniversalTime() - entry.StartedAtUtc).TotalSeconds) >= 1)
+                        continue;
+                    host.Kill(entireProcessTree: true);
+                }
+                catch (ArgumentException) { }
+                catch (InvalidOperationException) { }
+            }
+            await Task.Delay(500);
+        }
+
+        private sealed record JournalEntry(string SlotId, string ProcessInstanceId, int Pid, DateTime StartedAtUtc);
+
         private static int FreePort()
         {
             var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -242,6 +381,9 @@ public sealed class RedesignM0HostTests
             listener.Stop();
             return port;
         }
+
+        [DllImport("libc", SetLastError = true)]
+        private static extern int kill(int pid, int signal);
 
         private static string FindRoot()
         {
