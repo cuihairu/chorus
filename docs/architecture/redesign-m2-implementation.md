@@ -33,14 +33,29 @@ AT 台账增量（不标满过，只记闭合半边）：
 - **AT14 帧部分闭合**：一帧=一回执事务（帧/消费/水位/房间/EOutbox 同进同出），崩溃后同 CommitId 收敛；AT14 全项待 M2-3/M2-4 的 tick 链与恢复后收口。
 - **AT27 帧部分闭合**：提交边界崩溃重启重放回执、前帧版本乐观校验、迟到低 tick 拒绝；终局与结算部分属 M2-5。
 
+## M2-3 已落地：示例玩法、GameServer 宿主与 RoomActor（1a61bc0）
+
+按架构 §7/§8.2/§8.4「玩法模块是受信服务端逻辑包：纯 ApplyTick→候选状态+Effects（写时复制）、Serialize/Restore 带版本守卫、ComputeStateHash；tick 节奏与快照策略由 manifest 钉住；运行时供给的 RNG 状态入快照、计时=tick、整数运算+有序集合保证确定性」「宿主不可用时模块不得凭新读臆造现实」「GameServer 无 DB 凭据，全部持久状态走 DataServer」：
+
+- `Chorus.Redesign.ExampleGame`：ExampleGameModule 双阵营计分——CreateInitialState 校验阵营（red/blue）与参与者去重；ApplyTick 纯函数（LCG 种子每 tick 恰推进一次并随状态携带；gift→阵营加分、boost→10×level+seed%5；未知形状与未知参与者确定性忽略；DurationTicks 到点冻结排名出 Result，并列→draw）；Serialize 规范 JSON（snake_case、有序字典）；Restore 仅认 schema v1 否则 fail-closed；ComputeStateHash=SHA256(Serialize)；OnHostUnavailable 返回空控制输入；manifest Default 50ms/快照每 100 tick/DeterministicReplay、FastTest 25ms；FailAfterTick 确定性故障缝（文档化测试变体，非宿主行为）。
+- `RedesignRoomStore` 生命周期操作：PrepareRoundAsync（回执 "round.prepare"；canonical 承诺快照哈希+schema，载荷与哈希同变才构成异请求；仅 Preparing 可写 tick-0 snapshot，verified=false 留给 M2-4 恢复语义）；ActivateRoundAsync（"round.activate"；须 Preparing 且存在 tick-0 快照，否则可见拒绝——房间绝不无初始状态运行；→Running、state_version=1、outbox `{roomId}/0/activate`）；SuspendRoundAsync（"round.suspend"；仅 Running 可挂起；→Suspended、outbox `{roomId}/0/suspend`；挂起房不再收帧不收新投递，状态保留待恢复）；AbortRound 扩为接受 Suspended 作终局逃生口。三者均所有权栅栏+幂等重试回放。
+- m2.proto：RoundStore 增 PrepareRound/ActivateRound/SuspendRound（← control-server、game-server）；新 GameHost 服务（Ready/PrepareRoom←control-server+game-server/RecoverRoom→Unimplemented，M2-4 落地）。
+- `Chorus.GameServer`（新工程，克隆 StreamerServer 骨架，端口 7503，无 DB 凭据）：宿主服务证书为 @cluster、数据面客户端身份为独立租户证书（CHORUS_CLIENT_CERT_PEM/KEY）——DataServer 从证书取租户，无需请求字段；RoomRuntime 持单 channel 与 actor 注册表，PrepareRoom=CreateInitialState→Serialize→PrepareRound(op+"/prepare")→ActivateRound(op+"/activate")→启动 actor，同房重入直接 Duplicate；RoomActor 单循环 PeriodicTimer(manifest.TickMs)：ReadInbox(≤200)→全部引用入帧、仅已知绑定映射为模块输入（外来投递入帧不臆造参与者）→ApplyTick→CommitFrame（commitId=`{roomId}/tick-{tick}` 天然幂等锚；tick%100==0 走 FullCheckpoint 同事务快照；final 帧 ResultJson+PlanHash=SHA256(result)）；结果未知（网络异常）以同 commitId 下次唤醒重放（§8.2）；明确拒绝（FailedPrecondition/InvalidArgument）或模块连续 3 次失败→SuspendRound 可见挂起并停 actor，他房继续。
+- 证据：模块级 `ExampleGameModuleTests` 3 例（同配置同脚本双实例哈希一致、快照恢复后续 tick 哈希一致且种子在快照内、终局排名/draw/未知形状忽略、schema 拒识、tick 契约、故障缝按 tick 触发、manifest 钉住、OnHostUnavailable 空）；store 级 `RedesignRoundLifecycleTests` 1 例（未 prepare 即 activate 拒、prepare 恰一次+幂等+异快照冲突+错实例/旧 epoch 双栅栏、activate→Running v1+outbox+重激活拒、帧窗口开放、suspend→Suspended+outbox+重复挂起拒+挂起后拒帧、abort 逃生）；宿主级 `RedesignM2HostTests.GameServerRunsRoundsToResultAndIsolatesModuleFailures`（真实四进程：控制面 Claim→StartRound→control 证书经 GameServer PrepareRoom×2（健康房 40 tick@25ms+故障房 FailAfterTick=2）→gateway 三礼物 ingest+route→健康房 Finishing（40 帧、投递全消费、水位 2、state_version 41、result winner=red 100:30、恰 2 条 score 效果、双房 tick-0 快照）而故障房 Suspended（≤1 帧、round.suspended outbox）——同进程双房一故障零交叉；重复 PrepareRoom Duplicate；streamer 角色 PrepareRoom PermissionDenied；RecoverRoom Unimplemented）。Release 全量 1201/1201。
+
+AT 台账增量（不标满过，只记闭合半边）：
+
+- **AT13 隔离半边闭合**：模块故障按房隔离——连续 3 败→可见挂起，同进程他房跑到终局；故障经模块缝注入。分布与压力证据待 M2-7。
+- **AT14/AT27 帧链半边推进**：tick 链由真实 actor 连续提交驱动、final 帧冻结 Result；快照恢复链属 M2-4。
+
 ## M2 后续顺序
 
 1. ~~局准入与 RoundGeneration、事件按局路由、AbortRound~~（已落地，见上）。
 2. ~~FrameStore：CommitFrame（§8.2 全事务）、ReadInbox、消费连续水位~~（已落地，见上）。
-3. §7 示例玩法 + Chorus.GameServer 宿主 + RoomActor tick + Prepare/激活（AT13 隔离半边）。
+3. ~~§7 示例玩法 + Chorus.GameServer 宿主 + RoomActor tick + Prepare/激活~~（已落地，见上）。
 4. 快照与恢复：PutSnapshot/LoadRecovery、确定性重放、坏快照回退（AT19）。
 5. 结算 §6.4 + FinalizeRound §6.6 + 排行榜投影 + 默认资产库存守卫（AT18、AT20、AT27 结算部分）。
 6. 客户端同步协议（Subscribe）+ 双主播示例（AT15、AT06 重连半边）。
 7. 全局出口证据：全流程场景测试、可选单节点基准、保留/清理守卫、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）。
 
-GameServer 工程尚不存在（M2-3 创建，无 DB 凭据，全部持久状态走 gRPC→DataServer）；match 票据与 BootstrapManifest 的 game-server 槽位扩展属 M3。
+GameServer 已建（无 DB 凭据，全部持久状态走 gRPC→DataServer）；match 票据与 BootstrapManifest 的 game-server 槽位扩展属 M3。
