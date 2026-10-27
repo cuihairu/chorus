@@ -449,4 +449,175 @@ public sealed class RedesignM1HostTests
             new GameplayStatusRequest { AccessCredential = login.AccessCredential }).ResponseAsync);
         Assert.Equal(StatusCode.PermissionDenied, stale.StatusCode);
     }
+
+    [Fact]
+    public async Task PlatformEventsIngestDurablyAcrossRealHostsAndSurviveDataServerRestart()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a","app-2":"game-b"}}"""
+            });
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        using var clientCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-client-1");
+        using var channel = environment.Channel(environment.StreamerPort, clientCertificate, "streamer-server");
+        var session = new StreamerSession.StreamerSessionClient(channel);
+        var credential = simulator.IssueCredential("app-1", "open-ingest", "live-ingest", TimeSpan.FromMinutes(5));
+        var login = await session.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential, LoginAttemptId = "attempt-1",
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            GatewayInstanceId = "gateway-1", ConnectionId = "connection-1"
+        });
+        var mounted = await session.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "mount-op-1"
+        });
+
+        // The platform gateway presents verified webhook batches to DataServer directly.
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var ingest = new PlatformIngest.PlatformIngestClient(gatewayChannel);
+
+        // Two legal same-amount gifts have different dedup keys and are both attributed to gen1.
+        var batch = new IngestBatchRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "batch-1"
+        };
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-1", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-ingest", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-2", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-ingest", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "comment-1", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-ingest", PayloadJson = """{"kind":"comment","text":"hi"}"""
+        });
+        var first = await ingest.IngestBatchAsync(batch);
+        Assert.False(first.Duplicate);
+        Assert.Equal(3, first.Receipts.Count);
+        Assert.All(first.Receipts, receipt =>
+        {
+            Assert.False(receipt.Duplicate);
+            Assert.Equal("Attributed", receipt.Disposition);
+            Assert.Equal(mounted.BindingId, receipt.BindingId);
+            Assert.Equal(1, receipt.BindingGeneration);
+        });
+
+        // The same operation retried replays the committed receipts.
+        var retry = await ingest.IngestBatchAsync(batch);
+        Assert.True(retry.Duplicate);
+        Assert.All(retry.Receipts, receipt => Assert.True(receipt.Duplicate));
+
+        // A switch moves the input window; a late duplicate keeps gen1, a new gift follows gen2.
+        var switched = await session.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = login.AccessCredential, GameId = "game-b", OperationId = "mount-op-2"
+        });
+        Assert.Equal(2, switched.Generation);
+        var lateBatch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-2" };
+        lateBatch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-1", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-ingest", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        lateBatch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-3", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-ingest", PayloadJson = """{"kind":"gift","amount":300}"""
+        });
+        var late = await ingest.IngestBatchAsync(lateBatch);
+        Assert.True(late.Receipts[0].Duplicate);
+        Assert.Equal(mounted.BindingId, late.Receipts[0].BindingId);
+        Assert.Equal(1, late.Receipts[0].BindingGeneration);
+        Assert.False(late.Receipts[1].Duplicate);
+        Assert.Equal(switched.BindingId, late.Receipts[1].BindingId);
+        Assert.Equal(2, late.Receipts[1].BindingGeneration);
+
+        // A room without a binding parks durable events in the inbox; best-effort is dropped.
+        var orphanBatch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-3" };
+        orphanBatch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-orphan", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-unknown", PayloadJson = """{"kind":"gift","amount":1}"""
+        });
+        orphanBatch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "comment-orphan", Durability = Chorus.DataServer.RedesignInputEventStore.BestEffort,
+            CanonicalRoomKey = "live-unknown", PayloadJson = """{"kind":"comment","text":"brb"}"""
+        });
+        var orphan = await ingest.IngestBatchAsync(orphanBatch);
+        Assert.Equal("PendingAttribution", orphan.Receipts[0].Disposition);
+        Assert.Empty(orphan.Receipts[0].BindingId);
+        Assert.Equal("BestEffortDropped", orphan.Receipts[1].Disposition);
+        var inbox = await ingest.GetPendingInboxAsync(new PendingInboxRequest { Platform = "simulator" });
+        var waiting = Assert.Single(inbox.Events);
+        Assert.Equal("gift-orphan", waiting.SourceDedupKey);
+        Assert.Equal("""{"kind": "gift", "amount": 1}""", waiting.PayloadJson);
+        Assert.Equal(0, (await ingest.ReconcileInboxAsync(new ReconcileInboxRequest
+        {
+            Platform = "simulator", CanonicalRoomKey = "live-unknown"
+        })).Attributed);
+
+        // The DataServer process dies after the commits; a restart answers with the original receipts.
+        environment.Kill("Chorus.DataServer");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        using var restartCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-2");
+        using var restartChannel = environment.Channel(environment.DataPort, restartCertificate, "data-server");
+        var restartedIngest = new PlatformIngest.PlatformIngestClient(restartChannel);
+        var afterRestart = await restartedIngest.IngestBatchAsync(batch);
+        Assert.True(afterRestart.Duplicate);
+        Assert.All(afterRestart.Receipts, receipt =>
+        {
+            Assert.True(receipt.Duplicate);
+            Assert.Equal(mounted.BindingId, receipt.BindingId);
+            Assert.Equal(1, receipt.BindingGeneration);
+        });
+
+        // Durable reality: 6 events, 4 attributed to bindings, 1 pending, 1 best-effort dropped.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var total = new NpgsqlCommand("SELECT count(*) FROM input.event", connection))
+                Assert.Equal(6, Convert.ToInt64(await total.ExecuteScalarAsync()));
+            await using (var dispositions = new NpgsqlCommand("""
+                SELECT disposition, count(*) FROM input.event GROUP BY disposition ORDER BY disposition
+                """, connection))
+            await using (var reader = await dispositions.ExecuteReaderAsync())
+            {
+                var observed = new List<string>();
+                while (await reader.ReadAsync())
+                    observed.Add($"{reader.GetString(0)}={Convert.ToInt64(reader.GetInt64(1))}");
+                Assert.Equal(["Attributed=4", "BestEffortDropped=1", "PendingAttribution=1"], observed);
+            }
+            await using (var frozen = new NpgsqlCommand("""
+                SELECT binding_generation FROM input.event WHERE source_dedup_key='gift-1'
+                """, connection))
+                Assert.Equal(1L, Convert.ToInt64(await frozen.ExecuteScalarAsync()));
+        }
+
+        // Only the platform gateway may ingest; other process roles are denied.
+        using var streamerRoleCertificate = environment.Certificate("tenant-a", "streamer-server", "role-probe");
+        using var streamerRoleChannel = environment.Channel(environment.DataPort, streamerRoleCertificate,
+            "data-server");
+        var deniedClient = new PlatformIngest.PlatformIngestClient(streamerRoleChannel);
+        var denied = await Assert.ThrowsAsync<RpcException>(() => deniedClient.IngestBatchAsync(batch).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
+    }
 }

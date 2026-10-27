@@ -15,6 +15,7 @@
     <EmbeddedResource Include="Redesign/0004_ownership_scope.sql" />
     <EmbeddedResource Include="Redesign/0005_session_connection.sql" />
     <EmbeddedResource Include="Redesign/0006_live_session_key.sql" />
+    <EmbeddedResource Include="Redesign/0007_input_event_attribution.sql" />
   </ItemGroup>
 
 </Project>

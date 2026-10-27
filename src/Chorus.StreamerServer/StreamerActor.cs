@@ -61,7 +61,7 @@ public sealed class StreamerActor(string tenantId, string streamerId)
                     ? null
                     : await store.GetSessionStateAsync(TenantId, sessionId, cancellationToken);
                 var sessionCurrent = session is not null && session.Current && !session.Revoked && !session.Expired;
-                var online = sessionCurrent && !session.Closed;
+                var online = sessionCurrent && session is not null && !session.Closed;
                 facts = new StreamerActorFacts(online, sessionCurrent, session?.SessionVersion ?? 0L,
                     liveSessionId is not null, binding);
             }

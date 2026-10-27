@@ -179,7 +179,7 @@ public sealed class RedesignM0HostTests
             Directory.CreateDirectory(_directory);
             _root = ProcessCertificateIssuer.CreateRoot("cluster-a", DateTimeOffset.UtcNow.AddDays(10));
             _nodeAuthority = ProcessCertificateIssuer.CreateNodeAuthority(_root,
-                new("cluster-a", "node-a", ["node-agent", "control-server", "data-server", "streamer-server", "game-server"],
+                new("cluster-a", "node-a", ["node-agent", "control-server", "data-server", "streamer-server", "game-server", "platform-gateway"],
                     ["@cluster", "tenant-a", "tenant-b"]), DateTimeOffset.UtcNow.AddDays(5));
             File.WriteAllText(Path.Combine(_directory, "root.pem"), _root.ExportCertificatePem());
             File.WriteAllText(Path.Combine(_directory, "node.pem"), _nodeAuthority.ExportCertificatePem());

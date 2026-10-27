@@ -225,6 +225,51 @@ message LiveSessionRequest {
 
 message LiveSessionReply { string live_session_id = 1; }
 
+message IngestEvent {
+  string source_dedup_key = 1;
+  string durability = 2; // Durable | BestEffort
+  string canonical_room_key = 3;
+  string payload_json = 4;
+}
+
+message IngestBatchRequest {
+  string platform = 1;
+  string app_id = 2;
+  string operation_id = 3;
+  repeated IngestEvent events = 4;
+}
+
+message EventReceipt {
+  string source_dedup_key = 1;
+  bool duplicate = 2;
+  string disposition = 3;
+  string binding_id = 4;
+  int64 binding_generation = 5;
+}
+
+message IngestBatchReply {
+  bool duplicate = 1;
+  repeated EventReceipt receipts = 2;
+}
+
+message PendingInboxRequest { string platform = 1; }
+
+message PendingInboxEvent {
+  string source_dedup_key = 1;
+  string canonical_room_key = 2;
+  string payload_json = 3;
+  int64 received_at_unix_ms = 4;
+}
+
+message PendingInboxReply { repeated PendingInboxEvent events = 1; }
+
+message ReconcileInboxRequest {
+  string platform = 1;
+  string canonical_room_key = 2;
+}
+
+message ReconcileInboxReply { int32 attributed = 1; }
+
 // StreamerServer session boundary; the caller presents a tenant-scoped streamer-server
 // identity and the tenant is taken from the authenticated certificate, not the request.
 service StreamerSession {
@@ -254,4 +299,14 @@ service StreamerIdentity {
   rpc StartGameplayBinding(BindingStartRequest) returns (BindingStartReply);
   rpc GetBindingStatus(BindingStatusRequest) returns (BindingStatusReply);
   rpc GetLiveSession(LiveSessionRequest) returns (LiveSessionReply);
+}
+
+// Durable platform event intake owned by DataServer (architecture 6.1). The caller is the
+// platform gateway after signature verification; a reply is only produced once the batch,
+// its dedup keys and the batch operation receipt are committed in one transaction.
+service PlatformIngest {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  rpc IngestBatch(IngestBatchRequest) returns (IngestBatchReply);
+  rpc GetPendingInbox(PendingInboxRequest) returns (PendingInboxReply);
+  rpc ReconcileInbox(ReconcileInboxRequest) returns (ReconcileInboxReply);
 }
