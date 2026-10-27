@@ -86,6 +86,26 @@ AT 台账增量（不标满过，只记闭合半边）：
 - **AT20 闭合**：结算到第 N 笔 kill→仅未完成 grant 重试且每笔恰一账本效果；FinalizeRound 任意位置可见拒绝/幂等重试收敛；占位、挂载指针与 owner 原子释放（单事务）且能开启下一局（宿主级同绑定二代局跑到终局）。
 - **AT27 闭合（结算部分与帧部分合流）**：帧提交、快照、结算 grant、FinalizeRound 全部回执锚定 OperationId——DB 已提交而 RPC 应答丢失时，同 op 重发回放原结果不产生重复效果（宿主级 DataServer Kill 于结算后、重启重发 Duplicate 且账本不增为结算侧证据；M2-2/M2-4 已证帧与快照侧）。AT27 至此单节点部分全项落地。
 
+## M2-6 已落地：客户端同步协议（bec1ab6）
+
+按架构 §8.3「只发布已提交帧；新订阅/滞后订阅先全量快照后增量；每订阅者有界队列、可丢中间显示帧但绝不把不连续 delta 当全量；逻辑永不等待最慢客户端；epoch 失配→ResyncRequired 而非不可验证帧」：
+
+- m2.proto：新 `RoundSync` 服务（GameServer）`Subscribe(SubscribeRequest) returns (stream SyncMessage)`；请求带 room/game/epoch 与订阅者已应用基线 (last_applied_tick, last_applied_state_version)；`SyncMessage` oneof {Snapshot, Delta, RoundResult, ResyncRequired}——每条消息携带房间身份（room/epoch/tick/state_version/module_version/config_hash）；`DeltaMessage` 含 base_version（客户端拒收基线未应用的 delta）、state_hash、input_event_ids、effects 与命令回执；`SnapshotMessage` 含全量状态载荷+schema 版本；`ResyncRequiredMessage` 含 current_epoch+reason。InboxItemProto 增 platform/source_dedup_key——客户端命令走 input.event 平台 "@chorus"、dedup key=command id（§6.3），宿主据此回执精确到命令。
+- `RoomSubscriber`：每订阅者有界队列（容量 64）。溢出即清积压并置 NeedsSnapshot，**丢弃触发溢出的那条 delta**（前驱已丢则它自身即不连续），终态消息（RoundResult/ResyncRequired）永不丢——溢出清队后仍入队。actor 对队列只 Offer 从不等待。
+- `RoomActor` 发布：`_publishGate` 单锁内同时推进头部 (state, tick, version) 并扇出——订阅者只见一致的已提交三元组。每提交帧构造 delta（base=前一提交版本；命令回执=平台 "@chorus" 的 inbox 项）；NeedsSnapshot 订阅者改收头部全量快照（快照涵盖该帧 delta）；final 帧先补快照（如需）再发 result 并 Complete——终局消息无隙到达。`Subscribe()`：已终局房→最终快照+冻结 result+Complete；基线落后头部→先头部快照；基线在头部→纯 delta 续流。
+- `RoundSyncGrpcService`：仅 streamer-server/control-server；未知房 NotFound；epoch 失配→单条 ResyncRequired(current_epoch) 后收流（不给客户端无法验证的帧）；泵循环 Detach 退出。
+- **流不得越过喂养它的循环（§8.3 活性规则，本轮排障成果）**：RunAsync 以 finally 收口——循环无论因何结束（终局、挂起、被栅栏拒、OCE），未提交 result 的房对每个在册订阅者发 ResyncRequired+Complete，已终局房仅补 Complete；`_loopEnded` 标志让晚到 Subscribe 绝不注册进已死的循环。排障证据链：全量门禁复现挂起→堆转储显示 actor 任务 RanToCompletion、订阅者 2 个仍在等、房 Running、头 486/487、堆上零异常对象→根因是 **60 秒租约上限被工作受限的长房越过**（每 tick 两次数据面调用，门禁负载下 ~100-200ms/tick）：过期租约把 tick-487 的 CommitFrame 以 stale-owner FailedPrecondition 拒之，commit 拒绝路径置 _stopped 后 SuspendRound 撞同一栅栏、RpcException 被 RoomRuntime 吞掉——循环退出而订阅者永等。修复=活性 finally + 拒绝路径 stderr 证据行（挂起本身可能被同一栅栏拒，证据不依赖它落地）+ 控制面续租。架构 §4.2 本就规定 ControlServer 负责授予与续租（初始 15s/续租 5s），M2 测试即控制面：`RenewableClaim` 每 20s 同 owner 重claim（ON CONFLICT 同 owner 且租约有效→epoch 不变，仅延长）——生产续租随 M3 控制面集成落地。
+- 测试基建：HostEnvironment 增 `CHORUS_TEST_DUMP_HOST_OUTPUT` 环境开关——逐宿主转储捕获的 stdout/stderr 到测试输出（本次定位 ArgumentOutOfRangeException 'leaseSeconds' 即靠它）。
+- 证据：宿主级 `RedesignM2HostTests` 增 3 例——
+  - `SlowSubscribersAreRebaselinedWhileFastSubscribersStreamContiguousDeltas`：600 tick@5ms 工作受限房（TickMs=5 下每 tick 两次数据面往返主导节拍）+双 streamer 订阅者；快者恰 1 条基线快照+无缝 delta 链（WalkSyncChain 逐条断言 BaseVersion==已应用版本）直达 tick-600 result（终版 601）；沉默慢者队列溢出重基线≥2 次仍收敛到同一 result——房从未等它。
+  - `DisconnectedSubscriberReconnectsToAHeadSnapshotAndTheSameResult`：过期 epoch 订阅→恰一条 ResyncRequired(current_epoch) 即收流；读到 tick≥12 断开→房继续（SQL 轮询帧数越过 applied+10）→携基线重连→首条为头部快照（tick>applied）、链无缝到 141/140 终局；流式 result 与 DB `game.result` 经 RankingOf 结构化一致（PG jsonb 键序无关）；晚到订阅者收最终快照+result 即收流。
+  - `ClientCommandsSurfaceAsReceiptsInTheDeltaStream`：120 tick 房，600ms 后第二 streamer 证书经 DataPort AcceptClientInput（command id "cmd-boost-1"，payload `{"action":"boost","level":3}`）→恰一条 delta 携该命令回执；同 command id 重发 Duplicate=true 且不产生第二条回执；效果兑现=red 130-134（礼物 100+boost 30-34）、blue 恰 30。Release 全量 1213/1213。
+
+AT 台账增量（不标满过，只记闭合半边）：
+
+- **AT15 闭合**：慢消费者不阻塞快者——有界队列溢出清积压+丢触发帧，actor 从不等待；快者链连续直达终局；强制滞后以全量快照重基线追平到同一 result。
+- **AT06 重连半边闭合**：断线后局继续提交；重连携 (tick, version) 基线→头部快照+无缝增量到冻结 result；流式与 DB 结果结构一致；过期 epoch 一律 ResyncRequired 不给不可验证帧。（房间模型半边 M2-1 已闭合。）
+
 ## M2 后续顺序
 
 1. ~~局准入与 RoundGeneration、事件按局路由、AbortRound~~（已落地，见上）。
@@ -93,7 +113,7 @@ AT 台账增量（不标满过，只记闭合半边）：
 3. ~~§7 示例玩法 + Chorus.GameServer 宿主 + RoomActor tick + Prepare/激活~~（已落地，见上）。
 4. ~~快照与恢复：PutSnapshot/LoadRecovery、确定性重放、坏快照回退（AT19）~~（已落地，见上）。
 5. ~~结算 §6.4 + FinalizeRound §6.6 + 排行榜投影 + 默认资产库存守卫（AT18、AT20、AT27 结算部分）~~（已落地，见上）。
-6. 客户端同步协议（Subscribe）+ 双主播示例（AT15、AT06 重连半边）。
+6. ~~客户端同步协议（Subscribe：Snapshot/Delta/CommandReceipt/RoundResult/ResyncRequired）~~（协议已落地，见上；双主播控制台示例 `Chorus.RoundDemo` 留作 M2-6b）。
 7. 全局出口证据：全流程场景测试、可选单节点基准、保留/清理守卫、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）。
 
 GameServer 已建（无 DB 凭据，全部持久状态走 gRPC→DataServer）；match 票据与 BootstrapManifest 的 game-server 槽位扩展属 M3。
