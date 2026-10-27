@@ -34,11 +34,18 @@ public sealed class GameHostGrpcService(RoomRuntime runtime, TrustedProcessCerti
         // own status — the caller sees exactly what the store refused.
     }
 
-    public override Task<RecoverRoomReply> RecoverRoom(RecoverRoomRequest request, ServerCallContext context)
+    public override async Task<RecoverRoomReply> RecoverRoom(RecoverRoomRequest request,
+        ServerCallContext context)
     {
         Require(context, "control-server", "game-server");
-        throw new RpcException(new Status(StatusCode.Unimplemented,
-            "Snapshot recovery lands in M2-4; until then recovery fails visibly instead of lying."));
+        try
+        {
+            return await runtime.RecoverRoomAsync(request, context.CancellationToken);
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
     }
 
     private ProcessIdentity Require(ServerCallContext context, params string[] roles)

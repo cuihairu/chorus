@@ -165,6 +165,72 @@ message ReadInboxReply {
   repeated InboxItemProto items = 2;
 }
 
+// Snapshot persistence and recovery reads (architecture 8.2, 10.3). PutSnapshot attaches a
+// store-verified full snapshot to the last committed frame; LoadRecovery hands the recoverer
+// everything a room needs to rebuild: the room head, every snapshot, the frames after the
+// oldest snapshot and the full delivery log in routing order.
+message PutSnapshotRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  int64 tick = 5;
+  bytes snapshot_payload = 6;
+  bytes snapshot_hash = 7;
+  int32 snapshot_schema_version = 8;
+  string operation_id = 9;
+}
+
+message SnapshotReceiptReply {
+  string room_id = 1;
+  int64 tick = 2;
+  int32 snapshot_schema_version = 3;
+  bool verified = 4;
+  bool duplicate = 5;
+}
+
+message LoadRecoveryRequest {
+  string room_id = 1;
+  string game_id = 2;
+}
+
+message RecoverySnapshotProto {
+  int64 tick = 1;
+  int32 schema_version = 2;
+  bytes payload = 3;
+  bytes payload_hash = 4;
+  bool verified = 5;
+}
+
+message RecoveryDeliveryProto {
+  string event_id = 1;
+  int64 sequence = 2;
+  string binding_id = 3;
+  string payload_json = 4;
+  bool consumed = 5;
+}
+
+message RecoveryFrameProto {
+  int64 tick = 1;
+  repeated string input_event_ids = 2;
+  bytes state_hash = 3;
+  string module_version = 4;
+  string config_hash = 5;
+}
+
+message LoadRecoveryReply {
+  bool found = 1;
+  string room_id = 2;
+  string status = 3;
+  int64 epoch = 4;
+  int64 last_tick = 5;
+  int64 state_version = 6;
+  repeated RecoverySnapshotProto snapshots = 7;
+  repeated RecoveryDeliveryProto deliveries = 8;
+  repeated RecoveryFrameProto frames = 9;
+  repeated RoundParticipantStateProto participants = 10;
+}
+
 service RoundStore {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc StartRound(StartRoundRequest) returns (RoundAdmissionReply);
@@ -190,6 +256,10 @@ service FrameStore {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc CommitFrame(CommitFrameRequest) returns (FrameReceiptReply);
   rpc ReadInbox(ReadInboxRequest) returns (ReadInboxReply);
+  // Recovery boundary: the owner persists store-verified snapshots; the owner and the
+  // control plane read the recovery plan (architecture 8.2, 10.3).
+  rpc PutSnapshot(PutSnapshotRequest) returns (SnapshotReceiptReply);
+  rpc LoadRecovery(LoadRecoveryRequest) returns (LoadRecoveryReply);
 }
 
 // Room preparation on the game host (architecture 7.2). The control plane names the
@@ -198,7 +268,8 @@ service FrameStore {
 service GameHost {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc PrepareRoom(PrepareRoomRequest) returns (PrepareRoomReply);
-  // Snapshot recovery lands in M2-4; until then the call fails visibly instead of lying.
+  // Snapshot recovery (architecture 10.3): replay from the newest usable snapshot, resume
+  // ticking; a Finishing room recovers its tail without restarting battle ticks.
   rpc RecoverRoom(RecoverRoomRequest) returns (RecoverRoomReply);
 }
 
@@ -263,10 +334,17 @@ message PrepareRoomReply {
 message RecoverRoomRequest {
   string room_id = 1;
   string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  int32 tick_ms = 5;
 }
 
 message RecoverRoomReply {
   string room_id = 1;
   bool recovered = 2;
   string note = 3;
+  string status = 4;
+  int64 last_tick = 5;
+  int64 snapshot_tick = 6;
+  int32 replayed_frames = 7;
 }

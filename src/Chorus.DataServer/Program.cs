@@ -43,6 +43,7 @@ builder.Services.AddSingleton(new RedesignPlatformTaskStore(connectionString));
 builder.Services.AddSingleton(new RedesignRoomStore(connectionString));
 builder.Services.AddSingleton(new RedesignRoundInputStore(connectionString));
 builder.Services.AddSingleton(new RedesignFrameStore(connectionString));
+builder.Services.AddSingleton(new RedesignRecoveryStore(connectionString));
 builder.Services.AddGrpc();
 
 var app = builder.Build();

@@ -636,16 +636,508 @@ public sealed class RedesignM2HostTests
         // A second PrepareRoom for a room this process already knows answers duplicate.
         var duplicate = await gameHost.PrepareRoomAsync(healthyPrepare);
         Assert.True(duplicate.Duplicate);
-        // Only the control plane and game hosts prepare rooms; recovery fails visibly until M2-4.
+        // Only the control plane and game hosts prepare rooms; a finished room recovers its
+        // tail without restarting battle ticks.
         using var streamerCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-role");
         using var streamerHostChannel = environment.Channel(environment.GamePort, streamerCertificate,
             "game-server");
         var denied = await Assert.ThrowsAsync<RpcException>(() => new GameHost.GameHostClient(
             streamerHostChannel).PrepareRoomAsync(healthyPrepare).ResponseAsync);
         Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
-        var unimplemented = await Assert.ThrowsAsync<RpcException>(() => gameHost.RecoverRoomAsync(
-            new RecoverRoomRequest { RoomId = "room-m2-4", GameId = "game-a" }).ResponseAsync);
-        Assert.Equal(StatusCode.Unimplemented, unimplemented.StatusCode);
+        var tail = await gameHost.RecoverRoomAsync(new RecoverRoomRequest
+        {
+            RoomId = "room-m2-4", GameId = "game-a", OwnerInstanceId = "game-1",
+            Epoch = healthyOwner.Epoch, TickMs = 25
+        });
+        Assert.True(tail.Recovered);
+        Assert.Equal("Finishing", tail.Status);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var frames = new NpgsqlCommand(
+                "SELECT count(*) FROM game.frame WHERE room_id='room-m2-4'", connection);
+            var afterTail = Convert.ToInt64(await frames.ExecuteScalarAsync());
+            Assert.Equal(40L, afterTail); // no battle tick was restarted
+        }
+    }
+
+    [Fact]
+    public async Task KilledGameServerRecoversAtTheHeadAndRunsToTheSameResult()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        var gameEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            gameEnvironment, clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-run-d", "live-m2-6-a");
+        var (guest, guestBinding) = await MountAsync(environment, simulator, "open-m2-run-e", "live-m2-6-b");
+        var (twinHost, twinHostBinding) = await MountAsync(environment, simulator, "open-m2-run-f", "live-m2-7-a");
+        var (twinGuest, twinGuestBinding) = await MountAsync(environment, simulator, "open-m2-run-g", "live-m2-7-b");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        var routing = new RoundInput.RoundInputClient(gameChannel);
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var ingest = new PlatformIngest.PlatformIngestClient(gatewayChannel);
+        using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
+        var gameHost = new GameHost.GameHostClient(hostChannel);
+
+        // The victim round runs long enough to pass its tick-100 checkpoint before the crash.
+        var owner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-6",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-6", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-6",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
+            }
+        })).Status);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-6", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-6", DurationTicks = 200, RandomSeed = 777, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-6" };
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-6a", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-6-a", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-6b", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-6-b", PayloadJson = """{"kind":"gift","amount":30}"""
+        });
+        await ingest.IngestBatchAsync(batch);
+        await routing.RouteEventsAsync(new RouteEventsRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "route-6", MaxEvents = 50
+        });
+
+        // Crash the game host mid-battle, past the tick-100 checkpoint (AT19 kill point).
+        long killTick = 0;
+        var crashDeadline = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < crashDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                (_, killTick) = await FrameStatsAsync(connection, "room-m2-6");
+            }
+            if (killTick >= 130) break;
+            await Task.Delay(100);
+        }
+        Assert.InRange(killTick, 130, 199);
+        environment.Kill("Chorus.GameServer");
+        // The actor keeps committing until the process actually dies; the head after the kill
+        // is the ground truth the recovery must land on.
+        long headTick;
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            (_, headTick) = await FrameStatsAsync(connection, "room-m2-6");
+        }
+        Assert.InRange(headTick, killTick, 199);
+
+        // A fresh process on the same port replays the frames after the tick-100 snapshot,
+        // verifies every state hash, pins the head and resumes ticking.
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            gameEnvironment, clientTenant: "tenant-a");
+        var recovered = await gameHost.RecoverRoomAsync(new RecoverRoomRequest
+        {
+            RoomId = "room-m2-6", GameId = "game-a", OwnerInstanceId = "game-1",
+            Epoch = owner.Epoch, TickMs = 25
+        });
+        Assert.True(recovered.Recovered);
+        Assert.Equal("Running", recovered.Status);
+        Assert.Equal(100L, recovered.SnapshotTick);
+        Assert.Equal(headTick, recovered.LastTick);
+        Assert.Equal((int)(headTick - 100), recovered.ReplayedFrames);
+
+        // An untouched twin with the same module configuration and the same gifts is the
+        // determinism reference: crash and recovery must not move the outcome.
+        var twinOwner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-7",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-7", OwnerInstanceId = "game-1", Epoch = twinOwner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-7",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = twinHostBinding, ParticipantId = twinHost.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = twinGuestBinding, ParticipantId = twinGuest.StreamerId, Role = "Guest" }
+            }
+        })).Status);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-7", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = twinOwner.Epoch,
+            OperationId = "run-op-7", DurationTicks = 200, RandomSeed = 777, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = twinHostBinding, ParticipantId = twinHost.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = twinGuestBinding, ParticipantId = twinGuest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        var twinBatch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-7" };
+        twinBatch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-7a", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-7-a", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        twinBatch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-7b", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-7-b", PayloadJson = """{"kind":"gift","amount":30}"""
+        });
+        await ingest.IngestBatchAsync(twinBatch);
+        await routing.RouteEventsAsync(new RouteEventsRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "route-7", MaxEvents = 50
+        });
+
+        var finishDeadline = DateTime.UtcNow.AddSeconds(30);
+        string victim = "", twin = "";
+        while (DateTime.UtcNow < finishDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                victim = await RoomStatusAsync(connection, "room-m2-6");
+                twin = await RoomStatusAsync(connection, "room-m2-7");
+            }
+            if (victim == "Finishing" && twin == "Finishing") break;
+            await Task.Delay(200);
+        }
+        Assert.Equal("Finishing", victim);
+        Assert.Equal("Finishing", twin);
+
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            // The recovered round completed its script: contiguous ticks 1..200, no gaps and
+            // no restart from zero — the resume continued at killTick + 1.
+            var (victimFrames, victimMax) = await FrameStatsAsync(connection, "room-m2-6");
+            Assert.Equal(200L, victimFrames);
+            Assert.Equal(200L, victimMax);
+            var (twinFrames, twinMax) = await FrameStatsAsync(connection, "room-m2-7");
+            Assert.Equal(200L, twinFrames);
+            Assert.Equal(200L, twinMax);
+            await using (var room = new NpgsqlCommand(
+                "SELECT last_tick,state_version FROM game.room WHERE room_id='room-m2-6'", connection))
+            await using (var reader = await room.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(200L, reader.GetInt64(0));
+                Assert.Equal(201L, reader.GetInt64(1));
+            }
+            // Crash and recovery did not move the deterministic outcome (AT19).
+            string victimResult, twinResult;
+            await using (var result = new NpgsqlCommand(
+                "SELECT result::text FROM game.result WHERE room_id='room-m2-6'", connection))
+                victimResult = (string)(await result.ExecuteScalarAsync())!;
+            await using (var result = new NpgsqlCommand(
+                "SELECT result::text FROM game.result WHERE room_id='room-m2-7'", connection))
+                twinResult = (string)(await result.ExecuteScalarAsync())!;
+            Assert.Equal(twinResult, victimResult);
+            using (var document = System.Text.Json.JsonDocument.Parse(victimResult))
+            {
+                Assert.Equal("red", document.RootElement.GetProperty("winner").GetString());
+                Assert.Equal(100, document.RootElement.GetProperty("ranking")[0].GetProperty("score").GetInt64());
+                Assert.Equal(30, document.RootElement.GetProperty("ranking")[1].GetProperty("score").GetInt64());
+            }
+            // Snapshot chain: the prepare anchor, the tick-100 checkpoint, the store-verified
+            // recovery head at the crash tick, and the final checkpoint.
+            await using (var snapshots = new NpgsqlCommand(
+                "SELECT tick_id,verified FROM game.snapshot WHERE room_id='room-m2-6' ORDER BY tick_id",
+                connection))
+            await using (var reader = await snapshots.ExecuteReaderAsync())
+            {
+                var rows = new List<(long, bool)>();
+                while (await reader.ReadAsync()) rows.Add((reader.GetInt64(0), reader.GetBoolean(1)));
+                Assert.Equal([(0L, false), (100L, false), (headTick, true), (200L, false)], rows);
+            }
+            // The inputs survived the crash and were consumed exactly once.
+            await using (var deliveries = new NpgsqlCommand("""
+                SELECT count(*) FILTER (WHERE state='Consumed'),count(*)
+                FROM input.delivery WHERE consumer_scope='room:room-m2-6'
+                """, connection))
+                Assert.Equal(2L, Convert.ToInt64(await deliveries.ExecuteScalarAsync()));
+        }
+    }
+
+    [Fact]
+    public async Task CorruptSnapshotsFallBackToTheAnchorOrSuspendVisibly()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        var gameEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            gameEnvironment, clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-run-h", "live-m2-8-a");
+        var (guest, guestBinding) = await MountAsync(environment, simulator, "open-m2-run-i", "live-m2-8-b");
+        var (lone, loneBinding) = await MountAsync(environment, simulator, "open-m2-run-j", "live-m2-9-a");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        var routing = new RoundInput.RoundInputClient(gameChannel);
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var ingest = new PlatformIngest.PlatformIngestClient(gatewayChannel);
+        using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
+        var gameHost = new GameHost.GameHostClient(hostChannel);
+
+        // A long round first; once it passes tick 130 a short round joins so both are
+        // mid-battle at the shared crash.
+        var owner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-8",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-8", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-8",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
+            }
+        })).Status);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-8", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-8", DurationTicks = 200, RandomSeed = 555, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-8" };
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-8a", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-8-a", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-8b", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-8-b", PayloadJson = """{"kind":"gift","amount":30}"""
+        });
+        await ingest.IngestBatchAsync(batch);
+        await routing.RouteEventsAsync(new RouteEventsRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "route-8", MaxEvents = 50
+        });
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            var tickDeadline = DateTime.UtcNow.AddSeconds(20);
+            while (DateTime.UtcNow < tickDeadline)
+            {
+                (_, var longTick) = await FrameStatsAsync(connection, "room-m2-8");
+                if (longTick >= 130) break;
+                await Task.Delay(100);
+            }
+        }
+        // The short round joins the same host; the crash must catch both mid-battle.
+        var loneOwner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-9",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-9", OwnerInstanceId = "game-1", Epoch = loneOwner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-9",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = loneBinding, ParticipantId = lone.StreamerId, Role = "Host" }
+            }
+        })).Status);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-9", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = loneOwner.Epoch,
+            OperationId = "run-op-9", DurationTicks = 60, RandomSeed = 888, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = loneBinding, ParticipantId = lone.StreamerId, Faction = "red" }
+            }
+        })).Status);
+
+        long longKill = 0, shortKill = 0;
+        var crashDeadline2 = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < crashDeadline2)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                (_, longKill) = await FrameStatsAsync(connection, "room-m2-8");
+                (_, shortKill) = await FrameStatsAsync(connection, "room-m2-9");
+            }
+            if (longKill >= 160 && shortKill >= 30) break;
+            await Task.Delay(100);
+        }
+        Assert.InRange(longKill, 160, 199);
+        Assert.InRange(shortKill, 30, 59);
+        environment.Kill("Chorus.GameServer");
+        // The heads at actual process death are the recovery ground truth.
+        long longHead, shortHead;
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            (_, longHead) = await FrameStatsAsync(connection, "room-m2-8");
+            (_, shortHead) = await FrameStatsAsync(connection, "room-m2-9");
+        }
+        Assert.InRange(longHead, longKill, 199);
+        Assert.InRange(shortHead, shortKill, 59);
+
+        // Disk-level corruption between crash and recovery: the long round's newest snapshot
+        // loses its hash commitment; the short round's only anchor becomes unreadable.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var corruptHash = new NpgsqlCommand("""
+                UPDATE game.snapshot SET payload_hash=decode('0000000000000000000000000000000000000000000000000000000000000000','hex')
+                WHERE room_id='room-m2-8' AND tick_id=100
+                """, connection))
+                await corruptHash.ExecuteNonQueryAsync();
+            await using (var corruptPayload = new NpgsqlCommand("""
+                UPDATE game.snapshot SET payload=convert_to('corrupted','UTF8')
+                WHERE room_id='room-m2-9' AND tick_id=0
+                """, connection))
+                await corruptPayload.ExecuteNonQueryAsync();
+        }
+
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            gameEnvironment, clientTenant: "tenant-a");
+        // The hash mismatch demotes the newest snapshot; the tick-0 anchor replays the whole
+        // battle with per-frame verification and the round still finishes.
+        var fallback = await gameHost.RecoverRoomAsync(new RecoverRoomRequest
+        {
+            RoomId = "room-m2-8", GameId = "game-a", OwnerInstanceId = "game-1",
+            Epoch = owner.Epoch, TickMs = 25
+        });
+        Assert.True(fallback.Recovered);
+        Assert.Equal("Running", fallback.Status);
+        Assert.Equal(0L, fallback.SnapshotTick);
+        Assert.Equal(longHead, fallback.LastTick);
+        Assert.Equal((int)longHead, fallback.ReplayedFrames);
+        // No snapshot survives for the short round: it parks visibly instead of guessing.
+        var parked = await gameHost.RecoverRoomAsync(new RecoverRoomRequest
+        {
+            RoomId = "room-m2-9", GameId = "game-a", OwnerInstanceId = "game-1",
+            Epoch = loneOwner.Epoch, TickMs = 25
+        });
+        Assert.False(parked.Recovered);
+        Assert.Equal("Suspended", parked.Status);
+
+        var finishDeadline = DateTime.UtcNow.AddSeconds(30);
+        string longRoom = "";
+        while (DateTime.UtcNow < finishDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                longRoom = await RoomStatusAsync(connection, "room-m2-8");
+            }
+            if (longRoom == "Finishing") break;
+            await Task.Delay(200);
+        }
+        Assert.Equal("Finishing", longRoom);
+
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            var (frames, maxTick) = await FrameStatsAsync(connection, "room-m2-8");
+            Assert.Equal(200L, frames);
+            Assert.Equal(200L, maxTick);
+            string fallbackResult;
+            await using (var result = new NpgsqlCommand(
+                "SELECT result::text FROM game.result WHERE room_id='room-m2-8'", connection))
+                fallbackResult = (string)(await result.ExecuteScalarAsync())!;
+            using (var document = System.Text.Json.JsonDocument.Parse(fallbackResult))
+                Assert.Equal("red", document.RootElement.GetProperty("winner").GetString());
+            // The suspended room keeps exactly the frames it had at the crash.
+            var (shortFrames, shortMax) = await FrameStatsAsync(connection, "room-m2-9");
+            Assert.Equal(shortHead, shortFrames);
+            Assert.Equal(shortHead, shortMax);
+            await using (var shortStatus = new NpgsqlCommand(
+                "SELECT status FROM game.room WHERE room_id='room-m2-9'", connection))
+                Assert.Equal("Suspended", await shortStatus.ExecuteScalarAsync());
+            await using (var suspendOutbox = new NpgsqlCommand(
+                "SELECT kind FROM infra.outbox WHERE effect_id='room-m2-9/0/suspend'", connection))
+                Assert.Equal("round.suspended", await suspendOutbox.ExecuteScalarAsync());
+        }
+    }
+
+    private static async Task<(long Count, long MaxTick)> FrameStatsAsync(NpgsqlConnection connection,
+        string roomId)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT count(*),COALESCE(max(tick_id),0) FROM game.frame WHERE room_id=@room", connection);
+        command.Parameters.AddWithValue("room", roomId);
+        await using var reader = await command.ExecuteReaderAsync();
+        return await reader.ReadAsync() ? (reader.GetInt64(0), reader.GetInt64(1)) : (0, 0);
     }
 
     private static async Task<string> RoomStatusAsync(NpgsqlConnection connection, string roomId)

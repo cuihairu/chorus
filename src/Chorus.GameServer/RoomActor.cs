@@ -35,10 +35,12 @@ internal sealed class RoomActor : IAsyncDisposable
     private long _stateVersion;
     private int _consecutiveModuleFailures;
     private volatile bool _stopped;
+    private volatile bool _finalCommitted;
 
     public RoomActor(RoomRuntime runtime, FrameStore.FrameStoreClient frames, ExampleGameModule module,
         string gameId, string roomId, string ownerInstanceId, long epoch, string configHash,
-        ExampleGameState initialState, IReadOnlyDictionary<string, string> participantByBinding)
+        ExampleGameState initialState, IReadOnlyDictionary<string, string> participantByBinding,
+        long lastTick = 0, long stateVersion = 1)
     {
         _runtime = runtime;
         _frames = frames;
@@ -50,9 +52,10 @@ internal sealed class RoomActor : IAsyncDisposable
         _configHash = configHash;
         _state = initialState;
         _participantByBinding = participantByBinding;
-        // Activation left the room Running at state version 1 with no frames yet.
-        _lastTick = 0;
-        _stateVersion = 1;
+        // Fresh rooms start at the activation head (tick 0, state version 1); a recovered
+        // room resumes from the head its frames already committed.
+        _lastTick = lastTick;
+        _stateVersion = stateVersion;
     }
 
     public void Start() => _run = Task.Run(() => RunAsync(_cancellation.Token));
@@ -167,8 +170,17 @@ internal sealed class RoomActor : IAsyncDisposable
         _state = outcome.State;
         _lastTick = receipt.Tick;
         _stateVersion = receipt.StateVersion;
-        if (outcome.Final) _stopped = true; // the room is Finishing; settlement is M2-5
+        if (outcome.Final)
+        {
+            // The room is Finishing; settlement is M2-5. Recovery asks must answer the
+            // tail, never restart battle ticks.
+            _finalCommitted = true;
+            _stopped = true;
+        }
     }
+
+    /// <summary>True once the final frame committed: the room is Finishing on the data plane.</summary>
+    public bool Completed => _finalCommitted;
 
     private static DateTime Deadline() => DateTime.UtcNow.AddSeconds(10);
 

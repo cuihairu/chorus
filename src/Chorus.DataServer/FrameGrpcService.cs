@@ -11,7 +11,8 @@ namespace Chorus.DataServer;
 /// one commit is one store transaction, so a reply always reflects a committed frame.
 /// </summary>
 public sealed class FrameGrpcService(
-    RedesignFrameStore frameStore, TrustedProcessCertificates trustedCertificates)
+    RedesignFrameStore frameStore, RedesignRecoveryStore recoveryStore,
+    TrustedProcessCertificates trustedCertificates)
     : FrameStore.FrameStoreBase
 {
     public override Task<ReadyReply> Ready(Empty request, ServerCallContext context)
@@ -78,6 +79,92 @@ public sealed class FrameGrpcService(
                     {
                         EventId = item.EventId, Sequence = item.Sequence, RouteVersion = item.RouteVersion,
                         BindingId = item.BindingId ?? "", PayloadJson = item.PayloadJson
+                    })
+                }
+            };
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<SnapshotReceiptReply> PutSnapshot(PutSnapshotRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "game-server");
+        try
+        {
+            var receipt = await recoveryStore.PutSnapshotAsync(caller.TenantId, request.GameId,
+                request.RoomId, request.OwnerInstanceId, request.Epoch, request.Tick,
+                request.SnapshotPayload.ToByteArray(), request.SnapshotHash.ToByteArray(),
+                request.SnapshotSchemaVersion, request.OperationId, context.CancellationToken);
+            return new SnapshotReceiptReply
+            {
+                RoomId = receipt.RoomId, Tick = receipt.Tick,
+                SnapshotSchemaVersion = receipt.SchemaVersion, Verified = receipt.Verified,
+                Duplicate = receipt.Duplicate
+            };
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The room ownership fence rejected the caller."));
+        }
+        catch (FrameConflictException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different snapshot."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<LoadRecoveryReply> LoadRecovery(LoadRecoveryRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "game-server", "control-server");
+        try
+        {
+            var plan = await recoveryStore.LoadRecoveryAsync(caller.TenantId, request.GameId,
+                request.RoomId, context.CancellationToken);
+            if (plan is null) return new LoadRecoveryReply { Found = false };
+            return new LoadRecoveryReply
+            {
+                Found = true, RoomId = plan.RoomId, Status = plan.Status, Epoch = plan.Epoch,
+                LastTick = plan.LastTick, StateVersion = plan.StateVersion,
+                Snapshots =
+                {
+                    plan.Snapshots.Select(snapshot => new RecoverySnapshotProto
+                    {
+                        Tick = snapshot.Tick, SchemaVersion = snapshot.SchemaVersion,
+                        Payload = Google.Protobuf.ByteString.CopyFrom(snapshot.Payload),
+                        PayloadHash = Google.Protobuf.ByteString.CopyFrom(snapshot.PayloadHash),
+                        Verified = snapshot.Verified
+                    })
+                },
+                Deliveries =
+                {
+                    plan.Deliveries.Select(delivery => new RecoveryDeliveryProto
+                    {
+                        EventId = delivery.EventId, Sequence = delivery.Sequence,
+                        BindingId = delivery.BindingId ?? "", PayloadJson = delivery.PayloadJson,
+                        Consumed = delivery.Consumed
+                    })
+                },
+                Frames =
+                {
+                    plan.Frames.Select(frame => new RecoveryFrameProto
+                    {
+                        Tick = frame.Tick, StateHash = Google.Protobuf.ByteString.CopyFrom(frame.StateHash),
+                        ModuleVersion = frame.ModuleVersion, ConfigHash = frame.ConfigHash,
+                        InputEventIds = { frame.InputEventIds }
+                    })
+                },
+                Participants =
+                {
+                    plan.Participants.Select(participant => new RoundParticipantStateProto
+                    {
+                        ParticipantId = participant.ParticipantId, BindingId = participant.BindingId,
+                        Role = participant.Role, State = participant.State
                     })
                 }
             };
