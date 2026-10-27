@@ -34,6 +34,8 @@ M0 细化（2026-10-27）：收据唯一键采用 `(TenantId, GameId, OperationK
 
 M0 存储细化：选择 PostgreSQL 唯一键作为并发裁决，由数据层事务入口同时持有收据占位、业务效果和最终回执；迁移独立执行。拒绝内存 TTL 去重（重启后失效）与“先保存收据、再调用业务”两次提交（会出现有成功回执而效果缺失）。此项只解决通用事务收据，DataServer 服务、权限与完整业务 schema 仍需单独实施。
 
+M0 迁移细化：目标 schema 用显式运行的 `Chorus.SchemaTool` 与迁移版本/内容校验推进，应用宿主启动仅检查兼容性。拒绝让多个业务实例在冷启动时 `CREATE TABLE IF NOT EXISTS`，因为这会掩盖版本漂移和部署竞态；初始结构清单及服务分界见 [M0 实现边界](redesign-m0-implementation.md)。
+
 ## ADR-R04：所有权 epoch 在接收端执行 fencing
 
 选择数据库中的 OwnerInstance/Epoch/LeaseUntil，所有权变更与业务提交锁同一行；数据服务校验，不依赖心跳通知及时到达。
