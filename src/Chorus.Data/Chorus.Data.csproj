@@ -16,6 +16,7 @@
     <EmbeddedResource Include="Redesign/0005_session_connection.sql" />
     <EmbeddedResource Include="Redesign/0006_live_session_key.sql" />
     <EmbeddedResource Include="Redesign/0007_input_event_attribution.sql" />
+    <EmbeddedResource Include="Redesign/0008_platform_task_coordination.sql" />
   </ItemGroup>
 
 </Project>

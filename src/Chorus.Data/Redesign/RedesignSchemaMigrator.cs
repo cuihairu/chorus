@@ -15,7 +15,8 @@ public static class RedesignSchemaMigrator
         (4, "Chorus.Data.Redesign.0004_ownership_scope.sql"),
         (5, "Chorus.Data.Redesign.0005_session_connection.sql"),
         (6, "Chorus.Data.Redesign.0006_live_session_key.sql"),
-        (7, "Chorus.Data.Redesign.0007_input_event_attribution.sql")
+        (7, "Chorus.Data.Redesign.0007_input_event_attribution.sql"),
+        (8, "Chorus.Data.Redesign.0008_platform_task_coordination.sql")
     ];
 
     public static async Task ApplyAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)

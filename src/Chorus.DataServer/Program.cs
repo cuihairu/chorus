@@ -39,12 +39,14 @@ builder.Services.AddSingleton(new RedesignPlayerStore(connectionString));
 builder.Services.AddSingleton(new RedesignIdentityStore(connectionString));
 builder.Services.AddSingleton(new RedesignBindingStore(connectionString));
 builder.Services.AddSingleton(new RedesignInputEventStore(connectionString));
+builder.Services.AddSingleton(new RedesignPlatformTaskStore(connectionString));
 builder.Services.AddGrpc();
 
 var app = builder.Build();
 app.MapGrpcService<DataGrpcService>();
 app.MapGrpcService<StreamerIdentityGrpcService>();
 app.MapGrpcService<PlatformIngestGrpcService>();
+app.MapGrpcService<PlatformTaskGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

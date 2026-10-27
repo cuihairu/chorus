@@ -270,6 +270,76 @@ message ReconcileInboxRequest {
 
 message ReconcileInboxReply { int32 attributed = 1; }
 
+message TaskEnqueueRequest {
+  string binding_id = 1;
+  string operation_id = 2;
+  string desired_json = 3;
+}
+
+message TaskLeaseRequest {
+  string task_id = 1;
+  string owner_instance_id = 2;
+  int64 lease_seconds = 3;
+}
+
+message TaskAttemptRequest {
+  string task_id = 1;
+  string owner_instance_id = 2;
+  int64 deadline_seconds = 3;
+}
+
+message TaskCompleteRequest {
+  string task_id = 1;
+  string owner_instance_id = 2;
+  string observed_json = 3;
+}
+
+message TaskErrorRequest {
+  string task_id = 1;
+  string owner_instance_id = 2;
+  string last_error = 3;
+}
+
+message TaskRetryRequest {
+  string task_id = 1;
+  string owner_instance_id = 2;
+  string last_error = 3;
+  int64 next_attempt_unix_ms = 4;
+}
+
+message TaskStopRequest {
+  string task_id = 1;
+  string last_error = 2;
+}
+
+message TaskResolveRequest {
+  string task_id = 1;
+  string owner_instance_id = 2;
+  bool executed_by_platform = 3;
+  string observed_json = 4;
+}
+
+message TaskGetRequest { string task_id = 1; }
+
+message TaskStateReply {
+  string task_id = 1;
+  string binding_id = 2;
+  int64 binding_generation = 3;
+  int64 task_epoch = 4;
+  string operation_id = 5;
+  string status = 6;
+  int32 attempt_count = 7;
+  string desired_json = 8;
+  string observed_json = 9;
+  string last_error = 10;
+  int64 next_attempt_unix_ms = 11;
+  string lease_owner = 12;
+  int64 lease_until_unix_ms = 13;
+  string attempt_owner = 14;
+  int64 attempt_deadline_unix_ms = 15;
+  bool duplicate = 16;
+}
+
 // StreamerServer session boundary; the caller presents a tenant-scoped streamer-server
 // identity and the tenant is taken from the authenticated certificate, not the request.
 service StreamerSession {
@@ -309,4 +379,21 @@ service PlatformIngest {
   rpc IngestBatch(IngestBatchRequest) returns (IngestBatchReply);
   rpc GetPendingInbox(PendingInboxRequest) returns (PendingInboxReply);
   rpc ReconcileInbox(ReconcileInboxRequest) returns (ReconcileInboxReply);
+}
+
+// External platform task coordination owned by DataServer (architecture 6.3). The control
+// plane records desired state and may reassign the lease; executors only run tasks whose
+// lease they hold, write their call to the outbox before issuing it, and never blindly retry
+// an outcome they could not observe.
+service PlatformTask {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  rpc EnqueueDesired(TaskEnqueueRequest) returns (TaskStateReply);
+  rpc AcquireLease(TaskLeaseRequest) returns (TaskStateReply);
+  rpc BeginAttempt(TaskAttemptRequest) returns (TaskStateReply);
+  rpc CompleteAttempt(TaskCompleteRequest) returns (TaskStateReply);
+  rpc MarkOutcomeUnknown(TaskErrorRequest) returns (TaskStateReply);
+  rpc MarkRetryFailed(TaskRetryRequest) returns (TaskStateReply);
+  rpc MarkNeedsAttention(TaskStopRequest) returns (TaskStateReply);
+  rpc ResolveOutcome(TaskResolveRequest) returns (TaskStateReply);
+  rpc GetTask(TaskGetRequest) returns (TaskStateReply);
 }

@@ -620,4 +620,151 @@ public sealed class RedesignM1HostTests
         var denied = await Assert.ThrowsAsync<RpcException>(() => deniedClient.IngestBatchAsync(batch).ResponseAsync);
         Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
     }
+
+    [Fact]
+    public async Task PlatformTaskCoordinationSurvivesDataServerCrashAcrossRealHosts()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a","app-2":"game-b"}}"""
+            });
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        using var clientCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-client-1");
+        using var channel = environment.Channel(environment.StreamerPort, clientCertificate, "streamer-server");
+        var session = new StreamerSession.StreamerSessionClient(channel);
+        var credential = simulator.IssueCredential("app-1", "open-task", "live-task", TimeSpan.FromMinutes(5));
+        var login = await session.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential, LoginAttemptId = "attempt-1",
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            GatewayInstanceId = "gateway-1", ConnectionId = "connection-1"
+        });
+        var mounted = await session.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "task-mount-1"
+        });
+
+        // The control plane records the desired external state for the mount; retries are idempotent.
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-1");
+        using var controlChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
+        var control = new PlatformTask.PlatformTaskClient(controlChannel);
+        var desired = """{"kind":"screen-link","state":"active"}""";
+        var enqueued = await control.EnqueueDesiredAsync(new TaskEnqueueRequest
+        {
+            BindingId = mounted.BindingId, OperationId = "op-screen-link", DesiredJson = desired
+        });
+        Assert.Equal("Pending", enqueued.Status);
+        Assert.False(enqueued.Duplicate);
+        Assert.True((await control.EnqueueDesiredAsync(new TaskEnqueueRequest
+        {
+            BindingId = mounted.BindingId, OperationId = "op-screen-link", DesiredJson = desired
+        })).Duplicate);
+
+        // The executor holds the lease and durably records the call before issuing it.
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gw-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var gateway = new PlatformTask.PlatformTaskClient(gatewayChannel);
+        var leased = await gateway.AcquireLeaseAsync(new TaskLeaseRequest
+        {
+            TaskId = enqueued.TaskId, OwnerInstanceId = "gw-1", LeaseSeconds = 300
+        });
+        Assert.Equal(2, leased.TaskEpoch);
+        var attempt = await gateway.BeginAttemptAsync(new TaskAttemptRequest
+        {
+            TaskId = enqueued.TaskId, OwnerInstanceId = "gw-1", DeadlineSeconds = 1
+        });
+        Assert.Equal("Executing", attempt.Status);
+        Assert.Equal(1, attempt.AttemptCount);
+
+        // The DataServer process dies with the external call in flight.
+        environment.Kill("Chorus.DataServer");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+
+        // A reassigned executor may not blindly repeat the possibly-conflicting call: it waits
+        // out the dead attempt's deadline and resolves the official outcome first (AT09).
+        using var takeoverCertificate = environment.Certificate("@cluster", "platform-gateway", "gw-2");
+        using var takeoverChannel = environment.Channel(environment.DataPort, takeoverCertificate, "data-server");
+        var takeover = new PlatformTask.PlatformTaskClient(takeoverChannel);
+        var reassigned = await takeover.AcquireLeaseAsync(new TaskLeaseRequest
+        {
+            TaskId = enqueued.TaskId, OwnerInstanceId = "gw-2", LeaseSeconds = 300
+        });
+        Assert.Equal(3, reassigned.TaskEpoch);
+        Assert.Equal("Executing", reassigned.Status); // the epoch bumped; the in-flight attempt stayed
+        var fenced = await Assert.ThrowsAsync<RpcException>(() => takeover.BeginAttemptAsync(
+            new TaskAttemptRequest { TaskId = enqueued.TaskId, OwnerInstanceId = "gw-2", DeadlineSeconds = 30 })
+            .ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, fenced.StatusCode);
+        await Task.Delay(TimeSpan.FromSeconds(1.2)); // the dead attempt's deadline elapses
+        var resolved = await takeover.ResolveOutcomeAsync(new TaskResolveRequest
+        {
+            TaskId = enqueued.TaskId, OwnerInstanceId = "gw-2", ExecutedByPlatform = false
+        });
+        Assert.Equal("Retryable", resolved.Status);
+        var retried = await takeover.BeginAttemptAsync(new TaskAttemptRequest
+        {
+            TaskId = enqueued.TaskId, OwnerInstanceId = "gw-2", DeadlineSeconds = 30
+        });
+        Assert.Equal(2, retried.AttemptCount);
+        var completed = await takeover.CompleteAttemptAsync(new TaskCompleteRequest
+        {
+            TaskId = enqueued.TaskId, OwnerInstanceId = "gw-2",
+            ObservedJson = """{"state":"active","officialId":"official-1"}"""
+        });
+        Assert.Equal("Completed", completed.Status);
+
+        // The committed coordination reality: task row and both outbox attempts.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var task = new NpgsqlCommand("""
+                SELECT status,attempt_count,task_epoch,lease_owner FROM live.task WHERE task_id=@task
+                """, connection))
+            {
+                task.Parameters.AddWithValue("task", enqueued.TaskId);
+                await using var reader = await task.ExecuteReaderAsync();
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("Completed", reader.GetString(0));
+                Assert.Equal(2, reader.GetInt32(1));
+                Assert.Equal(3L, reader.GetInt64(2));
+                Assert.Equal("gw-2", reader.GetString(3));
+            }
+            await using (var outbox = new NpgsqlCommand("""
+                SELECT status FROM infra.outbox WHERE effect_id LIKE @prefix ORDER BY effect_id
+                """, connection))
+            {
+                outbox.Parameters.AddWithValue("prefix", enqueued.TaskId + ":%");
+                await using var reader = await outbox.ExecuteReaderAsync();
+                var statuses = new List<string>();
+                while (await reader.ReadAsync()) statuses.Add(reader.GetString(0));
+                Assert.Equal(["NotExecuted", "Recorded"], statuses);
+            }
+        }
+
+        // Status is observable by all three roles; the role split is enforced on the way in.
+        using var streamerCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-client-2");
+        using var streamerChannel = environment.Channel(environment.DataPort, streamerCertificate, "data-server");
+        var streamerClient = new PlatformTask.PlatformTaskClient(streamerChannel);
+        Assert.Equal("Completed", (await streamerClient.GetTaskAsync(
+            new TaskGetRequest { TaskId = enqueued.TaskId })).Status);
+        var wrongRole = await Assert.ThrowsAsync<RpcException>(() => streamerClient.AcquireLeaseAsync(
+            new TaskLeaseRequest { TaskId = enqueued.TaskId, OwnerInstanceId = "gw-3", LeaseSeconds = 300 })
+            .ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, wrongRole.StatusCode);
+        var wrongPlane = await Assert.ThrowsAsync<RpcException>(() => takeover.MarkNeedsAttentionAsync(
+            new TaskStopRequest { TaskId = enqueued.TaskId, LastError = "not the control plane" })
+            .ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, wrongPlane.StatusCode);
+    }
 }
