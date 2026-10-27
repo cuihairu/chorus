@@ -55,14 +55,25 @@ AT03 中「新连接不被误标离线」的存储与边界语义已就绪；但
 - `GetLiveSession`/`GetBindingStatus` 查询供登录恢复与状态展示；`StreamerSession.StartGameplay`/`GameplayStatus` 以 access credential 鉴别行动会话。
 - 证据：store 级 `RedesignBindingStoreTests.LiveSlotIsCrossGameAndHoldsOneActiveBindingAcrossSwitches`（幂等/改绑拒绝/跨 GameId 切换唯一活跃/同操作异请求冲突/接管栅栏/未知直播会话拒绝）；宿主级 `RedesignM1HostTests.GameplayBindingStartsSwitchesAcrossGamesAndFencesTakenOverSessions`（真实三进程 + 数据库断言 Closed/Ready 各一、槽指向 gen2；未映射游戏与被接管凭据 PermissionDenied）；协调器级 `StartGameplayRequiresMappedGameLiveSessionAndCurrentAccess`。Release 全量 1170/1170。
 
-AT04 的"共享直播槽仅一个活跃挂载"存储与边界语义已就绪；"切换途中重启"的 Actor 恢复注入尚未实现。StreamerActor 内存状态机（Loading→Ready→RetainingOffline→Deactivating，架构 5.3）未实现。
+## 本轮已落地：StreamerActor 内存状态机与切换途中重启恢复
+
+按架构 5.3「StreamerActor 内存状态：Loading → Ready → RetainingOffline → Deactivating；任一步可进入 RecoveryFailed」与 5.1 步 5「加载资料、当前挂载……进入 EntityReady。恢复失败时不发送登录成功」：
+
+- `StreamerActor`/`StreamerActorRegistry`（Chorus.StreamerServer）：内存实体按单一信箱串行转移状态；连接、会话、直播、挂载四类事实独立观测，不合成单一 online 布尔。数据库是权威，注册表只是投影——进程重启丢掉的条目由下一次登录/恢复的 `RecoverAsync` 从持久事实重建。带会话恢复落在 Ready（在线）或 RetainingOffline（关闭/吊销/过期：保留内存等待 resume）；显式 Deactivating 决策在事实刷新中存活；无有效挂载且无当前会话才允许卸载（对局/待办事务 M1 尚未建模）。
+- 协调器接线：Login 在实体资料加载与直播会话打开之后、会话提交之前执行实体恢复（含待恢复挂载）；任何恢复失败进入 RecoveryFailed，不返回 LoginReady 也不创建会话（gRPC 映射 FailedPrecondition）。Resume/AttachConnection/ConnectionClosed 驱动 Ready↔RetainingOffline；挂载切换后同步更新内存投影。
+- 切换途中重启（AT04 重启半边）两级确定性证据：
+  - store 级 `RedesignBindingStoreTests.MidSwitchCrashKeepsOldMountAndRetryWithSameOperationConverges`：`crashAfterClosingOldBinding` 注入在关旧挂载后、事务提交前抛出——整个回执事务（含回执占位与业务写）回滚，旧挂载仍是唯一活跃且槽指向不变；同 OperationId 重试干净收敛到 gen2 新游戏、恰好一个活跃挂载。
+  - 宿主级 `RedesignM1HostTests.StreamerServerRestartRecoversTheSingleActiveBindingAcrossSwitches`：真实 StreamerServer 进程 Kill 后同端口重启（内存 actor 全部丢失），客户端凭平台身份重新登录（会话 v2 接管），GameplayStatus 恢复出崩溃前的同一 bindingId/gen1，随后跨 GameId 切换 gen2 且数据库断言唯一活跃；崩溃前的访问凭据被接管拒绝。
+  - 协调器级 `RedesignStreamerActorTests` 4 例：登录把恢复事实装进 Ready actor 且切换更新投影；恢复失败拦截 LoginReady（无会话创建）且重试收敛；连接关闭→RetainingOffline、Resume/Attach→Ready（离线是路由事实非会话丢失）；空注册表重启恢复已提交事实（崩溃前记忆不可见，只认已提交绑定）与卸载门槛。
+
+第 3 步（含 StreamerActor 状态机与切换途中重启注入）至此完整。Release 全量 1177/1177。
 
 ## M1 后续顺序
 
 1. ~~PlatformGateway 的验证接口和 Development Platform Simulator；Douyin/Kuaishou 实现分别保留 `NotProductionReady`~~（已落地，见上）。
 2. ~~StreamerServer Login/Resume API、实体资料加载成功后才返回 LoginReady~~；~~同连接 Attach generation 与 access credential 消费端校验接线~~（均已落地，见上）。
-3. ~~GameplayBinding 唯一挂载、跨 GameId LiveSlot 冲突事务~~（已落地，见上）。剩余：StreamerActor / LoginCoordinator 状态恢复（内存状态机与切换途中重启注入）。
-4. 持久 PlatformTask、NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属。
+3. ~~GameplayBinding 唯一挂载、跨 GameId LiveSlot 冲突事务~~；~~StreamerActor / LoginCoordinator 状态恢复（内存状态机与切换途中重启注入）~~（均已落地，见上）。
+4. 持久 PlatformTask、NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属（下一项）。
 5. 逐项完成 AT01–AT09；外部真实平台需要测试应用/样本时，模拟器证据与生产验收分开记录。
 
-目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、Actor 恢复、平台持久收件箱或对局终结处理（ClosingInput 窗口属挂载切换的后续）；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
+目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、平台持久收件箱或对局终结处理（ClosingInput 窗口属挂载切换的后续）；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
