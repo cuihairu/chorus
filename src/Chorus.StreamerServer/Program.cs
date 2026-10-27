@@ -55,10 +55,13 @@ Grpc.Net.Client.GrpcChannel DataChannel() => ProcessGrpcClientFactory.Create(
     new Uri($"https://localhost:{dataPort}"), serverCertificate, root, nodeAuthority, clusterId, "data-server");
 
 builder.Services.AddSingleton(trustedCertificates);
+var actorRegistry = new StreamerActorRegistry();
+builder.Services.AddSingleton(actorRegistry);
 builder.Services.AddSingleton(new RedesignStreamerLoginCoordinator(
     new RedesignPlatformGateway(adapters, allowNotProductionReady),
     new StreamerIdentityChannel(DataChannel),
     new StreamerProfileChannel(DataChannel),
+    actorRegistry,
     readOnlyTenants,
     accessCredentialKey));
 builder.Services.AddGrpc();

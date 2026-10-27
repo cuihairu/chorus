@@ -38,6 +38,10 @@ public sealed class StreamerSessionGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "The streamer entity is not ready."));
         }
+        catch (EntityRecoveryFailedException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The streamer entity could not be recovered."));
+        }
         catch (SessionRevokedException)
         {
             throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked."));
@@ -66,6 +70,10 @@ public sealed class StreamerSessionGrpcService(
         catch (SessionReplacedException)
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "Session is replaced."));
+        }
+        catch (EntityRecoveryFailedException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The streamer entity could not be recovered."));
         }
         catch (ArgumentException)
         {

@@ -92,6 +92,7 @@ public sealed class RedesignStreamerLoginCoordinatorTests
             new RedesignPlatformGateway([simulator], allowNotProductionReady: true),
             store,
             profile ?? new LoadedProfileStore(),
+            new StreamerActorRegistry(),
             new Dictionary<string, IReadOnlyDictionary<string, string>>
             {
                 ["tenant-a"] = new Dictionary<string, string> { ["app-1"] = "game-a" }

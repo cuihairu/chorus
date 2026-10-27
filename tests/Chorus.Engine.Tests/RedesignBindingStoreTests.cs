@@ -98,6 +98,74 @@ public sealed class RedesignBindingStoreTests
             "missing-live", takeover.SessionId, "game-a", "op-5"));
     }
 
+    [Fact]
+    public async Task MidSwitchCrashKeepsOldMountAndRetryWithSameOperationConverges()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        // Restart fault injection: the switch dies after closing the old binding, before commit.
+        var armed = false;
+        var bindingStore = new RedesignBindingStore(database.ConnectionString,
+            () =>
+            {
+                if (armed) throw new InvalidOperationException("simulated process death mid-switch");
+            });
+
+        var streamer = await identityStore.ResolveIdentityAsync("tenant-a", "simulator", "app-1", "crash-open-id");
+        var live = await bindingStore.OpenLiveSessionAsync("tenant-a", streamer.StreamerId, "simulator",
+            "app-1", "room-1", "live-key-1");
+        var session = await identityStore.LoginAsync(streamer.StreamerId, "gateway-1", "connection-1",
+            RandomNumberGenerator.GetBytes(32));
+        var first = await bindingStore.StartGameplayAsync("tenant-a", live, session.SessionId, "game-a", "op-1");
+        Assert.Equal(1, first.Generation);
+
+        // The crash rolls the whole receipt transaction back: the old mount stays the only active one.
+        armed = true;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => bindingStore.StartGameplayAsync(
+            "tenant-a", live, session.SessionId, "game-b", "op-2"));
+        armed = false;
+        var survived = await bindingStore.GetActiveBindingAsync("tenant-a", streamer.StreamerId);
+        Assert.NotNull(survived);
+        Assert.Equal(first.BindingId, survived!.BindingId);
+        Assert.Equal("game-a", survived.GameId);
+        Assert.Equal(1, survived.Generation);
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var slot = new NpgsqlCommand("""
+                SELECT generation,active_binding_id FROM live.slot
+                WHERE platform='simulator' AND canonical_live_session_key='live-key-1'
+                """, connection))
+            await using (var reader = await slot.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(1L, reader.GetInt64(0));
+                Assert.Equal(first.BindingId, reader.GetString(1));
+            }
+        }
+
+        // The same operation id retries cleanly (its receipt claim rolled back too) and converges.
+        var second = await bindingStore.StartGameplayAsync("tenant-a", live, session.SessionId, "game-b", "op-2");
+        Assert.Equal(2, second.Generation);
+        Assert.False(second.Duplicate);
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var active = new NpgsqlCommand("""
+                SELECT game_id,generation FROM live.binding WHERE live_session_id=@live
+                  AND state IN ('Starting','Ready','Running','AwaitingPlatformClose')
+                """, connection))
+            {
+                active.Parameters.AddWithValue("live", live);
+                await using var reader = await active.ExecuteReaderAsync();
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("game-b", reader.GetString(0));
+                Assert.Equal(2L, reader.GetInt64(1));
+                Assert.False(await reader.ReadAsync()); // exactly one active binding after recovery
+            }
+        }
+    }
+
     private sealed class TemporaryDatabase(string source) : IAsyncDisposable
     {
         private readonly string _name = "chorus_m1_binding_" + Guid.NewGuid().ToString("N");

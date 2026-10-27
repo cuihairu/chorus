@@ -138,6 +138,7 @@ public sealed class RedesignM0HostTests
     {
         private readonly string _databaseName = "chorus_m0_host_" + Guid.NewGuid().ToString("N");
         private readonly List<Process> _processes = [];
+        private readonly Dictionary<Process, string> _projectByProcess = new();
         private readonly List<Process> _agents = [];
         private readonly Dictionary<Process, System.Text.StringBuilder> _hostOutput = [];
         private readonly string _directory = Path.Combine(Path.GetTempPath(), "chorus-m0-host-" + Guid.NewGuid().ToString("N"));
@@ -225,6 +226,7 @@ public sealed class RedesignM0HostTests
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             _processes.Add(process);
+            _projectByProcess[process] = project;
             using var caller = Certificate("@cluster",
                 role == "streamer-server" ? "streamer-server" : "node-agent", "ready-probe");
             using var channel = Channel(port, caller, role);
@@ -245,6 +247,21 @@ public sealed class RedesignM0HostTests
                 catch (RpcException) { await Task.Delay(100); }
             }
             throw new TimeoutException(project + " did not become ready.\n" + output);
+        }
+
+        /// <summary>
+        /// Kills a started host abruptly (simulated crash). Bounded synchronous wait: the hosts are
+        /// setsid children whose redirected pipes would keep an async exit wait hanging. The process
+        /// stays registered so dispose skips it as already exited; the project can be started again.
+        /// </summary>
+        public void Kill(string project)
+        {
+            foreach (var process in _projectByProcess.Where(pair => pair.Value == project).Select(pair => pair.Key).ToList())
+            {
+                if (process.HasExited) continue;
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(TimeSpan.FromSeconds(10));
+            }
         }
 
         public async Task<Process> StartBootstrapAgentAsync()

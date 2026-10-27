@@ -364,4 +364,89 @@ public sealed class RedesignM1HostTests
         });
         Assert.Equal(3, third.Generation);
     }
+
+    [Fact]
+    public async Task StreamerServerRestartRecoversTheSingleActiveBindingAcrossSwitches()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a","app-2":"game-b"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            streamerEnvironment);
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var credential = simulator.IssueCredential("app-1", "open-restart", "live-restart", TimeSpan.FromMinutes(10));
+        using var firstCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-client-1");
+        using var firstChannel = environment.Channel(environment.StreamerPort, firstCertificate, "streamer-server");
+        var firstClient = new StreamerSession.StreamerSessionClient(firstChannel);
+        var login = await firstClient.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential, LoginAttemptId = "attempt-1",
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            GatewayInstanceId = "gateway-1", ConnectionId = "connection-1"
+        });
+        var mounted = await firstClient.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "restart-op-1"
+        });
+        Assert.Equal(1, mounted.Generation);
+
+        // The StreamerServer process dies abruptly; its in-memory actors are gone by construction.
+        environment.Kill("Chorus.StreamerServer");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            streamerEnvironment);
+
+        // A fresh client connection re-logins by platform identity (chapter 5.2) and the entity —
+        // including the mount to restore — is recovered from the database, not from lost memory.
+        using var restartCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-client-2");
+        using var restartChannel = environment.Channel(environment.StreamerPort, restartCertificate, "streamer-server");
+        var restartedClient = new StreamerSession.StreamerSessionClient(restartChannel);
+        var relogin = await restartedClient.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential, LoginAttemptId = "attempt-2",
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            GatewayInstanceId = "gateway-2", ConnectionId = "connection-2"
+        });
+        Assert.Equal(login.StreamerId, relogin.StreamerId);
+        Assert.Equal(2, relogin.SessionVersion); // takeover: the pre-crash session is revoked
+        var recovered = await restartedClient.GameplayStatusAsync(
+            new GameplayStatusRequest { AccessCredential = relogin.AccessCredential });
+        Assert.Equal(mounted.BindingId, recovered.BindingId);
+        Assert.Equal("game-a", recovered.GameId);
+        Assert.Equal(1, recovered.Generation);
+
+        // The recovered entity can still switch; the slot keeps exactly one active binding.
+        var switched = await restartedClient.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = relogin.AccessCredential, GameId = "game-b", OperationId = "restart-op-2"
+        });
+        Assert.Equal(2, switched.Generation);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var active = new NpgsqlCommand("""
+                SELECT count(*) FROM live.binding WHERE live_session_id=@live
+                  AND state IN ('Starting','Ready','Running','AwaitingPlatformClose')
+                """, connection))
+            {
+                active.Parameters.AddWithValue("live", switched.LiveSessionId);
+                Assert.Equal(1, Convert.ToInt64(await active.ExecuteScalarAsync()));
+            }
+        }
+
+        // The pre-crash access credential was revoked by the takeover login and cannot act.
+        var stale = await Assert.ThrowsAsync<RpcException>(() => restartedClient.GameplayStatusAsync(
+            new GameplayStatusRequest { AccessCredential = login.AccessCredential }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, stale.StatusCode);
+    }
 }

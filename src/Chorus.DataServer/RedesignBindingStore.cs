@@ -17,7 +17,12 @@ public sealed record BindingStatus(
 /// (platform, canonical live session key) — cross-GameId by design — and one live session has at
 /// most one active binding at any time, enforced inside one transaction under the slot lock.
 /// </summary>
-public sealed class RedesignBindingStore(string connectionString)
+/// <param name="crashAfterClosingOldBinding">
+/// Fault-injection seam for restart tests: invoked mid-switch after the old binding close, before
+/// the transaction commits. An exception there plays a process dying between the two steps; the
+/// rollback keeps the old mount active.
+/// </param>
+public sealed class RedesignBindingStore(string connectionString, Action? crashAfterClosingOldBinding = null)
 {
     private const string ActiveStates = "('Starting','Ready','Running','AwaitingPlatformClose')";
 
@@ -237,6 +242,7 @@ public sealed class RedesignBindingStore(string connectionString)
             close.Parameters.AddWithValue("session", liveSessionId);
             await close.ExecuteNonQueryAsync(cancellationToken);
         }
+        crashAfterClosingOldBinding?.Invoke();
         await using (var insert = new NpgsqlCommand("""
             INSERT INTO live.binding(binding_id,live_session_id,tenant_id,game_id,generation,state)
             VALUES (@binding,@session,@tenant,@game,@generation,'Ready')

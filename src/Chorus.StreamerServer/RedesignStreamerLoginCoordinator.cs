@@ -89,6 +89,7 @@ public sealed class RedesignStreamerLoginCoordinator(
     RedesignPlatformGateway platformGateway,
     IStreamerIdentityStore identityStore,
     IStreamerProfileStore profileStore,
+    StreamerActorRegistry actorRegistry,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> tenantApplications,
     byte[] accessCredentialKey,
     Func<DateTimeOffset>? clock = null)
@@ -106,8 +107,13 @@ public sealed class RedesignStreamerLoginCoordinator(
         // The verified canonical live key opens (or reuses) the live session and its cross-GameId slot.
         await identityStore.OpenLiveSessionAsync(callerTenantId, streamerId, verified.Platform, verified.AppId,
             verified.CanonicalLiveSessionKey, verified.CanonicalLiveSessionKey, cancellationToken);
+        // Chapter 5.1 step 5: load the entity (including the mount to restore) before committing the
+        // session. A recovery failure means no LoginReady and no session grant.
+        var actor = actorRegistry.GetOrAdd(callerTenantId, streamerId);
+        await actor.RecoverAsync(identityStore, cancellationToken: cancellationToken);
         var grant = await identityStore.LoginAsync(callerTenantId, streamerId, command.GatewayInstanceId,
             command.ConnectionId, command.NextResumeSecret, cancellationToken);
+        await actor.OnSessionGrantedAsync(grant, cancellationToken);
         return Ready(grant);
     }
 
@@ -117,20 +123,38 @@ public sealed class RedesignStreamerLoginCoordinator(
         var grant = await identityStore.ResumeAsync(callerTenantId, command.PreviousSessionId,
             command.GatewayInstanceId, command.ConnectionId, command.ResumeOperationId,
             command.PreviousSecret, command.NextSecret, cancellationToken);
+        var actor = actorRegistry.GetOrAdd(callerTenantId, grant.StreamerId);
+        await actor.RecoverAsync(identityStore, grant.SessionId, cancellationToken);
+        await actor.OnSessionGrantedAsync(grant, cancellationToken);
         return Ready(grant);
     }
 
     /// <summary>Gateway switch on a live session: no rotation, only the connection generation moves.</summary>
-    public Task<StreamerConnection> AttachConnectionAsync(string callerTenantId, AttachConnectionCommand command,
+    public async Task<StreamerConnection> AttachConnectionAsync(string callerTenantId, AttachConnectionCommand command,
         CancellationToken cancellationToken = default)
-        => identityStore.AttachConnectionAsync(callerTenantId, command.SessionId, command.GatewayInstanceId,
-            command.ConnectionId, command.OperationId, command.CurrentSecret, cancellationToken);
+    {
+        var connection = await identityStore.AttachConnectionAsync(callerTenantId, command.SessionId,
+            command.GatewayInstanceId, command.ConnectionId, command.OperationId, command.CurrentSecret,
+            cancellationToken);
+        // The actor may be absent after a process restart; its facts are re-derived on the next recovery.
+        var actor = actorRegistry.FindBySession(callerTenantId, connection.SessionId);
+        if (actor is not null) await actor.OnConnectionAttachedAsync(connection, cancellationToken);
+        return connection;
+    }
 
     /// <summary>Gateway close notification; stale generations are ignored by DataServer.</summary>
-    public Task<bool> ConnectionClosedAsync(string callerTenantId, string sessionId, string gatewayInstanceId,
+    public async Task<bool> ConnectionClosedAsync(string callerTenantId, string sessionId, string gatewayInstanceId,
         string connectionId, long connectionGeneration, CancellationToken cancellationToken = default)
-        => identityStore.ConnectionClosedAsync(callerTenantId, sessionId, gatewayInstanceId, connectionId,
-            connectionGeneration, cancellationToken);
+    {
+        var applied = await identityStore.ConnectionClosedAsync(callerTenantId, sessionId, gatewayInstanceId,
+            connectionId, connectionGeneration, cancellationToken);
+        if (applied)
+        {
+            var actor = actorRegistry.FindBySession(callerTenantId, sessionId);
+            if (actor is not null) await actor.OnConnectionClosedAsync(cancellationToken);
+        }
+        return applied;
+    }
 
     /// <summary>
     /// Consumer-side access credential check (contracts 3.1): the signature must verify, and the
@@ -165,8 +189,11 @@ public sealed class RedesignStreamerLoginCoordinator(
         var access = await ValidateAccessAsync(callerTenantId, accessCredential, cancellationToken);
         var liveSessionId = await identityStore.GetLiveSessionIdAsync(callerTenantId, access.StreamerId,
             cancellationToken) ?? throw new BindingDeniedException();
-        return await identityStore.StartGameplayAsync(callerTenantId, liveSessionId, access.SessionId,
+        var binding = await identityStore.StartGameplayAsync(callerTenantId, liveSessionId, access.SessionId,
             gameId, operationId, cancellationToken);
+        var actor = actorRegistry.Find(callerTenantId, access.StreamerId);
+        if (actor is not null) await actor.OnGameplayBindingAsync(binding, cancellationToken);
+        return binding;
     }
 
     /// <summary>The binding to restore at login or reconnect; null when nothing is mounted.</summary>
