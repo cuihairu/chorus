@@ -66,14 +66,27 @@ AT03 中「新连接不被误标离线」的存储与边界语义已就绪；但
   - 宿主级 `RedesignM1HostTests.StreamerServerRestartRecoversTheSingleActiveBindingAcrossSwitches`：真实 StreamerServer 进程 Kill 后同端口重启（内存 actor 全部丢失），客户端凭平台身份重新登录（会话 v2 接管），GameplayStatus 恢复出崩溃前的同一 bindingId/gen1，随后跨 GameId 切换 gen2 且数据库断言唯一活跃；崩溃前的访问凭据被接管拒绝。
   - 协调器级 `RedesignStreamerActorTests` 4 例：登录把恢复事实装进 Ready actor 且切换更新投影；恢复失败拦截 LoginReady（无会话创建）且重试收敛；连接关闭→RetainingOffline、Resume/Attach→Ready（离线是路由事实非会话丢失）；空注册表重启恢复已提交事实（崩溃前记忆不可见，只认已提交绑定）与卸载门槛。
 
-第 3 步（含 StreamerActor 状态机与切换途中重启注入）至此完整。Release 全量 1177/1177。
+第 3 步（含 StreamerActor 状态机与切换途中重启注入）至此完整。Release 全量 1176/1176。
+
+## 本轮已落地：平台事件持久接收、幂等回执与 UnresolvedInbox
+
+按架构 6.1「DataServer 在一个事务中写事件、去重键与接收回执。回调成功只能发生在该事务提交后」「已存在事件返回原回执」「批次必须整体持久化」与 6.2「没有可信对局标识的事件采用明确的『首次持久接收时归局』规则」：
+
+- 迁移 0007：`input.event` 增加规范房间键（归属线索）与 durability（Durable/BestEffort），加 PendingAttribution 部分索引作持久收件箱扫描面。
+- `RedesignInputEventStore.IngestAsync`：整批一个回执事务——每事件先查去重键（同键同哈希=重复，返回已提交的归属与处置；同键异载荷=可见冲突，整批回滚），新事件在事务内按 (platform, canonical key) 定位活跃挂载归属；查不到时 Durable 入收件箱（PendingAttribution，不伪造归属），BestEffort 落库即弃（BestEffortDropped）。批级幂等走 M0 回执库：同操作重试重放原回执，同操作异批次冲突。
+- 归属冻结：重复投递沿用首次持久接收时的 binding/generation，不按重试到达时间重算；切换窗口后旧事件重复仍属旧代、新事件属新代。
+- `ReconcilePendingAsync`：挂载出现在规范键上后，一条语句把收件箱中该房间的待归属事件归到当前活跃挂载，received_at 不改写；重复对账幂等。
+- `m1.proto` 新增 `PlatformIngest`（IngestBatch/GetPendingInbox/ReconcileInbox，DataServer 宿主，角色 platform-gateway；宿主无独立 PlatformGateway 进程，该 RPC 即平台网关调用契约）。
+- 证据：store 级 `RedesignInputEventStoreTests` 3 例（批原子+同额不同键礼物不按内容去重+同键异载荷冲突+`crashAfterPersist` 注入批中途死亡全回滚后同操作重试收敛；归属冻结跨切换窗口、未知房间 Durable/BestEffort 分流；收件箱对账保 received_at 且重投保持已提交归属）；宿主级 `RedesignM1HostTests.PlatformEventsIngestDurablyAcrossRealHostsAndSurviveDataServerRestart`（真实三进程 + platform-gateway 证书直连 DataServer、同操作重试重放原回执、切换后迟到重复冻结在 gen1、DataServer Kill+重启后原回执仍在、SQL 处置分布 4/1/1、streamer-server 角色被拒）。
+
+第 4 步的事件接收侧至此完整；同项的 PlatformTask（架构 6.3）与 DeliveryRecord 消费路由（6.1.5–6.1.6）尚未实现。Release 全量 1180/1180。
 
 ## M1 后续顺序
 
 1. ~~PlatformGateway 的验证接口和 Development Platform Simulator；Douyin/Kuaishou 实现分别保留 `NotProductionReady`~~（已落地，见上）。
 2. ~~StreamerServer Login/Resume API、实体资料加载成功后才返回 LoginReady~~；~~同连接 Attach generation 与 access credential 消费端校验接线~~（均已落地，见上）。
 3. ~~GameplayBinding 唯一挂载、跨 GameId LiveSlot 冲突事务~~；~~StreamerActor / LoginCoordinator 状态恢复（内存状态机与切换途中重启注入）~~（均已落地，见上）。
-4. 持久 PlatformTask、NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属（下一项）。
+4. 持久 PlatformTask、~~NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属~~（事件接收侧已落地，见上；PlatformTask 与 DeliveryRecord 消费路由为下一项）。
 5. 逐项完成 AT01–AT09；外部真实平台需要测试应用/样本时，模拟器证据与生产验收分开记录。
 
-目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、平台持久收件箱或对局终结处理（ClosingInput 窗口属挂载切换的后续）；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
+目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、持久 PlatformTask、DeliveryRecord 消费路由或对局终结处理（ClosingInput 窗口属挂载切换的后续）；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
