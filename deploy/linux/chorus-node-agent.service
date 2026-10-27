@@ -1,0 +1,29 @@
+[Unit]
+Description=Chorus NodeAgent (verifies signed bootstrap manifest and supervises seed slots)
+Documentation=https://github.com/cuihairu/chorus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chorus-agent
+Group=chorus-agent
+# Environment file holds CHORUS_BOOTSTRAP_MANIFEST, CHORUS_ROOT_CA_PEM,
+# CHORUS_NODE_AUTHORITY_PFX_PASSWORD and CHORUS_AGENT_STATE_DIR.
+# It is created 0640 root:chorus-agent by install-node-agent.sh and never logged.
+EnvironmentFile=/etc/chorus/node-agent.env
+WorkingDirectory=/opt/chorus/node-agent
+ExecStart=@DOTNET@ /opt/chorus/node-agent/Chorus.NodeAgent.dll
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/chorus/agent
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

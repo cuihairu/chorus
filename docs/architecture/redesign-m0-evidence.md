@@ -23,6 +23,8 @@ title: M0 验收证据
 | 证据 | 结果 | 实际覆盖 |
 |---|---|---|
 | Windows 目标构建 | PASS（交叉编译） | `dotnet build src/Chorus.NodeAgent/Chorus.NodeAgent.csproj -c Release -r win-x64 --verbosity quiet -m:1`，0 warnings、0 errors。 |
+| Linux 安装配置 | PASS（语法级） | `deploy/linux/chorus-node-agent.service` 通过 `systemd-analyze verify`（占位符替换真实 dotnet 路径后）；`deploy/linux/install-node-agent.sh` 通过 `bash -n` 与 `shellcheck` 零告警。未在本机执行实机安装（需要 root 与目标节点），systemd 启动、服务账号与状态目录行为在真实节点上仍未验收。 |
+| Windows 安装配置 | NOT RUN（脚本就绪） | `deploy/windows/install-node-agent.ps1`（服务账号随机服务密码不落盘、状态目录 ACL、服务注册、失败自动重启）通过 PowerShell 解析器语法检查；实际安装、服务启动、Job Object 回收与证书存储验收需要 Windows 实机，保持 NOT RUN。 |
 | Windows Service / Job Object 实机 | NOT RUN | 当前执行环境为 Linux；交叉编译不证明 Windows Service 启停、Job Object 孙进程回收、状态目录 ACL 或证书存储行为。 |
 | Windows 空库冷启动 | NOT RUN | 没有 Windows 主机上的 PostgreSQL/DataServer/ControlServer/NodeAgent 端到端验收。 |
 
@@ -31,6 +33,6 @@ title: M0 验收证据
 M0 总体验收仍保持 open。关闭前还需要：
 
 1. Windows 主机执行空库启动、Windows Service、Job Object 子进程树、受限状态目录 ACL 与证书保护验收。
-2. 补齐计划中的可复现安装配置；开发平台模拟器（`RedesignPlatformGateway` + `DevelopmentPlatformSimulator`，Douyin/Kuaishou 桩 `NotProductionReady`）已落地（见 `docs/architecture/redesign-m1-implementation.md`），但完整双 OS 安装/升级包尚未开始。
+2. 双 OS 实机安装/升级验收：可复现安装配置（`deploy/linux/`、`deploy/windows/`）已就绪并通过各自语法级验证，开发平台模拟器已落地（见 `docs/architecture/redesign-m1-implementation.md`）；但两 OS 的实机安装、服务启动、升级包与签名包流程仍未执行。
 
 其余 AT18/23/27 的基础部分及 AT32 身份隔离已有上述 Linux PostgreSQL/真实宿主进程证据，但不替代以上缺项或 M0 完整出口。详情见[验收计划](redesign-acceptance.md)与[M0 实现边界](redesign-m0-implementation.md)。

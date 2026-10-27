@@ -33,7 +33,7 @@ TLS 握手回调验证完整 X.509 链、节点授权扩展和 SPIFFE 身份，�
 
 Linux 的 systemd、Windows Service 只启动 Agent；Agent 验证签名 bootstrap manifest，再拉起固定 Control/Data seed slots。普通动态计划在 Control 可用后获取。每个启动实例生成新 ProcessInstanceId，记录 PID、创建时间与 slot；停止时回收整个进程组（Linux）或 Job Object（Windows）。Agent 重启时不能只凭 PID 认领旧进程。
 
-M0 骨架必须显式报告缺失的 cgroup/Job 限制能力，不得将未生效的资源限制显示为成功。当前 Agent 使用 Linux 进程树管理和 Windows Job Object 的 close-kill 行为；资源限额仍未执行。Windows 可交叉编译但不能以 Linux 上的构建结果代替 Windows 实机启动、子进程树与证书存储验收。安装程序尚需预置受限的状态目录 ACL 和服务账号。
+M0 骨架必须显式报告缺失的 cgroup/Job 限制能力，不得将未生效的资源限制显示为成功。当前 Agent 使用 Linux 进程树管理和 Windows Job Object 的 close-kill 行为；资源限额仍未执行。Windows 可交叉编译但不能以 Linux 上的构建结果代替 Windows 实机启动、子进程树与证书存储验收。可复现安装配置位于 `deploy/linux/`（systemd 单元 + 安装脚本：受限服务账号、0700 状态目录、占位符解析 dotnet 路径）与 `deploy/windows/`（服务账号随机服务密码、ACL、服务注册、失败自动重启）；两者只做到脚本/单元语法级验证，实机安装与启动验收见证据记录。
 
 ## 4. 验收证据口径
 
