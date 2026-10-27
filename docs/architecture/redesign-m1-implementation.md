@@ -45,12 +45,24 @@ M1 按 [验收计划](redesign-acceptance.md) 实施；真实平台无法联调�
 
 AT03 中「新连接不被误标离线」的存储与边界语义已就绪；但 AT03 完整验收还需双终端与响应丢失注入（属后续验收轮）。
 
+## 本轮已落地：直播槽与 GameplayBinding 唯一挂载
+
+按架构 6.2「同一直播切换玩法必须完成旧挂载关闭与本局终结处理，再提交新挂载 generation；挂载唯一约束防止两个客户端同时创建玩法」：
+
+- 迁移 0006：`live.session.canonical_live_session_key` + 部分唯一索引，把已验证直播键链接到跨 GameId 挂载槽（槽主键自 0002 起即 platform+canonical key，无 GameId 维度）。
+- `RedesignBindingStore.OpenLiveSessionAsync`：登录时以 VerifyLaunch 得到的规范直播键幂等注册直播会话与槽；同一键不得改绑其他租户或其他主播。协调器 Login 在实体加载通过后、会话提交前调用。
+- `StartGameplayAsync`：槽行锁内一个事务完成——会话代栅栏（重读 `current_session_id`，被接管的控制会话不能换挂载）→ 关闭旧活跃挂载 → 新挂载 generation=槽代+1 → 槽指向新挂载；操作幂等走 M0 回执库，键为直播槽作用域（`@cluster` 游戏位），同 OperationId 换 GameId 是冲突不是第二个挂载。
+- `GetLiveSession`/`GetBindingStatus` 查询供登录恢复与状态展示；`StreamerSession.StartGameplay`/`GameplayStatus` 以 access credential 鉴别行动会话。
+- 证据：store 级 `RedesignBindingStoreTests.LiveSlotIsCrossGameAndHoldsOneActiveBindingAcrossSwitches`（幂等/改绑拒绝/跨 GameId 切换唯一活跃/同操作异请求冲突/接管栅栏/未知直播会话拒绝）；宿主级 `RedesignM1HostTests.GameplayBindingStartsSwitchesAcrossGamesAndFencesTakenOverSessions`（真实三进程 + 数据库断言 Closed/Ready 各一、槽指向 gen2；未映射游戏与被接管凭据 PermissionDenied）；协调器级 `StartGameplayRequiresMappedGameLiveSessionAndCurrentAccess`。Release 全量 1170/1170。
+
+AT04 的"共享直播槽仅一个活跃挂载"存储与边界语义已就绪；"切换途中重启"的 Actor 恢复注入尚未实现。StreamerActor 内存状态机（Loading→Ready→RetainingOffline→Deactivating，架构 5.3）未实现。
+
 ## M1 后续顺序
 
 1. ~~PlatformGateway 的验证接口和 Development Platform Simulator；Douyin/Kuaishou 实现分别保留 `NotProductionReady`~~（已落地，见上）。
 2. ~~StreamerServer Login/Resume API、实体资料加载成功后才返回 LoginReady~~；~~同连接 Attach generation 与 access credential 消费端校验接线~~（均已落地，见上）。
-3. StreamerActor / LoginCoordinator 状态恢复及 GameplayBinding 唯一挂载、跨 GameId LiveSlot 冲突事务。
+3. ~~GameplayBinding 唯一挂载、跨 GameId LiveSlot 冲突事务~~（已落地，见上）。剩余：StreamerActor / LoginCoordinator 状态恢复（内存状态机与切换途中重启注入）。
 4. 持久 PlatformTask、NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属。
 5. 逐项完成 AT01–AT09；外部真实平台需要测试应用/样本时，模拟器证据与生产验收分开记录。
 
-目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、Actor 恢复、挂载流程或平台持久收件箱；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
+目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、Actor 恢复、平台持久收件箱或对局终结处理（ClosingInput 窗口属挂载切换的后续）；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
