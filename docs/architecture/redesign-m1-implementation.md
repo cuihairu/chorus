@@ -30,14 +30,27 @@ M1 按 [验收计划](redesign-acceptance.md) 实施；真实平台无法联调�
 - `ChorusAccessCredential`：HMAC-SHA256 短时访问凭据（base64url payload + 签名、固定时间比较、过期拒绝、密钥 ≥256 bit），Login/Resume 成功后签发。
 - 真实宿主集成证据：`RedesignM1HostTests.SimulatorLaunchLoginsRotatesResumeAndFencesTenantsAcrossRealHosts`（Control+Data+Streamer 三真实进程：模拟器登录 v1 并落库 profile、Resume 轮换 v2、重试幂等、接管 Login v3、旧会话/伪造凭据/未映射应用/跨租户证书全部 PermissionDenied、访问凭据正确密钥可验错密钥为 null）。协调器契约证据：`RedesignStreamerLoginCoordinatorTests` 5/5。Release 全量 1163/1163。
 
-尚未完成（不计为验收）：同连接 Attach generation、access credential 在 DataServer 输入校验中的消费端接线、面向客户端的 StreamerGateway 宿主、Logout；尚不等同 AT01–AT09 完整验收。
+尚未完成（不计为验收）：面向客户端的 StreamerGateway 宿主、Logout；尚不等同 AT01–AT09 完整验收。
+
+## 本轮已落地：Attach generation 与 access credential 消费端校验
+
+按契约 3.3「换 Gateway 的请求通过当前 session/secret 发起新的 `AttachConnection` 幂等操作，递增 ConnectionGeneration；旧 Gateway 的关闭通知必须携旧 generation，不影响新连接」：
+
+- 迁移 0005：`auth.session.connection_closed_at`（当前代关闭标记）与 `auth.rotation.result_connection_generation`（attach 结果代，供精确重试返回同代）。
+- `RedesignIdentityStore.AttachConnectionAsync`：当前 resume secret 授权、不轮换任何秘密；行锁下递增 generation 并重绑 gateway/connection、清除关闭标记；同 OperationId/同请求哈希在重试窗口内返回同代（Duplicate），同操作不同连接或错 secret 拒绝；会话被接管/吊销时拒绝。
+- `CloseConnectionAsync`：仅当 gateway、connection、generation 三者与当前行完全一致才标记关闭；旧代、错代、未知会话一律不改动（返回未应用）。重新 attach 会清掉关闭标记。
+- `GetSessionStateAsync`：会话事实快照（版本、到期、吊销、关闭、封禁、是否当前代、归属租户），供消费端判定。
+- `StreamerSession` 新增 `AttachConnection`/`ConnectionClosed`/`ValidateAccess`：ValidateAccess 先验 HMAC 签名与过期，再对照会话快照要求"当前代且未吊销/未过期/未封禁/版本一致/租户一致"，否则 PermissionDenied；离线（online=false）是路由事实不是认证失败，不拒答。
+- 证据：store 级 `RedesignIdentityStoreTests.ConnectionsAttachGenerationsStaleCloseDoesNotDetachAndStateReflectsFacts`（含重开与新登录吊销后的事实）；宿主级 `RedesignM1HostTests.GatewayAttachRotatesGenerationsAndStaleCloseNeverDetachesTheNewConnection`（真实三进程：消费端校验、attach 幂等、旧代/错代关闭无效、当前代关闭后离线、伪造凭据与跨租户校验/关闭全拒）；协调器级 `AttachConnectionPassesThroughWithoutRotation`、`ValidateAccessBindsCredentialToCurrentSessionState`。Release 全量 1167/1167。
+
+AT03 中「新连接不被误标离线」的存储与边界语义已就绪；但 AT03 完整验收还需双终端与响应丢失注入（属后续验收轮）。
 
 ## M1 后续顺序
 
 1. ~~PlatformGateway 的验证接口和 Development Platform Simulator；Douyin/Kuaishou 实现分别保留 `NotProductionReady`~~（已落地，见上）。
-2. ~~StreamerServer Login/Resume API、实体资料加载成功后才返回 LoginReady~~（已落地，见上）。剩余：同连接 Attach generation 与 access credential 消费端校验接线。
+2. ~~StreamerServer Login/Resume API、实体资料加载成功后才返回 LoginReady~~；~~同连接 Attach generation 与 access credential 消费端校验接线~~（均已落地，见上）。
 3. StreamerActor / LoginCoordinator 状态恢复及 GameplayBinding 唯一挂载、跨 GameId LiveSlot 冲突事务。
 4. 持久 PlatformTask、NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属。
 5. 逐项完成 AT01–AT09；外部真实平台需要测试应用/样本时，模拟器证据与生产验收分开记录。
 
-目前没有面向客户端的 StreamerGateway 宿主、完整轮换响应丢失集成测试、Actor 恢复、挂载流程或平台持久收件箱；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
+目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、Actor 恢复、挂载流程或平台持久收件箱；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
