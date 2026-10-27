@@ -43,6 +43,50 @@ public sealed class StreamerIdentityChannel(Func<GrpcChannel> channelFactory) : 
         return Grant(reply);
     }
 
+    public async Task<StreamerConnection> AttachConnectionAsync(string tenantId, string sessionId,
+        string gatewayInstanceId, string connectionId, string operationId, byte[] currentSecret,
+        CancellationToken cancellationToken = default)
+    {
+        var reply = await CallAsync(client => client.AttachConnectionAsync(new SessionAttachRequest
+        {
+            TenantId = tenantId, SessionId = sessionId, OperationId = operationId,
+            GatewayInstanceId = gatewayInstanceId, ConnectionId = connectionId,
+            CurrentSecret = Google.Protobuf.ByteString.CopyFrom(currentSecret)
+        }, cancellationToken: cancellationToken));
+        return new StreamerConnection(reply.SessionId, reply.StreamerId, reply.SessionVersion,
+            reply.ConnectionGeneration, reply.Duplicate);
+    }
+
+    public async Task<bool> ConnectionClosedAsync(string tenantId, string sessionId, string gatewayInstanceId,
+        string connectionId, long connectionGeneration, CancellationToken cancellationToken = default)
+    {
+        var reply = await CallAsync(client => client.ConnectionClosedAsync(new SessionCloseRequest
+        {
+            TenantId = tenantId, SessionId = sessionId, GatewayInstanceId = gatewayInstanceId,
+            ConnectionId = connectionId, ConnectionGeneration = connectionGeneration
+        }, cancellationToken: cancellationToken));
+        return reply.Applied;
+    }
+
+    public async Task<StreamerSessionState?> GetSessionStateAsync(string tenantId, string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var reply = await CallAsync(client => client.GetSessionStateAsync(new SessionStateRequest
+            {
+                TenantId = tenantId, SessionId = sessionId
+            }, cancellationToken: cancellationToken));
+            return new StreamerSessionState(reply.StreamerId, reply.TenantId, reply.SessionVersion,
+                reply.GatewayInstanceId, reply.ConnectionId, reply.ConnectionGeneration,
+                reply.Revoked, reply.Closed, reply.Expired, reply.Banned, reply.Current);
+        }
+        catch (RpcException error) when (error.StatusCode == StatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
     private static StreamerSessionGrant Grant(SessionGrantReply reply) => new(reply.StreamerId, reply.SessionId,
         reply.SessionVersion, DateTimeOffset.FromUnixTimeMilliseconds(reply.ExpiresAtUnixMs).UtcDateTime,
         reply.Duplicate);

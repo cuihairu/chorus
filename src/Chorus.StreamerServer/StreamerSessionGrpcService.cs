@@ -73,6 +73,80 @@ public sealed class StreamerSessionGrpcService(
         }
     }
 
+    public override async Task<ConnectionReply> AttachConnection(AttachConnectionRequest request, ServerCallContext context)
+    {
+        var caller = await RequireAsync(context);
+        try
+        {
+            var connection = await coordinator.AttachConnectionAsync(caller.TenantId, new AttachConnectionCommand(
+                request.SessionId, request.OperationId, request.CurrentSecret.ToByteArray(),
+                request.GatewayInstanceId, request.ConnectionId), context.CancellationToken);
+            return new ConnectionReply
+            {
+                SessionId = connection.SessionId, StreamerId = connection.StreamerId,
+                SessionVersion = connection.SessionVersion,
+                ConnectionGeneration = connection.ConnectionGeneration, Duplicate = connection.Duplicate
+            };
+        }
+        catch (SessionRevokedException)
+        {
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked."));
+        }
+        catch (SessionReplacedException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Session is replaced."));
+        }
+        catch (ArgumentException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The attach request is invalid."));
+        }
+    }
+
+    public override async Task<ConnectionClosedReply> ConnectionClosed(ConnectionClosedRequest request, ServerCallContext context)
+    {
+        var caller = await RequireAsync(context);
+        try
+        {
+            var applied = await coordinator.ConnectionClosedAsync(caller.TenantId, request.SessionId,
+                request.GatewayInstanceId, request.ConnectionId, request.ConnectionGeneration,
+                context.CancellationToken);
+            return new ConnectionClosedReply { Applied = applied };
+        }
+        catch (SessionRevokedException)
+        {
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked."));
+        }
+        catch (ArgumentException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The close request is invalid."));
+        }
+    }
+
+    public override async Task<AccessStateReply> ValidateAccess(ValidateAccessRequest request, ServerCallContext context)
+    {
+        var caller = await RequireAsync(context);
+        try
+        {
+            var access = await coordinator.ValidateAccessAsync(caller.TenantId, request.AccessCredential,
+                context.CancellationToken);
+            return new AccessStateReply
+            {
+                StreamerId = access.StreamerId, SessionId = access.SessionId,
+                SessionVersion = access.SessionVersion, ConnectionGeneration = access.ConnectionGeneration,
+                GatewayInstanceId = access.GatewayInstanceId, ConnectionId = access.ConnectionId,
+                Online = access.Online
+            };
+        }
+        catch (AccessCredentialRejectedException)
+        {
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "The access credential is rejected."));
+        }
+        catch (ArgumentException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The access request is invalid."));
+        }
+    }
+
     private async Task<ProcessIdentity> RequireAsync(ServerCallContext context)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;

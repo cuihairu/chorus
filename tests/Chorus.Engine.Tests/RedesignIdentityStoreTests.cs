@@ -47,6 +47,64 @@ public sealed class RedesignIdentityStoreTests
         Assert.Equal(1, Convert.ToInt32(await count.ExecuteScalarAsync()));
     }
 
+    [Fact]
+    public async Task ConnectionsAttachGenerationsStaleCloseDoesNotDetachAndStateReflectsFacts()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var store = new RedesignIdentityStore(database.ConnectionString);
+        var identity = await store.ResolveIdentityAsync("tenant-a", "simulator", "app-1", "attach-open-id");
+        var firstSecret = RandomNumberGenerator.GetBytes(32);
+        var login = await store.LoginAsync(identity.StreamerId, "gateway-1", "connection-1", firstSecret);
+
+        var snapshot = await store.GetSessionStateAsync(login.SessionId);
+        Assert.NotNull(snapshot);
+        Assert.True(snapshot.Current);
+        Assert.False(snapshot.Closed);
+        Assert.Equal("tenant-a", snapshot.TenantId);
+        Assert.Equal(1, snapshot.ConnectionGeneration);
+
+        // A gateway switch attaches a new connection and increments the generation without rotation.
+        var attach = await store.AttachConnectionAsync(login.SessionId, "gateway-2", "connection-2",
+            "attach-op-1", firstSecret);
+        Assert.Equal(2, attach.ConnectionGeneration);
+        Assert.False(attach.Duplicate);
+        var attachRetry = await store.AttachConnectionAsync(login.SessionId, "gateway-2", "connection-2",
+            "attach-op-1", firstSecret);
+        Assert.True(attachRetry.Duplicate);
+        Assert.Equal(2, attachRetry.ConnectionGeneration);
+        // Same operation with a different connection, or the wrong secret, is rejected.
+        await Assert.ThrowsAsync<SessionRevokedException>(() => store.AttachConnectionAsync(login.SessionId,
+            "gateway-3", "connection-3", "attach-op-1", firstSecret));
+        await Assert.ThrowsAsync<SessionRevokedException>(() => store.AttachConnectionAsync(login.SessionId,
+            "gateway-3", "connection-3", "attach-op-2", RandomNumberGenerator.GetBytes(32)));
+
+        // Stale closes — old generation or wrong generation for the current pair — change nothing.
+        Assert.False(await store.CloseConnectionAsync(login.SessionId, "gateway-1", "connection-1", 1));
+        Assert.False(await store.CloseConnectionAsync(login.SessionId, "gateway-2", "connection-2", 99));
+        var stillOnline = await store.GetSessionStateAsync(login.SessionId);
+        Assert.False(stillOnline!.Closed);
+
+        // The current generation closes the session.
+        Assert.True(await store.CloseConnectionAsync(login.SessionId, "gateway-2", "connection-2", 2));
+        Assert.True((await store.GetSessionStateAsync(login.SessionId))!.Closed);
+
+        // A later attach re-binds the connection and clears the closed marker.
+        var reopen = await store.AttachConnectionAsync(login.SessionId, "gateway-3", "connection-3",
+            "attach-op-3", firstSecret);
+        Assert.Equal(3, reopen.ConnectionGeneration);
+        Assert.False((await store.GetSessionStateAsync(login.SessionId))!.Closed);
+
+        // A new login revokes the old session; snapshots expose revoked and non-current.
+        var takeover = await store.LoginAsync(identity.StreamerId, "gateway-4", "connection-4",
+            RandomNumberGenerator.GetBytes(32));
+        var revoked = await store.GetSessionStateAsync(login.SessionId);
+        Assert.True(revoked!.Revoked);
+        Assert.False(revoked.Current);
+        var current = await store.GetSessionStateAsync(takeover.SessionId);
+        Assert.True(current!.Current);
+        Assert.False(current.Revoked);
+    }
+
     private sealed class TemporaryDatabase(string source) : IAsyncDisposable
     {
         private readonly string _name = "chorus_m1_identity_" + Guid.NewGuid().ToString("N");

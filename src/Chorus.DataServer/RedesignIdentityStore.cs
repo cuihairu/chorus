@@ -7,6 +7,11 @@ namespace Chorus.DataServer;
 
 public sealed record ResolvedStreamer(string TenantId, string Platform, string AppId, string OpenId, string StreamerId);
 public sealed record SessionGrant(string SessionId, string StreamerId, long SessionVersion, DateTime ExpiresAtUtc, bool Duplicate);
+public sealed record SessionConnection(string SessionId, string StreamerId, long SessionVersion, long ConnectionGeneration, bool Duplicate);
+public sealed record SessionSnapshot(
+    string StreamerId, string TenantId, long SessionVersion, DateTime ExpiresAtUtc,
+    string GatewayInstanceId, string ConnectionId, long ConnectionGeneration,
+    bool Revoked, bool Closed, bool Expired, bool Banned, bool Current);
 
 public sealed class RedesignIdentityStore(string connectionString)
 {
@@ -254,6 +259,198 @@ public sealed class RedesignIdentityStore(string connectionString)
         }
         await transaction.CommitAsync(cancellationToken);
         return new SessionGrant(newSessionId, streamerId, newVersion, expiresAt, false);
+    }
+
+    /// <summary>
+    /// Binds the session to a new gateway connection, incrementing the connection generation. The
+    /// current resume secret authorizes the switch; nothing rotates. Exact retries return the same
+    /// generation within the retry window.
+    /// </summary>
+    public async Task<SessionConnection> AttachConnectionAsync(string sessionId, string gatewayInstanceId,
+        string connectionId, string operationId, byte[] currentSecret, CancellationToken cancellationToken = default)
+    {
+        Require(sessionId, nameof(sessionId)); Require(operationId, nameof(operationId));
+        Require(gatewayInstanceId, nameof(gatewayInstanceId)); Require(connectionId, nameof(connectionId));
+        RequireSecret(currentSecret);
+        var currentHash = Hash(currentSecret);
+        var requestHash = SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"attach\n{sessionId}\n{Convert.ToHexString(currentHash)}\n{gatewayInstanceId}\n{connectionId}"));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        string streamerId;
+        await using (var lookup = new NpgsqlCommand("SELECT streamer_id FROM auth.session WHERE session_id=@session", connection, transaction))
+        {
+            lookup.Parameters.AddWithValue("session", sessionId);
+            streamerId = await lookup.ExecuteScalarAsync(cancellationToken) as string
+                ?? throw new SessionRevokedException();
+        }
+        long currentVersion;
+        string? currentSessionId;
+        await using (var state = new NpgsqlCommand("""
+            SELECT current_session_version,current_session_id,ban_state FROM auth.streamer_state
+            WHERE streamer_id=@streamer FOR UPDATE
+            """, connection, transaction))
+        {
+            state.Parameters.AddWithValue("streamer", streamerId);
+            await using var reader = await state.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) throw new SessionRevokedException();
+            currentVersion = reader.GetInt64(0);
+            currentSessionId = reader.IsDBNull(1) ? null : reader.GetString(1);
+            if (reader.GetString(2) != "Allowed") throw new SessionRevokedException();
+        }
+
+        string? duplicateSession = null;
+        long duplicateVersion = 0;
+        long duplicateGeneration = 0;
+        await using (var rotation = new NpgsqlCommand("""
+            SELECT previous_secret_hash,request_hash,result_session_id,result_session_version,
+                   result_connection_generation,retry_until
+            FROM auth.rotation WHERE streamer_id=@streamer AND operation_id=@operation
+            """, connection, transaction))
+        {
+            rotation.Parameters.AddWithValue("streamer", streamerId);
+            rotation.Parameters.AddWithValue("operation", operationId);
+            await using var reader = await rotation.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var storedPrevious = (byte[])reader[0];
+                var storedRequest = (byte[])reader[1];
+                duplicateSession = reader.GetString(2);
+                duplicateVersion = reader.GetInt64(3);
+                if (reader.IsDBNull(4)) throw new SessionRevokedException();
+                duplicateGeneration = reader.GetInt64(4);
+                var retryUntil = reader.GetDateTime(5);
+                if (!CryptographicOperations.FixedTimeEquals(storedPrevious, currentHash) ||
+                    !CryptographicOperations.FixedTimeEquals(storedRequest, requestHash) || retryUntil <= DateTime.UtcNow)
+                    throw new SessionRevokedException();
+            }
+        }
+        if (duplicateSession is not null)
+        {
+            if (currentVersion != duplicateVersion || currentSessionId != duplicateSession)
+                throw new SessionReplacedException();
+            await transaction.CommitAsync(cancellationToken);
+            return new SessionConnection(duplicateSession, streamerId, duplicateVersion, duplicateGeneration, true);
+        }
+
+        long generation;
+        await using (var session = new NpgsqlCommand("""
+            SELECT resume_hash,expires_at,revoked_at,session_version,connection_generation
+            FROM auth.session WHERE session_id=@session AND streamer_id=@streamer FOR UPDATE
+            """, connection, transaction))
+        {
+            session.Parameters.AddWithValue("session", sessionId);
+            session.Parameters.AddWithValue("streamer", streamerId);
+            await using var reader = await session.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) throw new SessionRevokedException();
+            var stored = (byte[])reader[0];
+            if (!CryptographicOperations.FixedTimeEquals(stored, currentHash) || !reader.IsDBNull(2) ||
+                reader.GetDateTime(1) <= DateTime.UtcNow || reader.GetInt64(3) != currentVersion ||
+                currentSessionId != sessionId)
+                throw new SessionRevokedException();
+            generation = checked(reader.GetInt64(4) + 1);
+        }
+        await using (var update = new NpgsqlCommand("""
+            UPDATE auth.session SET connection_generation=@generation,gateway_instance_id=@gateway,
+                connection_id=@connection,connection_closed_at=NULL
+            WHERE session_id=@session
+            """, connection, transaction))
+        {
+            update.Parameters.AddWithValue("session", sessionId);
+            update.Parameters.AddWithValue("generation", generation);
+            update.Parameters.AddWithValue("gateway", gatewayInstanceId);
+            update.Parameters.AddWithValue("connection", connectionId);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var insertRotation = new NpgsqlCommand("""
+            INSERT INTO auth.rotation(streamer_id,operation_id,previous_secret_hash,request_hash,
+                result_session_id,result_session_version,result_connection_generation,retry_until)
+            VALUES (@streamer,@operation,@previous,@request,@session,@version,@generation,
+                clock_timestamp()+interval '2 minutes')
+            """, connection, transaction))
+        {
+            insertRotation.Parameters.AddWithValue("streamer", streamerId);
+            insertRotation.Parameters.AddWithValue("operation", operationId);
+            insertRotation.Parameters.AddWithValue("previous", currentHash);
+            insertRotation.Parameters.AddWithValue("request", requestHash);
+            insertRotation.Parameters.AddWithValue("session", sessionId);
+            insertRotation.Parameters.AddWithValue("version", currentVersion);
+            insertRotation.Parameters.AddWithValue("generation", generation);
+            await insertRotation.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return new SessionConnection(sessionId, streamerId, currentVersion, generation, false);
+    }
+
+    /// <summary>
+    /// Applies a gateway close notification. Only a notification carrying the current gateway,
+    /// connection and generation marks the session offline; stale notifications change nothing.
+    /// </summary>
+    public async Task<bool> CloseConnectionAsync(string sessionId, string gatewayInstanceId, string connectionId,
+        long connectionGeneration, CancellationToken cancellationToken = default)
+    {
+        Require(sessionId, nameof(sessionId)); Require(gatewayInstanceId, nameof(gatewayInstanceId));
+        Require(connectionId, nameof(connectionId));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        string currentGateway;
+        string currentConnection;
+        long currentGeneration;
+        await using (var select = new NpgsqlCommand("""
+            SELECT gateway_instance_id,connection_id,connection_generation,revoked_at
+            FROM auth.session WHERE session_id=@session FOR UPDATE
+            """, connection, transaction))
+        {
+            select.Parameters.AddWithValue("session", sessionId);
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) return false;
+            if (!reader.IsDBNull(3)) return false;
+            currentGateway = reader.GetString(0);
+            currentConnection = reader.GetString(1);
+            currentGeneration = reader.GetInt64(2);
+        }
+        if (!StringComparer.Ordinal.Equals(currentGateway, gatewayInstanceId) ||
+            !StringComparer.Ordinal.Equals(currentConnection, connectionId) || currentGeneration != connectionGeneration)
+            return false;
+        await using (var update = new NpgsqlCommand(
+            "UPDATE auth.session SET connection_closed_at=clock_timestamp() WHERE session_id=@session",
+            connection, transaction))
+        {
+            update.Parameters.AddWithValue("session", sessionId);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    /// <summary>The session row with live facts for access-credential consumers, or null when unknown.</summary>
+    public async Task<SessionSnapshot?> GetSessionStateAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        Require(sessionId, nameof(sessionId));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT s.streamer_id,s.session_version,s.expires_at,s.revoked_at,s.gateway_instance_id,
+                   s.connection_id,s.connection_generation,s.connection_closed_at,
+                   st.current_session_version,st.current_session_id,st.ban_state,i.tenant_id
+            FROM auth.session s
+            JOIN auth.streamer_state st ON st.streamer_id=s.streamer_id
+            LEFT JOIN LATERAL (SELECT tenant_id FROM auth.identity WHERE player_id=s.streamer_id LIMIT 1) i ON true
+            WHERE s.session_id=@session
+            """, connection);
+        command.Parameters.AddWithValue("session", sessionId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        var expiresAt = DateTime.SpecifyKind(reader.GetDateTime(2), DateTimeKind.Utc);
+        return new SessionSnapshot(
+            reader.GetString(0), reader.IsDBNull(11) ? "" : reader.GetString(11), reader.GetInt64(1),
+            expiresAt, reader.GetString(4), reader.GetString(5),
+            reader.GetInt64(6), !reader.IsDBNull(3), !reader.IsDBNull(7), expiresAt <= DateTime.UtcNow,
+            reader.GetString(10) != "Allowed",
+            reader.GetInt64(8) == reader.GetInt64(1) && !reader.IsDBNull(9) &&
+            StringComparer.Ordinal.Equals(reader.GetString(9), sessionId));
     }
 
     /// <summary>The tenant that owns this streamer identity, or null when unknown.</summary>

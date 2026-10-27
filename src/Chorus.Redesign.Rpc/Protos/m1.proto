@@ -76,12 +76,99 @@ message SessionGrantReply {
   bool duplicate = 5;
 }
 
+message AttachConnectionRequest {
+  string session_id = 1;
+  string operation_id = 2;
+  bytes current_secret = 3;
+  string gateway_instance_id = 4;
+  string connection_id = 5;
+}
+
+message ConnectionClosedRequest {
+  string session_id = 1;
+  string gateway_instance_id = 2;
+  string connection_id = 3;
+  int64 connection_generation = 4;
+}
+
+message ConnectionReply {
+  string session_id = 1;
+  string streamer_id = 2;
+  int64 session_version = 3;
+  int64 connection_generation = 4;
+  bool duplicate = 5;
+}
+
+message ConnectionClosedReply { bool applied = 1; }
+
+message ValidateAccessRequest { string access_credential = 1; }
+
+message AccessStateReply {
+  string streamer_id = 1;
+  string session_id = 2;
+  int64 session_version = 3;
+  int64 connection_generation = 4;
+  string gateway_instance_id = 5;
+  string connection_id = 6;
+  bool online = 7;
+}
+
+message SessionAttachRequest {
+  string tenant_id = 1;
+  string session_id = 2;
+  string operation_id = 3;
+  bytes current_secret = 4;
+  string gateway_instance_id = 5;
+  string connection_id = 6;
+}
+
+message SessionCloseRequest {
+  string tenant_id = 1;
+  string session_id = 2;
+  string gateway_instance_id = 3;
+  string connection_id = 4;
+  int64 connection_generation = 5;
+}
+
+message SessionConnectionReply {
+  string session_id = 1;
+  string streamer_id = 2;
+  int64 session_version = 3;
+  int64 connection_generation = 4;
+  bool duplicate = 5;
+}
+
+message SessionCloseReply { bool applied = 1; }
+
+message SessionStateRequest {
+  string tenant_id = 1;
+  string session_id = 2;
+}
+
+message SessionStateReply {
+  string streamer_id = 1;
+  string tenant_id = 2;
+  int64 session_version = 3;
+  int64 expires_at_unix_ms = 4;
+  string gateway_instance_id = 5;
+  string connection_id = 6;
+  int64 connection_generation = 7;
+  bool revoked = 8;
+  bool closed = 9;
+  bool expired = 10;
+  bool banned = 11;
+  bool current = 12;
+}
+
 // StreamerServer session boundary; the caller presents a tenant-scoped streamer-server
 // identity and the tenant is taken from the authenticated certificate, not the request.
 service StreamerSession {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc Login(LoginRequest) returns (LoginReadyReply);
   rpc Resume(ResumeRequest) returns (LoginReadyReply);
+  rpc AttachConnection(AttachConnectionRequest) returns (ConnectionReply);
+  rpc ConnectionClosed(ConnectionClosedRequest) returns (ConnectionClosedReply);
+  rpc ValidateAccess(ValidateAccessRequest) returns (AccessStateReply);
 }
 
 // Identity and session persistence owned by DataServer; StreamerServer orchestrates
@@ -93,4 +180,7 @@ service StreamerIdentity {
   rpc Login(SessionLoginRequest) returns (SessionGrantReply);
   rpc Resume(SessionResumeRequest) returns (SessionGrantReply);
   rpc EnsureEntityProfile(EnsureProfileRequest) returns (EnsureProfileReply);
+  rpc AttachConnection(SessionAttachRequest) returns (SessionConnectionReply);
+  rpc ConnectionClosed(SessionCloseRequest) returns (SessionCloseReply);
+  rpc GetSessionState(SessionStateRequest) returns (SessionStateReply);
 }

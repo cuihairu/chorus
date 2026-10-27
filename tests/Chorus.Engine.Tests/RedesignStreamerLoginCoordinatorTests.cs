@@ -12,6 +12,9 @@ public sealed class RedesignStreamerLoginCoordinatorTests
     private sealed class FakeIdentityStore : IStreamerIdentityStore
     {
         public int Logins;
+        public StreamerSessionState? State = new("streamer-fake", "tenant-a", 1, "gateway-1", "connection-1",
+            1, Revoked: false, Closed: false, Expired: false, Banned: false, Current: true);
+
         public Task<string> ResolveIdentityAsync(string tenantId, string platform, string appId, string openId,
             CancellationToken cancellationToken = default) => Task.FromResult("streamer-fake");
 
@@ -28,6 +31,18 @@ public sealed class RedesignStreamerLoginCoordinatorTests
             CancellationToken cancellationToken = default)
             => Task.FromResult(new StreamerSessionGrant("streamer-fake", "session-fake", 2,
                 Now.UtcDateTime.AddHours(1), false));
+
+        public Task<StreamerConnection> AttachConnectionAsync(string tenantId, string sessionId,
+            string gatewayInstanceId, string connectionId, string operationId, byte[] currentSecret,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new StreamerConnection(sessionId, "streamer-fake", 1, 2, false));
+
+        public Task<bool> ConnectionClosedAsync(string tenantId, string sessionId, string gatewayInstanceId,
+            string connectionId, long connectionGeneration, CancellationToken cancellationToken = default)
+            => Task.FromResult(true);
+
+        public Task<StreamerSessionState?> GetSessionStateAsync(string tenantId, string sessionId,
+            CancellationToken cancellationToken = default) => Task.FromResult(State);
     }
 
     private sealed class LoadedProfileStore : IStreamerProfileStore
@@ -104,6 +119,39 @@ public sealed class RedesignStreamerLoginCoordinatorTests
         var command = Command(rig.IssueCredential) with { LaunchCredential = "forged" };
         await Assert.ThrowsAsync<PlatformLaunchRejectedException>(
             () => rig.Coordinator.LoginAsync("tenant-a", command));
+    }
+
+    [Fact]
+    public async Task AttachConnectionPassesThroughWithoutRotation()
+    {
+        var rig = New();
+        var connection = await rig.Coordinator.AttachConnectionAsync("tenant-a", new AttachConnectionCommand(
+            "session-fake", "attach-op-1", RandomNumberGenerator.GetBytes(32), "gateway-2", "connection-2"));
+        Assert.Equal(2, connection.ConnectionGeneration);
+        Assert.True(await rig.Coordinator.ConnectionClosedAsync("tenant-a", "session-fake",
+            "gateway-2", "connection-2", 2));
+    }
+
+    [Fact]
+    public async Task ValidateAccessBindsCredentialToCurrentSessionState()
+    {
+        var rig = New();
+        var ready = await rig.Coordinator.LoginAsync("tenant-a", Command(rig.IssueCredential));
+        var access = await rig.Coordinator.ValidateAccessAsync("tenant-a", ready.AccessCredential);
+        Assert.True(access.Online);
+        Assert.Equal(1, access.SessionVersion);
+
+        await Assert.ThrowsAsync<AccessCredentialRejectedException>(
+            () => rig.Coordinator.ValidateAccessAsync("tenant-a", "forged"));
+        await Assert.ThrowsAsync<AccessCredentialRejectedException>(
+            () => rig.Coordinator.ValidateAccessAsync("tenant-b", ready.AccessCredential));
+        rig.Store.State = rig.Store.State with { Current = false };
+        await Assert.ThrowsAsync<AccessCredentialRejectedException>(
+            () => rig.Coordinator.ValidateAccessAsync("tenant-a", ready.AccessCredential));
+        // Offline is a routing fact, not an authentication failure.
+        rig.Store.State = rig.Store.State with { Current = true, Closed = true };
+        var offline = await rig.Coordinator.ValidateAccessAsync("tenant-a", ready.AccessCredential);
+        Assert.False(offline.Online);
     }
 
     [Fact]

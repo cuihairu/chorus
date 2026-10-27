@@ -100,6 +100,58 @@ public sealed class StreamerIdentityGrpcService(
         }
     }
 
+    public override async Task<SessionConnectionReply> AttachConnection(SessionAttachRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server");
+        var streamerId = await identityStore.GetSessionStreamerAsync(request.SessionId, context.CancellationToken);
+        if (streamerId is not null)
+            await RequireIdentityTenantAsync(request.TenantId, streamerId, context.CancellationToken);
+        try
+        {
+            var connection = await identityStore.AttachConnectionAsync(request.SessionId, request.GatewayInstanceId,
+                request.ConnectionId, request.OperationId, request.CurrentSecret.ToByteArray(),
+                context.CancellationToken);
+            return new SessionConnectionReply
+            {
+                SessionId = connection.SessionId, StreamerId = connection.StreamerId,
+                SessionVersion = connection.SessionVersion,
+                ConnectionGeneration = connection.ConnectionGeneration, Duplicate = connection.Duplicate
+            };
+        }
+        catch (SessionRevokedException) { throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked.")); }
+        catch (SessionReplacedException) { throw new RpcException(new Status(StatusCode.FailedPrecondition, "Session is replaced.")); }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<SessionCloseReply> ConnectionClosed(SessionCloseRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server");
+        var streamerId = await identityStore.GetSessionStreamerAsync(request.SessionId, context.CancellationToken);
+        if (streamerId is null) return new SessionCloseReply { Applied = false };
+        await RequireIdentityTenantAsync(request.TenantId, streamerId, context.CancellationToken);
+        var applied = await identityStore.CloseConnectionAsync(request.SessionId, request.GatewayInstanceId,
+            request.ConnectionId, request.ConnectionGeneration, context.CancellationToken);
+        return new SessionCloseReply { Applied = applied };
+    }
+
+    public override async Task<SessionStateReply> GetSessionState(SessionStateRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server");
+        var snapshot = await identityStore.GetSessionStateAsync(request.SessionId, context.CancellationToken);
+        if (snapshot is null || !StringComparer.Ordinal.Equals(snapshot.TenantId, request.TenantId))
+            throw new RpcException(new Status(StatusCode.NotFound, "The session does not exist for this tenant."));
+        return new SessionStateReply
+        {
+            StreamerId = snapshot.StreamerId, TenantId = snapshot.TenantId,
+            SessionVersion = snapshot.SessionVersion,
+            ExpiresAtUnixMs = new DateTimeOffset(snapshot.ExpiresAtUtc, TimeSpan.Zero).ToUnixTimeMilliseconds(),
+            GatewayInstanceId = snapshot.GatewayInstanceId, ConnectionId = snapshot.ConnectionId,
+            ConnectionGeneration = snapshot.ConnectionGeneration,
+            Revoked = snapshot.Revoked, Closed = snapshot.Closed, Expired = snapshot.Expired,
+            Banned = snapshot.Banned, Current = snapshot.Current
+        };
+    }
+
     private async Task<ProcessIdentity> RequireAsync(ServerCallContext context, params string[] roles)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;
