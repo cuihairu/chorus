@@ -26,7 +26,9 @@ Result {
 }
 ```
 
-OperationId 标识一次逻辑操作，重试不变；RequestId 标识一次传输尝试，可改变。接收方保存请求规范化哈希；同 OperationId 不同 payload 返回 IdempotencyConflict，而不是返回另一请求的成功结果。幂等作用域包含 tenant、game、操作类型和目标。
+OperationId 标识一次逻辑操作，重试不变；RequestId 标识一次传输尝试，可改变。接收方保存请求规范化哈希；同 OperationId 不同 payload 返回 IdempotencyConflict，而不是返回另一请求的成功结果。幂等键精确为 `(TenantId, GameId, OperationKind, TargetId, OperationId)`；无游戏作用域的集群操作使用协议保留值 `@cluster`，不得使用空字符串或调用方自造的代号。接收端从已认证上下文确定 tenant/game，并验证目标与操作类型，不能直接信任请求中的作用域字段。
+
+请求哈希覆盖会改变业务效果的规范化字段及 payload，不覆盖 `RequestId`、`TraceId`、传输 deadline、调用实例 ID；这些字段在安全重试时可以变化。规范化编码由每个 RPC 的有版本消息契约定义；同一操作版本的重复调用必须产生相同字节。不同 payload 或规范化版本不得借相同 `OperationId` 取得旧成功回执。回执与业务效果在同一事务提交，超时后先按完整幂等键查询原结果。
 
 | 状态 | 含义 | 调用方处理 |
 |---|---|---|
@@ -179,7 +181,7 @@ NormalizedEvent {
 | game.result | RoomId+ResultVersion UNIQUE、FinalFrame、PlanHash、Result | DataServer |
 | settlement.grant | RoomId+ResultVersion+PlayerId+GrantKey UNIQUE、Status | DataServer |
 | infra.outbox | EffectId UNIQUE、Kind、Payload、Status、NextAttempt | DataServer |
-| infra.receipt | OperationScope+OperationId UNIQUE、RequestHash、Result | 事务执行端 |
+| infra.receipt | TenantId+GameId+OperationKind+TargetId+OperationId UNIQUE、RequestHash、CanonicalVersion、Result | 事务执行端；与业务效果同事务 |
 | infra.audit | AuditId、Actor、OperationId、Reason、Before/AfterHash | ControlServer / DataServer |
 
 不在 JSON 字段里暗藏影响唯一性或授权的关键索引。大二进制快照首期存 PostgreSQL；将来外置对象存储必须使用“先写不可变 blob、验证可读，再提交引用”协议，并处理孤儿对象，不能先引用未上传文件。
@@ -217,7 +219,7 @@ COMMIT
 
 接收时先去重查原回执；锁对应挂载、校验来源与路由版本并保存归属证据。客户端输入还必须锁/校验 auth.streamer_state 中的当前会话版本。挂载边界变更与新输入归属使用同一锁序。无可信 round hint 的事件按首次持久接收时的输入窗口归局；间歇/收尾窗口采用局外处置，不能承诺还原上游发生顺序。
 
-事件可以先进入 UnresolvedInbox：持久接收是对已收到信息的保存承诺，不是承诺已经找到正确房间。之后 RouteEvent 事务只允许从 Unresolved/Accepted 转为一个明确 consumer scope，不允许同一输入悄悄进入两局。需同时做审计、个人贡献与局内效果时，使用不同消费者并各自幂等。
+事件可以先进入 UnresolvedInbox：持久接收是对已收到信息的保存承诺，不是承诺已经找到正确房间。之后 RouteEvent 事务只允许从 Unresolved/Accepted 转为一个明确 consumer scope，不允许同一输入悄悄进入两局。需同时做审计、个人贡献与局内效果时，使用不同消费者并各自幂等。客户端输入事务必须先锁主播会话/资格，再锁挂载；平台事件没有客户端会话时直接从挂载锁开始，均符合 §6.5 的统一锁序。
 
 DeliverySequence 在 consumer cursor 行锁内分配，并与 delivery 插入同事务提交；回滚也回滚计数。不能用数据库 sequence 最大值作为消费高水位，因为分配顺序不保证提交顺序。扫描未处置记录并维护连续已完成水位，存在空洞时不越过；按类别跳过暂不能应用的输入必须单独保留 pending 状态，不能把它误标已消费。
 

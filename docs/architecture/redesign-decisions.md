@@ -30,6 +30,8 @@ title: 重设计关键决策
 
 后果：单数据库是容量及可用性边界；首期 HA 同步复制，故障晋升先人工隔离旧主。保留旧 room-control-storage.md 中“已确认数据不丢”的意图，但替换每帧完整快照和历史磁盘估计。覆盖 TR-consistency-001～003、TR-data-001～004。
 
+M0 细化（2026-10-27）：收据唯一键采用 `(TenantId, GameId, OperationKind, TargetId, OperationId)`；无游戏作用域的集群操作使用保留值 `@cluster`。请求哈希只覆盖有版本的规范化业务请求，不包含可变的传输 ID、trace、deadline 或调用实例。拒绝只按裸 `OperationId` 去重（不同租户/目标会相互污染），也拒绝把传输字段算进哈希（安全重试会误判冲突）。收据必须与业务效果同事务；该规则是协议与存储共同约束，现阶段仅有协议实现，持久收据表和 DataServer 尚未落地。
+
 ## ADR-R04：所有权 epoch 在接收端执行 fencing
 
 选择数据库中的 OwnerInstance/Epoch/LeaseUntil，所有权变更与业务提交锁同一行；数据服务校验，不依赖心跳通知及时到达。
