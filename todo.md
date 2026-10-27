@@ -346,7 +346,7 @@
   历史（2026-10-20 代决单语）：仓内曾零英文页、root 标 English 装中文、`zh/` 为 41 张重复中文树且缺首页；处置为先落诚实单语（root=简体中文），英文版待授权译文来源。
 - [x] Dependabot 清零（2026-10-21，#172–#176）：package overrides 迁至 pnpm-workspace.yaml 并锁定 decode-uri-component 0.5.0、esbuild 0.25.0、vite 6.4.3；上一单 .NET 全量 1117/1117 与浏览器 E2E 100 房/500 连接/720 趋势点已绿，本轮补跑 pnpm install --frozen-lockfile 与 docs:build 通过。
 
-## 21. 重设计方案（2026-10-25 目标架构，未实现）
+## 21. 重设计方案（2026-10-25 目标架构，M0 部分开工）
 
-- [ ] **BLOCKED (2026-10-27 登记): 重设计为纯设计稿，未获实现授权、未开工，不得记成已完成。** 方案体：`docs/architecture/architecture.md`（424 行目标架构，自称「不是当前代码能力声明，也不是生产验收通过声明」）+ 附录 `redesign-contracts.md` / `redesign-operations.md` / `redesign-decisions.md` / `redesign-acceptance.md` + 调研基线 `docs/research/live-interactive-redesign-baseline.md`（6 文件 2026-10-25 经 `223e5c4` 落盘）。三档盘点：**已实现 0** —— 33 条 TR 要求、32 条 AT 验收场景、10 条 ADR-R01~R10、M0~M4 五阶段全是纸面；**只有设计** —— 身份/直播挂载/连接/对局分离建模、七进程角色（NodeAgent/ControlServer/两 Gateway/StreamerServer/GameServer/DataServer）、PG 单写主库 + 行锁 epoch 接收端 fencing、持久帧日志 + 5s 快照、持久接收与游戏应用分开确认、预留/准备/原子提交匹配、双 OS 进程监管、统一数据服务账本、版本钉住自然排空；**完全没有** —— 任何新角色代码、新 schema 迁移、两平台专属适配器、确定性示例玩法重写、双 OS 安装包与容量实测。实施起点 M0（契约与可运行骨架）是否开工、复用旧代码范围如何审，等用户拍板。
-  证据（2026-10-27 复核）：`git log --stat 223e5c4` 仅动 6 个 docs 文件与 config/README 各 +2 行，`src/` 零改动；`grep -cE '^\| TR-[a-z]+-[0-9]+' redesign-acceptance.md`=33、AT=32、`grep -cE '^## ADR-R[0-9]+' redesign-decisions.md`=10；`npm run docs:build` 56.78s 绿（0 dead link）。旧 `docs/decisions.md` 与 `docs/architecture.md` 已补指向本方案的注记（本轮 commit），避免读者按旧 ADR 覆盖目标设计。
+- [ ] **M0 部分开工（2026-10-27）**：已明确收据幂等键、规范化请求哈希与客户端输入锁序（`0c2bd82`）；`Chorus.Protocol.Redesign` 已实现操作身份/指纹并通过 7 项测试（`56a95a6`）。这只关闭 M0 的一小段协议契约，33 条 TR、32 条 AT、M0～M4 的阶段出口均未验收。仍缺默认 PostgreSQL schema/迁移、DataServer 与 ControlServer 新边界、NodeAgent 双 OS 骨架、平台模拟器和真实接入等；旧 ControlHost 能力不得按新目标架构折算。
+  历史基线：2026-10-27 登记时新方案只有设计文件（`223e5c4`），没有新角色代码；用户本轮已明确授权续做。后续逐项以验收计划 `docs/architecture/redesign-acceptance.md` 为准，不以文档或协议类型存在宣称阶段通过。

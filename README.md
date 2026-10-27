@@ -19,6 +19,8 @@
 
 ## Documentation (VuePress)
 
+**Target redesign (2026-10-25):** [distributed live-game server design](docs/architecture/architecture.md) and [acceptance plan](docs/architecture/redesign-acceptance.md). M0 protocol work has started; the architecture below describes the current implementation.
+
 - Site (GitHub Pages): `https://cuihairu.github.io/chorus/`
 - Source: `docs/`
 - Local preview: `npm install && npm run docs:dev`
