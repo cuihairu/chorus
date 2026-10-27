@@ -1,0 +1,64 @@
+using System.Security.Cryptography;
+using System.Text;
+using Npgsql;
+
+namespace Chorus.Data.Redesign;
+
+/// <summary>Applies target-architecture PostgreSQL migrations explicitly, before service startup.</summary>
+public static class RedesignSchemaMigrator
+{
+    private static readonly (int Version, string Resource)[] Steps =
+    [
+        (1, "Chorus.Data.Redesign.0001_operation_receipt.sql"),
+        (2, "Chorus.Data.Redesign.0002_core_schema.sql")
+    ];
+
+    public static async Task ApplyAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        if (connection.State != System.Data.ConnectionState.Open)
+            throw new InvalidOperationException("Open the migration connection before applying schema changes.");
+
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var prepare = new NpgsqlCommand("""
+            SELECT pg_advisory_xact_lock(785245019403117211);
+            CREATE SCHEMA IF NOT EXISTS infra;
+            CREATE TABLE IF NOT EXISTS infra.schema_migration (
+                version integer PRIMARY KEY,
+                checksum char(64) NOT NULL,
+                applied_at timestamptz NOT NULL DEFAULT clock_timestamp()
+            );
+            """, connection, transaction))
+            await prepare.ExecuteNonQueryAsync(cancellationToken);
+
+        foreach (var (version, resource) in Steps)
+        {
+            await using var stream = typeof(RedesignSchemaMigrator).Assembly.GetManifestResourceStream(resource)
+                ?? throw new InvalidOperationException($"Migration resource {resource} is missing.");
+            using var reader = new StreamReader(stream);
+            var sql = await reader.ReadToEndAsync(cancellationToken);
+            var checksum = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sql)));
+
+            await using var check = new NpgsqlCommand(
+                "SELECT checksum FROM infra.schema_migration WHERE version = @version", connection, transaction);
+            check.Parameters.AddWithValue("version", version);
+            var existing = await check.ExecuteScalarAsync(cancellationToken) as string;
+            if (existing is not null)
+            {
+                if (!StringComparer.Ordinal.Equals(existing, checksum))
+                    throw new InvalidOperationException($"Migration {version} checksum differs from the applied schema.");
+                continue;
+            }
+
+            await using (var apply = new NpgsqlCommand(sql, connection, transaction))
+                await apply.ExecuteNonQueryAsync(cancellationToken);
+            await using var record = new NpgsqlCommand(
+                "INSERT INTO infra.schema_migration(version, checksum) VALUES (@version, @checksum)", connection, transaction);
+            record.Parameters.AddWithValue("version", version);
+            record.Parameters.AddWithValue("checksum", checksum);
+            await record.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+}

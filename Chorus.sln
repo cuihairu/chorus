@@ -45,6 +45,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.StreamerGateway", "s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.PlatformGateway", "src\Chorus.PlatformGateway\Chorus.PlatformGateway.csproj", "{18AA6C36-E9BA-440F-AF87-C2A65AD372DE}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.SchemaTool", "src\Chorus.SchemaTool\Chorus.SchemaTool.csproj", "{807587C6-2169-41B3-901E-8DF1E77FE207}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -283,6 +285,18 @@ Global
 		{18AA6C36-E9BA-440F-AF87-C2A65AD372DE}.Release|x64.Build.0 = Release|Any CPU
 		{18AA6C36-E9BA-440F-AF87-C2A65AD372DE}.Release|x86.ActiveCfg = Release|Any CPU
 		{18AA6C36-E9BA-440F-AF87-C2A65AD372DE}.Release|x86.Build.0 = Release|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Debug|x64.Build.0 = Debug|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Debug|x86.Build.0 = Debug|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Release|Any CPU.Build.0 = Release|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Release|x64.ActiveCfg = Release|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Release|x64.Build.0 = Release|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Release|x86.ActiveCfg = Release|Any CPU
+		{807587C6-2169-41B3-901E-8DF1E77FE207}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -307,5 +321,6 @@ Global
 		{6983BE99-3578-4AF9-9F7D-B1F5BD9CF03B} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
 		{D52D53D3-AB4A-45A2-AC05-60CABB11232E} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
 		{18AA6C36-E9BA-440F-AF87-C2A65AD372DE} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
+		{807587C6-2169-41B3-901E-8DF1E77FE207} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
 	EndGlobalSection
 EndGlobal

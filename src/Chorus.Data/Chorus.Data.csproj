@@ -10,6 +10,7 @@
     <PackageReference Include="Npgsql" Version="10.0.0" />
     <ProjectReference Include="../Chorus.Protocol/Chorus.Protocol.csproj" />
     <EmbeddedResource Include="Redesign/0001_operation_receipt.sql" />
+    <EmbeddedResource Include="Redesign/0002_core_schema.sql" />
   </ItemGroup>
 
 </Project>
