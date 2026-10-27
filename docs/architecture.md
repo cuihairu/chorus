@@ -13,6 +13,11 @@ area; this is the map plus the reasoning:
 - Capability usage: [battle](./guide/battle.md), [matchmaking](./guide/matchmaking.md),
   [leaderboard](./guide/leaderboard.md)
 
+> **Target redesign (2026-10-25).** This page describes the current implementation. The next target
+> architecture is designed separately in [Chorus 分布式直播游戏服务器完整设计](./architecture/architecture.md)
+> (design only, unimplemented); it is the authoritative entry point for new work and must not be
+> overwritten by the pages below.
+
 ## Layering and module split
 
 Bottom-up, the 13 projects fall into five layers (dependencies may only point downward):

@@ -4,6 +4,11 @@
 > Proxy decision-making is user-authorized (since 2026-10-12). Each entry carries background and
 > impact; if a review changes direction, the rollback surface is noted here.
 
+> **Target redesign (2026-10-25).** The next architecture has its own decision set in
+> [重设计关键决策](./architecture/redesign-decisions.md) (ADR-R01 ~ R10, design only, unimplemented).
+> Those ADRs supersede parts of this log for the target design; the entries below remain valid
+> history of the current implementation and are not rewritten.
+
 ## 2026-10-12
 
 ### D1 Platform adapters move into the shared project `Chorus.Adapters.Platforms`
