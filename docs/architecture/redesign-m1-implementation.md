@@ -17,12 +17,16 @@ M1 按 [验收计划](redesign-acceptance.md) 实施；真实平台无法联调�
 
 数据库集成证据：`RedesignIdentityStoreTests.PlatformIdentity_LoginTakeoverAndResumeRotationAreTenantScopedAndIdempotent`。此项是 M1 的持久化基础，尚不等于 StreamerServer API 或完整主播登录流程。
 
+## 本轮已落地：平台启动验证接口与开发模拟器
+
+`RedesignPlatformGateway` 按平台名路由 `VerifyLaunch`；`DevelopmentPlatformSimulator` 用 HMAC-SHA256 签发并验证开发启动凭据（AppId 作用域、过期、固定时间签名比较、稳定拒绝码、无签名秘密返回）；`DouyinLaunchAdapter`/`KuaishouLaunchAdapter` 为 `NotProductionReady` 失败关闭桩。生产宿主默认拒绝非 ProductionReady 适配器，开发宿主显式打开；官方协议版本、脱敏真实样本、签名正反用例与成功回执齐备前，桩不验证任何凭据，模拟器证据不折算为生产适配器。契约证据：`RedesignPlatformGatewayTests` 5/5（含伪造/过期/错 AppId/未知平台/越权适配器输出/凭据不外泄）。此项是 M1 平台接入前置，尚不等同 AT02（需真实平台样本）。
+
 ## M1 后续顺序
 
-1. PlatformGateway 的验证接口和 Development Platform Simulator；Douyin/Kuaishou 实现分别保留 `NotProductionReady`，直到官方协议、脱敏真实样本、签名正反用例和成功回执齐备。
+1. ~~PlatformGateway 的验证接口和 Development Platform Simulator；Douyin/Kuaishou 实现分别保留 `NotProductionReady`~~（已落地，见上）。
 2. StreamerServer Login/Resume API、实体资料加载成功后才返回 LoginReady、access credential 校验和同连接 Attach generation。
 3. StreamerActor / LoginCoordinator 状态恢复及 GameplayBinding 唯一挂载、跨 GameId LiveSlot 冲突事务。
 4. 持久 PlatformTask、NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属。
 5. 逐项完成 AT01–AT09；外部真实平台需要测试应用/样本时，模拟器证据与生产验收分开记录。
 
-目前没有 StreamerServer 宿主、平台验证 API、完整轮换响应丢失集成测试、Actor 恢复、挂载流程或平台持久收件箱。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
+目前没有 StreamerServer 宿主、完整轮换响应丢失集成测试、Actor 恢复、挂载流程或平台持久收件箱；平台启动验证接口与开发模拟器已落地，但真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。

@@ -31,6 +31,6 @@ title: M0 验收证据
 M0 总体验收仍保持 open。关闭前还需要：
 
 1. Windows 主机执行空库启动、Windows Service、Job Object 子进程树、受限状态目录 ACL 与证书保护验收。
-2. 补齐计划中的平台模拟器和可复现安装配置；当前有 BootstrapTool/SchemaTool 与 Linux 离线 seed 冷启动，但没有完整双 OS 安装/升级包或平台模拟器。
+2. 补齐计划中的可复现安装配置；开发平台模拟器（`RedesignPlatformGateway` + `DevelopmentPlatformSimulator`，Douyin/Kuaishou 桩 `NotProductionReady`）已落地（见 `docs/architecture/redesign-m1-implementation.md`），但完整双 OS 安装/升级包尚未开始。
 
 其余 AT18/23/27 的基础部分及 AT32 身份隔离已有上述 Linux PostgreSQL/真实宿主进程证据，但不替代以上缺项或 M0 完整出口。详情见[验收计划](redesign-acceptance.md)与[M0 实现边界](redesign-m0-implementation.md)。

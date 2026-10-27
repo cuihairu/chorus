@@ -348,7 +348,7 @@
 
 ## 21. 重设计方案（2026-10-25 目标架构，M0 进行中）
 
-- [ ] **M0 总出口仍 open（2026-10-27）**：Linux 空库 PostgreSQL、真实 gRPC host 集成与 Agent 离线冷启动/崩溃回收均已通过；Windows 实机验收与计划中的平台模拟器/安装包尚未完成。不得将部分验收标记为 M0 完成；证据见 `docs/architecture/redesign-m0-evidence.md`。
+- [ ] **M0 总出口仍 open（2026-10-27）**：Linux 空库 PostgreSQL、真实 gRPC host 集成、Agent 离线冷启动/崩溃回收与开发平台模拟器均已通过；Windows 实机验收与可复现安装配置尚未完成。不得将部分验收标记为 M0 完成；证据见 `docs/architecture/redesign-m0-evidence.md`。
 - [x] 操作身份/指纹协议、持久收据及 SchemaMigrator 收口（`0c2bd82`、`56a95a6`、`a8523f4`、`857af82`、`bc2363a`）：包含 schema 版本 1–4、事务迁移/校验和以及 stored fingerprint 验证。
 - [x] 新 DataServer / ControlServer 边界和 mTLS 身份隔离（`bc2363a`）：真实 host 集成覆盖 profile/asset/receipt、tenant/role、ownership epoch 及进程报告。
 - [x] NodeAgent 双系统骨架、SchemaTool/BootstrapTool 和 M0 验收记录（`bc2363a`）：Linux Release build、Windows `win-x64` 交叉编译通过；测试结果和未运行证据按平台分列。
@@ -357,4 +357,5 @@
 - [x] 重设计身份存储：tenant 作用域身份映射、Login 接管、Resume 轮换幂等，数据库集成测试通过（`be84f99`）。
 - [x] M1 证据登记（`be84f99`）：`docs/architecture/redesign-m1-implementation.md` 记录身份持久化基础已落地，StreamerServer 宿主、平台验证 API 与挂载流程未实现，M1 进行中。
 - [x] Release 全量 1152/1152，Release solution build 0 errors，win-x64 交叉编译 0 errors（`087fc4a`）。
+- [x] 开发平台模拟器（M0 交付件之一，`4c8e898`）：`RedesignPlatformGateway` VerifyLaunch 按平台路由 + `DevelopmentPlatformSimulator` HMAC 凭据签发/验证 + Douyin/Kuaishou `NotProductionReady` 失败关闭桩；契约测试 5/5，全量 1157/1157。真实平台适配器仍属 M1 且保持 NotProductionReady；可复现安装配置仍未完成。
   历史基线：2026-10-27 登记时新方案只有设计文件（`223e5c4`），没有新角色代码；用户本轮已明确授权续做。后续逐项以验收计划 `docs/architecture/redesign-acceptance.md` 为准，不以文档或协议类型存在宣称阶段通过。
