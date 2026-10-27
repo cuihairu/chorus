@@ -79,14 +79,25 @@ AT03 中「新连接不被误标离线」的存储与边界语义已就绪；但
 - `m1.proto` 新增 `PlatformIngest`（IngestBatch/GetPendingInbox/ReconcileInbox，DataServer 宿主，角色 platform-gateway；宿主无独立 PlatformGateway 进程，该 RPC 即平台网关调用契约）。
 - 证据：store 级 `RedesignInputEventStoreTests` 3 例（批原子+同额不同键礼物不按内容去重+同键异载荷冲突+`crashAfterPersist` 注入批中途死亡全回滚后同操作重试收敛；归属冻结跨切换窗口、未知房间 Durable/BestEffort 分流；收件箱对账保 received_at 且重投保持已提交归属）；宿主级 `RedesignM1HostTests.PlatformEventsIngestDurablyAcrossRealHostsAndSurviveDataServerRestart`（真实三进程 + platform-gateway 证书直连 DataServer、同操作重试重放原回执、切换后迟到重复冻结在 gen1、DataServer Kill+重启后原回执仍在、SQL 处置分布 4/1/1、streamer-server 角色被拒）。
 
-第 4 步的事件接收侧至此完整；同项的 PlatformTask（架构 6.3）与 DeliveryRecord 消费路由（6.1.5–6.1.6）尚未实现。Release 全量 1180/1180。
+第 4 步的事件接收侧至此完整；同项的 PlatformTask（架构 6.3）见下。Release 全量 1180/1180。
+
+## 本轮已落地：PlatformTask 租约协调与未知结果处置
+
+按架构 6.3「PlatformTask 保存 DesiredState、ObservedState、OperationId、TaskEpoch、Attempt、NextAttemptAt 和 LastError。PlatformGateway 仅执行自己当前持有的任务租约」「外部调用先落 Outbox，调用后记录回执；超时进入 OutcomeUnknown」「既不可幂等又不可查询的操作停止自动重试，进入人工处理」「epoch 不能取消已发往平台的旧 HTTP 请求；重分配时等待旧请求截止时间、核对平台状态，再发冲突操作」：
+
+- 迁移 0008：`live.task` 增加 attempt_count/last_error/lease_owner/lease_until/attempt_owner/attempt_deadline，`ux_live_task_executing` 部分唯一索引强制同挂载外部操作串行。
+- `RedesignPlatformTaskStore`：Enqueue 以 (binding, operation) 幂等记录期望（同操作异期望冲突）；AcquireLease 重分配 bump TaskEpoch 但不动在途 attempt；BeginAttempt 校验租约持有+未过期+退避到期+状态可用，同一事务先写 `infra.outbox` 再允许外呼（23505 → TaskBusy）；Complete/MarkOutcomeUnknown/MarkRetryFailed/MarkNeedsAttention 记录官方观察或终止自动重试；ResolveOutcome 从 OutcomeUnknown（查询者）或 Executing（新租约持有者且旧 attempt 截止时间已过）按官方查询结果收敛为 Completed 或立即可重试的 Retryable——绝不盲目重发可能冲突的调用。
+- `m1.proto` 新增 `PlatformTask` 服务（DataServer 宿主）：期望与重分配属控制面（control-server/streamer-server），attempt 属 platform-gateway，NeedsAttention 仅控制面；宿主级测试抓到过 EnqueueDesired/AcquireLease 漏角色检查并已修复。
+- 证据：store 级 `RedesignPlatformTaskStoreTests` 3 例（幂等/租约栅栏/挂载串行/Outbox 先行；超时→OutcomeUnknown→不可盲重试→查询未执行→重试收敛、不可幂等不可查询→NeedsAttention 终态、执行者死于 Executing→重分配 epoch+1 在途不动→等截止→查官方→收敛，outbox 历史保留各 attempt 状态；退避未到期拒绝、到期即试、租约过期拒绝与重取）；宿主级 `RedesignM1HostTests.PlatformTaskCoordinationSurvivesDataServerCrashAcrossRealHosts`（真实三进程：控制面登记、gw-1 租约+attempt 落 Outbox、DataServer Kill+重启、gw-2 重分配被 FailedPrecondition 栅栏→等截止→ResolveOutcome 未执行→attempt 2 完成带官方观察、SQL 断言 task 行 Completed/attempt 2/epoch 3 与 outbox NotExecuted+Recorded、跨角色/跨面调用 PermissionDenied）。
+
+AT09 的存储与边界语义就绪（杀进程、超时、不支持幂等三要素均有确定性证据）；真实平台适配器仍 NotProductionReady，官方查询 API 未接前 ResolveOutcome 由调用方提供查询结果。第 4 步至此完整；剩余 DeliveryRecord 消费路由（6.1.5–6.1.6）依赖对局/房间建模，归入后续。Release 全量 1184/1184。
 
 ## M1 后续顺序
 
 1. ~~PlatformGateway 的验证接口和 Development Platform Simulator；Douyin/Kuaishou 实现分别保留 `NotProductionReady`~~（已落地，见上）。
 2. ~~StreamerServer Login/Resume API、实体资料加载成功后才返回 LoginReady~~；~~同连接 Attach generation 与 access credential 消费端校验接线~~（均已落地，见上）。
 3. ~~GameplayBinding 唯一挂载、跨 GameId LiveSlot 冲突事务~~；~~StreamerActor / LoginCoordinator 状态恢复（内存状态机与切换途中重启注入）~~（均已落地，见上）。
-4. 持久 PlatformTask、~~NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属~~（事件接收侧已落地，见上；PlatformTask 与 DeliveryRecord 消费路由为下一项）。
+4. ~~持久 PlatformTask、NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属~~（均已落地，见上；DeliveryRecord 消费路由依赖对局建模，归后续）。
 5. 逐项完成 AT01–AT09；外部真实平台需要测试应用/样本时，模拟器证据与生产验收分开记录。
 
-目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、持久 PlatformTask、DeliveryRecord 消费路由或对局终结处理（ClosingInput 窗口属挂载切换的后续）；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
+目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、DeliveryRecord 消费路由或对局终结处理（ClosingInput 窗口属挂载切换的后续）；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
