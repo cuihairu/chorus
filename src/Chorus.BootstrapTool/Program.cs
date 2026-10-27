@@ -50,8 +50,17 @@ BootstrapSeedSlot Seed(string role, string assembly, int port)
         Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))), port);
 }
 var manifest = new BootstrapManifestPayload(args[1], args[2], "root-ca.pem", "node-ca.pem", "node-ca.pfx",
-    "https://localhost:7500", DateTimeOffset.UtcNow.AddDays(30).ToUnixTimeMilliseconds(),
-    [Seed("control-server", args[3], 7500), Seed("data-server", args[4], 7501)]);
+    $"https://localhost:{Environment.GetEnvironmentVariable("CHORUS_CONTROL_PORT") ?? "7500"}",
+    DateTimeOffset.UtcNow.AddDays(30).ToUnixTimeMilliseconds(),
+    [Seed("control-server", args[3], Port("CHORUS_CONTROL_PORT", 7500)),
+        Seed("data-server", args[4], Port("CHORUS_DATA_PORT", 7501))]);
 File.WriteAllText(Path.Combine(node, "bootstrap.json"), JsonSerializer.Serialize(BootstrapManifest.Sign(manifest, root)));
 Console.WriteLine("Offline root private key: offline/root.pfx. Keep it outside the node. Node bundle: node/.");
 return 0;
+
+static int Port(string name, int fallback)
+{
+    var value = int.Parse(Environment.GetEnvironmentVariable(name) ?? fallback.ToString(),
+        System.Globalization.CultureInfo.InvariantCulture);
+    return value is > 0 and <= 65535 ? value : throw new ArgumentOutOfRangeException(name);
+}
