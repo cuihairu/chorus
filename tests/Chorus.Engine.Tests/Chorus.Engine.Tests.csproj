@@ -28,6 +28,7 @@
     <ProjectReference Include="..\..\src\Chorus.Server\Chorus.Server.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Messaging\Chorus.Messaging.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Redesign.Rpc\Chorus.Redesign.Rpc.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.Redesign.Platform\Chorus.Redesign.Platform.csproj" />
     <ProjectReference Include="..\..\src\Chorus.DataServer\Chorus.DataServer.csproj" />
     <ProjectReference Include="..\..\src\Chorus.ControlServer\Chorus.ControlServer.csproj" />
   </ItemGroup>
