@@ -262,6 +262,156 @@ public sealed class RedesignM2HostTests
         }
     }
 
+    [Fact]
+    public async Task FrameCommitsSurviveDataServerRestartAndReplayFromReceipts()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            streamerEnvironment);
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (login, binding) = await MountAsync(environment, simulator, "open-m2-frame", "live-m2-frame");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var owner = await new ControlService.ControlServiceClient(controlChannel).ClaimOwnershipAsync(
+            new OwnershipRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-3",
+                OwnerInstanceId = "game-1", LeaseSeconds = 15
+            });
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-3", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-1",
+            Participants = { new RoundParticipantProto
+            {
+                BindingId = binding, ParticipantId = login.StreamerId, Role = "Host"
+            } }
+        });
+        // Room activation (Preparing → Running with the initial snapshot) lands in M2-3; the
+        // frame boundary under test observes a Running room.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var activate = new NpgsqlCommand(
+                "UPDATE game.room SET status='Running' WHERE room_id='room-m2-3'", connection);
+            await activate.ExecuteNonQueryAsync();
+        }
+
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-1" };
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-1", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-frame", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-2", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-frame", PayloadJson = """{"kind":"gift","amount":50}"""
+        });
+        await new PlatformIngest.PlatformIngestClient(gatewayChannel).IngestBatchAsync(batch);
+        var input = new RoundInput.RoundInputClient(gameChannel);
+        await input.RouteEventsAsync(new RouteEventsRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "route-1", MaxEvents = 50
+        });
+
+        // The owner reads the round inbox and commits the first authoritative tick.
+        var frames = new FrameStore.FrameStoreClient(gameChannel);
+        var inbox = await frames.ReadInboxAsync(new ReadInboxRequest
+        {
+            RoomId = "room-m2-3", GameId = "game-a", MaxEvents = 50
+        });
+        Assert.Equal(0, inbox.Watermark);
+        Assert.Equal(2, inbox.Items.Count);
+        var commit = new CommitFrameRequest
+        {
+            RoomId = "room-m2-3", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            CommitId = "tick-1", PrevTick = 0, PrevStateVersion = 0,
+            InputEventIds = { inbox.Items.Select(item => item.EventId) },
+            StateHash = Google.Protobuf.ByteString.CopyFrom([1, 2, 3]),
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1"
+        };
+        commit.Effects.Add(new FrameEffectProto
+        {
+            Kind = "score", PayloadJson = """{"player":"p1","points":10}"""
+        });
+        var committed = await frames.CommitFrameAsync(commit);
+        Assert.False(committed.Duplicate);
+        Assert.Equal(1, committed.Tick);
+        Assert.Equal(2, committed.Watermark);
+
+        // The DataServer dies after the commit; a restarted process replays the stored frame
+        // receipt, the inbox is drained, and only the room owner may commit further ticks.
+        environment.Kill("Chorus.DataServer");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        using var restartCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var restartChannel = environment.Channel(environment.DataPort, restartCertificate, "data-server");
+        var restarted = new FrameStore.FrameStoreClient(restartChannel);
+        var replayed = await restarted.CommitFrameAsync(commit);
+        Assert.True(replayed.Duplicate);
+        Assert.Equal(1, replayed.Tick);
+        var drained = await restarted.ReadInboxAsync(new ReadInboxRequest
+        {
+            RoomId = "room-m2-3", GameId = "game-a", MaxEvents = 50
+        });
+        Assert.Equal(2, drained.Watermark);
+        Assert.Empty(drained.Items);
+        using var controlDataChannel = environment.Channel(environment.DataPort, controlCertificate,
+            "data-server");
+        var probe = await new FrameStore.FrameStoreClient(controlDataChannel).ReadInboxAsync(
+            new ReadInboxRequest { RoomId = "room-m2-3", GameId = "game-a", MaxEvents = 50 });
+        Assert.Equal(2, probe.Watermark);
+        using var streamerCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-role");
+        using var streamerChannel = environment.Channel(environment.DataPort, streamerCertificate, "data-server");
+        var deniedRole = await Assert.ThrowsAsync<RpcException>(() => new FrameStore.FrameStoreClient(
+            streamerChannel).CommitFrameAsync(commit).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, deniedRole.StatusCode);
+        var deniedControl = await Assert.ThrowsAsync<RpcException>(() => new FrameStore.FrameStoreClient(
+            controlDataChannel).CommitFrameAsync(commit).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, deniedControl.StatusCode);
+
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var frame = new NpgsqlCommand("""
+                SELECT count(*),max(tick_id) FROM game.frame WHERE room_id='room-m2-3'
+                """, connection))
+            await using (var reader = await frame.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(1L, reader.GetInt64(0));
+                Assert.Equal(1L, reader.GetInt64(1));
+            }
+            await using (var room = new NpgsqlCommand(
+                "SELECT status,last_tick,state_version FROM game.room WHERE room_id='room-m2-3'", connection))
+            await using (var reader = await room.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("Running", reader.GetString(0));
+                Assert.Equal(1L, reader.GetInt64(1));
+                Assert.Equal(1L, reader.GetInt64(2));
+            }
+        }
+    }
+
     /// <summary>Logs a simulator streamer in through the real StreamerServer and mounts game-a.</summary>
     private static async Task<(LoginReadyReply Login, string BindingId)> MountAsync(
         RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator,

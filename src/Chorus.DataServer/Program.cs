@@ -42,6 +42,7 @@ builder.Services.AddSingleton(new RedesignInputEventStore(connectionString));
 builder.Services.AddSingleton(new RedesignPlatformTaskStore(connectionString));
 builder.Services.AddSingleton(new RedesignRoomStore(connectionString));
 builder.Services.AddSingleton(new RedesignRoundInputStore(connectionString));
+builder.Services.AddSingleton(new RedesignFrameStore(connectionString));
 builder.Services.AddGrpc();
 
 var app = builder.Build();
@@ -51,6 +52,7 @@ app.MapGrpcService<PlatformIngestGrpcService>();
 app.MapGrpcService<PlatformTaskGrpcService>();
 app.MapGrpcService<RoundGrpcService>();
 app.MapGrpcService<RoundInputGrpcService>();
+app.MapGrpcService<FrameGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

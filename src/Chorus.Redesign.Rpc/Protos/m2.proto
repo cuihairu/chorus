@@ -99,6 +99,72 @@ message ClientInputReply {
   bool duplicate = 5;
 }
 
+// One authoritative tick commit (architecture 8.2). The owner states the tick and state
+// version it derived the candidate from; the store validates the fence, the prev frame and
+// every input ref before anything is consumed.
+message FrameEffectProto {
+  string kind = 1;
+  string payload_json = 2;
+}
+
+message PlannedGrantProto {
+  string player_id = 1;
+  string grant_key = 2;
+  string operation_id = 3;
+}
+
+message CommitFrameRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  string commit_id = 5;
+  int64 prev_tick = 6;
+  int64 prev_state_version = 7;
+  repeated string input_event_ids = 8;
+  bytes state_hash = 9;
+  repeated FrameEffectProto effects = 10;
+  string module_version = 11;
+  string config_hash = 12;
+  // FullCheckpoint mode: the candidate state joins the frame transaction (8.2); absent
+  // fields mean a regular deterministic tick.
+  bytes snapshot_payload = 13;
+  bytes snapshot_hash = 14;
+  int32 snapshot_schema_version = 15;
+  bool final = 16;
+  string result_json = 17;
+  bytes plan_hash = 18;
+  repeated PlannedGrantProto grants = 19;
+}
+
+message FrameReceiptReply {
+  string commit_id = 1;
+  string room_id = 2;
+  int64 tick = 3;
+  int64 state_version = 4;
+  int64 watermark = 5;
+  bool duplicate = 6;
+}
+
+message ReadInboxRequest {
+  string room_id = 1;
+  string game_id = 2;
+  int32 max_events = 3;
+}
+
+message InboxItemProto {
+  string event_id = 1;
+  int64 sequence = 2;
+  int64 route_version = 3;
+  string binding_id = 4;
+  string payload_json = 5;
+}
+
+message ReadInboxReply {
+  int64 watermark = 1;
+  repeated InboxItemProto items = 2;
+}
+
 service RoundStore {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc StartRound(StartRoundRequest) returns (RoundAdmissionReply);
@@ -110,4 +176,12 @@ service RoundInput {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc RouteEvents(RouteEventsRequest) returns (RouteEventsReply);
   rpc AcceptClientInput(ClientInputRequest) returns (ClientInputReply);
+}
+
+// Authoritative frame commits and round inbox reads (architecture 8.2, 6.1.6). Only the
+// room owner commits; reads belong to the owner and the control plane for diagnostics.
+service FrameStore {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  rpc CommitFrame(CommitFrameRequest) returns (FrameReceiptReply);
+  rpc ReadInbox(ReadInboxRequest) returns (ReadInboxReply);
 }
