@@ -346,7 +346,7 @@
   历史（2026-10-20 代决单语）：仓内曾零英文页、root 标 English 装中文、`zh/` 为 41 张重复中文树且缺首页；处置为先落诚实单语（root=简体中文），英文版待授权译文来源。
 - [x] Dependabot 清零（2026-10-21，#172–#176）：package overrides 迁至 pnpm-workspace.yaml 并锁定 decode-uri-component 0.5.0、esbuild 0.25.0、vite 6.4.3；上一单 .NET 全量 1117/1117 与浏览器 E2E 100 房/500 连接/720 趋势点已绿，本轮补跑 pnpm install --frozen-lockfile 与 docs:build 通过。
 
-## 21. 重设计方案（2026-10-25 目标架构，M0 部分开工）
+## 21. 重设计方案（2026-10-25 目标架构，M0 进行中）
 
-- [ ] **M0 部分开工（2026-10-27）**：已明确收据幂等键、规范化请求哈希与客户端输入锁序（`0c2bd82`）；`Chorus.Protocol.Redesign` 已实现操作身份/指纹并通过 7 项测试（`56a95a6`）。这只关闭 M0 的一小段协议契约，33 条 TR、32 条 AT、M0～M4 的阶段出口均未验收。仍缺默认 PostgreSQL schema/迁移、DataServer 与 ControlServer 新边界、NodeAgent 双 OS 骨架、平台模拟器和真实接入等；旧 ControlHost 能力不得按新目标架构折算。
+- [ ] **M0 进行中（2026-10-27）**：操作身份/指纹协议（`0c2bd82`、`56a95a6`）与 PostgreSQL 持久收据迁移、同事务业务回调、冲突/回滚/并发重试（`a8523f4`、`857af82`）已落地；3 项新 PostgreSQL 集成测试和完整解决方案 1143/1143 通过。此处仅是通用事务收据能力，尚无新 DataServer、ControlServer 服务边界、默认完整 schema/迁移、NodeAgent 双 OS 骨架、平台模拟器与安装配置；M0 的 AT18/22/23/27 基础部分及 AT32 身份隔离出口均未验收，不能标记 M0 完成。旧 ControlHost 能力不得按新目标架构折算。
   历史基线：2026-10-27 登记时新方案只有设计文件（`223e5c4`），没有新角色代码；用户本轮已明确授权续做。后续逐项以验收计划 `docs/architecture/redesign-acceptance.md` 为准，不以文档或协议类型存在宣称阶段通过。

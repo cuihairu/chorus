@@ -5,7 +5,7 @@
 > impact; if a review changes direction, the rollback surface is noted here.
 
 > **Target redesign (2026-10-25).** The next architecture has its own decision set in
-> [重设计关键决策](./architecture/redesign-decisions.md) (ADR-R01 ~ R10; M0 protocol work has started, but the target architecture remains unimplemented).
+> [重设计关键决策](./architecture/redesign-decisions.md) (ADR-R01 ~ R10; M0 protocol and durable receipt work has started, but the target architecture remains unimplemented).
 > Those ADRs supersede parts of this log for the target design; the entries below remain valid
 > history of the current implementation and are not rewritten.
 
