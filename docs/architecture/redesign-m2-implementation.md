@@ -106,6 +106,17 @@ AT 台账增量（不标满过，只记闭合半边）：
 - **AT15 闭合**：慢消费者不阻塞快者——有界队列溢出清积压+丢触发帧，actor 从不等待；快者链连续直达终局；强制滞后以全量快照重基线追平到同一 result。
 - **AT06 重连半边闭合**：断线后局继续提交；重连携 (tick, version) 基线→头部快照+无缝增量到冻结 result；流式与 DB 结果结构一致；过期 epoch 一律 ResyncRequired 不给不可验证帧。（房间模型半边 M2-1 已闭合。）
 
+## M2-6b 已落地：双主播控制台示例（b035444）
+
+M2-6 剩余半项——「新 `src/Chorus.RoundDemo` 控制台示例（双主播、§3.2 语义、开发证书认证）+ 同场景类作 RoundDemoScenarioTests 保绿门」。核心设计是 **IDemoCluster 接缝**：`ControlPort/DataPort/StreamerPort/GamePort/DatabaseConnectionString/StartAllAsync(签名密钥,凭据密钥)/Certificate/Channel`——独立 `DemoCluster` 与测试侧 `HostEnvironmentCluster`（包 RedesignM0HostTests.HostEnvironment，处置权留属主测试）实现同一契约，场景代码零分叉：控制台与测试跑的是同一份旅程。
+
+- `DemoCluster`：自含开发集群——进程内根/节点 CA（ProcessCertificateIssuer，roles×tenants 与宿主测试同构）、专库 `chorus_m2_demo_<guid>`（清理白名单 chorus_m2_% 族内）建库+迁移、四真实宿主按环境契约以进程拉起（streamer 挂开发平台模拟器双密钥、game-server 双证书身份 tenant-a 客户端）、逐宿主就绪探针（streamer 的 Ready 只答 streamer-server 探针证书，其余 node-agent）、宿主输出捕获进失败异常文本；DisposeAsync 杀进程（有界 10s 等待）+DROP DATABASE WITH (FORCE)+删临时目录。
+- `RoundDemoScenario.RunAsync` 共享旅程（§3.2/§5.3/§6.3/§8.3/§9.3 一条链）：模拟器凭据→双主播 Login+StartGameplay 挂载→控制面 claim+20s 同 owner 续租（§4.2，epoch 不变仅延长）→StartRound→PrepareRoom（120 tick@25ms，seed 6464）→平台礼物 100/30 经 ingest+route→两条边缘自 tick-0 基线订阅→host 边收到首条 delta 即经 DataPort AcceptClientInput 发 durable 命令 demo-boost-1（`{"action":"boost","level":3}`）→双边缘逐条 base_version 链校验到 tick-120 冻结 result→控制面 FinalizeRound 重试至 Settled（manifest 未清时 FailedPrecondition 可见、可重试）→ReadLeaderboard→返回双 DemoSubscriberEvidence+榜单+房态证据记录。durability 用 proto 线上常量字面量 "Durable"（demo 保持纯客户端、不引用 data-server 工程）。
+- `Program`：CHORUS_TEST_POSTGRES 前置说明+集群起停+证据收尾输出；实机验证 `dotnet run --project src/Chorus.RoundDemo` 全程输出：119 deltas+1 snapshot×2 边缘、receipts [demo-boost-1]、榜单 131/30、settled at epoch 1；残留零（demo 库 DROP、无孤儿进程）。
+- `RoundDemoScenarioTests.TwoStreamersRunTheDemoJourneyToSettlementAndTheLeaderboard`：断言双边缘 FinalTick 恰 120、版本/result 双双一致、**双方各恰一条 demo-boost-1 回执**（回执属已提交帧，全体订阅者可见，非仅发送方）、red 130-134/blue 30、榜单 host（∈[130,134]）首位 guest 30 次位、房 Settled。Release 全量 **1214/1214**（轨迹 …1210→1213→1214）。
+
+本项不新增 AT 闭合——它是 M2-7 全流程出口证据的场景载体（全流程场景测试直接复用本场景加断线/重连段）。
+
 ## M2 后续顺序
 
 1. ~~局准入与 RoundGeneration、事件按局路由、AbortRound~~（已落地，见上）。
@@ -113,7 +124,7 @@ AT 台账增量（不标满过，只记闭合半边）：
 3. ~~§7 示例玩法 + Chorus.GameServer 宿主 + RoomActor tick + Prepare/激活~~（已落地，见上）。
 4. ~~快照与恢复：PutSnapshot/LoadRecovery、确定性重放、坏快照回退（AT19）~~（已落地，见上）。
 5. ~~结算 §6.4 + FinalizeRound §6.6 + 排行榜投影 + 默认资产库存守卫（AT18、AT20、AT27 结算部分）~~（已落地，见上）。
-6. ~~客户端同步协议（Subscribe：Snapshot/Delta/CommandReceipt/RoundResult/ResyncRequired）~~（协议已落地，见上；双主播控制台示例 `Chorus.RoundDemo` 留作 M2-6b）。
-7. 全局出口证据：全流程场景测试、可选单节点基准、保留/清理守卫、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）。
+6. ~~客户端同步协议（Subscribe：Snapshot/Delta/CommandReceipt/RoundResult/ResyncRequired）+ 双主播控制台示例 `Chorus.RoundDemo`~~（均已落地，见上）。
+7. 全局出口证据：全流程场景测试（复用 RoundDemoScenario 加断线/重连段）、可选单节点基准、保留/清理守卫、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）。
 
 GameServer 已建（无 DB 凭据，全部持久状态走 gRPC→DataServer）；match 票据与 BootstrapManifest 的 game-server 槽位扩展属 M3。
