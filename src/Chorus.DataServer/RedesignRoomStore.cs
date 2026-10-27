@@ -37,6 +37,8 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
 {
     public const string Preparing = "Preparing";
     public const string Aborted = "Aborted";
+    public const string Running = "Running";
+    public const string Suspended = "Suspended";
     private const string ActiveStates = "('Starting','Ready','Running','AwaitingPlatformClose')";
 
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
@@ -219,7 +221,7 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
             room.Parameters.AddWithValue("game", gameId);
             status = await room.ExecuteScalarAsync(cancellationToken) as string
                 ?? throw new RoundAdmissionException("The room does not exist.");
-            if (status is not (Preparing or "Running"))
+            if (status is not (Preparing or Running or Suspended))
                 throw new RoundAdmissionException($"A room in status {status} cannot be aborted.");
         }
         var released = new List<string>();
@@ -307,6 +309,197 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
                     reader.GetString(2), reader.GetString(3)));
         }
         return new RoundStatus(roomId, status, epoch, lastTick, stateVersion, participants);
+    }
+
+    /// <summary>
+    /// Deposits the tick-0 snapshot of an admitted round (architecture 7.2): only a room in
+    /// Preparing accepts it, so the initial state is pinned exactly once before activation.
+    /// Idempotent per (room, operation); the same operation with a different snapshot conflicts.
+    /// </summary>
+    public async Task<RoundAdmission> PrepareRoundAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, byte[] snapshotPayload, byte[] snapshotHash, int schemaVersion,
+        string operationId, CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
+        Require(ownerInstanceId, nameof(ownerInstanceId)); Require(operationId, nameof(operationId));
+        ArgumentNullException.ThrowIfNull(snapshotPayload);
+        ArgumentNullException.ThrowIfNull(snapshotHash);
+        if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
+        if (schemaVersion <= 0) throw new ArgumentOutOfRangeException(nameof(schemaVersion));
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1, JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            RoomId = roomId, SnapshotHash = snapshotHash, SchemaVersion = schemaVersion
+        }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "round.prepare", roomId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplyPrepareAsync(tenantId, gameId, roomId, ownerInstanceId,
+                epoch, snapshotPayload, snapshotHash, schemaVersion, connection, transaction, token),
+            cancellationToken);
+        var result = JsonSerializer.Deserialize<RoundAdmission>(receipt.ResultJson)
+            ?? throw new InvalidOperationException("The stored prepare receipt is unreadable.");
+        return result with { Duplicate = receipt.Duplicate };
+    }
+
+    private async Task<string> ApplyPrepareAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, byte[] snapshotPayload, byte[] snapshotHash, int schemaVersion,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        var ownershipEpoch = await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
+            connection, transaction, cancellationToken);
+        await using (var room = new NpgsqlCommand("""
+            SELECT status FROM game.room WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
+            FOR UPDATE
+            """, connection, transaction))
+        {
+            room.Parameters.AddWithValue("room", roomId);
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            var status = await room.ExecuteScalarAsync(cancellationToken) as string
+                ?? throw new RoundAdmissionException("The room does not exist.");
+            if (status != Preparing)
+                throw new RoundAdmissionException($"A room in status {status} cannot be prepared.");
+        }
+        await using (var snapshot = new NpgsqlCommand("""
+            INSERT INTO game.snapshot(room_id,tick_id,schema_version,payload,payload_hash,verified)
+            VALUES (@room,0,@schema,@payload,@hash,false)
+            """, connection, transaction))
+        {
+            snapshot.Parameters.AddWithValue("room", roomId);
+            snapshot.Parameters.AddWithValue("schema", schemaVersion);
+            snapshot.Parameters.AddWithValue("payload", snapshotPayload);
+            snapshot.Parameters.AddWithValue("hash", snapshotHash);
+            await snapshot.ExecuteNonQueryAsync(cancellationToken);
+        }
+        return JsonSerializer.Serialize(
+            new RoundAdmission(roomId, 0, Preparing, ownershipEpoch, Duplicate: false));
+    }
+
+    /// <summary>
+    /// Flips a prepared room to Running at state version 1 — the actor may commit frames only
+    /// after this transaction. Activation without a tick-0 snapshot is rejected visibly, so a
+    /// room can never run without its initial state pinned.
+    /// </summary>
+    public async Task<RoundAdmission> ActivateRoundAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, string operationId, CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
+        Require(ownerInstanceId, nameof(ownerInstanceId)); Require(operationId, nameof(operationId));
+        if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1,
+            JsonSerializer.SerializeToUtf8Bytes(new { RoomId = roomId }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "round.activate", roomId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplyActivateAsync(tenantId, gameId, roomId, ownerInstanceId,
+                epoch, connection, transaction, token),
+            cancellationToken);
+        var result = JsonSerializer.Deserialize<RoundAdmission>(receipt.ResultJson)
+            ?? throw new InvalidOperationException("The stored activate receipt is unreadable.");
+        return result with { Duplicate = receipt.Duplicate };
+    }
+
+    private async Task<string> ApplyActivateAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, NpgsqlConnection connection, NpgsqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        var ownershipEpoch = await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
+            connection, transaction, cancellationToken);
+        await using (var room = new NpgsqlCommand("""
+            SELECT status FROM game.room WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
+            FOR UPDATE
+            """, connection, transaction))
+        {
+            room.Parameters.AddWithValue("room", roomId);
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            var status = await room.ExecuteScalarAsync(cancellationToken) as string
+                ?? throw new RoundAdmissionException("The room does not exist.");
+            if (status != Preparing)
+                throw new RoundAdmissionException($"A room in status {status} cannot be activated.");
+        }
+        await using (var prepared = new NpgsqlCommand(
+            "SELECT 1 FROM game.snapshot WHERE room_id=@room AND tick_id=0", connection, transaction))
+        {
+            prepared.Parameters.AddWithValue("room", roomId);
+            if (await prepared.ExecuteScalarAsync(cancellationToken) is null)
+                throw new RoundAdmissionException("The round has no prepared initial state.");
+        }
+        await using (var activate = new NpgsqlCommand(
+            "UPDATE game.room SET status=@status, state_version=1, updated_at=clock_timestamp() WHERE room_id=@room",
+            connection, transaction))
+        {
+            activate.Parameters.AddWithValue("status", Running);
+            activate.Parameters.AddWithValue("room", roomId);
+            await activate.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await WriteOutboxAsync($"{roomId}/0/activate", "round.activated", new
+        {
+            RoomId = roomId, TenantId = tenantId, GameId = gameId, Epoch = ownershipEpoch
+        }, connection, transaction, cancellationToken);
+        return JsonSerializer.Serialize(
+            new RoundAdmission(roomId, 0, Running, ownershipEpoch, Duplicate: false));
+    }
+
+    /// <summary>
+    /// Parks a damaged round visibly (isolation evidence for AT13): a suspended room accepts no
+    /// frames and no new deliveries, but keeps its state for recovery (M2-4). Abort remains the
+    /// terminal escape hatch for a suspended room that will never recover.
+    /// </summary>
+    public async Task<RoundAdmission> SuspendRoundAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, string reason, string operationId,
+        CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
+        Require(ownerInstanceId, nameof(ownerInstanceId)); Require(reason, nameof(reason));
+        Require(operationId, nameof(operationId));
+        if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1,
+            JsonSerializer.SerializeToUtf8Bytes(new { RoomId = roomId, Reason = reason }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "round.suspend", roomId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplySuspendAsync(tenantId, gameId, roomId, ownerInstanceId,
+                epoch, reason, connection, transaction, token),
+            cancellationToken);
+        var result = JsonSerializer.Deserialize<RoundAdmission>(receipt.ResultJson)
+            ?? throw new InvalidOperationException("The stored suspend receipt is unreadable.");
+        return result with { Duplicate = receipt.Duplicate };
+    }
+
+    private async Task<string> ApplySuspendAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, string reason, NpgsqlConnection connection,
+        NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        var ownershipEpoch = await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
+            connection, transaction, cancellationToken);
+        await using (var room = new NpgsqlCommand("""
+            SELECT status FROM game.room WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
+            FOR UPDATE
+            """, connection, transaction))
+        {
+            room.Parameters.AddWithValue("room", roomId);
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            var status = await room.ExecuteScalarAsync(cancellationToken) as string
+                ?? throw new RoundAdmissionException("The room does not exist.");
+            if (status != Running)
+                throw new RoundAdmissionException($"A room in status {status} cannot be suspended.");
+        }
+        await using (var suspend = new NpgsqlCommand(
+            "UPDATE game.room SET status=@status, updated_at=clock_timestamp() WHERE room_id=@room",
+            connection, transaction))
+        {
+            suspend.Parameters.AddWithValue("status", Suspended);
+            suspend.Parameters.AddWithValue("room", roomId);
+            await suspend.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await WriteOutboxAsync($"{roomId}/0/suspend", "round.suspended", new
+        {
+            RoomId = roomId, TenantId = tenantId, GameId = gameId, Epoch = ownershipEpoch, Reason = reason
+        }, connection, transaction, cancellationToken);
+        return JsonSerializer.Serialize(
+            new RoundAdmission(roomId, 0, Suspended, ownershipEpoch, Duplicate: false));
     }
 
     private static async Task<long> LockRoomOwnershipAsync(string tenantId, string gameId, string roomId,

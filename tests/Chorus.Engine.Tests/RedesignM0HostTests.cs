@@ -149,6 +149,7 @@ public sealed class RedesignM0HostTests
         public int ControlPort { get; } = FreePort();
         public int DataPort { get; } = FreePort();
         public int StreamerPort { get; } = FreePort();
+        public int GamePort { get; } = FreePort();
         public string DatabaseConnectionString => _connectionString;
 
         public static async Task<HostEnvironment> CreateAsync()
@@ -194,7 +195,7 @@ public sealed class RedesignM0HostTests
                 _root, _nodeAuthority, "cluster-a", role);
 
         public async Task StartAsync(string project, int port, string role,
-            IReadOnlyDictionary<string, string>? extraEnvironment = null)
+            IReadOnlyDictionary<string, string>? extraEnvironment = null, string? clientTenant = null)
         {
             using var certificate = Certificate("@cluster", role, project);
             var certPath = Path.Combine(_directory, project + ".pem");
@@ -218,6 +219,19 @@ public sealed class RedesignM0HostTests
             start.Environment["CHORUS_PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
             foreach (var (name, value) in extraEnvironment ?? new Dictionary<string, string>())
                 start.Environment[name] = value;
+            if (clientTenant is { Length: > 0 })
+            {
+                // Some hosts serve under a cluster certificate but speak for a tenant on the
+                // data plane (game-server): they get a second, tenant-scoped client identity.
+                using var clientCertificate = Certificate(clientTenant, role, project + "-client");
+                File.WriteAllText(Path.Combine(_directory, project + "-client.pem"),
+                    clientCertificate.ExportCertificatePem());
+                using (var clientKey = clientCertificate.GetECDsaPrivateKey())
+                    File.WriteAllText(Path.Combine(_directory, project + "-client.key"),
+                        clientKey!.ExportPkcs8PrivateKeyPem());
+                start.Environment["CHORUS_CLIENT_CERT_PEM"] = Path.Combine(_directory, project + "-client.pem");
+                start.Environment["CHORUS_CLIENT_KEY_PEM"] = Path.Combine(_directory, project + "-client.key");
+            }
             var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start " + project);
             var output = new System.Text.StringBuilder();
             _hostOutput.Add(process, output);
@@ -240,6 +254,8 @@ public sealed class RedesignM0HostTests
                         await new ControlService.ControlServiceClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     else if (role == "streamer-server")
                         await new StreamerSession.StreamerSessionClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
+                    else if (role == "game-server")
+                        await new GameHost.GameHostClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     else
                         await new DataService.DataServiceClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     return;

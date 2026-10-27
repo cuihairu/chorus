@@ -170,6 +170,12 @@ service RoundStore {
   rpc StartRound(StartRoundRequest) returns (RoundAdmissionReply);
   rpc AbortRound(AbortRoundRequest) returns (RoundAdmissionReply);
   rpc GetRound(GetRoundRequest) returns (RoundStatusReply);
+  // Room lifecycle after admission (architecture 7.2): the owner deposits the tick-0
+  // snapshot while the room is Preparing, activation flips it to Running at state
+  // version 1, and a suspension parks a damaged round visibly instead of killing it.
+  rpc PrepareRound(PrepareRoundRequest) returns (RoundAdmissionReply);
+  rpc ActivateRound(ActivateRoundRequest) returns (RoundAdmissionReply);
+  rpc SuspendRound(SuspendRoundRequest) returns (RoundAdmissionReply);
 }
 
 service RoundInput {
@@ -184,4 +190,83 @@ service FrameStore {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc CommitFrame(CommitFrameRequest) returns (FrameReceiptReply);
   rpc ReadInbox(ReadInboxRequest) returns (ReadInboxReply);
+}
+
+// Room preparation on the game host (architecture 7.2). The control plane names the
+// admitted room and its module configuration; the host derives the deterministic initial
+// state, deposits the tick-0 snapshot, activates the round and starts the room actor.
+service GameHost {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  rpc PrepareRoom(PrepareRoomRequest) returns (PrepareRoomReply);
+  // Snapshot recovery lands in M2-4; until then the call fails visibly instead of lying.
+  rpc RecoverRoom(RecoverRoomRequest) returns (RecoverRoomReply);
+}
+
+message PrepareRoundRequest {
+  string room_id = 1;
+  string owner_instance_id = 2;
+  int64 epoch = 3;
+  string game_id = 4;
+  // The serialized tick-0 state and its hash become the room's first snapshot; the
+  // schema version is the module's own and gates Restore.
+  bytes snapshot_payload = 5;
+  bytes snapshot_hash = 6;
+  int32 snapshot_schema_version = 7;
+  string operation_id = 8;
+}
+
+message ActivateRoundRequest {
+  string room_id = 1;
+  string owner_instance_id = 2;
+  int64 epoch = 3;
+  string game_id = 4;
+  string operation_id = 5;
+}
+
+message SuspendRoundRequest {
+  string room_id = 1;
+  string owner_instance_id = 2;
+  int64 epoch = 3;
+  string game_id = 4;
+  string reason = 5;
+  string operation_id = 6;
+}
+
+message GameParticipantProto {
+  string binding_id = 1;
+  string participant_id = 2;
+  string faction = 3;
+}
+
+message PrepareRoomRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  string operation_id = 5;
+  // The example module start configuration: everything the initial state derives from.
+  int64 duration_ticks = 6;
+  int64 random_seed = 7;
+  int32 fail_after_tick = 8;
+  int32 tick_ms = 9;
+  repeated GameParticipantProto participants = 10;
+}
+
+message PrepareRoomReply {
+  string room_id = 1;
+  bool duplicate = 2;
+  string status = 3;
+  int64 state_version = 4;
+  int64 tick = 5;
+}
+
+message RecoverRoomRequest {
+  string room_id = 1;
+  string game_id = 2;
+}
+
+message RecoverRoomReply {
+  string room_id = 1;
+  bool recovered = 2;
+  string note = 3;
 }

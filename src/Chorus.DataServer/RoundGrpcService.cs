@@ -75,6 +75,84 @@ public sealed class RoundGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    public override async Task<RoundAdmissionReply> PrepareRound(PrepareRoundRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "control-server", "game-server");
+        try
+        {
+            var admission = await roomStore.PrepareRoundAsync(caller.TenantId, request.GameId, request.RoomId,
+                request.OwnerInstanceId, request.Epoch, request.SnapshotPayload.ToByteArray(),
+                request.SnapshotHash.ToByteArray(), request.SnapshotSchemaVersion, request.OperationId,
+                context.CancellationToken);
+            return Reply(admission);
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The room ownership fence rejected the caller."));
+        }
+        catch (RoundAdmissionException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<RoundAdmissionReply> ActivateRound(ActivateRoundRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "control-server", "game-server");
+        try
+        {
+            var admission = await roomStore.ActivateRoundAsync(caller.TenantId, request.GameId, request.RoomId,
+                request.OwnerInstanceId, request.Epoch, request.OperationId, context.CancellationToken);
+            return Reply(admission);
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The room ownership fence rejected the caller."));
+        }
+        catch (RoundAdmissionException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<RoundAdmissionReply> SuspendRound(SuspendRoundRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "control-server", "game-server");
+        try
+        {
+            var admission = await roomStore.SuspendRoundAsync(caller.TenantId, request.GameId, request.RoomId,
+                request.OwnerInstanceId, request.Epoch, request.Reason, request.OperationId,
+                context.CancellationToken);
+            return Reply(admission);
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The room ownership fence rejected the caller."));
+        }
+        catch (RoundAdmissionException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
     public override async Task<RoundStatusReply> GetRound(GetRoundRequest request, ServerCallContext context)
     {
         var caller = Require(context, "control-server", "game-server", "streamer-server", "platform-gateway");
