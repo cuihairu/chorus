@@ -66,13 +66,33 @@ AT 台账增量（不标满过，只记闭合半边）：
 - **AT19 闭合**：快照写一半→事务原子+store 自验哈希，可见即完整；最新快照损坏→回退前一可用（哈希失配与拒识两路都有据）；旧快照重放→逐帧验哈希到头+未受扰孪生结局逐字节相等；Finishing 恢复→尾恢复不重启战斗 tick。四条验收词全部落地。
 - **AT14/AT27 帧链推进**：恢复链与帧哈希互证闭合（帧哈希在恢复中被逐帧校验）；终局与结算部分仍属 M2-5。
 
+## M2-5 已落地：结算、FinalizeRound 与排行榜（04f3944）
+
+按架构 §9.2/§9.3「终局清单不可变、逐笔入账、FinalizeRound 是不依赖原 game host 的持久终结者」与 §6.6「终局原子释放占位与挂载指针」：
+
+- 迁移 0010：`settlement.grant` 增 `asset_id`（默认 'points'）与 `delta`（非零约束在 store 层）；新投影表 `game.leaderboard_score`（PK (tenant,game,board,player)，`score DESC, player_id ASC` 排名索引——确定性并列序）。
+- `RedesignFrameStore` 清单扩展：PlannedGrant 增 AssetId/Delta，指纹随之承诺；final 帧事务写入的 `settlement.grant` 行携带资产与数额——清单即终局事实，提交后不可再变。
+- `RoomActor` 终局清单推导：final 帧 ResultJson 的 ranking{faction,score} × 参与者阵营（FactionByParticipant 随状态入快照）→ 按 player id 序生成 grant（GrantKey "round-score"、OperationId `{roomId}/grant/{player}`、仅正分）；恢复出的 actor 从快照重导出同一清单——崩溃前后清单逐字节一致。final 提交成功后即调 SettleRoom（结果未知吞 RpcException：清单进度已持久，恢复/重试续传）；Finishing 房恢复尾同样先 Settle 再答。
+- `RedesignSettlementStore`（DataServer）：
+  - CommitResultAsync：读清单（max result_version、Pending 按按 player/grant 排序）→ 逐 grant 独立回执事务（identity (tenant,game,"settlement.grant",room,grant.OperationId)，canonical {PlayerId,AssetId,Delta,GrantKey}）：种默认资产行（ON CONFLICT DO NOTHING）→ `UPDATE balance=balance+delta ... WHERE balance+delta>=0 RETURNING`（会打负即 SettlementRejected 可见拒绝）→ 账本恰一行（line_id 'grant'，reason `settlement:{room}/{grantKey}`）→ grant→Granted → 排行榜投影 upsert（score+=delta）→ 回执。第 N 笔崩溃只回滚该笔，重试只补未完成——每笔恰一账本效果。`crashAfterGrant` 注入缝。全清后重复提交 → Duplicate（pending=0）。
+  - FinalizeRoundAsync：回执 "round.finalize"（canonical {RoomId}）；ApplyFinalize 依次校验并全部可见拒绝：房间须 Finishing（Settled→"already settled"）、result 存在、清单全 Granted、本局 Pending 投递清零（consumer_scope room:x）；然后单一事务：participation→Closed（RETURNING binding_id）→ 有序清各绑定 `current_room_id`（仅仍指向本局者）→ 房间→Settled → 所有权 Released epoch+1（终结者不持所有权，仅 FOR UPDATE 不校验 owner）→ outbox `{roomId}/0/settle` round.settled。重复终局回 Duplicate；异 op 再终局可见拒绝。下一局=新房间 id，同绑定 round_generation+1。
+  - ReadLeaderboardAsync：`ORDER BY score DESC, player_id ASC LIMIT`（1..1000），board_id=asset_id。
+- m2.proto 新 Settlement 服务（DataServer）：Ready←control/game；CommitResult←game/control；FinalizeRound←control/game；ReadLeaderboard←control/game/streamer。三个请求带可选 `tenant_id`：@cluster 证书（控制面）必须指名租户（act-as-tenant），租户证书继承证书租户、指名他租户即 PermissionDenied——无跨租户穿透。SettlementRejected→FailedPrecondition。
+- 证据：store 级 `RedesignSettlementStoreTests` 4 例——① 第 2 笔崩溃→p1 Granted/p2、p3 Planned、账本恰 1 行；重试收敛 3 Granted、账本 DISTINCT operation_id=count(*)=3、余额/榜单一致；异 op 重发 Duplicate；未知房可见拒绝。② FinalizeRound 栅栏族：Running 房拒、清单未清拒、Pending 输入未清拒；happy path Settled+epoch+1+participation Closed+指针 NULL+outbox round.settled，重复 Duplicate、再终局拒；同绑定开下一代 round_generation=2。③ profile.patch 声称 `{"assets":{"points":999999}}` → 资产仍 100、账本仍 1 行、榜单不动（JSON 无覆盖账本资产之路）。④ 双房并行结算同一批玩家：账户行串行化、每 grant 恰一行、余额与榜单均双局之和（并发资产增减）。宿主级 `RedesignM2HostTests.SettledRoundFinalizesFreesMountsAndOpensTheNextRound`：真实四进程对局跑到 Finishing（礼物 100/30）→ actor 自动结算（grant 全 Granted、账本 2 行、余额 100/30、控制面读榜单 [100,30] 确定性序）→ Kill+重启 DataServer 后重发结果 Duplicate 且账本不增 → 控制面（@cluster 证书 act-as-tenant）FinalizeRound：Settled/epoch+1/参与 Closed/指针释放/所有权 Released/outbox round.settled → 同绑定 room-m2-11 开局并跑到 Finishing（round_generation=2）→ game 证书指名他租户 PermissionDenied、streamer 角色终局 PermissionDenied。Release 全量 1210/1210。
+
+AT 台账增量（不标满过，只记闭合半边）：
+
+- **AT18 闭合**：新库安装→首笔 grant 种默认 'points' 行；余额/库存与流水一致→每 grant 恰一账本行、崩溃重试不增行、并发双局余额=和且榜单=和；无 JSON 覆盖奖励→profile.patch 对账本资产零影响（M0 已有版本冲突+幂等入账底座）。
+- **AT20 闭合**：结算到第 N 笔 kill→仅未完成 grant 重试且每笔恰一账本效果；FinalizeRound 任意位置可见拒绝/幂等重试收敛；占位、挂载指针与 owner 原子释放（单事务）且能开启下一局（宿主级同绑定二代局跑到终局）。
+- **AT27 闭合（结算部分与帧部分合流）**：帧提交、快照、结算 grant、FinalizeRound 全部回执锚定 OperationId——DB 已提交而 RPC 应答丢失时，同 op 重发回放原结果不产生重复效果（宿主级 DataServer Kill 于结算后、重启重发 Duplicate 且账本不增为结算侧证据；M2-2/M2-4 已证帧与快照侧）。AT27 至此单节点部分全项落地。
+
 ## M2 后续顺序
 
 1. ~~局准入与 RoundGeneration、事件按局路由、AbortRound~~（已落地，见上）。
 2. ~~FrameStore：CommitFrame（§8.2 全事务）、ReadInbox、消费连续水位~~（已落地，见上）。
 3. ~~§7 示例玩法 + Chorus.GameServer 宿主 + RoomActor tick + Prepare/激活~~（已落地，见上）。
 4. ~~快照与恢复：PutSnapshot/LoadRecovery、确定性重放、坏快照回退（AT19）~~（已落地，见上）。
-5. 结算 §6.4 + FinalizeRound §6.6 + 排行榜投影 + 默认资产库存守卫（AT18、AT20、AT27 结算部分）。
+5. ~~结算 §6.4 + FinalizeRound §6.6 + 排行榜投影 + 默认资产库存守卫（AT18、AT20、AT27 结算部分）~~（已落地，见上）。
 6. 客户端同步协议（Subscribe）+ 双主播示例（AT15、AT06 重连半边）。
 7. 全局出口证据：全流程场景测试、可选单节点基准、保留/清理守卫、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）。
 
