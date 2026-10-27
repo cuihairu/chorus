@@ -43,7 +43,7 @@ M1 按 [验收计划](redesign-acceptance.md) 实施；真实平台无法联调�
 - `StreamerSession` 新增 `AttachConnection`/`ConnectionClosed`/`ValidateAccess`：ValidateAccess 先验 HMAC 签名与过期，再对照会话快照要求"当前代且未吊销/未过期/未封禁/版本一致/租户一致"，否则 PermissionDenied；离线（online=false）是路由事实不是认证失败，不拒答。
 - 证据：store 级 `RedesignIdentityStoreTests.ConnectionsAttachGenerationsStaleCloseDoesNotDetachAndStateReflectsFacts`（含重开与新登录吊销后的事实）；宿主级 `RedesignM1HostTests.GatewayAttachRotatesGenerationsAndStaleCloseNeverDetachesTheNewConnection`（真实三进程：消费端校验、attach 幂等、旧代/错代关闭无效、当前代关闭后离线、伪造凭据与跨租户校验/关闭全拒）；协调器级 `AttachConnectionPassesThroughWithoutRotation`、`ValidateAccessBindsCredentialToCurrentSessionState`。Release 全量 1167/1167。
 
-AT03 中「新连接不被误标离线」的存储与边界语义已就绪；但 AT03 完整验收还需双终端与响应丢失注入（属后续验收轮）。
+AT03 中「新连接不被误标离线」的存储与边界语义已就绪；双终端与响应丢失注入已补齐（见下 AT03 台账）。
 
 ## 本轮已落地：直播槽与 GameplayBinding 唯一挂载
 
@@ -92,12 +92,30 @@ AT03 中「新连接不被误标离线」的存储与边界语义已就绪；但
 
 AT09 的存储与边界语义就绪（杀进程、超时、不支持幂等三要素均有确定性证据）；真实平台适配器仍 NotProductionReady，官方查询 API 未接前 ResolveOutcome 由调用方提供查询结果。第 4 步至此完整；剩余 DeliveryRecord 消费路由（6.1.5–6.1.6）依赖对局/房间建模，归入后续。Release 全量 1184/1184。
 
+## M1 第 5 步：AT01–AT09 逐项台账（模拟器侧）
+
+按验收出口「真实平台无法联调时可完成模拟契约测试，但标记相应适配器 NotProductionReady，不将其伪装为通过」，逐项登记证据与阻塞原因。模拟器侧通过指：该场景的确定性/宿主级证据齐备；真实平台半边单列，不折算。
+
+| AT | 通过条件 | 模拟器侧证据 | 状态 |
+|----|----------|--------------|------|
+| AT01 | 实体独立可用；加载失败不返回 LoginReady | `RedesignStreamerLoginCoordinatorTests`（实体独立、加载失败拒绝 LoginReady）；宿主登录 `SimulatorLaunchLoginsRotatesResumeAndFencesTenantsAcrossRealHosts` | 模拟器侧通过；真实平台半边阻塞（AT02） |
+| AT02 | 生产适配器符合实际直播协议；错误身份不能登录 | `RedesignPlatformGatewayTests`（伪造/过期/错 AppId 拒绝，契约 5/5） | **阻塞**：需抖音/快手官方协议版本与脱敏真实样本；Douyin/Kuaishou 保持 `NotProductionReady` |
+| AT03 | 单有效控制会话；旧新命令拒绝，精确重试不重复轮换，新连接不被误标离线 | 双终端接管与旧命令晚到 `SimulatorLaunchLoginsRotatesResumeAndFencesTenants`；attach 与过期关闭 `GatewayAttachRotatesGenerationsAndStaleCloseNeverDetachesTheNewConnection`；**轮换提交后响应丢失** `RotationResponseLossAcrossRestartKeepsSingleRotationAndFencesOldCommands`（崩溃重启后精确重试返回 Duplicate 同一会话 v3、`auth.rotation` 仅一行、改请求/旧密钥拒绝、接管后重试窗口关闭） | 模拟器侧通过（本轮补齐响应丢失集成） |
+| AT04 | 共享直播槽仅一个活跃挂载；跨应用直播键不假称互斥 | `GameplayBindingStartsSwitchesAcrossGamesAndFencesTakenOverSessions`（跨 GameId 切换、切换途中重启 `StreamerServerRestartRecoversEntityAndMounts`） | 模拟器侧通过（同租户应用）；**跨应用直播键互斥未验证**，不折算 |
+| AT05 | 有可信线索归原局；无局标识按首次接收窗口固定归属；映射冲突待核对 | 首次接收窗口冻结与切换 `RedesignInputEventStoreTests.AttributionFreezesAtFirstReceiveAndFollowsTheCurrentWindow`；宿主迟到重复冻结 `PlatformEventsIngestDurablyAcrossRealHosts`（gen1 冻结、gen2 归新窗）；PendingInbox 补归属 | 首次接收窗口半边通过；**对局归属（旧局礼物跨新局、缺对局字段按局归）阻塞 M2 RoundGeneration** |
+| AT06 | 原局继续并恢复；离线不自动排新局；结果可查 | — | **阻塞 M2**（对局中断网、局末离线、结果查询依赖对局建模） |
+| AT07 | 确认后的输入存在；重复不重复应用；整批回执语义正确 | `RedesignInputEventStoreTests.BatchIsAtomicIdempotentAndConflictsFailVisibly`（crashAfterPersist 注入 → 计数不变、同操作重放收敛；跨操作重复逐条回执；冲突可见）；宿主跨 DataServer 重启持久 | 模拟器侧通过 |
+| AT08 | 顺序固定可重放；合法两笔不被误去重；不假设平台真实全序 | 同金额两笔合法礼物均归属 `RedesignInputEventStoreTests` 与宿主批次（同额不同键不去重、同键不同载荷冲突可见）；重复批次幂等 | 模拟器侧通过（乱序/迟到同 AT05 窗口证据）；**对局归属部分随 AT05 阻塞** |
+| AT09 | 查状态或 NeedsAttention；不盲目重复冲突调用 | `RedesignPlatformTaskStoreTests`（OutcomeUnknown → ResolveOutcome 可查执行/未执行；不可查 → NeedsAttention 终态且拒绝重试）；宿主跨崩溃 `PlatformTaskCoordinationSurvivesDataServerCrashAcrossRealHosts`（deadline 后接管、ResolveOutcome 后再发、不盲重试） | 模拟器侧通过；真实平台查询 API 未接前 ResolveOutcome 由调用方提供结果 |
+
+汇总：模拟器侧已通过 AT01/03/04/07/08/09（AT04 有跨应用直播键限制、AT05/08 的对局归属半边随 AT05）；阻塞项 AT02（真实协议样本）与 AT06（M2 对局建模）不阻塞其余实现，适配器保持 `NotProductionReady`。Release 全量 1185/1185。
+
 ## M1 后续顺序
 
 1. ~~PlatformGateway 的验证接口和 Development Platform Simulator；Douyin/Kuaishou 实现分别保留 `NotProductionReady`~~（已落地，见上）。
 2. ~~StreamerServer Login/Resume API、实体资料加载成功后才返回 LoginReady~~；~~同连接 Attach generation 与 access credential 消费端校验接线~~（均已落地，见上）。
 3. ~~GameplayBinding 唯一挂载、跨 GameId LiveSlot 冲突事务~~；~~StreamerActor / LoginCoordinator 状态恢复（内存状态机与切换途中重启注入）~~（均已落地，见上）。
 4. ~~持久 PlatformTask、NormalizedEvent/UnresolvedInbox、回调提交后确认、乱序/迟到事件归属~~（均已落地，见上；DeliveryRecord 消费路由依赖对局建模，归后续）。
-5. 逐项完成 AT01–AT09；外部真实平台需要测试应用/样本时，模拟器证据与生产验收分开记录。
+5. ~~逐项完成 AT01–AT09 台账与缺口补齐~~（台账见上；AT03 响应丢失集成已补 `ec0b6d9`；AT02 等真实平台样本、AT06 及对局归属归 M2，均保持阻塞并单列记录）。
 
-目前没有面向客户端的 StreamerGateway 宿主、Logout、完整轮换响应丢失集成测试、DeliveryRecord 消费路由或对局终结处理（ClosingInput 窗口属挂载切换的后续）；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
+目前没有面向客户端的 StreamerGateway 宿主、Logout、DeliveryRecord 消费路由或对局终结处理（ClosingInput 窗口属挂载切换的后续）；真实平台适配器保持 `NotProductionReady`。M1 保持进行中，不将旧 Gateway/Actor 代码折算为新架构验收。
