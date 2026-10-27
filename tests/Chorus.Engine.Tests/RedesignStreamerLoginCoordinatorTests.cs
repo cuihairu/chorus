@@ -43,6 +43,28 @@ public sealed class RedesignStreamerLoginCoordinatorTests
 
         public Task<StreamerSessionState?> GetSessionStateAsync(string tenantId, string sessionId,
             CancellationToken cancellationToken = default) => Task.FromResult(State);
+
+        public bool LiveSessionOpen = true;
+        public StreamerBinding? Binding = new("binding-fake", "live-fake", "game-a", 1, "Ready", false);
+
+        public Task<string> OpenLiveSessionAsync(string tenantId, string streamerId, string platform, string appId,
+            string platformRoomKey, string canonicalLiveSessionKey, CancellationToken cancellationToken = default)
+            => Task.FromResult("live-fake");
+
+        public Task<string?> GetLiveSessionIdAsync(string tenantId, string streamerId,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(LiveSessionOpen ? "live-fake" : null);
+
+        public Task<StreamerBinding> StartGameplayAsync(string tenantId, string liveSessionId, string sessionId,
+            string gameId, string operationId, CancellationToken cancellationToken = default)
+            => Task.FromResult(Binding! with { GameId = gameId });
+
+        public Task<StreamerBindingStatus?> GetActiveBindingAsync(string tenantId, string streamerId,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult<StreamerBindingStatus?>(Binding is null
+                ? null
+                : new StreamerBindingStatus(Binding.LiveSessionId, Binding.BindingId, Binding.GameId,
+                    Binding.Generation, Binding.State));
     }
 
     private sealed class LoadedProfileStore : IStreamerProfileStore
@@ -152,6 +174,32 @@ public sealed class RedesignStreamerLoginCoordinatorTests
         rig.Store.State = rig.Store.State with { Current = true, Closed = true };
         var offline = await rig.Coordinator.ValidateAccessAsync("tenant-a", ready.AccessCredential);
         Assert.False(offline.Online);
+    }
+
+    [Fact]
+    public async Task StartGameplayRequiresMappedGameLiveSessionAndCurrentAccess()
+    {
+        var rig = New();
+        var ready = await rig.Coordinator.LoginAsync("tenant-a", Command(rig.IssueCredential));
+        var binding = await rig.Coordinator.StartGameplayAsync("tenant-a", ready.AccessCredential, "game-a", "op-1");
+        Assert.Equal("live-fake", binding.LiveSessionId);
+        Assert.False(binding.Duplicate);
+
+        // Unmapped games are denied before anything else.
+        await Assert.ThrowsAsync<TenantApplicationDeniedException>(
+            () => rig.Coordinator.StartGameplayAsync("tenant-a", ready.AccessCredential, "game-other", "op-2"));
+        await Assert.ThrowsAsync<AccessCredentialRejectedException>(
+            () => rig.Coordinator.StartGameplayAsync("tenant-a", "forged", "game-a", "op-3"));
+        rig.Store.LiveSessionOpen = false;
+        await Assert.ThrowsAsync<BindingDeniedException>(
+            () => rig.Coordinator.StartGameplayAsync("tenant-a", ready.AccessCredential, "game-a", "op-4"));
+
+        // Status restores the active binding, or reports nothing when none is mounted.
+        var status = await rig.Coordinator.GetGameplayStatusAsync("tenant-a", ready.AccessCredential);
+        Assert.NotNull(status);
+        Assert.Equal("binding-fake", status!.BindingId);
+        rig.Store.Binding = null;
+        Assert.Null(await rig.Coordinator.GetGameplayStatusAsync("tenant-a", ready.AccessCredential));
     }
 
     [Fact]

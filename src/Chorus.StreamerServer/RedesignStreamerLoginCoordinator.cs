@@ -33,6 +33,12 @@ public sealed record StreamerAccessState(
     string StreamerId, string SessionId, long SessionVersion, string GatewayInstanceId, string ConnectionId,
     long ConnectionGeneration, bool Online);
 
+public sealed record StreamerBinding(
+    string BindingId, string LiveSessionId, string GameId, long Generation, string State, bool Duplicate);
+
+public sealed record StreamerBindingStatus(
+    string LiveSessionId, string BindingId, string GameId, long Generation, string State);
+
 /// <summary>The entity is not usable; LoginReady must not be returned (AT01).</summary>
 public sealed class EntityNotReadyException : Exception;
 
@@ -57,6 +63,14 @@ public interface IStreamerIdentityStore
     Task<bool> ConnectionClosedAsync(string tenantId, string sessionId, string gatewayInstanceId,
         string connectionId, long connectionGeneration, CancellationToken cancellationToken = default);
     Task<StreamerSessionState?> GetSessionStateAsync(string tenantId, string sessionId,
+        CancellationToken cancellationToken = default);
+    Task<string> OpenLiveSessionAsync(string tenantId, string streamerId, string platform, string appId,
+        string platformRoomKey, string canonicalLiveSessionKey, CancellationToken cancellationToken = default);
+    Task<string?> GetLiveSessionIdAsync(string tenantId, string streamerId,
+        CancellationToken cancellationToken = default);
+    Task<StreamerBinding> StartGameplayAsync(string tenantId, string liveSessionId, string sessionId,
+        string gameId, string operationId, CancellationToken cancellationToken = default);
+    Task<StreamerBindingStatus?> GetActiveBindingAsync(string tenantId, string streamerId,
         CancellationToken cancellationToken = default);
 }
 
@@ -89,6 +103,9 @@ public sealed class RedesignStreamerLoginCoordinator(
         var streamerId = await identityStore.ResolveIdentityAsync(callerTenantId, verified.Platform,
             verified.AppId, verified.OpenId, cancellationToken);
         await EnsureEntityReadyAsync(callerTenantId, gameId, streamerId, cancellationToken);
+        // The verified canonical live key opens (or reuses) the live session and its cross-GameId slot.
+        await identityStore.OpenLiveSessionAsync(callerTenantId, streamerId, verified.Platform, verified.AppId,
+            verified.CanonicalLiveSessionKey, verified.CanonicalLiveSessionKey, cancellationToken);
         var grant = await identityStore.LoginAsync(callerTenantId, streamerId, command.GatewayInstanceId,
             command.ConnectionId, command.NextResumeSecret, cancellationToken);
         return Ready(grant);
@@ -134,6 +151,36 @@ public sealed class RedesignStreamerLoginCoordinator(
         return new StreamerAccessState(state.StreamerId, identity.SessionId, state.SessionVersion,
             state.GatewayInstanceId, state.ConnectionId, state.ConnectionGeneration,
             Online: !state.Closed && !state.Revoked && !state.Expired);
+    }
+
+    /// <summary>
+    /// Starts or switches the gameplay binding on the live slot (architecture 6.2). The access
+    /// credential identifies the acting session; DataServer re-checks session currency inside the
+    /// switch transaction, so a taken-over connection cannot mount or switch gameplay.
+    /// </summary>
+    public async Task<StreamerBinding> StartGameplayAsync(string callerTenantId, string accessCredential,
+        string gameId, string operationId, CancellationToken cancellationToken = default)
+    {
+        if (!GameAllowed(callerTenantId, gameId)) throw new TenantApplicationDeniedException();
+        var access = await ValidateAccessAsync(callerTenantId, accessCredential, cancellationToken);
+        var liveSessionId = await identityStore.GetLiveSessionIdAsync(callerTenantId, access.StreamerId,
+            cancellationToken) ?? throw new BindingDeniedException();
+        return await identityStore.StartGameplayAsync(callerTenantId, liveSessionId, access.SessionId,
+            gameId, operationId, cancellationToken);
+    }
+
+    /// <summary>The binding to restore at login or reconnect; null when nothing is mounted.</summary>
+    public async Task<StreamerBindingStatus?> GetGameplayStatusAsync(string callerTenantId, string accessCredential,
+        CancellationToken cancellationToken = default)
+    {
+        var access = await ValidateAccessAsync(callerTenantId, accessCredential, cancellationToken);
+        return await identityStore.GetActiveBindingAsync(callerTenantId, access.StreamerId, cancellationToken);
+    }
+
+    private bool GameAllowed(string tenantId, string gameId)
+    {
+        return tenantApplications.TryGetValue(tenantId, out var applications) &&
+            applications.Values.Contains(gameId, StringComparer.Ordinal);
     }
 
     private async Task EnsureEntityReadyAsync(string tenantId, string gameId, string streamerId,

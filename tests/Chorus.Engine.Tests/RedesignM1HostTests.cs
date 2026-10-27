@@ -250,4 +250,118 @@ public sealed class RedesignM1HostTests
             }).ResponseAsync);
         Assert.Equal(StatusCode.PermissionDenied, crossClose.StatusCode);
     }
+
+    [Fact]
+    public async Task GameplayBindingStartsSwitchesAcrossGamesAndFencesTakenOverSessions()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a","app-2":"game-b"}}"""
+            });
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        using var clientCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-client-1");
+        using var channel = environment.Channel(environment.StreamerPort, clientCertificate, "streamer-server");
+        var session = new StreamerSession.StreamerSessionClient(channel);
+
+        // Login opens the live session for the verified canonical key.
+        var credential = simulator.IssueCredential("app-1", "open-bind", "live-bind", TimeSpan.FromMinutes(5));
+        var secret = RandomNumberGenerator.GetBytes(32);
+        var login = await session.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential, LoginAttemptId = "attempt-1",
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(secret),
+            GatewayInstanceId = "gateway-1", ConnectionId = "connection-1"
+        });
+
+        // Nothing is mounted yet; then the first gameplay starts and an exact retry is idempotent.
+        var empty = await session.GameplayStatusAsync(
+            new GameplayStatusRequest { AccessCredential = login.AccessCredential });
+        Assert.Empty(empty.BindingId);
+        var first = await session.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "start-op-1"
+        });
+        Assert.Equal(1, first.Generation);
+        Assert.Equal("Ready", first.State);
+        Assert.False(first.Duplicate);
+        var retry = await session.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "start-op-1"
+        });
+        Assert.True(retry.Duplicate);
+        Assert.Equal(first.BindingId, retry.BindingId);
+
+        // A cross-GameId switch closes the old binding; the shared slot keeps exactly one active mount.
+        var second = await session.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = login.AccessCredential, GameId = "game-b", OperationId = "start-op-2"
+        });
+        Assert.Equal(2, second.Generation);
+        var status = await session.GameplayStatusAsync(
+            new GameplayStatusRequest { AccessCredential = login.AccessCredential });
+        Assert.Equal("game-b", status.GameId);
+        Assert.Equal(2, status.Generation);
+        Assert.Equal(second.BindingId, status.BindingId);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var states = new NpgsqlCommand("""
+                SELECT state FROM live.binding WHERE live_session_id=@live ORDER BY generation
+                """, connection))
+            {
+                states.Parameters.AddWithValue("live", second.LiveSessionId);
+                await using var reader = await states.ExecuteReaderAsync();
+                var observed = new List<string>();
+                while (await reader.ReadAsync()) observed.Add(reader.GetString(0));
+                Assert.Equal(["Closed", "Ready"], observed);
+            }
+            await using (var slot = new NpgsqlCommand("""
+                SELECT generation,active_binding_id FROM live.slot
+                WHERE platform='simulator' AND canonical_live_session_key='live-bind'
+                """, connection))
+            await using (var reader = await slot.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(2L, reader.GetInt64(0));
+                Assert.Equal(second.BindingId, reader.GetString(1));
+            }
+        }
+
+        // Unmapped games never mount; a taken-over session cannot switch gameplay.
+        var unmapped = await Assert.ThrowsAsync<RpcException>(() => session.StartGameplayAsync(
+            new StartGameplayRequest
+            {
+                AccessCredential = login.AccessCredential, GameId = "game-c", OperationId = "start-op-3"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, unmapped.StatusCode);
+        var takeover = await session.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential, LoginAttemptId = "attempt-2",
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            GatewayInstanceId = "gateway-2", ConnectionId = "connection-2"
+        });
+        Assert.Equal(2, takeover.SessionVersion);
+        var fenced = await Assert.ThrowsAsync<RpcException>(() => session.StartGameplayAsync(
+            new StartGameplayRequest
+            {
+                AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "start-op-4"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, fenced.StatusCode);
+        var third = await session.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = takeover.AccessCredential, GameId = "game-a", OperationId = "start-op-5"
+        });
+        Assert.Equal(3, third.Generation);
+    }
 }

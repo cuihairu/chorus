@@ -37,6 +37,7 @@ builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Any, port, 
 builder.Services.AddSingleton(trustedCertificates);
 builder.Services.AddSingleton(new RedesignPlayerStore(connectionString));
 builder.Services.AddSingleton(new RedesignIdentityStore(connectionString));
+builder.Services.AddSingleton(new RedesignBindingStore(connectionString));
 builder.Services.AddGrpc();
 
 var app = builder.Build();

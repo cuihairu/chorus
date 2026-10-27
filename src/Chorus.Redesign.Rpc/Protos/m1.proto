@@ -113,6 +113,23 @@ message AccessStateReply {
   bool online = 7;
 }
 
+message StartGameplayRequest {
+  string access_credential = 1;
+  string game_id = 2;
+  string operation_id = 3;
+}
+
+message GameplayStatusRequest { string access_credential = 1; }
+
+message GameplayStatusReply {
+  string live_session_id = 1;
+  string binding_id = 2;
+  string game_id = 3;
+  int64 generation = 4;
+  string state = 5;
+  bool duplicate = 6;
+}
+
 message SessionAttachRequest {
   string tenant_id = 1;
   string session_id = 2;
@@ -160,6 +177,54 @@ message SessionStateReply {
   bool current = 12;
 }
 
+message OpenLiveRequest {
+  string tenant_id = 1;
+  string streamer_id = 2;
+  string platform = 3;
+  string app_id = 4;
+  string platform_room_key = 5;
+  string canonical_live_session_key = 6;
+}
+
+message OpenLiveReply { string live_session_id = 1; }
+
+message BindingStartRequest {
+  string tenant_id = 1;
+  string live_session_id = 2;
+  string session_id = 3;
+  string game_id = 4;
+  string operation_id = 5;
+}
+
+message BindingStartReply {
+  string binding_id = 1;
+  string live_session_id = 2;
+  string game_id = 3;
+  int64 generation = 4;
+  string state = 5;
+  bool duplicate = 6;
+}
+
+message BindingStatusRequest {
+  string tenant_id = 1;
+  string streamer_id = 2;
+}
+
+message BindingStatusReply {
+  string live_session_id = 1;
+  string binding_id = 2;
+  string game_id = 3;
+  int64 generation = 4;
+  string state = 5;
+}
+
+message LiveSessionRequest {
+  string tenant_id = 1;
+  string streamer_id = 2;
+}
+
+message LiveSessionReply { string live_session_id = 1; }
+
 // StreamerServer session boundary; the caller presents a tenant-scoped streamer-server
 // identity and the tenant is taken from the authenticated certificate, not the request.
 service StreamerSession {
@@ -169,6 +234,8 @@ service StreamerSession {
   rpc AttachConnection(AttachConnectionRequest) returns (ConnectionReply);
   rpc ConnectionClosed(ConnectionClosedRequest) returns (ConnectionClosedReply);
   rpc ValidateAccess(ValidateAccessRequest) returns (AccessStateReply);
+  rpc StartGameplay(StartGameplayRequest) returns (GameplayStatusReply);
+  rpc GameplayStatus(GameplayStatusRequest) returns (GameplayStatusReply);
 }
 
 // Identity and session persistence owned by DataServer; StreamerServer orchestrates
@@ -183,4 +250,8 @@ service StreamerIdentity {
   rpc AttachConnection(SessionAttachRequest) returns (SessionConnectionReply);
   rpc ConnectionClosed(SessionCloseRequest) returns (SessionCloseReply);
   rpc GetSessionState(SessionStateRequest) returns (SessionStateReply);
+  rpc OpenLiveSession(OpenLiveRequest) returns (OpenLiveReply);
+  rpc StartGameplayBinding(BindingStartRequest) returns (BindingStartReply);
+  rpc GetBindingStatus(BindingStatusRequest) returns (BindingStatusReply);
+  rpc GetLiveSession(LiveSessionRequest) returns (LiveSessionReply);
 }

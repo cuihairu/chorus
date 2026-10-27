@@ -5,3 +5,6 @@ public sealed class SessionRevokedException : Exception;
 
 /// <summary>A newer login took over; this session can no longer rotate or act.</summary>
 public sealed class SessionReplacedException : Exception;
+
+/// <summary>The live session or gameplay binding is not available to this caller.</summary>
+public sealed class BindingDeniedException : Exception;

@@ -147,6 +147,76 @@ public sealed class StreamerSessionGrpcService(
         }
     }
 
+    public override async Task<GameplayStatusReply> StartGameplay(StartGameplayRequest request, ServerCallContext context)
+    {
+        var caller = await RequireAsync(context);
+        try
+        {
+            var binding = await coordinator.StartGameplayAsync(caller.TenantId, request.AccessCredential,
+                request.GameId, request.OperationId, context.CancellationToken);
+            return StatusReply(binding.LiveSessionId, binding.BindingId, binding.GameId,
+                binding.Generation, binding.State, binding.Duplicate);
+        }
+        catch (TenantApplicationDeniedException)
+        {
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "The application is not mapped for this tenant."));
+        }
+        catch (AccessCredentialRejectedException)
+        {
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "The access credential is rejected."));
+        }
+        catch (BindingDeniedException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The gameplay binding is not available."));
+        }
+        catch (SessionRevokedException)
+        {
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked."));
+        }
+        catch (SessionReplacedException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Session is replaced."));
+        }
+        catch (ArgumentException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The gameplay request is invalid."));
+        }
+    }
+
+    public override async Task<GameplayStatusReply> GameplayStatus(GameplayStatusRequest request, ServerCallContext context)
+    {
+        var caller = await RequireAsync(context);
+        try
+        {
+            var status = await coordinator.GetGameplayStatusAsync(caller.TenantId, request.AccessCredential,
+                context.CancellationToken);
+            return status is null
+                ? new GameplayStatusReply()
+                : StatusReply(status.LiveSessionId, status.BindingId, status.GameId,
+                    status.Generation, status.State, false);
+        }
+        catch (AccessCredentialRejectedException)
+        {
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "The access credential is rejected."));
+        }
+        catch (SessionRevokedException)
+        {
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked."));
+        }
+        catch (ArgumentException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The status request is invalid."));
+        }
+    }
+
+    private static GameplayStatusReply StatusReply(
+        string liveSessionId, string bindingId, string gameId, long generation, string state, bool duplicate)
+        => new()
+        {
+            LiveSessionId = liveSessionId, BindingId = bindingId, GameId = gameId,
+            Generation = generation, State = state, Duplicate = duplicate
+        };
+
     private async Task<ProcessIdentity> RequireAsync(ServerCallContext context)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;

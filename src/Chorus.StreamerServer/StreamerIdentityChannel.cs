@@ -87,6 +87,53 @@ public sealed class StreamerIdentityChannel(Func<GrpcChannel> channelFactory) : 
         }
     }
 
+    public async Task<string> OpenLiveSessionAsync(string tenantId, string streamerId, string platform,
+        string appId, string platformRoomKey, string canonicalLiveSessionKey,
+        CancellationToken cancellationToken = default)
+    {
+        var reply = await CallAsync(client => client.OpenLiveSessionAsync(new OpenLiveRequest
+        {
+            TenantId = tenantId, StreamerId = streamerId, Platform = platform, AppId = appId,
+            PlatformRoomKey = platformRoomKey, CanonicalLiveSessionKey = canonicalLiveSessionKey
+        }, cancellationToken: cancellationToken));
+        return reply.LiveSessionId;
+    }
+
+    public async Task<string?> GetLiveSessionIdAsync(string tenantId, string streamerId,
+        CancellationToken cancellationToken = default)
+    {
+        var reply = await CallAsync(client => client.GetLiveSessionAsync(new LiveSessionRequest
+        {
+            TenantId = tenantId, StreamerId = streamerId
+        }, cancellationToken: cancellationToken));
+        return string.IsNullOrEmpty(reply.LiveSessionId) ? null : reply.LiveSessionId;
+    }
+
+    public async Task<StreamerBinding> StartGameplayAsync(string tenantId, string liveSessionId, string sessionId,
+        string gameId, string operationId, CancellationToken cancellationToken = default)
+    {
+        var reply = await CallAsync(client => client.StartGameplayBindingAsync(new BindingStartRequest
+        {
+            TenantId = tenantId, LiveSessionId = liveSessionId, SessionId = sessionId,
+            GameId = gameId, OperationId = operationId
+        }, cancellationToken: cancellationToken));
+        return new StreamerBinding(reply.BindingId, reply.LiveSessionId, reply.GameId, reply.Generation,
+            reply.State, reply.Duplicate);
+    }
+
+    public async Task<StreamerBindingStatus?> GetActiveBindingAsync(string tenantId, string streamerId,
+        CancellationToken cancellationToken = default)
+    {
+        var reply = await CallAsync(client => client.GetBindingStatusAsync(new BindingStatusRequest
+        {
+            TenantId = tenantId, StreamerId = streamerId
+        }, cancellationToken: cancellationToken));
+        return string.IsNullOrEmpty(reply.BindingId)
+            ? null
+            : new StreamerBindingStatus(reply.LiveSessionId, reply.BindingId, reply.GameId,
+                reply.Generation, reply.State);
+    }
+
     private static StreamerSessionGrant Grant(SessionGrantReply reply) => new(reply.StreamerId, reply.SessionId,
         reply.SessionVersion, DateTimeOffset.FromUnixTimeMilliseconds(reply.ExpiresAtUnixMs).UtcDateTime,
         reply.Duplicate);
@@ -107,6 +154,10 @@ public sealed class StreamerIdentityChannel(Func<GrpcChannel> channelFactory) : 
         catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition)
         {
             throw new SessionReplacedException();
+        }
+        catch (RpcException error) when (error.StatusCode == StatusCode.Aborted)
+        {
+            throw new BindingDeniedException();
         }
     }
 }

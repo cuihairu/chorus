@@ -13,7 +13,7 @@ namespace Chorus.DataServer;
 /// </summary>
 public sealed class StreamerIdentityGrpcService(
     RedesignIdentityStore identityStore, RedesignPlayerStore playerStore,
-    TrustedProcessCertificates trustedCertificates)
+    RedesignBindingStore bindingStore, TrustedProcessCertificates trustedCertificates)
     : StreamerIdentity.StreamerIdentityBase
 {
     private const int DefaultSchemaVersion = 1;
@@ -150,6 +150,77 @@ public sealed class StreamerIdentityGrpcService(
             Revoked = snapshot.Revoked, Closed = snapshot.Closed, Expired = snapshot.Expired,
             Banned = snapshot.Banned, Current = snapshot.Current
         };
+    }
+
+    public override async Task<OpenLiveReply> OpenLiveSession(OpenLiveRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server");
+        await RequireIdentityTenantAsync(request.TenantId, request.StreamerId, context.CancellationToken);
+        try
+        {
+            var liveSessionId = await bindingStore.OpenLiveSessionAsync(request.TenantId, request.StreamerId,
+                request.Platform, request.AppId, request.PlatformRoomKey, request.CanonicalLiveSessionKey,
+                context.CancellationToken);
+            return new OpenLiveReply { LiveSessionId = liveSessionId };
+        }
+        catch (BindingDeniedException)
+        {
+            throw new RpcException(new Status(StatusCode.Aborted, "The live session is not available."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<BindingStartReply> StartGameplayBinding(BindingStartRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server");
+        var streamerId = await identityStore.GetSessionStreamerAsync(request.SessionId, context.CancellationToken);
+        if (streamerId is not null)
+            await RequireIdentityTenantAsync(request.TenantId, streamerId, context.CancellationToken);
+        try
+        {
+            var grant = await bindingStore.StartGameplayAsync(request.TenantId, request.LiveSessionId,
+                request.SessionId, request.GameId, request.OperationId, context.CancellationToken);
+            return new BindingStartReply
+            {
+                BindingId = grant.BindingId, LiveSessionId = grant.LiveSessionId, GameId = grant.GameId,
+                Generation = grant.Generation, State = grant.State, Duplicate = grant.Duplicate
+            };
+        }
+        catch (BindingDeniedException)
+        {
+            throw new RpcException(new Status(StatusCode.Aborted, "The gameplay binding is not available."));
+        }
+        catch (SessionRevokedException) { throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked.")); }
+        catch (SessionReplacedException) { throw new RpcException(new Status(StatusCode.FailedPrecondition, "Session is replaced.")); }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<BindingStatusReply> GetBindingStatus(BindingStatusRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server");
+        await RequireIdentityTenantAsync(request.TenantId, request.StreamerId, context.CancellationToken);
+        var status = await bindingStore.GetActiveBindingAsync(request.TenantId, request.StreamerId,
+            context.CancellationToken);
+        return status is null
+            ? new BindingStatusReply()
+            : new BindingStatusReply
+            {
+                LiveSessionId = status.LiveSessionId, BindingId = status.BindingId, GameId = status.GameId,
+                Generation = status.Generation, State = status.State
+            };
+    }
+
+    public override async Task<LiveSessionReply> GetLiveSession(LiveSessionRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server");
+        await RequireIdentityTenantAsync(request.TenantId, request.StreamerId, context.CancellationToken);
+        var liveSessionId = await bindingStore.GetLiveSessionIdAsync(request.TenantId, request.StreamerId,
+            context.CancellationToken);
+        return new LiveSessionReply { LiveSessionId = liveSessionId ?? "" };
     }
 
     private async Task<ProcessIdentity> RequireAsync(ServerCallContext context, params string[] roles)
