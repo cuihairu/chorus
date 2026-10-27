@@ -134,7 +134,7 @@ public sealed class RedesignM0HostTests
             TargetId = target, OperationId = operation, CanonicalVersion = 1, RequestHashHex = fingerprint.Sha256Hex };
     }
 
-    private sealed class HostEnvironment : IAsyncDisposable
+    public sealed class HostEnvironment : IAsyncDisposable
     {
         private readonly string _databaseName = "chorus_m0_host_" + Guid.NewGuid().ToString("N");
         private readonly List<Process> _processes = [];
@@ -147,6 +147,8 @@ public sealed class RedesignM0HostTests
         private string _connectionString = "";
         public int ControlPort { get; } = FreePort();
         public int DataPort { get; } = FreePort();
+        public int StreamerPort { get; } = FreePort();
+        public string DatabaseConnectionString => _connectionString;
 
         public static async Task<HostEnvironment> CreateAsync()
         {
@@ -190,7 +192,8 @@ public sealed class RedesignM0HostTests
             ProcessGrpcClientFactory.Create(new Uri($"https://localhost:{port}"), certificate,
                 _root, _nodeAuthority, "cluster-a", role);
 
-        public async Task StartAsync(string project, int port, string role)
+        public async Task StartAsync(string project, int port, string role,
+            IReadOnlyDictionary<string, string>? extraEnvironment = null)
         {
             using var certificate = Certificate("@cluster", role, project);
             var certPath = Path.Combine(_directory, project + ".pem");
@@ -212,6 +215,8 @@ public sealed class RedesignM0HostTests
             start.Environment["CHORUS_TLS_CERT_PEM"] = certPath;
             start.Environment["CHORUS_TLS_KEY_PEM"] = keyPath;
             start.Environment["CHORUS_PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            foreach (var (name, value) in extraEnvironment ?? new Dictionary<string, string>())
+                start.Environment[name] = value;
             var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start " + project);
             var output = new System.Text.StringBuilder();
             _hostOutput.Add(process, output);
@@ -220,7 +225,8 @@ public sealed class RedesignM0HostTests
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             _processes.Add(process);
-            using var caller = Certificate("@cluster", "node-agent", "ready-probe");
+            using var caller = Certificate("@cluster",
+                role == "streamer-server" ? "streamer-server" : "node-agent", "ready-probe");
             using var channel = Channel(port, caller, role);
             var deadline = DateTime.UtcNow.AddSeconds(15);
             while (DateTime.UtcNow < deadline)
@@ -230,6 +236,8 @@ public sealed class RedesignM0HostTests
                 {
                     if (role == "control-server")
                         await new ControlService.ControlServiceClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
+                    else if (role == "streamer-server")
+                        await new StreamerSession.StreamerSessionClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     else
                         await new DataService.DataServiceClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     return;

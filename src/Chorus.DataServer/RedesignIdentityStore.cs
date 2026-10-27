@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Chorus.Redesign.Rpc;
 using Npgsql;
 
 namespace Chorus.DataServer;
@@ -255,6 +256,30 @@ public sealed class RedesignIdentityStore(string connectionString)
         return new SessionGrant(newSessionId, streamerId, newVersion, expiresAt, false);
     }
 
+    /// <summary>The tenant that owns this streamer identity, or null when unknown.</summary>
+    public async Task<string?> GetIdentityTenantAsync(string streamerId, CancellationToken cancellationToken = default)
+    {
+        Require(streamerId, nameof(streamerId));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            "SELECT tenant_id FROM auth.identity WHERE player_id=@streamer LIMIT 1", connection);
+        command.Parameters.AddWithValue("streamer", streamerId);
+        return await command.ExecuteScalarAsync(cancellationToken) as string;
+    }
+
+    /// <summary>The streamer bound to a session, or null; lets callers fence cross-tenant use before mutating.</summary>
+    public async Task<string?> GetSessionStreamerAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return null;
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            "SELECT streamer_id FROM auth.session WHERE session_id=@session", connection);
+        command.Parameters.AddWithValue("session", sessionId);
+        return await command.ExecuteScalarAsync(cancellationToken) as string;
+    }
+
     private static async Task<DateTime> GetExpiryAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         string sessionId, CancellationToken cancellationToken)
     {
@@ -274,6 +299,3 @@ public sealed class RedesignIdentityStore(string connectionString)
         if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException("Value is required.", name);
     }
 }
-
-public sealed class SessionRevokedException : Exception;
-public sealed class SessionReplacedException : Exception;
