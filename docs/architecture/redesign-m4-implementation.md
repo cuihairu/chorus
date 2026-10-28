@@ -48,6 +48,29 @@ M4 目标（redesign-contracts §3 + architecture §3.3 + operations §1.3）：
 
 门禁：Release 全量 **1280/1280**（负载谷 5min<10 下定局）。过程如实：外部负载（他工程 vitest/tsc 风暴，负载 15-47）下两次全量 1279/1280、1278/1280，唯一反复失败是 M3-7 `AKilledExecutorIsReplacedByQuery` 的 **AssertOutboxAsync 零延迟读**——任务 Completed 可见先于 outbox 效应行落库，负载下必输；按 37538e9 先例把断言改为 30s 收敛等待（期望状态皆终态，等待不会翻转匹配），负载谷全量一次过。M4-2 代码本身三轮全绿零抖动。残留 0（进程/`chorus_m%` 库）。
 
+## M4-3 已落地：挂载/排队上行 + 状态下行 + 路由监视推送（87f6ae3）
+
+**上行三连 + 下行两连（contracts §3.1/§3.2）**，身份注入不变式贯穿：tenant/binding/session 全部来自认证后的连接事实（M4-2 MarkSession/本轮 MarkGameplay），客户端上行身份字段一律忽略——网关对数据面具名，对客户端不信任。
+
+- **startGameplay（m1 StartGameplay）**：`EdgeSessionClient.StartGameplayAsync(tenant, accessCredential, gameId, operationId)` → 成功即 `MarkGameplay(bindingId, gameId, rulesVersion)` 落连接事实（rulesVersion 是客户端声明的可命名事实，参与匹配分区）→ 下发 `gameplayStatus{bindingId,generation,state,reason?}`（`reason="duplicate"` 当且仅当 m1 报重放）。未映射 game → m1 `TenantApplicationDeniedException`→PermissionDenied→边缘呈现 `session_revoked`（与 M4-2 会话映射一致），连接保持可重试。
+- **joinQueue（MatchQueue EnqueueTicket）**：分区 = `EdgeQueueKeys.PartitionFor(tenant, game, rulesVersion|"-", queueType)`——**只有网关能命名的四个事实决定分区**，join options 携带的任何东西都不放宽窗口（两 mount 未在这四事实上一致就绝不共享 round window）；缺 rulesVersion 显式落 `-` 段，不与 rules-1 静默同池。`EdgeQueueClient.EnqueueAsync`（cluster 作用域对数据面具名 tenant，沿 M3 TenantFor 栅栏）→ 回 `matchStatus{ticketId,state,reservationId?}`（store 状态直传，仅 `Committed→Matched` 换客户端词汇，`EdgeMatchStates.FromStore`）。成功后 `routingMonitor.Subscribe(streamerId, connectionId, …)`——**从此推送归路由监视**。
+- **cancelQueue（MatchQueue CancelTicket）**：以 mount 的 binding 为地址（客户端手里的 ticketId/ticketVersion 是诊断不是寻址，契约 §3.1）→ 回 `matchStatus{Cancelled}`；连接保持可用。
+- **未挂载先排队**：joinQueue/cancelQueue 在无 startGameplay 时拒 `invalid_message`（连接保持）——ticket 属于 mount，无 mount 无票。
+- **`EdgeQueueClient`**：MatchQueue 边界的网关侧客户端（Lazy channel，按宿主证书 cluster 角色）；`EdgeQueueKeys`（分区合成）；`EdgeMatchStates`（客户端词汇映射）。
+- **`EdgeRoutingMonitor`（WatchRouting 消费者）**：`RunAsync` 常驻 watch 循环（`RoutingMonitorHost : BackgroundService` 托管，与宿主同寿命）；notice 无载荷 → 每次版本变化全量拉快照（Routing 服务消费者契约）→ `ApplySnapshotAsync` 记录 streamer 行 room、对每个订阅者**房间变化才回调**（首个 apply 报当前房间含 `""`——中途订阅也能立刻对齐现状；回调携快照值离锁执行，慢推送不阻塞 watch 循环）；`RoomFor(streamerId)` 供 M4-4 扇出问房间端点；连接关闭 `Unsubscribe`。
+- **Watch 版本语义（本轮踩坑修正）**：路由版本是 **FNV-1a 内容散列**（control store 明示"deliberate deviation from a monotonic sequence"——漏看 notice 的消费者靠**版本不同**发现差距，不靠大小排序）。首版监视循环写了 `notice.Version <= version → skip`：散列为负（约一半概率）时首条 notice 永远 ≤0 被跳过，监视静默失明——配对测试当场抓获（ticket 已 Committed、两 streamer 路由行都有房间、推送没到）。修正为 `==` 跳过、`!=` 即拉：**"不同"才是变化信号，更小的散列同样是更新的世界**。
+- **Matched 推送的收敛窗（本轮第二个产品修正）**：房间在 round **start 事务**即写 `current_room_id` 路由可见，ticket 要到 **CommitMatch** 才落 `Committed`——中间隔着 prepare 往返。首版回调读一次 ticket 不是 Committed 就放弃且房间 notice 已被 claim → 推送永久丢失（近乎确定性，不是低概率竞态）。修正 `OnRoomRoutedAsync`：claim 房间后对 ticket **收敛读**——`Reserved/Preparing`（管线在途）每 150ms 再读（15s 上界）、`Committed` 即推 `matchStatus{Matched, reservationId, roomId}`、`Queued/Cancelled/Expired/无票` 静默退出（该房间不属于此 mount 本轮，后续新房间会再次触发回调）；瞬时 RpcException 在窗内重试。`TryClaimRoomNotice` 保证每房间至多一次推送。
+- **队列错误映射（`EdgeErrorMapping.FromQueueRpcStatus`）**：FailedPrecondition/InvalidArgument→`invalid_message`（**队列态拒绝绝不借用 session_replaced**——票被拒不是会话被换）、PermissionDenied→`session_revoked`；会话轮换映射原样保留。Refuse 文案区分队列语境。
+- **`EdgeJson` 补 `DefaultIgnoreCondition=WhenWritingNull`**：可选字段缺省即缺席——null 与 missing 在线上不可区分（契约示例形态；单测钉死 `rulesVersion` 未设时整段不出现）。
+- **MatchQueueGrpcService 角色放宽**：EnqueueTicket/CancelTicket +`streamer-gateway`，GetTicket +`streamer-gateway`（Ready 于 M4-1 已放行）；coordinator-only 的 ListQueued/ExpireQueued/ListPartitions 不动。
+
+**测试（+10：host 6 + 单元 4，Release 1280→1290）**：
+
+- host `RedesignM4HostTests`（四宿主+网关全链；`StartEdgeClusterAsync(withMatchmaker:true)` 时 ControlServer 加 coordinator 环境 CHORUS_DATA_ENDPOINT/CHORUS_GAME_ENDPOINTS/CHORUS_MATCH_INTERVAL_MS=200 并起 GameServer——复用 M3-5 自动配对拓扑）：startGameplay 挂载 binding（state Ready、generation≥1、bindingId 非空）且连接可继续用；**两个边缘客户端（不同 openId——同 openId 会互踢）排队被配成同一 round**——双双回 Queued、双双被**推送** Matched（同 roomId/reservationId/ticketId，30s 窗）；cancelQueue 撤票回 Cancelled 且连接可用；排队上行先于挂载双拒 invalid_message 且连接可用；未映射 game 在 startGameplay 拒 session_revoked 且连接保持；**重复 joinQueue 同 operationId 重放同 ticket**（store OperationFingerprint 收据）。
+- 单元 `RedesignM4EdgeUnitTests`：上行/下行 JSON 逐字段（rulesVersion 未设时缺席钉死）；分区合成（缺 rules→`-` 段、rules/queueType 不同即不同分区）；票态词汇 + 队列错误映射钉死；路由监视逐订阅者每变化一次（首个 apply 报当前房间含 `""`、变化才再报、重复静默、RoomFor、Unsubscribe 停报）。
+
+门禁：Release 全量 **1290/1290**（真负载谷定局：1min<7、5min<9.5、15min<11 三线同低才起跑）。过程如实：配对测试先在轮内抓出两个产品缺陷（watch 版本 `<=` 门负散列失明；Matched 推送缺收敛窗）——均为"单测绿、全链才现形"的跨平面时序问题；修后 M4 过滤 32/32、M3 邻居 17/17，全量三轮：1289/1290（M2 kill-tick 20s 窗在负载 30 风暴下差 2 tick，单测隔离即绿）、1288/1290（M3-7 executor 平台调用等待窗 + FreePort 端口竞态致 DataServer 绑定失败，双双隔离绿——纯外部负载环境态，零 M4-3 代码交集），第三轮谷内定局 1290/1290。残留 0（进程/`chorus_m%` 库）。
+
 ## M4 后续顺序
 
-M4-2 WSS 登录/恢复/登出 + SessionReplaced 双腿 + m1 tenant_id 增量（§3.3 核心，AT01-05 客户端面）——**已落地** → M4-3 挂载/排队上行 + EdgeRoutingMonitor → M4-4 RoundSync 扇出 + Ack/requestSnapshot + EdgeOutbox 接线（AT06/15）→ M4-5 GameCommand/CommandReceipt + LeaveRound（§3 全闭合）→ M4-6 网关崩溃/排空/换网关（§3.3 末段 + AT30 网关腿）→ M4-7 CHORUS_RUN_M4_EDGE 基准 + 台账收口。
+M4-3 挂载/排队上行 + EdgeRoutingMonitor——**已落地** → M4-4 RoundSync 扇出 + Ack/requestSnapshot + EdgeOutbox 接线（AT06/15）→ M4-5 GameCommand/CommandReceipt + LeaveRound（§3 全闭合）→ M4-6 网关崩溃/排空/换网关（§3.3 末段 + AT30 网关腿）→ M4-7 CHORUS_RUN_M4_EDGE 基准 + 台账收口。
