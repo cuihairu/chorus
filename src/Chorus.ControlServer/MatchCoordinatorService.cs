@@ -20,6 +20,7 @@ public sealed class MatchCoordinatorService(
     ClusterDirectory directory,
     RedesignCoordinatorStore coordinatorStore,
     RedesignControlStore controlStore,
+    RedesignAdminStore adminStore,
     MatchCoordinatorOptions options,
     ILogger<MatchCoordinatorService> logger) : BackgroundService
 {
@@ -72,12 +73,16 @@ public sealed class MatchCoordinatorService(
             deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: cancellationToken)).PartitionKeys;
         var partitions = queued.Concat(reserved).Distinct(StringComparer.Ordinal)
             .OrderBy(partition => partition, StringComparer.Ordinal).Take(MaxPartitionsPerCycle);
+        // The admin queue gate parks pairing only: recovery of in-flight reservations continues,
+        // so a suspended partition still converges its orphans — only new matches wait.
+        var suspended = await adminStore.ListSuspendedPartitionsAsync(cancellationToken);
         foreach (var partition in partitions)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var term = await EnsureTermAsync(partition, cancellationToken);
             if (term is null) continue;
             await RecoverPartitionAsync(partition, term, cancellationToken);
+            if (suspended.Contains(partition)) continue;
             await PairPartitionAsync(partition, term, cancellationToken);
         }
     }

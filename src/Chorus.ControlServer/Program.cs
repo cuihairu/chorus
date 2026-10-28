@@ -37,6 +37,7 @@ builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Any, port, 
 builder.Services.AddSingleton(trustedCertificates);
 builder.Services.AddSingleton(new RedesignControlStore(connectionString));
 builder.Services.AddSingleton(new RedesignCoordinatorStore(connectionString));
+builder.Services.AddSingleton(new RedesignAdminStore(connectionString));
 // The channel directory is always built: the control plane reaches the data plane (takeover,
 // recovery) and the configured game hosts whether or not matching is on.
 var dataEndpoint = Environment.GetEnvironmentVariable("CHORUS_DATA_ENDPOINT")
@@ -68,6 +69,7 @@ app.MapGrpcService<CoordinatorGrpcService>();
 app.MapGrpcService<RoutingGrpcService>();
 app.MapGrpcService<DeploymentGrpcService>();
 app.MapGrpcService<TakeoverGrpcService>();
+app.MapGrpcService<AdminGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

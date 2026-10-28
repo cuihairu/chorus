@@ -299,6 +299,35 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
     }
 
     /// <summary>
+    /// The admin's controlled retry: only a NeedsAttention task may requeue, and only to
+    /// Retryable due immediately at a bumped epoch — the decision to try again is auditable on
+    /// the control plane, and the executors pick the task up through the normal lease path.
+    /// </summary>
+    public async Task<PlatformTaskState> RequeueTaskAsync(string taskId, CancellationToken cancellationToken = default)
+    {
+        Require(taskId, nameof(taskId));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        var row = await LoadForUpdateAsync(connection, transaction, taskId, cancellationToken);
+        if (row.Status != NeedsAttention)
+            throw new TaskStateConflictException();
+        await using (var update = new NpgsqlCommand("""
+            UPDATE live.task SET status=@status, task_epoch=task_epoch+1,
+                next_attempt=clock_timestamp(), lease_until=NULL, lease_owner=NULL
+            WHERE task_id=@task
+            """, connection, transaction))
+        {
+            update.Parameters.AddWithValue("status", Retryable);
+            update.Parameters.AddWithValue("task", taskId);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+        var updated = await ReadRequiredAsync(connection, transaction, taskId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return ToState(updated, Duplicate: false);
+    }
+
+    /// <summary>
     /// Resolves an unknown outcome from the platform's queryable state: executed tasks complete
     /// with the official observation, not-executed tasks become retryable immediately. Callable
     /// on OutcomeUnknown by anyone who then queried the platform, and on a still-Executing task

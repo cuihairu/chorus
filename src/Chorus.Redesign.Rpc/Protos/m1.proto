@@ -321,6 +321,10 @@ message TaskResolveRequest {
 
 message TaskGetRequest { string task_id = 1; }
 
+// The admin's controlled retry (operations 6): a NeedsAttention task goes back to Retryable,
+// due immediately, at a bumped epoch — the audited decision to try again, not a blind re-issue.
+message TaskRequeueRequest { string task_id = 1; }
+
 // Executor discovery: due work (Pending/Retryable past its next attempt, OutcomeUnknown) plus
 // tasks left Executing by a holder whose lease expired — the reassignment candidates.
 message TaskListRequest { int32 max = 1; }
@@ -403,4 +407,5 @@ service PlatformTask {
   rpc ResolveOutcome(TaskResolveRequest) returns (TaskStateReply);
   rpc GetTask(TaskGetRequest) returns (TaskStateReply);
   rpc ListReadyTasks(TaskListRequest) returns (TaskListReply);
+  rpc RequeueTask(TaskRequeueRequest) returns (TaskStateReply);
 }

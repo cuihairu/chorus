@@ -101,6 +101,13 @@ public sealed class PlatformTaskGrpcService(
         return new TaskListReply { Tasks = { tasks.Select(Reply) } };
     }
 
+    public override Task<TaskStateReply> RequeueTask(TaskRequeueRequest request, ServerCallContext context) =>
+        ExecuteAsync(() =>
+        {
+            Require(context, "control-server");
+            return taskStore.RequeueTaskAsync(request.TaskId, context.CancellationToken);
+        });
+
     private static async Task<TaskStateReply> ExecuteAsync(Func<Task<PlatformTaskState>> action)
     {
         try

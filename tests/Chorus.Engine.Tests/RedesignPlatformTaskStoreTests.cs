@@ -139,6 +139,48 @@ public sealed class RedesignPlatformTaskStoreTests
     }
 
     [Fact]
+    public async Task AdminRequeueRevivesNeedsAttentionAtABumpedEpochOnly()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var taskStore = new RedesignPlatformTaskStore(database.ConnectionString);
+        var binding = await MountAsync(identityStore, bindingStore, "live-key-requeue");
+
+        // The blind-call dead end only the control plane may overrule: NeedsAttention → Retryable,
+        // due immediately, epoch bumped, lease cleared — then the normal executor path takes over.
+        var task = await taskStore.EnqueueDesiredAsync(binding.BindingId, "op-requeue-1",
+            """{"kind":"gift-refund","order":"o-42"}""");
+        await taskStore.AcquireLeaseAsync(task.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(task.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        await taskStore.MarkOutcomeUnknownAsync(task.TaskId, "gw-a", "call timed out");
+        var stopped = await taskStore.MarkNeedsAttentionAsync(task.TaskId, "no status query on platform");
+        Assert.Equal(RedesignPlatformTaskStore.NeedsAttention, stopped.Status);
+
+        var requeued = await taskStore.RequeueTaskAsync(task.TaskId);
+        Assert.Equal(RedesignPlatformTaskStore.Retryable, requeued.Status);
+        Assert.Equal(stopped.TaskEpoch + 1, requeued.TaskEpoch);
+        // The lease is released so any executor may pick the task up; the dead attempt's owner
+        // stays in the history columns, exactly like an executor takeover keeps it.
+        Assert.True(string.IsNullOrEmpty(requeued.LeaseOwner));
+        Assert.NotNull(requeued.NextAttemptUtc);
+        Assert.True(requeued.NextAttemptUtc <= DateTime.UtcNow.AddSeconds(1));
+        var ready = await taskStore.ListReadyTasksAsync(16);
+        Assert.Contains(ready, item => item.TaskId == task.TaskId);
+
+        await taskStore.AcquireLeaseAsync(task.TaskId, "gw-b", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(task.TaskId, "gw-b", TimeSpan.FromSeconds(30));
+        Assert.Equal(RedesignPlatformTaskStore.Completed,
+            (await taskStore.CompleteAttemptAsync(task.TaskId, "gw-b", """{"state":"refunded"}""")).Status);
+
+        // Anything but NeedsAttention refuses: completed work never restarts through admin.
+        await Assert.ThrowsAsync<TaskStateConflictException>(() => taskStore.RequeueTaskAsync(task.TaskId));
+        var queued = await taskStore.EnqueueDesiredAsync(binding.BindingId, "op-requeue-2",
+            """{"kind":"poll","round":"r-9"}""");
+        await Assert.ThrowsAsync<TaskStateConflictException>(() => taskStore.RequeueTaskAsync(queued.TaskId));
+    }
+
+    [Fact]
     public async Task RetryBackoffAndLeaseExpiryGateNewAttempts()
     {
         await using var database = await TemporaryDatabase.CreateAsync();
