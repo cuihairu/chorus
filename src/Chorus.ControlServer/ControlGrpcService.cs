@@ -30,7 +30,8 @@ public sealed class ControlGrpcService(
         // which know their own endpoint). The caller certificate decides which — an agent cannot
         // claim a self-report and a process cannot impersonate its agent.
         var caller = await RequireAsync(context,
-            "node-agent", "data-server", "streamer-server", "game-server", "platform-gateway", "control-server");
+            "node-agent", "data-server", "streamer-server", "game-server", "platform-gateway",
+            "streamer-gateway", "control-server");
         string agentInstanceId;
         var selfReport = false;
         if (caller.Role == "node-agent")
@@ -46,7 +47,8 @@ public sealed class ControlGrpcService(
         else
         {
             selfReport = true;
-            if (request.Role is not ("streamer-server" or "game-server" or "platform-gateway")
+            if (request.Role is not ("streamer-server" or "game-server" or "platform-gateway"
+                    or "streamer-gateway")
                 || caller.Role != request.Role ||
                 caller.ProcessInstanceId != request.ProcessInstanceId || caller.NodeId != request.NodeId ||
                 caller.TenantId != "@cluster" ||

@@ -17,13 +17,15 @@ public sealed class RoutingGrpcService(
 
     public override async Task<ReadyReply> Ready(Empty request, ServerCallContext context)
     {
-        await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server", "control-server");
+        await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server",
+            "streamer-gateway", "control-server");
         return new ReadyReply { Ready = true, SchemaVersion = "4" };
     }
 
     public override async Task<RoutingSnapshotReply> GetRoutingSnapshot(Empty request, ServerCallContext context)
     {
-        await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server", "control-server");
+        await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server",
+            "streamer-gateway", "control-server");
         var snapshot = await store.ReadRoutingSnapshotAsync(context.CancellationToken);
         return new RoutingSnapshotReply
         {
@@ -53,7 +55,8 @@ public sealed class RoutingGrpcService(
     public override async Task WatchRouting(WatchRoutingRequest request,
         IServerStreamWriter<RoutingNotice> responseStream, ServerCallContext context)
     {
-        await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server", "control-server");
+        await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server",
+            "streamer-gateway", "control-server");
         var lastVersion = request.KnownVersion;
         while (!context.CancellationToken.IsCancellationRequested)
         {

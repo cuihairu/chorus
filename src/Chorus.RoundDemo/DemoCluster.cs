@@ -82,7 +82,7 @@ public sealed class DemoCluster : IDemoCluster
         _nodeAuthority = ProcessCertificateIssuer.CreateNodeAuthority(_root,
             new("cluster-a", "node-a",
                 ["node-agent", "control-server", "data-server", "streamer-server", "game-server",
-                    "platform-gateway"],
+                    "platform-gateway", "streamer-gateway"],
                 ["@cluster", "tenant-a"]), DateTimeOffset.UtcNow.AddDays(5));
         File.WriteAllText(Path.Combine(_directory, "root.pem"), _root.ExportCertificatePem());
         File.WriteAllText(Path.Combine(_directory, "node.pem"), _nodeAuthority.ExportCertificatePem());

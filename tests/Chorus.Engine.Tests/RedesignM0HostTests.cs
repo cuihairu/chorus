@@ -152,6 +152,15 @@ public sealed class RedesignM0HostTests
         public int GamePort { get; } = FreePort();
         public string DatabaseConnectionString => _connectionString;
 
+        /// <summary>The test root CA in PEM form — public-edge test clients (WSS) trust the
+        /// same root the host certificates chain to, without disabling validation.</summary>
+        public string RootCertificatePem => File.ReadAllText(Path.Combine(_directory, "root.pem"));
+
+        /// <summary>The node authority (issuing intermediate) in PEM form — the hosts send
+        /// their leaf certificates alone, so a validating client needs the intermediate in
+        /// its trust store to build the chain.</summary>
+        public string NodeAuthorityCertificatePem => File.ReadAllText(Path.Combine(_directory, "node.pem"));
+
         /// <summary>The spawned host processes by instance id — benchmark CPU accounting (test infra).</summary>
         public IReadOnlyList<(Process Process, string Instance)> HostProcesses =>
             _projectByProcess.Select(entry => (entry.Key, entry.Value)).ToList();
@@ -188,7 +197,7 @@ public sealed class RedesignM0HostTests
             Directory.CreateDirectory(_directory);
             _root = ProcessCertificateIssuer.CreateRoot("cluster-a", DateTimeOffset.UtcNow.AddDays(10));
             _nodeAuthority = ProcessCertificateIssuer.CreateNodeAuthority(_root,
-                new("cluster-a", "node-a", ["node-agent", "control-server", "data-server", "streamer-server", "game-server", "platform-gateway"],
+                new("cluster-a", "node-a", ["node-agent", "control-server", "data-server", "streamer-server", "game-server", "platform-gateway", "streamer-gateway"],
                     ["@cluster", "tenant-a", "tenant-b"]), DateTimeOffset.UtcNow.AddDays(5));
             File.WriteAllText(Path.Combine(_directory, "root.pem"), _root.ExportCertificatePem());
             File.WriteAllText(Path.Combine(_directory, "node.pem"), _nodeAuthority.ExportCertificatePem());
@@ -274,6 +283,8 @@ public sealed class RedesignM0HostTests
                         await new GameHost.GameHostClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     else if (role == "platform-gateway")
                         await new PlatformGatewayFace.PlatformGatewayFaceClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
+                    else if (role == "streamer-gateway")
+                        await new StreamerGatewayFace.StreamerGatewayFaceClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     else
                         await new DataService.DataServiceClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     return;
