@@ -110,6 +110,14 @@ public sealed class MatchQueueGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    public override async Task<ListPartitionsReply> ListPartitions(Empty request,
+        ServerCallContext context)
+    {
+        Require(context, "control-server");
+        var partitions = await ticketStore.ListPartitionKeysAsync(context.CancellationToken);
+        return new ListPartitionsReply { PartitionKeys = { partitions } };
+    }
+
     private static string TenantFor(ProcessIdentity caller, string requested)
     {
         if (string.IsNullOrWhiteSpace(requested))
@@ -130,7 +138,8 @@ public sealed class MatchQueueGrpcService(
         Version = ticket.Version, PartitionKey = ticket.PartitionKey,
         ExpiresUnixMs = ticket.ExpiresAtUtc is null ? 0
             : new DateTimeOffset(ticket.ExpiresAtUtc.Value).ToUnixTimeMilliseconds(),
-        ReservationId = ticket.ReservationId ?? ""
+        ReservationId = ticket.ReservationId ?? "", StreamerId = ticket.StreamerId,
+        TenantId = ticket.TenantId, GameId = ticket.GameId
     };
 
     private ProcessIdentity Require(ServerCallContext context, params string[] roles)

@@ -336,6 +336,237 @@ public sealed class RedesignM3HostTests
         }
     }
 
+    [Fact]
+    public async Task TheCoordinatorPairsQueuedMountsIntoRoundsWithoutAManualOrchestrator()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulator = await StartMatchClusterAsync(environment);
+        const string partition = "tenant-a/game-a/rules-1/region-1/simulator/standard";
+        var host = await MountAsync(environment, simulator, "m3-host-5a");
+        var guest = await MountAsync(environment, simulator, "m3-host-5b");
+
+        // Two mounts enqueue on their own certificates; the coordinator behind the control
+        // plane sees the partition and walks reserve → own → start → prepare → mark → commit.
+        await EnqueueAsync(environment, host, partition, "m3-enqueue-5a");
+        await EnqueueAsync(environment, guest, partition, "m3-enqueue-5b");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-5");
+        using var controlChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
+        var queue = new MatchQueue.MatchQueueClient(controlChannel);
+        var match = new Match.MatchClient(controlChannel);
+        Assert.Contains(partition, (await queue.ListPartitionsAsync(new Empty())).PartitionKeys);
+
+        var committed = await WaitForAsync(async () =>
+        {
+            var hostTicket = await queue.GetTicketAsync(
+                new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = host.BindingId });
+            var guestTicket = await queue.GetTicketAsync(
+                new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = guest.BindingId });
+            return hostTicket.Ticket.State == "Committed" && guestTicket.Ticket.State == "Committed"
+                && hostTicket.Ticket.ReservationId == guestTicket.Ticket.ReservationId
+                && hostTicket.Ticket.ReservationId.Length > 0;
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(committed, "The coordinator did not commit the pair.");
+
+        var hostTicket = await queue.GetTicketAsync(
+            new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = host.BindingId });
+        var reservation = await match.GetReservationAsync(new GetReservationRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", ReservationId = hostTicket.Ticket.ReservationId
+        });
+        Assert.Equal("Committed", reservation.Reservation.Status);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-m3-5");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var round = await new RoundStore.RoundStoreClient(gameChannel).GetRoundAsync(new GetRoundRequest
+        {
+            RoomId = reservation.Reservation.RoomId, GameId = "game-a"
+        });
+        Assert.True(round.Found);
+        Assert.Equal(2, round.Participants.Count);
+        Assert.Contains(round.Participants, participant => participant.BindingId == host.BindingId);
+        Assert.Contains(round.Participants, participant => participant.BindingId == guest.BindingId);
+
+        // A third mount cancels while queued: no partner ever arrives, and the queue drains.
+        var loner = await MountAsync(environment, simulator, "m3-host-5c");
+        await EnqueueAsync(environment, loner, partition, "m3-enqueue-5c");
+        var cancelled = await queue.CancelTicketAsync(new CancelTicketRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", BindingId = loner.BindingId, OperationId = "m3-cancel-5"
+        });
+        Assert.Equal("Cancelled", cancelled.Ticket.State);
+        var drained = await WaitForAsync(async () =>
+            (await queue.ListPartitionsAsync(new Empty())).PartitionKeys.Count == 0, TimeSpan.FromSeconds(30));
+        Assert.True(drained, "The partition never drained after the commit and the cancel.");
+    }
+
+    [Fact]
+    public async Task ASuccessorCoordinatorConvergesOrphanedReservations()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        // The first control plane runs without game endpoints: a plain control plane, matching
+        // nothing. The test plays the coordinator that dies right after reserving.
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        const string partition = "tenant-a/game-a/rules-1/region-1/simulator/standard";
+        var host = await MountAsync(environment, simulator, "m3-host-6a");
+        var guest = await MountAsync(environment, simulator, "m3-host-6b");
+        await EnqueueAsync(environment, host, partition, "m3-enqueue-6a");
+        await EnqueueAsync(environment, guest, partition, "m3-enqueue-6b");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-6");
+        using (var controlPlane = environment.Channel(environment.ControlPort, controlCertificate,
+            "control-server"))
+        {
+            var coordinator = new Coordinator.CoordinatorClient(controlPlane);
+            var term = await coordinator.ClaimTermAsync(new TermRequest
+            {
+                PartitionKey = partition, HolderInstanceId = "control-m3-6", LeaseSeconds = 30
+            });
+            Assert.Equal(1, term.Term);
+        }
+        using var dataChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
+        var match = new Match.MatchClient(dataChannel);
+        var orphan = await match.ReserveMatchAsync(new ReserveMatchRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", PartitionKey = partition,
+            CoordinatorTerm = 1, HolderInstanceId = "control-m3-6", RoomId = "room-m3-6",
+            ReservationSeconds = 15, OperationId = "m3-reserve-6",
+            Participants =
+            {
+                new ReservedParticipantProto
+                {
+                    BindingId = host.BindingId, ParticipantId = host.StreamerId, Role = "Host"
+                },
+                new ReservedParticipantProto
+                {
+                    BindingId = guest.BindingId, ParticipantId = guest.StreamerId, Role = "Guest"
+                }
+            }
+        });
+        Assert.Equal("Reserved", orphan.Reservation.Status);
+
+        // The coordinator process dies; its successor starts with game endpoints configured.
+        environment.Kill("Chorus.ControlServer");
+        var coordinatorEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+            ["CHORUS_GAME_ENDPOINTS"] = $"https://localhost:{environment.GamePort}",
+            ["CHORUS_MATCH_INTERVAL_MS"] = "200"
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", coordinatorEnvironment);
+
+        // The successor takes over the term, releases the orphan it cannot finish — no second
+        // room, no half-enrollment — and pairs the returned tickets into a committed match.
+        var queue = new MatchQueue.MatchQueueClient(dataChannel);
+        var converged = await WaitForAsync(async () =>
+        {
+            var hostTicket = await queue.GetTicketAsync(
+                new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = host.BindingId });
+            var guestTicket = await queue.GetTicketAsync(
+                new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = guest.BindingId });
+            return hostTicket.Ticket.State == "Committed" && guestTicket.Ticket.State == "Committed"
+                && hostTicket.Ticket.ReservationId != orphan.Reservation.ReservationId;
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(converged, "The successor coordinator did not converge the orphan.");
+
+        var retired = await match.GetReservationAsync(new GetReservationRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", ReservationId = orphan.Reservation.ReservationId
+        });
+        Assert.Equal("Aborted", retired.Reservation.Status);
+        var hostTicket = await queue.GetTicketAsync(
+            new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = host.BindingId });
+        var committed = await match.GetReservationAsync(new GetReservationRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", ReservationId = hostTicket.Ticket.ReservationId
+        });
+        Assert.Equal("Committed", committed.Reservation.Status);
+        Assert.NotEqual("room-m3-6", committed.Reservation.RoomId);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-m3-6");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var orphanRoom = await new RoundStore.RoundStoreClient(gameChannel).GetRoundAsync(
+            new GetRoundRequest { RoomId = "room-m3-6", GameId = "game-a" });
+        Assert.False(orphanRoom.Found);
+    }
+
+    private static async Task<DevelopmentPlatformSimulator> StartMatchClusterAsync(
+        RedesignM0HostTests.HostEnvironment environment)
+    {
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        var coordinatorEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+            ["CHORUS_GAME_ENDPOINTS"] = $"https://localhost:{environment.GamePort}",
+            ["CHORUS_MATCH_INTERVAL_MS"] = "200"
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", coordinatorEnvironment);
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            clientTenant: "tenant-a");
+        return new DevelopmentPlatformSimulator(simulatorKey);
+    }
+
+    private static async Task EnqueueAsync(RedesignM0HostTests.HostEnvironment environment,
+        (string StreamerId, string SessionId, string BindingId) mount, string partition, string operationId)
+    {
+        using var certificate = environment.Certificate("tenant-a", "streamer-server",
+            "streamer-" + operationId);
+        using var channel = environment.Channel(environment.DataPort, certificate, "data-server");
+        var queue = new MatchQueue.MatchQueueClient(channel);
+        await queue.EnqueueTicketAsync(new EnqueueTicketRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", BindingId = mount.BindingId,
+            SessionId = mount.SessionId, PartitionKey = partition, OperationId = operationId
+        });
+    }
+
+    private static async Task<bool> WaitForAsync(Func<Task<bool>> probe, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await probe()) return true;
+            await Task.Delay(200);
+        }
+        return await probe();
+    }
+
     private static async Task<(string StreamerId, string SessionId, string BindingId)> MountAsync(
         RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator, string openId)
     {

@@ -46,6 +46,11 @@ message TicketProto {
   // 0 = the ticket has no expiry of its own.
   int64 expires_unix_ms = 6;
   string reservation_id = 7;
+  // The streamer behind the mount: the coordinator's window is self-describing.
+  string streamer_id = 8;
+  // The scope the ticket lives in — a coordinator pairs candidates and drives rounds for it.
+  string tenant_id = 9;
+  string game_id = 10;
 }
 
 message TicketReply {
@@ -65,6 +70,9 @@ message ExpireQueuedRequest { int32 max = 1; }
 
 message ExpireQueuedReply { int64 expired = 1; }
 
+// The partitions with live candidates — the coordinator's discovery scan.
+message ListPartitionsReply { repeated string partition_keys = 1; }
+
 service MatchQueue {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc EnqueueTicket(EnqueueTicketRequest) returns (TicketReply);
@@ -73,6 +81,8 @@ service MatchQueue {
   // The coordinator's candidate window and the sweep that retires stale queued tickets.
   rpc ListQueued(ListQueuedRequest) returns (ListQueuedReply);
   rpc ExpireQueued(ExpireQueuedRequest) returns (ExpireQueuedReply);
+  // The partitions a coordinator can hold terms for.
+  rpc ListPartitions(chorus.redesign.m0.Empty) returns (ListPartitionsReply);
 }
 
 // Match coordinator terms (architecture 7.1, 10.1). One holder per partition; a takeover or
@@ -197,6 +207,13 @@ message ExpireReservationsRequest { int32 max = 1; }
 
 message ExpireReservationsReply { int64 expired = 1; }
 
+message ListActiveReservationsRequest {
+  string partition_key = 1;
+  int32 max = 2;
+}
+
+message ListActiveReservationsReply { repeated ReservationProto reservations = 1; }
+
 service Match {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   // Reserves the candidate set under the coordinator's term. Every participant must hold
@@ -214,4 +231,8 @@ service Match {
   rpc GetReservation(GetReservationRequest) returns (ReservationReply);
   // The sweep that retires expired reservations and releases everything they held.
   rpc ExpireReservations(ExpireReservationsRequest) returns (ExpireReservationsReply);
+  // The successor coordinator's recovery scan: unretired reservations of one partition.
+  rpc ListActiveReservations(ListActiveReservationsRequest) returns (ListActiveReservationsReply);
+  // The partitions holding unretired reservations: recovery discovery without queued tickets.
+  rpc ListReservationPartitions(chorus.redesign.m0.Empty) returns (ListPartitionsReply);
 }

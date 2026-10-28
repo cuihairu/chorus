@@ -25,6 +25,9 @@ message StartRoundRequest {
   string package_hash = 7;
   string operation_id = 8;
   repeated RoundParticipantProto participants = 9;
+  // Empty = the caller's certificate tenant; a cluster-scoped coordinator names the tenant
+  // it acts for (the same rule as the match services).
+  string tenant_id = 10;
 }
 
 message AbortRoundRequest {

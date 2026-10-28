@@ -37,6 +37,23 @@ builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Any, port, 
 builder.Services.AddSingleton(trustedCertificates);
 builder.Services.AddSingleton(new RedesignControlStore(connectionString));
 builder.Services.AddSingleton(new RedesignCoordinatorStore(connectionString));
+// The match coordinator hosts inside the control plane (ADR-R02) once game endpoints are
+// configured; without them this is a plain control plane, matching nothing.
+var gameEndpoints = Environment.GetEnvironmentVariable("CHORUS_GAME_ENDPOINTS");
+if (gameEndpoints is { Length: > 0 })
+{
+    var dataEndpoint = Environment.GetEnvironmentVariable("CHORUS_DATA_ENDPOINT")
+        ?? $"https://localhost:{Environment.GetEnvironmentVariable("CHORUS_DATA_PORT") ?? "7501"}";
+    var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])
+        ?? throw new InvalidOperationException("The ControlServer certificate carries no process identity.");
+    var intervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_MATCH_INTERVAL_MS") ?? "500");
+    builder.Services.AddSingleton(new ClusterDirectory(serverCertificate, root, nodeAuthority,
+        clusterId, dataEndpoint,
+        gameEndpoints.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)));
+    builder.Services.AddSingleton(
+        new MatchCoordinatorOptions(identity.ProcessInstanceId, intervalMs));
+    builder.Services.AddHostedService<MatchCoordinatorService>();
+}
 builder.Services.AddGrpc();
 
 var app = builder.Build();

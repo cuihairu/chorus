@@ -9,8 +9,9 @@ namespace Chorus.DataServer;
 public sealed class RedesignMatchException(string message) : Exception(message);
 
 public sealed record MatchTicket(
-    string TicketId, string BindingId, string State, long Version, string PartitionKey,
-    DateTime? ExpiresAtUtc, string? ReservationId, bool Duplicate);
+    string TicketId, string BindingId, string StreamerId, string State, long Version,
+    string PartitionKey, DateTime? ExpiresAtUtc, string? ReservationId, bool Duplicate,
+    string TenantId = "", string GameId = "");
 
 /// <summary>
 /// Match queue tickets (architecture 7.1, 7.3). One active ticket per mount is enforced by
@@ -126,15 +127,16 @@ public sealed class RedesignMatchTicketStore(string connectionString)
 
         var ticketId = Guid.NewGuid().ToString("N");
         await using (var insert = new NpgsqlCommand("""
-            INSERT INTO match.ticket(ticket_id,tenant_id,game_id,binding_id,state,version,
+            INSERT INTO match.ticket(ticket_id,tenant_id,game_id,binding_id,streamer_id,state,version,
                 partition_key,expires_at)
-            VALUES (@ticket,@tenant,@game,@binding,'Queued',1,@partition,@expires)
+            VALUES (@ticket,@tenant,@game,@binding,@streamer,'Queued',1,@partition,@expires)
             """, connection, transaction))
         {
             insert.Parameters.AddWithValue("ticket", ticketId);
             insert.Parameters.AddWithValue("tenant", tenantId);
             insert.Parameters.AddWithValue("game", gameId);
             insert.Parameters.AddWithValue("binding", bindingId);
+            insert.Parameters.AddWithValue("streamer", streamerId);
             insert.Parameters.AddWithValue("partition", partitionKey);
             if (expiresAtUtc is null) insert.Parameters.AddWithValue("expires", DBNull.Value);
             else insert.Parameters.AddWithValue("expires", expiresAtUtc.Value);
@@ -149,8 +151,9 @@ public sealed class RedesignMatchTicketStore(string connectionString)
             }
         }
         return JsonSerializer.Serialize(new StoredTicket(
-            ticketId, bindingId, Queued, 1, partitionKey,
-            expiresAtUtc is null ? 0 : new DateTimeOffset(expiresAtUtc.Value).ToUnixTimeMilliseconds(), null));
+            ticketId, bindingId, streamerId, Queued, 1, partitionKey,
+            expiresAtUtc is null ? 0 : new DateTimeOffset(expiresAtUtc.Value).ToUnixTimeMilliseconds(),
+            null, tenantId, gameId));
     }
 
     /// <summary>
@@ -192,12 +195,12 @@ public sealed class RedesignMatchTicketStore(string connectionString)
             if (await binding.ExecuteScalarAsync(cancellationToken) is null)
                 throw new RedesignMatchException("The binding does not exist.");
         }
-        string ticketId; string state; long version; string partitionKey;
+        string ticketId; string streamerId; string state; long version; string partitionKey;
         long expiresUnixMs; string? reservationId;
         await using (var ticket = new NpgsqlCommand("""
-            SELECT ticket_id,state,version,partition_key,
+            SELECT ticket_id,streamer_id,state,version,partition_key,
                 (CASE WHEN expires_at IS NULL THEN 0 ELSE (EXTRACT(EPOCH FROM expires_at)*1000)::bigint END),
-                reservation_id
+                reservation_id,tenant_id,game_id
             FROM match.ticket
             WHERE binding_id=@binding AND state IN ('Queued','Reserved','Preparing')
             ORDER BY created_at DESC LIMIT 1 FOR UPDATE
@@ -208,11 +211,14 @@ public sealed class RedesignMatchTicketStore(string connectionString)
             if (!await reader.ReadAsync(cancellationToken))
                 throw new RedesignMatchException("The mount holds no active ticket to cancel.");
             ticketId = reader.GetString(0);
-            state = reader.GetString(1);
-            version = reader.GetInt64(2);
-            partitionKey = reader.GetString(3);
-            expiresUnixMs = reader.GetInt64(4);
-            reservationId = reader.IsDBNull(5) ? null : reader.GetString(5);
+            streamerId = reader.GetString(1);
+            state = reader.GetString(2);
+            version = reader.GetInt64(3);
+            partitionKey = reader.GetString(4);
+            expiresUnixMs = reader.GetInt64(5);
+            reservationId = reader.IsDBNull(6) ? null : reader.GetString(6);
+            tenantId = reader.GetString(7);
+            gameId = reader.GetString(8);
         }
         if (state != Queued)
             throw new RedesignMatchException(
@@ -225,7 +231,8 @@ public sealed class RedesignMatchTicketStore(string connectionString)
             await update.ExecuteNonQueryAsync(cancellationToken);
         }
         return JsonSerializer.Serialize(new StoredTicket(
-            ticketId, bindingId, Cancelled, version + 1, partitionKey, expiresUnixMs, reservationId));
+            ticketId, bindingId, streamerId, Cancelled, version + 1, partitionKey, expiresUnixMs,
+            reservationId, tenantId, gameId));
     }
 
     /// <summary>
@@ -261,9 +268,9 @@ public sealed class RedesignMatchTicketStore(string connectionString)
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
-            SELECT ticket_id,state,version,partition_key,
+            SELECT ticket_id,streamer_id,state,version,partition_key,
                 (CASE WHEN expires_at IS NULL THEN 0 ELSE (EXTRACT(EPOCH FROM expires_at)*1000)::bigint END),
-                reservation_id
+                reservation_id,tenant_id,game_id
             FROM match.ticket WHERE tenant_id=@tenant AND game_id=@game AND binding_id=@binding
             ORDER BY created_at DESC, ticket_id LIMIT 1
             """, connection);
@@ -272,10 +279,11 @@ public sealed class RedesignMatchTicketStore(string connectionString)
         command.Parameters.AddWithValue("binding", bindingId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;
-        return new MatchTicket(reader.GetString(0), bindingId, reader.GetString(1), reader.GetInt64(2),
-            reader.GetString(3),
-            reader.GetInt64(4) == 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)).UtcDateTime,
-            reader.IsDBNull(5) ? null : reader.GetString(5), Duplicate: false);
+        return new MatchTicket(reader.GetString(0), bindingId, reader.GetString(1), reader.GetString(2),
+            reader.GetInt64(3), reader.GetString(4),
+            reader.GetInt64(5) == 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)).UtcDateTime,
+            reader.IsDBNull(6) ? null : reader.GetString(6), Duplicate: false,
+            reader.GetString(7), reader.GetString(8));
     }
 
     /// <summary>
@@ -290,9 +298,9 @@ public sealed class RedesignMatchTicketStore(string connectionString)
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
-            SELECT ticket_id,binding_id,version,
+            SELECT ticket_id,binding_id,streamer_id,version,
                 (CASE WHEN expires_at IS NULL THEN 0 ELSE (EXTRACT(EPOCH FROM expires_at)*1000)::bigint END),
-                reservation_id
+                reservation_id,tenant_id,game_id
             FROM match.ticket
             WHERE partition_key=@partition AND state='Queued'
               AND (expires_at IS NULL OR expires_at>=clock_timestamp())
@@ -303,22 +311,46 @@ public sealed class RedesignMatchTicketStore(string connectionString)
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var tickets = new List<MatchTicket>();
         while (await reader.ReadAsync(cancellationToken))
-            tickets.Add(new MatchTicket(reader.GetString(0), reader.GetString(1), Queued, reader.GetInt64(2),
-                partitionKey,
-                reader.GetInt64(3) == 0 ? null
-                    : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3)).UtcDateTime,
-                reader.IsDBNull(4) ? null : reader.GetString(4), Duplicate: false));
+            tickets.Add(new MatchTicket(reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                Queued, reader.GetInt64(3), partitionKey,
+                reader.GetInt64(4) == 0 ? null
+                    : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)).UtcDateTime,
+                reader.IsDBNull(5) ? null : reader.GetString(5), Duplicate: false,
+                reader.GetString(6), reader.GetString(7)));
         return tickets;
     }
 
+    /// <summary>
+    /// The partitions with live candidates — the coordinator's discovery scan. A partition
+    /// without queued tickets holds no term.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ListPartitionKeysAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT DISTINCT partition_key FROM match.ticket
+            WHERE state='Queued' AND (expires_at IS NULL OR expires_at>=clock_timestamp())
+            ORDER BY partition_key
+            """, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var keys = new List<string>();
+        while (await reader.ReadAsync(cancellationToken)) keys.Add(reader.GetString(0));
+        return keys;
+    }
+
     private static MatchTicket Ticket(StoredTicket stored, bool duplicate) => new(
-        stored.TicketId, stored.BindingId, stored.State, stored.Version, stored.PartitionKey,
+        stored.TicketId, stored.BindingId, stored.StreamerId, stored.State, stored.Version,
+        stored.PartitionKey,
         stored.ExpiresUnixMs == 0 ? null : DateTimeOffset.FromUnixTimeMilliseconds(stored.ExpiresUnixMs).UtcDateTime,
-        string.IsNullOrEmpty(stored.ReservationId) ? null : stored.ReservationId, duplicate);
+        string.IsNullOrEmpty(stored.ReservationId) ? null : stored.ReservationId, duplicate,
+        stored.TenantId ?? "", stored.GameId ?? "");
 
     private sealed record StoredTicket(
-        string TicketId, string BindingId, string State, long Version, string PartitionKey,
-        long ExpiresUnixMs, string? ReservationId);
+        string TicketId, string BindingId, string StreamerId, string State, long Version,
+        string PartitionKey, long ExpiresUnixMs, string? ReservationId,
+        string? TenantId = null, string? GameId = null);
 
     private static void Require(string? value, string name)
     {

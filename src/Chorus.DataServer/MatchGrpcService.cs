@@ -199,6 +199,30 @@ public sealed class MatchGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    public override async Task<ListActiveReservationsReply> ListActiveReservations(
+        ListActiveReservationsRequest request, ServerCallContext context)
+    {
+        Require(context, "control-server");
+        try
+        {
+            var reservations = await reservationStore.ListActiveReservationsAsync(
+                request.PartitionKey, request.Max, context.CancellationToken);
+            return new ListActiveReservationsReply
+            {
+                Reservations = { reservations.Select(ReservationProto) }
+            };
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<ListPartitionsReply> ListReservationPartitions(
+        Empty request, ServerCallContext context)
+    {
+        Require(context, "control-server");
+        var partitions = await reservationStore.ListReservationPartitionsAsync(context.CancellationToken);
+        return new ListPartitionsReply { PartitionKeys = { partitions } };
+    }
+
     private static ReservedParticipant Participant(ReservedParticipantProto participant) => new(
         participant.BindingId, participant.ParticipantId, participant.Role);
 

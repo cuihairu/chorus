@@ -26,7 +26,8 @@ public sealed class RoundGrpcService(
         var caller = Require(context, "control-server", "game-server");
         try
         {
-            var admission = await roomStore.StartRoundAsync(caller.TenantId, request.GameId, request.RoomId,
+            var admission = await roomStore.StartRoundAsync(
+                TenantFor(caller, request.TenantId), request.GameId, request.RoomId,
                 request.OwnerInstanceId, request.Epoch,
                 request.Participants.Select(participant => new RoundParticipant(
                     participant.BindingId, participant.ParticipantId, participant.Role)).ToList(),
@@ -188,6 +189,15 @@ public sealed class RoundGrpcService(
         RoomId = admission.RoomId, RoundGeneration = admission.RoundGeneration,
         Status = admission.Status, Epoch = admission.Epoch, Duplicate = admission.Duplicate
     };
+
+    /// <summary>Empty names the certificate tenant; otherwise a cluster scope may name any tenant.</summary>
+    private static string TenantFor(ProcessIdentity caller, string requested)
+    {
+        if (string.IsNullOrEmpty(requested)) return caller.TenantId;
+        if (caller.TenantId != "@cluster" && caller.TenantId != requested)
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Tenant is not authorized."));
+        return requested;
+    }
 
     internal ProcessIdentity Require(ServerCallContext context, params string[] roles)
     {

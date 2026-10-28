@@ -568,6 +568,54 @@ public sealed class RedesignMatchReservationStore(string connectionString,
     }
 
     /// <summary>
+    /// The partitions holding unretired reservations — the recovery half of the coordinator's
+    /// discovery: an orphaned reservation can be the only living thing in its partition.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ListReservationPartitionsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT DISTINCT partition_key FROM match.reservation
+            WHERE status IN ('Reserved','Prepared')
+            ORDER BY partition_key
+            """, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var keys = new List<string>();
+        while (await reader.ReadAsync(cancellationToken)) keys.Add(reader.GetString(0));
+        return keys;
+    }
+
+    /// <summary>
+    /// The partition's unretired reservations in deadline order — the successor coordinator's
+    /// recovery scan. Terminal reservations are history and never re-driven.
+    /// </summary>
+    public async Task<IReadOnlyList<MatchReservation>> ListActiveReservationsAsync(
+        string partitionKey, int max, CancellationToken cancellationToken = default)
+    {
+        Require(partitionKey, nameof(partitionKey));
+        if (max is <= 0 or > 500) throw new ArgumentException("The recovery window is 1..500 reservations.", nameof(max));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT reservation_id,room_id,tenant_id,game_id,partition_key,coordinator_term,
+                (EXTRACT(EPOCH FROM expires_at)*1000)::bigint,status,participants::text,
+                COALESCE(prepared_receipt::text,'')
+            FROM match.reservation
+            WHERE partition_key=@partition AND status IN ('Reserved','Prepared')
+            ORDER BY expires_at LIMIT @max
+            """, connection);
+        command.Parameters.AddWithValue("partition", partitionKey);
+        command.Parameters.AddWithValue("max", max);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var reservations = new List<MatchReservation>();
+        while (await reader.ReadAsync(cancellationToken))
+            reservations.Add(ReadReservation(reader, duplicate: false));
+        return reservations;
+    }
+
+    /// <summary>
     /// The shared release path for retirement (explicit abort or the expiry sweep): abort a
     /// started room with the full skeleton, release the ownership with an epoch bump, return
     /// the tickets to the queue (unless their own expiry passed) and stamp the reservation.
