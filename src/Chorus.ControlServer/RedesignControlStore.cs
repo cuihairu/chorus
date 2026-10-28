@@ -169,6 +169,34 @@ public sealed class RedesignControlStore(string connectionString)
             ? new OwnerStatus(reader.GetString(0), reader.GetInt64(1), reader.GetDateTime(2), reader.GetString(3)) : null;
     }
 
+    /// <summary>
+    /// Extends the lease of every Active ownership whose owner still reports live (architecture
+    /// 4.2: the registrar renews on the owner's behalf while the owner is observable). An owner
+    /// whose process row went stale is not renewed — its lease runs out and the entity becomes
+    /// takeable. A legacy owner without any process row is never renewed: it keeps its own
+    /// renewal discipline.
+    /// </summary>
+    public async Task<int> RenewLiveOwnershipsAsync(int leaseSeconds, int gateSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        if (leaseSeconds is <= 0 or > 60) throw new ArgumentOutOfRangeException(nameof(leaseSeconds));
+        if (gateSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(gateSeconds));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            UPDATE control.ownership AS ownership
+            SET lease_until=clock_timestamp()+@lease*interval '1 second', version=ownership.version+1
+            FROM control.process AS process
+            WHERE ownership.status='Active'
+              AND process.process_instance_id=ownership.owner_process_instance_id
+              AND process.lifecycle='Running'
+              AND process.observed_at>=clock_timestamp()-@gate*interval '1 second'
+            """, connection);
+        command.Parameters.AddWithValue("lease", leaseSeconds);
+        command.Parameters.AddWithValue("gate", gateSeconds);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private static void BindOwner(NpgsqlCommand command, string tenantId, string gameId, string kind, string entityId)
     {
         command.Parameters.AddWithValue("tenant", tenantId);

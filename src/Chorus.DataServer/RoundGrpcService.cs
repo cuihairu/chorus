@@ -159,6 +159,51 @@ public sealed class RoundGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    public override async Task<RoomTakeoverReply> TransferRoomOwnership(
+        TransferRoomOwnershipRequest request, ServerCallContext context)
+    {
+        var caller = Require(context, "control-server");
+        try
+        {
+            var takeover = await roomStore.TransferRoomOwnershipAsync(
+                TenantFor(caller, request.TenantId), request.GameId, request.RoomId,
+                request.FromInstance, request.ToInstance, request.LeaseSeconds, context.CancellationToken);
+            return TakeoverReply(takeover);
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.NotFound, "The room has no ownership under this scope."));
+        }
+        catch (InvalidOperationException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<RoomTakeoverReply> ConfirmRoomOwnership(
+        ConfirmRoomOwnershipRequest request, ServerCallContext context)
+    {
+        var caller = Require(context, "control-server");
+        try
+        {
+            var takeover = await roomStore.ConfirmRoomOwnershipAsync(
+                TenantFor(caller, request.TenantId), request.GameId, request.RoomId,
+                request.OwnerInstance, context.CancellationToken);
+            return TakeoverReply(takeover);
+        }
+        catch (InvalidOperationException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    private static RoomTakeoverReply TakeoverReply(RoomTakeover takeover) => new()
+    {
+        OwnerInstanceId = takeover.OwnerInstanceId, Epoch = takeover.Epoch, Status = takeover.Status
+    };
+
     public override async Task<RoundStatusReply> GetRound(GetRoundRequest request, ServerCallContext context)
     {
         var caller = Require(context, "control-server", "game-server", "streamer-server", "platform-gateway");

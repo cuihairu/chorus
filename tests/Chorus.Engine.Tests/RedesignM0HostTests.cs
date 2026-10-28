@@ -156,6 +156,10 @@ public sealed class RedesignM0HostTests
         public IReadOnlyList<(Process Process, string Instance)> HostProcesses =>
             _projectByProcess.Select(entry => (entry.Key, entry.Value)).ToList();
 
+        /// <summary>The captured stdout of one host process — evidence assertions (takeover).</summary>
+        public string HostOutput(Process process) =>
+            _hostOutput.TryGetValue(process, out var output) ? output.ToString() : "";
+
         public static async Task<HostEnvironment> CreateAsync()
         {
             var result = new HostEnvironment();

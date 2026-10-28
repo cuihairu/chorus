@@ -66,6 +66,31 @@ message RoundStatusReply {
   repeated RoundParticipantStateProto participants = 7;
 }
 
+// Room takeover (architecture 10.3): the control plane moves a live room's authority to a
+// new instance — the handover bumps both epochs and fences the old owner, then the new owner
+// confirms and recovers the room.
+message TransferRoomOwnershipRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string from_instance = 4;
+  string to_instance = 5;
+  int32 lease_seconds = 6;
+}
+
+message ConfirmRoomOwnershipRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string owner_instance = 4;
+}
+
+message RoomTakeoverReply {
+  string owner_instance_id = 1;
+  int64 epoch = 2;
+  string status = 3;
+}
+
 message RouteEventsRequest {
   string platform = 1;
   string app_id = 2;
@@ -253,6 +278,10 @@ service RoundStore {
   rpc PrepareRound(PrepareRoundRequest) returns (RoundAdmissionReply);
   rpc ActivateRound(ActivateRoundRequest) returns (RoundAdmissionReply);
   rpc SuspendRound(SuspendRoundRequest) returns (RoundAdmissionReply);
+  // Authority handover: transfer parks the room Recovering under the new holder at a bumped
+  // epoch, confirm flips it back to Active once the new holder is ready to recover.
+  rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (RoomTakeoverReply);
+  rpc ConfirmRoomOwnership(ConfirmRoomOwnershipRequest) returns (RoomTakeoverReply);
 }
 
 service RoundInput {
