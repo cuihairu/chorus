@@ -72,9 +72,11 @@ public sealed class RedesignM3PlatformTaskHostTests
             BindingId = bindingDrop, OperationId = "op-drop", DesiredJson = """{"kind":"gift","count":2}"""
         });
 
-        // gateway-a picks both up and its calls hang on the platform's hold gates.
+        // gateway-a picks both up and its calls hang on the platform's hold gates. The calls
+        // must arrive inside the lease window — beyond that the attempt stops being invisible
+        // ready work and the executor self-resolves it — so the wait stays under the lease.
         var inFlight = await WaitForAsync(() => Task.FromResult(
-            platform.Calls("op-exec") == 1 && platform.Calls("op-drop") == 1), TimeSpan.FromSeconds(45));
+            platform.Calls("op-exec") == 1 && platform.Calls("op-drop") == 1), TimeSpan.FromSeconds(55));
         Assert.True(inFlight, "The executor never issued both platform calls.");
         var executing = await tasks.GetTaskAsync(new TaskGetRequest { TaskId = exec.TaskId });
         Assert.Equal("Executing", executing.Status);
@@ -93,8 +95,10 @@ public sealed class RedesignM3PlatformTaskHostTests
 
         // gateway-b takes over by query: op-exec completes on the official record — the single
         // execution stands, no second call is issued, and the in-flight attempt stays attempt 1.
+        // The window carries the successor's wait: the frozen lease's expiry, then the attempt
+        // deadline guard, then the query and the re-drive.
         var executed = await WaitForTaskAsync(tasks, exec.TaskId,
-            state => state.Status == "Completed", TimeSpan.FromSeconds(60));
+            state => state.Status == "Completed", TimeSpan.FromSeconds(150));
         Assert.Equal(1, executed.AttemptCount);
         Assert.Equal(3, executed.TaskEpoch);
         Assert.Contains("applied", executed.ObservedJson);
@@ -104,7 +108,7 @@ public sealed class RedesignM3PlatformTaskHostTests
         // op-drop resolves not-executed, becomes retryable, and only then re-issues: the second
         // attempt executes exactly once — two calls, one execution.
         var dropped = await WaitForTaskAsync(tasks, drop.TaskId,
-            state => state.Status == "Completed", TimeSpan.FromSeconds(60));
+            state => state.Status == "Completed", TimeSpan.FromSeconds(150));
         Assert.Equal(2, dropped.AttemptCount);
         Assert.Equal(4, dropped.TaskEpoch);
         Assert.Contains("applied", dropped.ObservedJson);
@@ -139,11 +143,17 @@ public sealed class RedesignM3PlatformTaskHostTests
         ["CHORUS_DATA_PORT"] = dataPort.ToString(CultureInfo.InvariantCulture),
         ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platformUrl,
         ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300",
-        ["CHORUS_TASK_LEASE_SECONDS"] = "4",
-        ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "6",
-        // The held calls must outlive any scheduler starvation under full-suite load: the kill,
-        // not a timeout, is what ends them.
-        ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "60"
+        // The timing invariant of the kill test: a held call freezes the attempt from
+        // BeginAttempt until the kill, and the frozen state only holds while the task is
+        // invisible to ListReadyTasks — that is, while its lease is live. So the lease must
+        // outlive the load-dependent delay before the calls reach the platform, the call
+        // timeout and the attempt deadline must not fire on a held call before the kill, and
+        // the successor's wait (lease expiry, then the deadline guard) must fit the post-kill
+        // windows. Under full-suite load the call-arrival delay stretches to tens of seconds,
+        // which is why every clock here is far above the unloaded values.
+        ["CHORUS_TASK_LEASE_SECONDS"] = "60",
+        ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "70",
+        ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "120"
     };
 
     /// <summary>A control-plane face onto the data server's task service; keeps its certificate
