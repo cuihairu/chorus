@@ -152,6 +152,10 @@ public sealed class RedesignM0HostTests
         public int GamePort { get; } = FreePort();
         public string DatabaseConnectionString => _connectionString;
 
+        /// <summary>The spawned host processes by project — benchmark CPU accounting (test infra).</summary>
+        public IReadOnlyList<(Process Process, string Project)> HostProcesses =>
+            _projectByProcess.Select(entry => (entry.Key, entry.Value)).ToList();
+
         public static async Task<HostEnvironment> CreateAsync()
         {
             var result = new HostEnvironment();
