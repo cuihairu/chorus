@@ -1,0 +1,18 @@
+# M3 多节点匹配和业务恢复实施状态
+
+按验收出口（redesign-acceptance.md 108–112 行）：匹配预留/准备/提交、跨机路由、节点调度、Room/Streamer 接管、平台任务接管、Admin 状态和故障命令；出口 AT10～12、AT24/25/28/31。出口原文要求独立机器网络隔离证明 fencing；按 room-multihost-acceptance.md，同宿主实验室只算 same-failure-domain 证据、永不闭合独立主机/分区门槛——本机单物理机（2026-10-28 复核维持），故 M3 策略：全部交付物照建，单机多真实进程（含 SIGSTOP 进程冻结=进程级分区近似）证明机制，AT24/25/28 跨机/分区形式在台账如实标 open，不冒领；AT28（实际失电 100 房恢复）整体留待独立主机环境。分期 9 轮，每轮独立绿门；测试库扩族 `chorus_m3_<topic>_<guid>`（清理白名单加入 `chorus_m3_%`）。
+
+## M3-1 已落地：匹配票据队列与协调者任期（4cd31f7）
+
+按架构 §7.1/§7.3「票据入队/取消都是可见拒绝的回执事务，每挂载最多一个有效票据」「匹配协调者分片租约，term 单调递增，过期 term 无法提交」：
+
+- 迁移 0012（表 33→34、迁移 11→12）：`match.ticket.reservation_id`（FK→match.reservation，预留集关联，M3-2/3 使用）+ 索引；`match.ticket.expires_at`（排队票可选自过期，NULL=不过期）；`control.audit`（request_id/operator/reason/scope/command/detail jsonb 追加式审计表，M3-9 Admin 命令使用，先行入库避免里程碑中途二迁）。
+- `RedesignMatchTicketStore`（DataServer）：EnqueueTicketAsync 一个回执事务（键 `(tenant,game,"match.enqueue",bindingId,operationId)`，canonical v1 含 binding/session/partition/expires）；§6.5 锁序 Session→Binding→Ticket——校验链 auth.session 存在→streamer_state FOR UPDATE（当前会话+Allowed）→session 行 FOR UPDATE（未吊销未过期）→binding FOR UPDATE（租户/游戏相符、状态活跃、live session 属同一主播）→无 Active/Offline 参与→INSERT 'Queued'；`ux_match_ticket_active` 冲突（23505 按约束名识别）→可见拒绝「每挂载最多一个有效票据」。CancelTicketAsync（回执 match.cancel）：binding→活跃票 FOR UPDATE，Queued→Cancelled（version+1）；Reserved/Preparing→可见拒绝（预留事务先锁者胜）；无活跃票/Committed→可见拒绝；同 op 重试 Duplicate 回放。ExpireQueuedAsync：`FOR UPDATE SKIP LOCKED` 确定性 sweep（幂等于谓词），过期 Queued→Expired 释放唯一索引槽；ListQueuedAsync：协调者候选窗（单一 partition_key、排除已过期末扫票、created_at 序）；GetTicketAsync：挂载最新票状态读。
+- `RedesignCoordinatorStore`（ControlServer，control.coordinator 表首次有消费者）：ClaimTermAsync=acquire-or-takeover（同 holder 且租约未过期→仅延长、term 不变；否则 term+1）——与所有权租约同规则、无 epoch；RenewTermAsync 仅当前 holder 且租约有效可续，过期/易主→`RedesignTermLostException` 可见失败（被分区的协调者不会静默续命）；ReleaseTermAsync 把租约置过去（下次 claim 无论谁都是新 term）；GetTermAsync 只读；租约上限 60s 与所有权一致。
+- `m3.proto`（package chorus.redesign.m3）：`MatchQueue`（DataServer：Ready/EnqueueTicket/CancelTicket←streamer-server+control-server、GetTicket 加 game-server、ListQueued/ExpireQueued 仅 control-server；@cluster 须具名 tenant_id、租户证书不符→PermissionDenied）；`Coordinator`（ControlServer：ClaimTerm/RenewTerm/ReleaseTerm/GetTerm 仅 control-server；TermLost→FailedPrecondition）。MatchQueueGrpcService/CoordinatorGrpcService 挂入两宿主。
+- 证据：store 级 `RedesignMatchTicketStoreTests` 3 例（库族 chorus_m3_tickets_：入队幂等/异请求冲突/重复入队可见拒/错会话拒/未知绑定拒/在局挂载拒/取消后再入队新票；取消竞态——Queued 成功+重试 Duplicate+异 op 拒、Reserved/Preparing/Committed 四态可见拒；sweep 只 retire 过期 Queued、候选窗不跨 partition、过期后重新入队干净）与 `RedesignCoordinatorStoreTests` 2 例（库族 chorus_m3_terms_：term 单调——同 holder 重 claim 不变+renew OK+易主 term+1+旧 holder 续/放双拒+释放后新 term+分区独立+租约 0/61 拒；过期租约同 holder 重 claim 也 term+1）；宿主级 `RedesignM3HostTests` 2 例（真实三/一进程：streamer 证书经 DataServer 入队/重试 Duplicate/状态读/ListQueued 角色拒/跨租户拒，control 证书候选窗+sweep+取消；ControlServer 真机 ClaimTerm/RenewTerm/GetTerm、错 holder renew FailedPrecondition、data-server 角色 PermissionDenied）。Release 全量 1228/1228（基线 1221→1228；首轮门禁 1/1228 抖动、全量复跑全绿，故障名因输出截断未留存——已知抖动家族见测试套件前置记录）。
+- AT 台账增量：**AT12 基础半边闭合**（每挂载最多一个有效票据、重复入队可见拒、取消与预留态的可见竞态语义）；完整 AT12（匹配取消/重复入队/双协调者 term 交错全链）待 M3-4 宿主协调者。
+
+## M3 后续顺序
+
+M3-2 ReserveMatch（term 校验、排序锁候选、容量预留、过期回收）+ 控制面出站通道目录 → M3-3 Prepare 凭证+CommitMatch 单事务原子提交+AbortReservation → M3-4 MatchCoordinator 宿主服务（AT10/11/12 单机形式）→ M3-5 实例注册与路由快照+HostEnvironment 多实例 → M3-6 部署计划/WatchPlans/NodeAgent 幂等（AT24 单机半边）→ M3-7 生产续租+TransferOwnership/TakeoverRoom+SIGSTOP 分区近似接管（AT25 单机 mechanics）→ M3-8 平台任务执行器（PlatformGateway 重设计宿主+TaskReconciler）→ M3-9 Admin 状态/故障命令/审计+AT31 全链追溯+台账收口。
