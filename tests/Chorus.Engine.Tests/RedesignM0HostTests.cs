@@ -169,6 +169,20 @@ public sealed class RedesignM0HostTests
         public string HostOutput(Process process) =>
             _hostOutput.TryGetValue(process, out var output) ? output.ToString() : "";
 
+        /// <summary>Everything every started host printed — the corpus the leak-scan tests
+        /// grep for credential material that must never reach a log line.</summary>
+        public string AllHostOutput
+        {
+            get
+            {
+                lock (_hostOutput)
+                    return string.Join("\\n", _hostOutput.Values.Select(builder =>
+                    {
+                        lock (builder) return builder.ToString();
+                    }));
+            }
+        }
+
         public static async Task<HostEnvironment> CreateAsync()
         {
             var result = new HostEnvironment();

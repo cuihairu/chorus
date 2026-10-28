@@ -223,6 +223,33 @@ public sealed class StreamerIdentityGrpcService(
         return new LiveSessionReply { LiveSessionId = liveSessionId ?? "" };
     }
 
+    public override async Task<SessionRevokeReply> RevokeSession(SessionRevokeRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server");
+        var streamerId = await identityStore.GetSessionStreamerAsync(request.SessionId, context.CancellationToken);
+        if (streamerId is null) throw new RpcException(new Status(StatusCode.NotFound, "The session does not exist."));
+        await RequireIdentityTenantAsync(request.TenantId, streamerId, context.CancellationToken);
+        var revocation = await identityStore.RevokeSessionAsync(request.SessionId, context.CancellationToken);
+        return new SessionRevokeReply
+        {
+            SessionId = revocation.SessionId, StreamerId = revocation.StreamerId,
+            SessionVersion = revocation.SessionVersion, Applied = revocation.Applied,
+            DisplacedGatewayInstanceId = revocation.DisplacedGatewayInstanceId ?? "",
+            DisplacedConnectionId = revocation.DisplacedConnectionId ?? "",
+            DisplacedConnectionGeneration = revocation.DisplacedConnectionGeneration
+        };
+    }
+
+    public override async Task<SessionTenantReply> GetSessionTenant(SessionTenantRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server");
+        var streamerId = await identityStore.GetSessionStreamerAsync(request.SessionId, context.CancellationToken)
+            ?? throw new RpcException(new Status(StatusCode.NotFound, "The session does not exist."));
+        var tenantId = await identityStore.GetIdentityTenantAsync(streamerId, context.CancellationToken)
+            ?? throw new RpcException(new Status(StatusCode.NotFound, "The session does not exist."));
+        return new SessionTenantReply { TenantId = tenantId, StreamerId = streamerId };
+    }
+
     private async Task<ProcessIdentity> RequireAsync(ServerCallContext context, params string[] roles)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;
@@ -245,6 +272,10 @@ public sealed class StreamerIdentityGrpcService(
     {
         StreamerId = grant.StreamerId, SessionId = grant.SessionId, SessionVersion = grant.SessionVersion,
         ExpiresAtUnixMs = new DateTimeOffset(grant.ExpiresAtUtc, TimeSpan.Zero).ToUnixTimeMilliseconds(),
-        Duplicate = grant.Duplicate
+        Duplicate = grant.Duplicate,
+        PreviousSessionId = grant.PreviousSessionId ?? "",
+        PreviousGatewayInstanceId = grant.PreviousGatewayInstanceId ?? "",
+        PreviousConnectionId = grant.PreviousConnectionId ?? "",
+        PreviousConnectionGeneration = grant.PreviousConnectionGeneration
     };
 }

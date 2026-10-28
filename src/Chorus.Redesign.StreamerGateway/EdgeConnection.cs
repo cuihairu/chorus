@@ -16,16 +16,20 @@ public enum EdgeRateVerdict
 
 /// <summary>
 /// One accepted connection's edge state: identity the gateway itself minted (the connection
-/// id), the hello facts, and the per-class rate counters. Client-uplink identity fields are
-/// never stored here — the session facts a login establishes arrive from the StreamerServer
-/// and are the only ones trusted (contracts 3.1: the gateway does not believe client-provided
-/// identity).
+/// id), the hello facts, the per-class rate counters, and — once a login establishes it — the
+/// session facts the StreamerServer returned. Client-uplink identity fields are never stored
+/// here (contracts 3.1: the gateway does not believe client-provided identity). The downlink
+/// side is a single serialized lane: the dispatch loop and a session-replaced notice arriving
+/// on the internal gRPC face both send through it, so frames never interleave.
 /// </summary>
 public sealed class EdgeConnection
 {
     private readonly EdgeRateCounter _login;
     private readonly EdgeRateCounter _control;
     private readonly EdgeRateCounter _ack;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private Func<string, CancellationToken, Task>? _sendFrameAsync;
+    private Func<System.Net.WebSockets.WebSocketCloseStatus, string, Task>? _closeAsync;
 
     public EdgeConnection(string connectionId, string gatewayInstanceId, EdgeOptions options,
         Func<DateTimeOffset>? now = null)
@@ -46,7 +50,78 @@ public sealed class EdgeConnection
     /// never got past hello has no session facts to expose.</summary>
     public long FramesReceived { get; private set; }
 
+    public string? TenantId { get; private set; }
+    public string? SessionId { get; private set; }
+    public string? StreamerId { get; private set; }
+    /// <summary>The access credential names the acting session on every later uplink; it is
+    /// held in memory only and never written to logs or metrics.</summary>
+    public string? AccessCredential { get; private set; }
+
+    public bool HasSession => SessionId is { Length: > 0 };
+
     public void MarkHelloAccepted() => HelloAccepted = true;
+
+    public void MarkSession(string tenantId, string sessionId, string streamerId, string accessCredential)
+    {
+        TenantId = tenantId;
+        SessionId = sessionId;
+        StreamerId = streamerId;
+        AccessCredential = accessCredential;
+    }
+
+    /// <summary>Binds the socket's send/close operations behind the serialized lane; called
+    /// once right after the socket is accepted, before any frame can flow in either
+    /// direction.</summary>
+    public void AttachTransport(
+        Func<string, CancellationToken, Task> sendFrameAsync,
+        Func<System.Net.WebSockets.WebSocketCloseStatus, string, Task> closeAsync)
+    {
+        _sendFrameAsync = sendFrameAsync;
+        _closeAsync = closeAsync;
+    }
+
+    /// <summary>Sends one already-serialized frame; every downlink path funnels through here
+    /// so the socket never sees concurrent sends.</summary>
+    public async Task SendAsync(string frame, CancellationToken cancellation = default)
+    {
+        if (_sendFrameAsync is null) return;
+        await _sendLock.WaitAsync(cancellation);
+        try { await _sendFrameAsync(frame, cancellation); }
+        finally { _sendLock.Release(); }
+    }
+
+    public async Task SendJsonAsync<T>(T message, CancellationToken cancellation = default)
+        => await SendAsync(System.Text.Json.JsonSerializer.Serialize(message, EdgeJson.Options), cancellation);
+
+    /// <summary>Closes through the same lane, so a replacement notice mid-flight and the
+    /// dispatcher's own close decision serialize instead of colliding on the socket.</summary>
+    public async Task CloseAsync(System.Net.WebSockets.WebSocketCloseStatus status, string reason)
+    {
+        if (_closeAsync is null) return;
+        await _sendLock.WaitAsync(CancellationToken.None);
+        try { await _closeAsync(status, reason); }
+        finally { _sendLock.Release(); }
+    }
+
+    /// <summary>The active leg of session replacement on this gateway: push sessionReplaced,
+    /// then close. Returns false when the connection has no transport bound (it is already
+    /// gone) or the push failed — the caller reports delivery, nothing more.</summary>
+    public async Task<bool> TryDeliverSessionReplacedAsync(string reason)
+    {
+        if (_sendFrameAsync is null || _closeAsync is null) return false;
+        try
+        {
+            await SendJsonAsync(new EdgeSessionReplaced { Reason = reason }, CancellationToken.None);
+            await CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.PolicyViolation,
+                EdgeTypes.SessionReplaced);
+            return true;
+        }
+        catch (Exception error) when (error is System.Net.WebSockets.WebSocketException
+            or ObjectDisposedException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>Classifies a frame and consumes its budget. Frames before the hello gate and
     /// pings are not limited: the gate has its own timeout, and a ping flood proves

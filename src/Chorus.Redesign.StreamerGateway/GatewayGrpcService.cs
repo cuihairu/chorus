@@ -19,17 +19,18 @@ public sealed class GatewayGrpcService(
         return Task.FromResult(new ReadyReply { Ready = true, SchemaVersion = "4" });
     }
 
-    public override Task<SessionReplacedReply> NotifySessionReplaced(
+    public override async Task<SessionReplacedReply> NotifySessionReplaced(
         SessionReplacedNotice request, ServerCallContext context)
     {
         // Only the streamer session authority may say a session moved on: the notice names
-        // one connection at one generation, and the gateway closes exactly that.
+        // one connection at one generation, and the gateway closes exactly that. The old
+        // generation travels for the close that follows a gateway switch (contracts 3.3);
+        // a connection id already gone answers not-delivered, never a wrong connection.
         Require(context, "streamer-server");
         var connection = registry.FindByConnection(request.ConnectionId);
-        if (connection is null) return Task.FromResult(new SessionReplacedReply { Delivered = false });
-        // The session facts and the replaced downlink land with the login round (M4-2); the
-        // registry hit is the delivery proof this face answers today.
-        return Task.FromResult(new SessionReplacedReply { Delivered = true });
+        if (connection is null) return new SessionReplacedReply { Delivered = false };
+        var delivered = await connection.TryDeliverSessionReplacedAsync(request.Reason);
+        return new SessionReplacedReply { Delivered = delivered };
     }
 
     private void Require(ServerCallContext context, params string[] roles)

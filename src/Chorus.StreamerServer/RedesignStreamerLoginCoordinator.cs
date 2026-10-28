@@ -20,7 +20,21 @@ public sealed record StreamerLoginReady(
 
 /// <summary>Session grant as seen from this side of the DataServer boundary.</summary>
 public sealed record StreamerSessionGrant(
-    string StreamerId, string SessionId, long SessionVersion, DateTime ExpiresAtUtc, bool Duplicate);
+    string StreamerId, string SessionId, long SessionVersion, DateTime ExpiresAtUtc, bool Duplicate,
+    string? PreviousSessionId = null, string? PreviousGatewayInstanceId = null,
+    string? PreviousConnectionId = null, long PreviousConnectionGeneration = 0);
+
+/// <summary>Logout outcome as seen from this side of the DataServer boundary.</summary>
+public sealed record StreamerSessionRevocation(
+    string SessionId, string StreamerId, long SessionVersion, bool Applied,
+    string? DisplacedGatewayInstanceId, string? DisplacedConnectionId, long DisplacedConnectionGeneration);
+
+public sealed record StreamerLogout(string SessionId, string StreamerId, long SessionVersion, bool Duplicate);
+
+/// <summary>A connection displaced by a grant or a logout; the old gateway gets the notice.</summary>
+public sealed record SessionReplacement(
+    string GatewayInstanceId, string SessionId, string ConnectionId, long ConnectionGeneration,
+    string StreamerId, string Reason);
 
 public sealed record StreamerConnection(
     string SessionId, string StreamerId, long SessionVersion, long ConnectionGeneration, bool Duplicate);
@@ -64,6 +78,9 @@ public interface IStreamerIdentityStore
         string connectionId, long connectionGeneration, CancellationToken cancellationToken = default);
     Task<StreamerSessionState?> GetSessionStateAsync(string tenantId, string sessionId,
         CancellationToken cancellationToken = default);
+    Task<StreamerSessionRevocation> RevokeSessionAsync(string tenantId, string sessionId,
+        CancellationToken cancellationToken = default);
+    Task<string?> GetSessionTenantAsync(string sessionId, CancellationToken cancellationToken = default);
     Task<string> OpenLiveSessionAsync(string tenantId, string streamerId, string platform, string appId,
         string platformRoomKey, string canonicalLiveSessionKey, CancellationToken cancellationToken = default);
     Task<string?> GetLiveSessionIdAsync(string tenantId, string streamerId,
@@ -93,7 +110,8 @@ public sealed class RedesignStreamerLoginCoordinator(
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> tenantApplications,
     byte[] accessCredentialKey,
     Func<DateTimeOffset>? clock = null,
-    StreamerOwnershipRegistrar? ownershipRegistrar = null)
+    StreamerOwnershipRegistrar? ownershipRegistrar = null,
+    SessionReplacedNotifier? sessionNotifier = null)
 {
     public async Task<StreamerLoginReady> LoginAsync(string callerTenantId, LoginCommand command,
         CancellationToken cancellationToken = default)
@@ -119,6 +137,8 @@ public sealed class RedesignStreamerLoginCoordinator(
         // names the holder and the registrar keeps the lease while the process is live.
         if (ownershipRegistrar is not null)
             await ownershipRegistrar.ClaimAsync(callerTenantId, gameId, streamerId, cancellationToken);
+        await NotifyReplacementAsync(grant, command.GatewayInstanceId, command.ConnectionId,
+            "replaced_by_login", cancellationToken);
         return Ready(grant);
     }
 
@@ -137,8 +157,56 @@ public sealed class RedesignStreamerLoginCoordinator(
         if (ownershipRegistrar is not null && facts.ActiveBinding is { } binding)
             await ownershipRegistrar.ClaimAsync(callerTenantId, binding.GameId, grant.StreamerId,
                 cancellationToken);
+        // A rotation displaced the previous connection wherever it lives — this gateway or
+        // another. Duplicate retries carry no previous facts: the first attempt notified.
+        await NotifyReplacementAsync(grant, command.GatewayInstanceId, command.ConnectionId,
+            "replaced_by_resume", cancellationToken);
         return Ready(grant);
     }
+
+    /// <summary>
+    /// Logout (contracts 3.1): the access credential names the acting session, DataServer
+    /// revokes it idempotently, and a displaced connection that is not the caller's own gets
+    /// the replacement notice. The actor marks its connection closed; facts stay recoverable.
+    /// </summary>
+    public async Task<StreamerLogout> LogoutAsync(string callerTenantId, string accessCredential,
+        string gatewayInstanceId, string connectionId, CancellationToken cancellationToken = default)
+    {
+        if (StringComparer.Ordinal.Equals(callerTenantId, "@cluster"))
+        {
+            // A connection that resumed in carries no application id, so the gateway cannot
+            // name the tenant: the credential names the session, the session names the tenant.
+            var named = ChorusAccessCredential.Validate(accessCredentialKey, accessCredential, clock)
+                ?? throw new AccessCredentialRejectedException();
+            callerTenantId = await identityStore.GetSessionTenantAsync(named.SessionId, cancellationToken)
+                ?? throw new AccessCredentialRejectedException();
+        }
+        var access = await ValidateAccessAsync(callerTenantId, accessCredential, cancellationToken);
+        var revocation = await identityStore.RevokeSessionAsync(callerTenantId, access.SessionId, cancellationToken);
+        if (revocation.Applied)
+        {
+            var actor = actorRegistry.FindBySession(callerTenantId, access.SessionId);
+            if (actor is not null) await actor.OnConnectionClosedAsync(cancellationToken);
+        }
+        if (revocation.DisplacedConnectionId is { Length: > 0 } &&
+            !(StringComparer.Ordinal.Equals(revocation.DisplacedGatewayInstanceId, gatewayInstanceId) &&
+              StringComparer.Ordinal.Equals(revocation.DisplacedConnectionId, connectionId)) &&
+            sessionNotifier is not null)
+        {
+            await sessionNotifier.NotifyAsync(new SessionReplacement(
+                revocation.DisplacedGatewayInstanceId!, revocation.SessionId,
+                revocation.DisplacedConnectionId, revocation.DisplacedConnectionGeneration,
+                revocation.StreamerId, "logged_out"), cancellationToken);
+        }
+        return new StreamerLogout(revocation.SessionId, revocation.StreamerId,
+            revocation.SessionVersion, !revocation.Applied);
+    }
+
+    /// <summary>The owning tenant of a session, so a cluster-scoped caller can route a resume
+    /// whose tenant only the session itself knows; null when the session is unknown.</summary>
+    public async Task<string?> ResolveSessionTenantAsync(string sessionId,
+        CancellationToken cancellationToken = default)
+        => await identityStore.GetSessionTenantAsync(sessionId, cancellationToken);
 
     /// <summary>Gateway switch on a live session: no rotation, only the connection generation moves.</summary>
     public async Task<StreamerConnection> AttachConnectionAsync(string callerTenantId, AttachConnectionCommand command,
@@ -217,6 +285,23 @@ public sealed class RedesignStreamerLoginCoordinator(
     {
         var access = await ValidateAccessAsync(callerTenantId, accessCredential, cancellationToken);
         return await identityStore.GetActiveBindingAsync(callerTenantId, access.StreamerId, cancellationToken);
+    }
+
+    /// <summary>Best-effort active leg of session replacement (contracts 3.3): the old
+    /// gateway is named by the grant, unless the displaced connection is the requester's
+    /// own — a client that resumed in place already holds the winning session. If the old
+    /// gateway never registered in routing, the passive leg (its next RPC fails with the
+    /// replaced status) still bounds the old connection.</summary>
+    private async Task NotifyReplacementAsync(StreamerSessionGrant grant, string gatewayInstanceId,
+        string connectionId, string reason, CancellationToken cancellationToken)
+    {
+        if (sessionNotifier is null || string.IsNullOrEmpty(grant.PreviousConnectionId)) return;
+        if (StringComparer.Ordinal.Equals(grant.PreviousGatewayInstanceId, gatewayInstanceId) &&
+            StringComparer.Ordinal.Equals(grant.PreviousConnectionId, connectionId))
+            return;
+        await sessionNotifier.NotifyAsync(new SessionReplacement(
+            grant.PreviousGatewayInstanceId!, grant.PreviousSessionId!, grant.PreviousConnectionId,
+            grant.PreviousConnectionGeneration, grant.StreamerId, reason), cancellationToken);
     }
 
     private bool GameAllowed(string tenantId, string gameId)

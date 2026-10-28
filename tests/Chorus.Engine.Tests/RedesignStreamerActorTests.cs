@@ -22,6 +22,13 @@ public sealed class RedesignStreamerActorTests
         public bool LiveSessionOpen = true;
         public StreamerBinding? Binding = new("binding-fake", "live-fake", "game-a", 1, "Ready", false);
 
+        public Task<string?> GetSessionTenantAsync(string sessionId, CancellationToken cancellationToken = default)
+            => Task.FromResult<string?>(null);
+
+        public Task<StreamerSessionRevocation> RevokeSessionAsync(string tenantId, string sessionId,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new StreamerSessionRevocation(sessionId, "streamer-fake", 1, true, null, null, 0));
+
         public Task<string> ResolveIdentityAsync(string tenantId, string platform, string appId, string openId,
             CancellationToken cancellationToken = default) => Task.FromResult("streamer-fake");
 

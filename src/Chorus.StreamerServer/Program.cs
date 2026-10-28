@@ -64,6 +64,7 @@ builder.Services.AddSingleton(actorRegistry);
 // puts the hosted streamer entities on the control-plane ownership record (architecture 10.3).
 var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOINT");
 StreamerOwnershipRegistrar? ownershipRegistrar = null;
+SessionReplacedNotifier? sessionNotifier = null;
 if (controlEndpoint is { Length: > 0 })
 {
     var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])
@@ -77,6 +78,12 @@ if (controlEndpoint is { Length: > 0 })
         () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate, root, nodeAuthority,
             clusterId, "control-server"),
         identity.ProcessInstanceId, leaseSeconds);
+    // Session replacement's active leg (contracts 3.3): routing names the old gateway, this
+    // notifier tells it to close the displaced connection.
+    sessionNotifier = new SessionReplacedNotifier(
+        () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate, root, nodeAuthority,
+            clusterId, "control-server"),
+        serverCertificate, root, nodeAuthority, clusterId);
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
 }
@@ -87,7 +94,8 @@ builder.Services.AddSingleton(new RedesignStreamerLoginCoordinator(
     actorRegistry,
     readOnlyTenants,
     accessCredentialKey,
-    ownershipRegistrar: ownershipRegistrar));
+    ownershipRegistrar: ownershipRegistrar,
+    sessionNotifier: sessionNotifier));
 builder.Services.AddGrpc();
 
 var app = builder.Build();

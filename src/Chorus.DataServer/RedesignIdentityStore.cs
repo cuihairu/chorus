@@ -6,7 +6,15 @@ using Npgsql;
 namespace Chorus.DataServer;
 
 public sealed record ResolvedStreamer(string TenantId, string Platform, string AppId, string OpenId, string StreamerId);
-public sealed record SessionGrant(string SessionId, string StreamerId, long SessionVersion, DateTime ExpiresAtUtc, bool Duplicate);
+public sealed record SessionGrant(string SessionId, string StreamerId, long SessionVersion, DateTime ExpiresAtUtc,
+    bool Duplicate, string? PreviousSessionId = null, string? PreviousGatewayInstanceId = null,
+    string? PreviousConnectionId = null, long PreviousConnectionGeneration = 0);
+
+/// <summary>The outcome of a logout: the revoked facts plus the connection the revocation
+/// displaced (empty on a duplicate call — the first call already displaced it).</summary>
+public sealed record SessionRevocation(string SessionId, string StreamerId, long SessionVersion, bool Applied,
+    string? DisplacedGatewayInstanceId = null, string? DisplacedConnectionId = null,
+    long DisplacedConnectionGeneration = 0);
 public sealed record SessionConnection(string SessionId, string StreamerId, long SessionVersion, long ConnectionGeneration, bool Duplicate);
 public sealed record SessionSnapshot(
     string StreamerId, string TenantId, long SessionVersion, DateTime ExpiresAtUtc,
@@ -86,6 +94,28 @@ public sealed class RedesignIdentityStore(string connectionString)
         }
         var sessionId = Guid.NewGuid().ToString("N");
         var expiresAt = DateTime.UtcNow.AddMinutes(30);
+        // Under the streamer_state lock, the unrevoked session this grant displaces is
+        // stable: its connection coordinates travel back for the replacement notice.
+        string? previousSessionId = null;
+        string? previousGateway = null;
+        string? previousConnection = null;
+        long previousGeneration = 0;
+        await using (var previous = new NpgsqlCommand("""
+            SELECT session_id,gateway_instance_id,connection_id,connection_generation FROM auth.session
+            WHERE streamer_id=@streamer AND revoked_at IS NULL
+            ORDER BY session_version DESC LIMIT 1 FOR UPDATE
+            """, connection, transaction))
+        {
+            previous.Parameters.AddWithValue("streamer", streamerId);
+            await using var reader = await previous.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                previousSessionId = reader.GetString(0);
+                previousGateway = reader.GetString(1);
+                previousConnection = reader.GetString(2);
+                previousGeneration = reader.GetInt64(3);
+            }
+        }
         await using (var revoke = new NpgsqlCommand("""
             UPDATE auth.session SET revoked_at=clock_timestamp()
             WHERE streamer_id=@streamer AND revoked_at IS NULL
@@ -120,7 +150,8 @@ public sealed class RedesignIdentityStore(string connectionString)
             await update.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
-        return new SessionGrant(sessionId, streamerId, version, expiresAt, false);
+        return new SessionGrant(sessionId, streamerId, version, expiresAt, false,
+            previousSessionId, previousGateway, previousConnection, previousGeneration);
     }
 
     public async Task<SessionGrant> ResumeAsync(string previousSessionId, string gatewayInstanceId,
@@ -194,8 +225,13 @@ public sealed class RedesignIdentityStore(string connectionString)
             return new SessionGrant(duplicateSession, streamerId, duplicateVersion, expires, true);
         }
 
+        string previousGateway;
+        string previousConnection;
+        long previousGeneration;
         await using (var previous = new NpgsqlCommand("""
-            SELECT resume_hash,expires_at,revoked_at,session_version FROM auth.session
+            SELECT resume_hash,expires_at,revoked_at,session_version,gateway_instance_id,
+                   connection_id,connection_generation
+            FROM auth.session
             WHERE session_id=@session AND streamer_id=@streamer FOR UPDATE
             """, connection, transaction))
         {
@@ -208,6 +244,10 @@ public sealed class RedesignIdentityStore(string connectionString)
                 reader.GetDateTime(1) <= DateTime.UtcNow || reader.GetInt64(3) != currentVersion ||
                 currentSessionId != previousSessionId)
                 throw new SessionRevokedException();
+            // The rotating session's own connection is what this resume displaces.
+            previousGateway = reader.GetString(4);
+            previousConnection = reader.GetString(5);
+            previousGeneration = reader.GetInt64(6);
         }
 
         var newSessionId = Guid.NewGuid().ToString("N");
@@ -258,7 +298,8 @@ public sealed class RedesignIdentityStore(string connectionString)
             await insertRotation.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
-        return new SessionGrant(newSessionId, streamerId, newVersion, expiresAt, false);
+        return new SessionGrant(newSessionId, streamerId, newVersion, expiresAt, false,
+            previousSessionId, previousGateway, previousConnection, previousGeneration);
     }
 
     /// <summary>
@@ -423,6 +464,79 @@ public sealed class RedesignIdentityStore(string connectionString)
         }
         await transaction.CommitAsync(cancellationToken);
         return true;
+    }
+
+    /// <summary>
+    /// Logout (contracts 3.1): revokes the session and reports the connection it held, so the
+    /// orchestrator can notify that connection's gateway. Idempotent — a second call reports
+    /// Applied=false and no displaced connection (the first call already displaced it).
+    /// </summary>
+    public async Task<SessionRevocation> RevokeSessionAsync(string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        Require(sessionId, nameof(sessionId));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var state = new NpgsqlCommand("""
+            SELECT 1 FROM auth.streamer_state st
+            JOIN auth.session s ON s.streamer_id=st.streamer_id
+            WHERE s.session_id=@session FOR UPDATE OF st
+            """, connection, transaction))
+        {
+            state.Parameters.AddWithValue("session", sessionId);
+            await using var reader = await state.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) throw new SessionRevokedException();
+        }
+        long sessionVersion;
+        string streamerId;
+        string? displacedGateway = null;
+        string? displacedConnection = null;
+        long displacedGeneration = 0;
+        bool alreadyRevoked;
+        await using (var select = new NpgsqlCommand("""
+            SELECT streamer_id,session_version,revoked_at,gateway_instance_id,connection_id,connection_generation
+            FROM auth.session WHERE session_id=@session FOR UPDATE
+            """, connection, transaction))
+        {
+            select.Parameters.AddWithValue("session", sessionId);
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)) throw new SessionRevokedException();
+            streamerId = reader.GetString(0);
+            sessionVersion = reader.GetInt64(1);
+            alreadyRevoked = !reader.IsDBNull(2);
+            if (!alreadyRevoked)
+            {
+                displacedGateway = reader.GetString(3);
+                displacedConnection = reader.GetString(4);
+                displacedGeneration = reader.GetInt64(5);
+            }
+        }
+        if (!alreadyRevoked)
+        {
+            await using (var update = new NpgsqlCommand(
+                "UPDATE auth.session SET revoked_at=clock_timestamp() WHERE session_id=@session",
+                connection, transaction))
+            {
+                update.Parameters.AddWithValue("session", sessionId);
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+            // A logout leaves no successor, so the streamer's current pointer must not keep
+            // naming a revoked session. A newer grant has already moved the pointer past
+            // this session; the version counter stays — session versions never regress.
+            await using (var clear = new NpgsqlCommand("""
+                UPDATE auth.streamer_state SET current_session_id=NULL
+                WHERE streamer_id=@streamer AND current_session_id=@session
+                """, connection, transaction))
+            {
+                clear.Parameters.AddWithValue("streamer", streamerId);
+                clear.Parameters.AddWithValue("session", sessionId);
+                await clear.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return new SessionRevocation(sessionId, streamerId, sessionVersion, !alreadyRevoked,
+            displacedGateway, displacedConnection, displacedGeneration);
     }
 
     /// <summary>The session row with live facts for access-credential consumers, or null when unknown.</summary>

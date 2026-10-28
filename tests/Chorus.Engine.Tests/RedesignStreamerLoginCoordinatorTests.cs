@@ -15,6 +15,13 @@ public sealed class RedesignStreamerLoginCoordinatorTests
         public StreamerSessionState? State = new("streamer-fake", "tenant-a", 1, "gateway-1", "connection-1",
             1, Revoked: false, Closed: false, Expired: false, Banned: false, Current: true);
 
+        public Task<string?> GetSessionTenantAsync(string sessionId, CancellationToken cancellationToken = default)
+            => Task.FromResult<string?>(null);
+
+        public Task<StreamerSessionRevocation> RevokeSessionAsync(string tenantId, string sessionId,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new StreamerSessionRevocation(sessionId, "streamer-fake", 1, true, null, null, 0));
+
         public Task<string> ResolveIdentityAsync(string tenantId, string platform, string appId, string openId,
             CancellationToken cancellationToken = default) => Task.FromResult("streamer-fake");
 

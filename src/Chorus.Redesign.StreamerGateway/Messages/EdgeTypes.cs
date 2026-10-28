@@ -36,6 +36,16 @@ public static class EdgeTypes
     public const string ResyncRequired = "resyncRequired";
     public const string Pong = "pong";
     public const string Error = "error";
+
+    /// <summary>The uplinks that need an established session (contracts 3.1: no gameplay
+    /// traffic before the login establishes one). Login, resume, logout and ping build or end
+    /// the session and are not guarded by it.</summary>
+    public static bool RequiresSession(string type) => type switch
+    {
+        StartGameplay or JoinQueue or CancelQueue or GameCommand or Ack or RequestSnapshot
+            or LeaveRound => true,
+        _ => false,
+    };
 }
 
 /// <summary>The protocol versions this build speaks. A mismatched hello is rejected before
@@ -58,4 +68,20 @@ public static class EdgeErrorCodes
     public const string NoSession = "no_session";
     public const string InvalidMessage = "invalid_message";
     public const string GatewayFull = "gateway_full";
+    public const string SessionRevoked = "session_revoked";
+    public const string SessionReplaced = "session_replaced";
+    public const string InternalError = "internal_error";
+}
+
+public static class EdgeErrorMapping
+{
+    /// <summary>Maps a StreamerSession RPC refusal to the code the client sees. The statuses
+    /// are already tenant-blind and secret-blind; the mapping adds no detail of its own.</summary>
+    public static string FromRpcStatus(Grpc.Core.StatusCode status) => status switch
+    {
+        Grpc.Core.StatusCode.PermissionDenied => EdgeErrorCodes.SessionRevoked,
+        Grpc.Core.StatusCode.FailedPrecondition => EdgeErrorCodes.SessionReplaced,
+        Grpc.Core.StatusCode.InvalidArgument => EdgeErrorCodes.InvalidMessage,
+        _ => EdgeErrorCodes.InternalError,
+    };
 }

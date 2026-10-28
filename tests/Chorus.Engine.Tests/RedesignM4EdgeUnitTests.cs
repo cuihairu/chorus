@@ -146,4 +146,84 @@ public sealed class RedesignM4EdgeUnitTests
         Assert.Equal("error", EdgeTypes.Error);
         Assert.Equal(1, EdgeProtocolVersion.Current);
     }
+
+    [Fact]
+    public void SessionUplinkAndDownlinkJsonMatchTheContractFields()
+    {
+        // Downlink: the discriminator rides on every frame, camelCase fields, no extras.
+        var ready = JsonSerializer.Serialize(new EdgeLoginReady
+        {
+            StreamerId = "streamer-1", SessionId = "session-1", SessionVersion = 2,
+            AccessCredential = "access-1", AccessExpiresAt = 1760000000000, ResumeRegistered = true
+        }, EdgeJson.Options);
+        Assert.Contains("\"type\":\"loginReady\"", ready);
+        Assert.Contains("\"streamerId\":\"streamer-1\"", ready);
+        Assert.Contains("\"sessionVersion\":2", ready);
+        Assert.Contains("\"accessExpiresAt\":1760000000000", ready);
+        Assert.Contains("\"resumeRegistered\":true", ready);
+        var replaced = JsonSerializer.Serialize(new EdgeSessionReplaced { Reason = "replaced_by_login" },
+            EdgeJson.Options);
+        Assert.Equal("""{"type":"sessionReplaced","reason":"replaced_by_login"}""", replaced);
+
+        // Uplink: secrets ride as base64, missing optional fields stay absent.
+        var login = JsonSerializer.Deserialize<EdgeLoginWithPlatformLaunch>(
+            """{"platform":"simulator","appId":"app-1","launchCredential":"credential-1","loginAttemptId":"attempt-1","nextResumeSecret":"AQIDBA=="}""",
+            EdgeJson.Options);
+        Assert.Equal("app-1", login!.AppId);
+        Assert.Equal([1, 2, 3, 4], login.NextResumeSecret);
+        var resume = JsonSerializer.Deserialize<EdgeResume>(
+            """{"resumeOperationId":"op-1","resumeCredential":"AQID","nextResumeSecret":"BAAA","previousSessionId":"session-1","lastSeenRoomId":"room-9","lastAppliedStateVersion":41}""",
+            EdgeJson.Options);
+        Assert.Equal("op-1", resume!.ResumeOperationId);
+        Assert.Equal("room-9", resume.LastSeenRoomId);
+        Assert.Equal(41, resume.LastAppliedStateVersion);
+    }
+
+    [Fact]
+    public void EdgeConnectionGuardsSessionScoredUplinksUntilLoginEstablishesFacts()
+    {
+        var connection = new EdgeConnection("connection-1", "gateway-1", new EdgeOptions());
+        Assert.False(connection.HasSession);
+        Assert.True(EdgeTypes.RequiresSession(EdgeTypes.GameCommand));
+        Assert.True(EdgeTypes.RequiresSession(EdgeTypes.Ack));
+        Assert.True(EdgeTypes.RequiresSession(EdgeTypes.StartGameplay));
+        Assert.False(EdgeTypes.RequiresSession(EdgeTypes.LoginWithPlatformLaunch));
+        Assert.False(EdgeTypes.RequiresSession(EdgeTypes.Resume));
+        Assert.False(EdgeTypes.RequiresSession(EdgeTypes.Logout));
+        Assert.False(EdgeTypes.RequiresSession(EdgeTypes.Ping));
+
+        connection.MarkSession("tenant-a", "session-1", "streamer-1", "access-1");
+        Assert.True(connection.HasSession);
+        Assert.Equal("tenant-a", connection.TenantId);
+        Assert.Equal("session-1", connection.SessionId);
+        Assert.Equal("access-1", connection.AccessCredential);
+    }
+
+    [Fact]
+    public void RpcRefusalsMapToContractErrorCodes()
+    {
+        Assert.Equal(EdgeErrorCodes.SessionRevoked,
+            EdgeErrorMapping.FromRpcStatus(Grpc.Core.StatusCode.PermissionDenied));
+        Assert.Equal(EdgeErrorCodes.SessionReplaced,
+            EdgeErrorMapping.FromRpcStatus(Grpc.Core.StatusCode.FailedPrecondition));
+        Assert.Equal(EdgeErrorCodes.InvalidMessage,
+            EdgeErrorMapping.FromRpcStatus(Grpc.Core.StatusCode.InvalidArgument));
+        // Anything else is the gateway's own failure, never a borrowed session code.
+        Assert.Equal(EdgeErrorCodes.InternalError,
+            EdgeErrorMapping.FromRpcStatus(Grpc.Core.StatusCode.Unavailable));
+    }
+
+    [Fact]
+    public void ErrorCodesArePinnedToTheirWireSpellings()
+    {
+        Assert.Equal("protocol_mismatch", EdgeErrorCodes.ProtocolMismatch);
+        Assert.Equal("message_too_large", EdgeErrorCodes.MessageTooLarge);
+        Assert.Equal("rate_limited", EdgeErrorCodes.RateLimited);
+        Assert.Equal("no_session", EdgeErrorCodes.NoSession);
+        Assert.Equal("invalid_message", EdgeErrorCodes.InvalidMessage);
+        Assert.Equal("gateway_full", EdgeErrorCodes.GatewayFull);
+        Assert.Equal("session_revoked", EdgeErrorCodes.SessionRevoked);
+        Assert.Equal("session_replaced", EdgeErrorCodes.SessionReplaced);
+        Assert.Equal("internal_error", EdgeErrorCodes.InternalError);
+    }
 }

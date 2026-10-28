@@ -134,9 +134,43 @@ public sealed class StreamerIdentityChannel(Func<GrpcChannel> channelFactory) : 
                 reply.Generation, reply.State);
     }
 
+    public async Task<StreamerSessionRevocation> RevokeSessionAsync(string tenantId, string sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        var reply = await CallAsync(client => client.RevokeSessionAsync(new SessionRevokeRequest
+        {
+            SessionId = sessionId, TenantId = tenantId
+        }, cancellationToken: cancellationToken));
+        return new StreamerSessionRevocation(reply.SessionId, reply.StreamerId, reply.SessionVersion,
+            reply.Applied,
+            string.IsNullOrEmpty(reply.DisplacedGatewayInstanceId) ? null : reply.DisplacedGatewayInstanceId,
+            string.IsNullOrEmpty(reply.DisplacedConnectionId) ? null : reply.DisplacedConnectionId,
+            reply.DisplacedConnectionGeneration);
+    }
+
+    public async Task<string?> GetSessionTenantAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var reply = await CallAsync(client => client.GetSessionTenantAsync(new SessionTenantRequest
+            {
+                SessionId = sessionId
+            }, cancellationToken: cancellationToken));
+            return string.IsNullOrEmpty(reply.TenantId) ? null : reply.TenantId;
+        }
+        catch (RpcException error) when (error.StatusCode == StatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
     private static StreamerSessionGrant Grant(SessionGrantReply reply) => new(reply.StreamerId, reply.SessionId,
         reply.SessionVersion, DateTimeOffset.FromUnixTimeMilliseconds(reply.ExpiresAtUnixMs).UtcDateTime,
-        reply.Duplicate);
+        reply.Duplicate,
+        string.IsNullOrEmpty(reply.PreviousSessionId) ? null : reply.PreviousSessionId,
+        string.IsNullOrEmpty(reply.PreviousGatewayInstanceId) ? null : reply.PreviousGatewayInstanceId,
+        string.IsNullOrEmpty(reply.PreviousConnectionId) ? null : reply.PreviousConnectionId,
+        reply.PreviousConnectionGeneration);
 
     private async Task<T> CallAsync<T>(Func<StreamerIdentity.StreamerIdentityClient, AsyncUnaryCall<T>> call)
     {

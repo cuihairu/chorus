@@ -105,6 +105,78 @@ public sealed class RedesignIdentityStoreTests
         Assert.False(current.Revoked);
     }
 
+    [Fact]
+    public async Task LoginAndResumeReportTheDisplacedConnectionForTheReplacementNotice()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var store = new RedesignIdentityStore(database.ConnectionString);
+        var identity = await store.ResolveIdentityAsync("tenant-a", "simulator", "app-1", "open-m4");
+        var firstSecret = RandomNumberGenerator.GetBytes(32);
+        var login = await store.LoginAsync(identity.StreamerId, "gateway-1", "connection-1", firstSecret);
+        Assert.Null(login.PreviousSessionId); // nothing was displaced by the very first grant.
+
+        var secondSecret = RandomNumberGenerator.GetBytes(32);
+        var resume = await store.ResumeAsync(login.SessionId, "gateway-2", "connection-2", "resume-op-1",
+            firstSecret, secondSecret);
+        Assert.Equal(login.SessionId, resume.PreviousSessionId);
+        Assert.Equal("gateway-1", resume.PreviousGatewayInstanceId);
+        Assert.Equal("connection-1", resume.PreviousConnectionId);
+        Assert.Equal(1, resume.PreviousConnectionGeneration);
+        // The exact retry replays the same grant and displaces nothing new.
+        var retry = await store.ResumeAsync(login.SessionId, "gateway-3", "connection-3", "resume-op-1",
+            firstSecret, secondSecret);
+        Assert.True(retry.Duplicate);
+        Assert.Null(retry.PreviousSessionId);
+        Assert.Null(retry.PreviousConnectionId);
+
+        var thirdSecret = RandomNumberGenerator.GetBytes(32);
+        var takeover = await store.LoginAsync(identity.StreamerId, "gateway-4", "connection-4", thirdSecret);
+        Assert.Equal(resume.SessionId, takeover.PreviousSessionId);
+        Assert.Equal("gateway-2", takeover.PreviousGatewayInstanceId);
+        Assert.Equal("connection-2", takeover.PreviousConnectionId);
+    }
+
+    [Fact]
+    public async Task RevokeSessionIsIdempotentAndNamesTheDisplacedConnection()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var store = new RedesignIdentityStore(database.ConnectionString);
+        var identity = await store.ResolveIdentityAsync("tenant-a", "simulator", "app-1", "open-m4-logout");
+        var secret = RandomNumberGenerator.GetBytes(32);
+        var login = await store.LoginAsync(identity.StreamerId, "gateway-1", "connection-1", secret);
+
+        var revocation = await store.RevokeSessionAsync(login.SessionId);
+        Assert.True(revocation.Applied);
+        Assert.Equal(identity.StreamerId, revocation.StreamerId);
+        Assert.Equal("gateway-1", revocation.DisplacedGatewayInstanceId);
+        Assert.Equal("connection-1", revocation.DisplacedConnectionId);
+        Assert.Equal(1, revocation.DisplacedConnectionGeneration);
+
+        var duplicate = await store.RevokeSessionAsync(login.SessionId);
+        Assert.False(duplicate.Applied);
+        Assert.Null(duplicate.DisplacedConnectionId); // the first call already displaced it.
+
+        // The revoked session can neither rotate nor be taken over by resume.
+        await Assert.ThrowsAsync<SessionRevokedException>(() => store.ResumeAsync(login.SessionId,
+            "gateway-2", "connection-2", "resume-after-logout", secret,
+            RandomNumberGenerator.GetBytes(32)));
+    }
+
+    [Fact]
+    public async Task GetSessionStateSeesTheRevocationImmediately()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var store = new RedesignIdentityStore(database.ConnectionString);
+        var identity = await store.ResolveIdentityAsync("tenant-a", "simulator", "app-1", "open-m4-state");
+        var login = await store.LoginAsync(identity.StreamerId, "gateway-1", "connection-1",
+            RandomNumberGenerator.GetBytes(32));
+        Assert.False((await store.GetSessionStateAsync(login.SessionId))!.Revoked);
+        await store.RevokeSessionAsync(login.SessionId);
+        var state = await store.GetSessionStateAsync(login.SessionId);
+        Assert.True(state!.Revoked);
+        Assert.False(state.Current);
+    }
+
     private sealed class TemporaryDatabase(string source) : IAsyncDisposable
     {
         private readonly string _name = "chorus_m1_identity_" + Guid.NewGuid().ToString("N");

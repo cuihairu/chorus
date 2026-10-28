@@ -53,7 +53,16 @@ var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clu
 var tenantApplications = new TenantApplicationMap(Required("CHORUS_TENANT_APPLICATIONS"));
 var edgeOptions = EdgeOptions.FromEnvironment();
 var registry = new EdgeSessionRegistry(edgeOptions.MaxConnections);
-var edgeWs = new EdgeWs(edgeOptions, registry, identity.ProcessInstanceId);
+// The StreamerSession boundary carries the login round-trips; the gateway holds no session
+// facts of its own beyond what a login just returned (architecture: no long-lived entities).
+var streamerPort = int.Parse(Environment.GetEnvironmentVariable("CHORUS_STREAMER_PORT") ?? "7502");
+var streamerEndpoint = Environment.GetEnvironmentVariable("CHORUS_STREAMER_ENDPOINT")
+    ?? $"https://localhost:{streamerPort}";
+var sessionClient = new EdgeSessionClient(
+    () => ProcessGrpcClientFactory.Create(new Uri(streamerEndpoint), serverCertificate,
+        root, nodeAuthority, clusterId, "streamer-server"),
+    identity.ProcessInstanceId);
+var edgeWs = new EdgeWs(edgeOptions, registry, tenantApplications, sessionClient, identity.ProcessInstanceId);
 
 // Instance self-registration (architecture 4.4): the gateway reports its internal gRPC
 // endpoint — routing consumers are cluster processes, never public clients.
