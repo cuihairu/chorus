@@ -29,8 +29,17 @@ public static class RoundDemoScenario
     public const string GameId = "game-a";
     public const string BoostCommandId = "demo-boost-1";
 
+    /// <summary>The tick at which the disconnecting edge's connection dies mid-round (AT06).</summary>
+    public const int GuestDisconnectTick = 12;
+
+    /// <param name="disconnectGuestEdge">
+    /// Runs the same journey with the guest edge's connection dying at
+    /// <see cref="GuestDisconnectTick"/>: the room continues without it and the reconnect
+    /// carries the applied baseline back into a gapless chain (the M2 exit demonstration).
+    /// </param>
     public static async Task<RoundDemoEvidence> RunAsync(
-        IDemoCluster cluster, TextWriter log, CancellationToken cancellationToken = default)
+        IDemoCluster cluster, TextWriter log, bool disconnectGuestEdge = false,
+        CancellationToken cancellationToken = default)
     {
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
         var accessKey = RandomNumberGenerator.GetBytes(32);
@@ -124,10 +133,12 @@ public static class RoundDemoScenario
 
         // Both edges subscribe at the committed head baseline (8.3); the host edge also sends
         // one durable client command mid-round whose receipt must surface in the delta stream.
+        // With the disconnect option the guest edge dies at the cutoff tick and rejoins later.
         var hostEdge = ReadEdgeAsync(cluster, "host edge", "demo-edge-a", host, boost: true,
-            owner.Epoch, host.SessionId, cancellationToken);
+            owner.Epoch, host.SessionId, null, cancellationToken);
         var guestEdge = ReadEdgeAsync(cluster, "guest edge", "demo-edge-b", guest, boost: false,
-            owner.Epoch, guest.SessionId, cancellationToken);
+            owner.Epoch, guest.SessionId,
+            disconnectGuestEdge ? GuestDisconnectTick : null, cancellationToken);
         var hostEvidence = await hostEdge;
         var guestEvidence = await guestEdge;
         await log.WriteLineAsync($"host edge: {hostEvidence.Deltas} deltas, {hostEvidence.Snapshots} snapshots, " +
@@ -179,31 +190,36 @@ public static class RoundDemoScenario
 
     private static async Task<DemoSubscriberEvidence> ReadEdgeAsync(
         IDemoCluster cluster, string name, string instance, MountedStreamer streamer, bool boost,
-        long epoch, string sessionId, CancellationToken cancellationToken)
+        long epoch, string sessionId, int? disconnectAfterTick, CancellationToken cancellationToken)
     {
         using var certificate = cluster.Certificate("tenant-a", "streamer-server", instance);
         using var channel = cluster.Channel(cluster.GamePort, certificate, "game-server");
         var sync = new RoundSync.RoundSyncClient(channel);
         var commandTask = Task.CompletedTask;
-        using var call = sync.Subscribe(new SubscribeRequest
-        {
-            RoomId = RoomId, GameId = GameId, Epoch = epoch,
-            LastAppliedTick = 0, LastAppliedStateVersion = 0
-        }, cancellationToken: cancellationToken);
+        var commandSent = false;
         var snapshots = 0;
         var deltas = 0;
         var appliedVersion = 0L;
-        var finalTick = 0L;
+        var appliedTick = 0L;
+        long? resultTick = null;
         var receipts = new List<string>();
         string result = "";
-        while (await call.ResponseStream.MoveNext(cancellationToken))
+
+        // One message-application rule for both legs: deltas only ride the edge's own chain,
+        // results only arrive on its head, and a reconnect snapshot must sit strictly above
+        // the baseline the edge departed with.
+        void Apply(SyncMessage message, long baselineTick, string? reconnectName = null)
         {
-            var message = call.ResponseStream.Current;
             switch (message.KindCase)
             {
                 case SyncMessage.KindOneofCase.Snapshot:
                     snapshots++;
+                    if (reconnectName is not null && message.Snapshot.Tick <= baselineTick)
+                        throw new InvalidOperationException(
+                            $"{reconnectName} reconnected to tick {message.Snapshot.Tick} at or " +
+                            $"below its baseline {baselineTick}.");
                     appliedVersion = message.Snapshot.StateVersion;
+                    appliedTick = message.Snapshot.Tick;
                     break;
                 case SyncMessage.KindOneofCase.Delta:
                     deltas++;
@@ -211,18 +227,22 @@ public static class RoundDemoScenario
                         throw new InvalidOperationException(
                             $"{name} received a delta outside its chain at tick {message.Delta.Tick}.");
                     appliedVersion = message.Delta.StateVersion;
+                    appliedTick = message.Delta.Tick;
                     foreach (var receipt in message.Delta.Commands)
                         receipts.Add(receipt.CommandId);
                     // One durable client command early in the stream (architecture 6.3): it
                     // enters the room inbox and its receipt returns with the frame that
                     // consumed it.
-                    if (boost && deltas == 1)
+                    if (boost && !commandSent && deltas == 1)
+                    {
+                        commandSent = true;
                         commandTask = SendBoostAsync(cluster, sessionId, epoch, cancellationToken);
+                    }
                     break;
                 case SyncMessage.KindOneofCase.RoundResult:
                     if (message.RoundResult.StateVersion != appliedVersion)
                         throw new InvalidOperationException(name + " received a result off its chain.");
-                    finalTick = message.RoundResult.Tick;
+                    resultTick = message.RoundResult.Tick;
                     result = message.RoundResult.ResultJson;
                     break;
                 default:
@@ -230,10 +250,41 @@ public static class RoundDemoScenario
                         (message.KindCase == SyncMessage.KindOneofCase.ResyncRequired
                             ? message.ResyncRequired.Reason : message.KindCase.ToString()));
             }
-            if (finalTick > 0) break;
+        }
+
+        using (var call = sync.Subscribe(new SubscribeRequest
+        {
+            RoomId = RoomId, GameId = GameId, Epoch = epoch,
+            LastAppliedTick = 0, LastAppliedStateVersion = 0
+        }, cancellationToken: cancellationToken))
+        {
+            while (await call.ResponseStream.MoveNext(cancellationToken))
+            {
+                Apply(call.ResponseStream.Current, 0);
+                if (resultTick is not null) break;
+                if (disconnectAfterTick is { } cutoff && appliedTick >= cutoff) break;
+            }
+        }
+        // The edge's connection died at its cutoff tick: the room runs on without it (AT06),
+        // and the reconnect carries the applied baseline — a baseline behind the head answers
+        // with a full snapshot and the chain resumes gapless into the frozen result.
+        if (disconnectAfterTick is { } && resultTick is null)
+        {
+            var baselineTick = appliedTick;
+            await Task.Delay(400, cancellationToken);
+            using var call = sync.Subscribe(new SubscribeRequest
+            {
+                RoomId = RoomId, GameId = GameId, Epoch = epoch,
+                LastAppliedTick = baselineTick, LastAppliedStateVersion = appliedVersion
+            }, cancellationToken: cancellationToken);
+            while (await call.ResponseStream.MoveNext(cancellationToken))
+            {
+                Apply(call.ResponseStream.Current, baselineTick, "the reconnected edge");
+                if (resultTick is not null) break;
+            }
         }
         await commandTask;
-        return new DemoSubscriberEvidence(name, streamer.StreamerId, finalTick, appliedVersion,
+        return new DemoSubscriberEvidence(name, streamer.StreamerId, resultTick ?? 0, appliedVersion,
             snapshots, deltas, receipts, result);
     }
 

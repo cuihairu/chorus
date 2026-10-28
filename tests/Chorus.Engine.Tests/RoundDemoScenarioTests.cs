@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Chorus.RoundDemo;
+using Npgsql;
 
 namespace Chorus.Engine.Tests;
 
@@ -52,6 +53,103 @@ public sealed class RoundDemoScenarioTests
         Assert.Equal(evidence.Guest.StreamerId, evidence.Leaderboard[1].PlayerId);
         Assert.Equal(30L, evidence.Leaderboard[1].Score);
     }
+
+    /// <summary>
+    /// The M2 exit demonstration (acceptance 2, AT06): the full journey — mount, admission,
+    /// platform inputs, client command, mid-round disconnect, the room continuing, reconnect,
+    /// settlement, leaderboard — with the database record, the client-visible stream and the
+    /// side-effect outbox agreeing on one round.
+    /// </summary>
+    [Fact]
+    public async Task DisconnectedEdgeRejoinsTheJourneyAndTheRecordAgreesThreeWays()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var evidence = await RoundDemoScenario.RunAsync(new HostEnvironmentCluster(environment),
+            Console.Out, disconnectGuestEdge: true);
+
+        // The reconnected guest edge holds the same frozen result as the edge that never
+        // left: its baseline snapshot, one head snapshot on reconnect (strictly above the
+        // departed baseline — the scenario enforces it) and a gapless chain into the result.
+        Assert.Equal(120L, evidence.Host.FinalTick);
+        Assert.Equal(120L, evidence.Guest.FinalTick);
+        Assert.Equal(evidence.Host.FinalVersion, evidence.Guest.FinalVersion);
+        Assert.Equal(evidence.Host.ResultJson, evidence.Guest.ResultJson);
+        Assert.Equal(2, evidence.Guest.Snapshots);
+        Assert.True(evidence.Host.Snapshots >= 1);
+        Assert.Equal(new[] { RoundDemoScenario.BoostCommandId }, evidence.Host.CommandReceipts);
+        Assert.Equal(new[] { RoundDemoScenario.BoostCommandId }, evidence.Guest.CommandReceipts);
+
+        // Three-way agreement (acceptance 2): the database record, the client stream above
+        // and the side-effect outbox all describe the same round.
+        await using var connection = new NpgsqlConnection(environment.DatabaseConnectionString);
+        await connection.OpenAsync();
+        string committedResult;
+        await using (var probe = new NpgsqlCommand(
+            "SELECT status,last_tick FROM game.room WHERE room_id=@room", connection))
+        {
+            probe.Parameters.AddWithValue("room", RoundDemoScenario.RoomId);
+            await using var reader = await probe.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("Settled", reader.GetString(0));
+            Assert.Equal(120L, reader.GetInt64(1));
+        }
+        await using (var committed = new NpgsqlCommand(
+            "SELECT result::text FROM game.result WHERE room_id=@room", connection))
+        {
+            committed.Parameters.AddWithValue("room", RoundDemoScenario.RoomId);
+            committedResult = (string)(await committed.ExecuteScalarAsync())!;
+        }
+        using (var committedDocument = JsonDocument.Parse(committedResult))
+        using (var hostDocument = JsonDocument.Parse(evidence.Host.ResultJson))
+        using (var guestDocument = JsonDocument.Parse(evidence.Guest.ResultJson))
+        {
+            var committed = RankingOf(committedDocument);
+            Assert.Equal(committed, RankingOf(hostDocument));
+            Assert.Equal(committed, RankingOf(guestDocument));
+        }
+        await using (var grants = new NpgsqlCommand("""
+            SELECT count(*) FROM settlement.grant
+            WHERE room_id=@room AND status='Granted'
+            """, connection))
+        {
+            grants.Parameters.AddWithValue("room", RoundDemoScenario.RoomId);
+            Assert.Equal(2L, Convert.ToInt64(await grants.ExecuteScalarAsync()));
+        }
+        await using (var ledger = new NpgsqlCommand("""
+            SELECT count(DISTINCT operation_id),count(*) FROM player.ledger
+            WHERE reason LIKE @reason
+            """, connection))
+        {
+            ledger.Parameters.AddWithValue("reason", $"settlement:{RoundDemoScenario.RoomId}/%");
+            await using var reader = await ledger.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(2L, reader.GetInt64(0));
+            Assert.Equal(2L, reader.GetInt64(1));
+        }
+        await using (var outbox = new NpgsqlCommand("""
+            SELECT kind FROM infra.outbox WHERE effect_id=@effect
+            """, connection))
+        {
+            foreach (var (effectId, kind) in new[]
+                {
+                    ($"{RoundDemoScenario.RoomId}/0/start", "round.started"),
+                    ($"{RoundDemoScenario.RoomId}/0/activate", "round.activated"),
+                    ($"{RoundDemoScenario.RoomId}/0/settle", "round.settled")
+                })
+            {
+                outbox.Parameters.Clear();
+                outbox.Parameters.AddWithValue("effect", effectId);
+                Assert.Equal(kind, await outbox.ExecuteScalarAsync());
+            }
+        }
+    }
+
+    /// <summary>The ranking entries of a round result in order: (faction, score).</summary>
+    private static List<(string Faction, long Score)> RankingOf(JsonDocument document) =>
+        document.RootElement.GetProperty("ranking").EnumerateArray()
+            .Select(entry => (entry.GetProperty("faction").GetString()!,
+                entry.GetProperty("score").GetInt64()))
+            .ToList();
 
     /// <summary>
     /// The demo cluster contract over the shared host environment: the same four real hosts,
