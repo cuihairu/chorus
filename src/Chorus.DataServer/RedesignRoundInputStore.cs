@@ -122,14 +122,12 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
             .Select(candidate => locked.First(item => item.EventId == candidate.EventId))
             .ToList();
 
-        // Pass 4: resolve each target room, allocate sequences under the cursor lock and write
-        // delivery rows and terminal dispositions.
-        var results = new List<RouteEventsItem>();
-        var cursors = new Dictionary<string, long>(StringComparer.Ordinal);
+        // Pass 4a: resolve each target room — a trusted round hint wins, otherwise the
+        // binding's current room does. A hint the binding never participated in is a mapping
+        // conflict for review; hint trust is immutable history, safe to read unlocked.
+        var resolved = new List<(string EventId, string BindingId, string? Target, bool Ambiguous)>();
         foreach (var (eventId, bindingId, payloadText) in orderedEvents)
         {
-            var bindingInfo = bindings[bindingId];
-            string? target = null;
             string? hint = null;
             using (var document = JsonDocument.Parse(payloadText))
             {
@@ -137,43 +135,59 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
                     && hintElement.ValueKind == JsonValueKind.String)
                     hint = hintElement.GetString();
             }
-            if (hint is not null)
+            if (hint is null)
             {
-                await using (var trust = new NpgsqlCommand("""
-                    SELECT 1 FROM game.participation WHERE room_id=@room AND binding_id=@binding
-                    """, connection, transaction))
-                {
-                    trust.Parameters.AddWithValue("room", hint);
-                    trust.Parameters.AddWithValue("binding", bindingId);
-                    if (await trust.ExecuteScalarAsync(cancellationToken) is null)
-                    {
-                        await MarkEventAsync(connection, transaction, eventId, AmbiguousRound, null, cancellationToken);
-                        results.Add(new RouteEventsItem(eventId, null, null, AmbiguousRound));
-                        continue;
-                    }
-                }
-                target = hint;
+                resolved.Add((eventId, bindingId, bindings[bindingId].CurrentRoomId, Ambiguous: false));
+                continue;
             }
-            else
+            await using (var trust = new NpgsqlCommand("""
+                SELECT 1 FROM game.participation WHERE room_id=@room AND binding_id=@binding
+                """, connection, transaction))
             {
-                target = bindingInfo.CurrentRoomId;
+                trust.Parameters.AddWithValue("room", hint);
+                trust.Parameters.AddWithValue("binding", bindingId);
+                resolved.Add(await trust.ExecuteScalarAsync(cancellationToken) is null
+                    ? (eventId, bindingId, null, true)
+                    : (eventId, bindingId, hint, false));
             }
+        }
 
+        // Pass 4b: lock every target room in the unified order — room before any delivery or
+        // cursor lock (architecture 6.5). Without this the delivery insert's foreign-key share
+        // is the first room touch, taken after the cursor, and deadlocks a concurrent frame
+        // commit that holds the room and wants the same cursor; the locked read also keeps a
+        // room that settles mid-batch from accepting deliveries.
+        var roomStatuses = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var target in resolved.Select(item => item.Target).Where(id => id is not null)
+                     .Cast<string>().Distinct().OrderBy(id => id, StringComparer.Ordinal))
+        {
+            await using var room = new NpgsqlCommand(
+                "SELECT status FROM game.room WHERE room_id=@room FOR UPDATE", connection, transaction);
+            room.Parameters.AddWithValue("room", target);
+            roomStatuses[target] = await room.ExecuteScalarAsync(cancellationToken) as string
+                ?? throw new RoundAdmissionException($"The target room {target} does not exist.");
+        }
+
+        // Pass 4c: allocate sequences under the cursor lock and write delivery rows and
+        // terminal dispositions.
+        var results = new List<RouteEventsItem>();
+        var cursors = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var (eventId, bindingId, target, ambiguous) in resolved)
+        {
+            var bindingInfo = bindings[bindingId];
+            if (ambiguous)
+            {
+                await MarkEventAsync(connection, transaction, eventId, AmbiguousRound, null, cancellationToken);
+                results.Add(new RouteEventsItem(eventId, null, null, AmbiguousRound));
+                continue;
+            }
             if (target is null)
             {
                 await MarkEventAsync(connection, transaction, eventId, OutOfRound, null, cancellationToken);
                 results.Add(new RouteEventsItem(eventId, null, null, OutOfRound));
                 continue;
             }
-            string roomStatus;
-            await using (var room = new NpgsqlCommand(
-                "SELECT status FROM game.room WHERE room_id=@room", connection, transaction))
-            {
-                room.Parameters.AddWithValue("room", target);
-                roomStatus = await room.ExecuteScalarAsync(cancellationToken) as string
-                    ?? throw new RoundAdmissionException($"The target room {target} does not exist.");
-            }
-            if (roomStatus is not (RedesignRoomStore.Preparing or "Running"))
+            if (roomStatuses[target] is not (RedesignRoomStore.Preparing or "Running"))
             {
                 await MarkEventAsync(connection, transaction, eventId, OutOfRound, target, cancellationToken);
                 results.Add(new RouteEventsItem(eventId, target, null, OutOfRound));
