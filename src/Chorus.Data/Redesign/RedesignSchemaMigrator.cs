@@ -19,7 +19,8 @@ public static class RedesignSchemaMigrator
         (8, "Chorus.Data.Redesign.0008_platform_task_coordination.sql"),
         (9, "Chorus.Data.Redesign.0009_round_generation.sql"),
         (10, "Chorus.Data.Redesign.0010_settlement_manifest_leaderboard.sql"),
-        (11, "Chorus.Data.Redesign.0011_retention_capacity.sql")
+        (11, "Chorus.Data.Redesign.0011_retention_capacity.sql"),
+        (12, "Chorus.Data.Redesign.0012_match_ticket_audit.sql")
     ];
 
     public static async Task ApplyAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)

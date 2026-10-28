@@ -12,5 +12,6 @@
     <Protobuf Include="Protos/m0.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m1.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m2.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos/m3.proto" GrpcServices="Both" />
   </ItemGroup>
 </Project>

@@ -40,6 +40,7 @@ builder.Services.AddSingleton(new RedesignIdentityStore(connectionString));
 builder.Services.AddSingleton(new RedesignBindingStore(connectionString));
 builder.Services.AddSingleton(new RedesignInputEventStore(connectionString));
 builder.Services.AddSingleton(new RedesignPlatformTaskStore(connectionString));
+builder.Services.AddSingleton(new RedesignMatchTicketStore(connectionString));
 builder.Services.AddSingleton(new RedesignRoomStore(connectionString,
     maxActiveRooms: int.TryParse(
         Environment.GetEnvironmentVariable("CHORUS_MAX_ACTIVE_ROOMS"), out var cap) && cap > 0
@@ -57,6 +58,7 @@ app.MapGrpcService<DataGrpcService>();
 app.MapGrpcService<StreamerIdentityGrpcService>();
 app.MapGrpcService<PlatformIngestGrpcService>();
 app.MapGrpcService<PlatformTaskGrpcService>();
+app.MapGrpcService<MatchQueueGrpcService>();
 app.MapGrpcService<RoundGrpcService>();
 app.MapGrpcService<RoundInputGrpcService>();
 app.MapGrpcService<FrameGrpcService>();

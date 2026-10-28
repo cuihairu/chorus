@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package chorus.redesign.m3;
+option csharp_namespace = "Chorus.Redesign.Rpc";
+
+import "Protos/m0.proto";
+
+// Multi-node matching and business recovery (architecture 7.1-7.3, 10.1). A mount holds at
+// most one active ticket; cancellation races the reservation transaction on the same locked
+// ticket rows, so whoever locks first wins visibly. A match partition moves between
+// coordinator holders through monotonically increasing terms — an expired term never commits.
+
+message EnqueueTicketRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string binding_id = 3;
+  string session_id = 4;
+  // The composite match partition (tenant/game/rules version/region/platform policy/queue
+  // type): candidates only ever meet inside one partition, so a wrong-platform candidate
+  // never shares a window with the right one.
+  string partition_key = 5;
+  string operation_id = 6;
+  // 0 = the queued ticket never expires on its own.
+  int64 expires_unix_ms = 7;
+}
+
+message CancelTicketRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string binding_id = 3;
+  string operation_id = 4;
+}
+
+message GetTicketRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string binding_id = 3;
+}
+
+message TicketProto {
+  string ticket_id = 1;
+  string binding_id = 2;
+  string state = 3;
+  int64 version = 4;
+  string partition_key = 5;
+  // 0 = the ticket has no expiry of its own.
+  int64 expires_unix_ms = 6;
+  string reservation_id = 7;
+}
+
+message TicketReply {
+  bool found = 1;
+  bool duplicate = 2;
+  TicketProto ticket = 3;
+}
+
+message ListQueuedRequest {
+  string partition_key = 1;
+  int32 max = 2;
+}
+
+message ListQueuedReply { repeated TicketProto tickets = 1; }
+
+message ExpireQueuedRequest { int32 max = 1; }
+
+message ExpireQueuedReply { int64 expired = 1; }
+
+service MatchQueue {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  rpc EnqueueTicket(EnqueueTicketRequest) returns (TicketReply);
+  rpc CancelTicket(CancelTicketRequest) returns (TicketReply);
+  rpc GetTicket(GetTicketRequest) returns (TicketReply);
+  // The coordinator's candidate window and the sweep that retires stale queued tickets.
+  rpc ListQueued(ListQueuedRequest) returns (ListQueuedReply);
+  rpc ExpireQueued(ExpireQueuedRequest) returns (ExpireQueuedReply);
+}
+
+// Match coordinator terms (architecture 7.1, 10.1). One holder per partition; a takeover or
+// an expired re-claim starts a new term, and writes carrying an old term are refused.
+message TermRequest {
+  string partition_key = 1;
+  string holder_instance_id = 2;
+  int32 lease_seconds = 3;
+}
+
+message GetTermRequest { string partition_key = 1; }
+
+message TermReply {
+  bool found = 1;
+  string holder_instance_id = 2;
+  int64 term = 3;
+  int64 lease_until_unix_ms = 4;
+}
+
+service Coordinator {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  // Acquire-or-takeover: bumps the term unless the same holder re-claims a live lease.
+  rpc ClaimTerm(TermRequest) returns (TermReply);
+  // Extends the lease of the current holder only; a lost lease is a visible failure.
+  rpc RenewTerm(TermRequest) returns (TermReply);
+  // Parks the lease in the past so the next claim starts a new term.
+  rpc ReleaseTerm(TermRequest) returns (TermReply);
+  rpc GetTerm(GetTermRequest) returns (TermReply);
+}

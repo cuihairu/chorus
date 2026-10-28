@@ -36,10 +36,12 @@ builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Any, port, 
 }));
 builder.Services.AddSingleton(trustedCertificates);
 builder.Services.AddSingleton(new RedesignControlStore(connectionString));
+builder.Services.AddSingleton(new RedesignCoordinatorStore(connectionString));
 builder.Services.AddGrpc();
 
 var app = builder.Build();
 app.MapGrpcService<ControlGrpcService>();
+app.MapGrpcService<CoordinatorGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
