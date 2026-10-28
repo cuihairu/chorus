@@ -13,14 +13,16 @@ namespace Chorus.Redesign.StreamerGateway;
 /// the pre-auth window, and a hello with an unknown protocol version is refused before any
 /// other byte is read. Frames above the size cap close the connection (transport limits are
 /// enforced at the transport). After the hello this loop carries the session round-trips:
-/// login, resume and logout reach the StreamerSession boundary, session-scored uplinks before
-/// a session are refused with no_session, and a session-replaced notice can arrive on the
-/// internal face at any moment and take the connection down through the same serialized
-/// downlink lane.
+/// login, resume and logout reach the StreamerSession boundary, startGameplay mounts the
+/// session and joinQueue/cancelQueue drive the mount's match ticket, session-scored uplinks
+/// before a session are refused with no_session, and a session-replaced notice can arrive on
+/// the internal face at any moment and take the connection down through the same serialized
+/// downlink lane. The routing watch pushes the match notice when the mount's round starts.
 /// </summary>
 public sealed class EdgeWs(
     EdgeOptions options, EdgeSessionRegistry registry, TenantApplicationMap tenantApplications,
-    EdgeSessionClient sessionClient, string gatewayInstanceId)
+    EdgeSessionClient sessionClient, string gatewayInstanceId,
+    EdgeQueueClient? queueClient = null, EdgeRoutingMonitor? routingMonitor = null)
 {
     private const int ReceiveChunkBytes = 8 * 1024;
 
@@ -96,6 +98,8 @@ public sealed class EdgeWs(
         }
         finally
         {
+            // A closing connection stops hearing about rooms before it leaves the registry.
+            routingMonitor?.Unsubscribe(connection.ConnectionId);
             registry.Close(connection);
         }
     }
@@ -170,8 +174,16 @@ public sealed class EdgeWs(
                 case EdgeTypes.Logout:
                     if (await HandleLogoutAsync(connection, root, cancellation)) return;
                     break;
-                case EdgeTypes.StartGameplay or EdgeTypes.JoinQueue or EdgeTypes.CancelQueue
-                    or EdgeTypes.GameCommand or EdgeTypes.Ack or EdgeTypes.RequestSnapshot
+                case EdgeTypes.StartGameplay:
+                    await HandleStartGameplayAsync(connection, root, cancellation);
+                    break;
+                case EdgeTypes.JoinQueue:
+                    await HandleJoinQueueAsync(connection, root, cancellation);
+                    break;
+                case EdgeTypes.CancelQueue:
+                    await HandleCancelQueueAsync(connection, root, cancellation);
+                    break;
+                case EdgeTypes.GameCommand or EdgeTypes.Ack or EdgeTypes.RequestSnapshot
                     or EdgeTypes.LeaveRound:
                     // In the protocol, wired in a later round of this milestone — an honest
                     // refusal, not a silent drop.
@@ -292,10 +304,156 @@ public sealed class EdgeWs(
         }
     }
 
-    private static async Task RefuseAsync(EdgeConnection connection, RpcException error,
-        string? operationId, CancellationToken cancellation)
+    private async Task HandleStartGameplayAsync(EdgeConnection connection, JsonElement root,
+        CancellationToken cancellation)
     {
-        var mapped = EdgeErrorMapping.FromRpcStatus(error.StatusCode);
+        var start = root.Deserialize<EdgeStartGameplay>(EdgeJson.Options) ?? throw new JsonException();
+        try
+        {
+            // The game id is the client's choice; everything else about the actor comes from
+            // the session the login established (contracts 3.1: no uplink identity is trusted).
+            var status = await sessionClient.StartGameplayAsync(connection.TenantId!,
+                connection.AccessCredential!, start.GameId, start.OperationId, cancellation);
+            connection.MarkGameplay(status.BindingId, status.GameId, start.RulesVersion);
+            await connection.SendJsonAsync(new EdgeGameplayStatus
+            {
+                BindingId = status.BindingId,
+                Generation = status.Generation,
+                State = status.State,
+                Reason = status.Duplicate ? "duplicate" : null
+            }, cancellation);
+        }
+        catch (RpcException error)
+        {
+            await RefuseAsync(connection, error, start.OperationId, cancellation);
+        }
+    }
+
+    private async Task HandleJoinQueueAsync(EdgeConnection connection, JsonElement root,
+        CancellationToken cancellation)
+    {
+        var join = root.Deserialize<EdgeJoinQueue>(EdgeJson.Options) ?? throw new JsonException();
+        if (!connection.HasGameplay)
+        {
+            // A queue ticket is per mount; without a startGameplay there is no mount to queue.
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "Start gameplay before joining a queue.",
+                OperationId = join.OperationId
+            }, cancellation);
+            return;
+        }
+        var partition = EdgeQueueKeys.PartitionFor(connection.TenantId!, connection.GameId!,
+            connection.RulesVersion, join.QueueType);
+        try
+        {
+            var reply = await queueClient!.EnqueueAsync(connection.TenantId!, connection.GameId!,
+                connection.BindingId!, connection.SessionId!, partition, join.OperationId, cancellation);
+            var ticket = reply.Ticket;
+            await connection.SendJsonAsync(new EdgeMatchStatus
+            {
+                TicketId = ticket.TicketId,
+                State = EdgeMatchStates.FromStore(ticket.State),
+                ReservationId = ticket.ReservationId is { Length: > 0 } id ? id : null,
+                RoomId = null
+            }, cancellation);
+            // From here the routing watch owns the push: when the mount's room appears the
+            // round started, and the ticket's commit turns it into the match notice.
+            routingMonitor?.Subscribe(connection.StreamerId!, connection.ConnectionId,
+                room => OnRoomRoutedAsync(connection, room));
+        }
+        catch (RpcException error)
+        {
+            await RefuseAsync(connection, error, join.OperationId, cancellation, queueErrors: true);
+        }
+    }
+
+    private async Task HandleCancelQueueAsync(EdgeConnection connection, JsonElement root,
+        CancellationToken cancellation)
+    {
+        var cancel = root.Deserialize<EdgeCancelQueue>(EdgeJson.Options) ?? throw new JsonException();
+        if (!connection.HasGameplay)
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "Start gameplay before changing a queue ticket.",
+                OperationId = cancel.OperationId
+            }, cancellation);
+            return;
+        }
+        try
+        {
+            // The mount's ticket is the unit — the ticket id and version the client holds are
+            // diagnostics, not the addressing (contracts 3.1 CancelQueue).
+            var reply = await queueClient!.CancelAsync(connection.TenantId!, connection.GameId!,
+                connection.BindingId!, cancel.OperationId, cancellation);
+            var ticket = reply.Ticket;
+            await connection.SendJsonAsync(new EdgeMatchStatus
+            {
+                TicketId = ticket.TicketId,
+                State = EdgeMatchStates.FromStore(ticket.State),
+                ReservationId = ticket.ReservationId is { Length: > 0 } id ? id : null,
+                RoomId = null
+            }, cancellation);
+        }
+        catch (RpcException error)
+        {
+            await RefuseAsync(connection, error, cancel.OperationId, cancellation, queueErrors: true);
+        }
+    }
+
+    /// <summary>The routing watch callback: the mount's room appeared (or moved). The room
+    /// becomes routing-visible the moment the round starts — before the ticket commits — so the
+    /// push converges on the ticket: while the reservation is mid-flight (Reserved/Preparing)
+    /// it keeps reading, and a committed ticket is the match the client has not been told about
+    /// yet, pushed once per room. A ticket that left the round (requeued, cancelled, expired)
+    /// ends the watch silently: the room belongs to a round this mount is no longer in, and a
+    /// later room re-triggers this callback.</summary>
+    private async Task OnRoomRoutedAsync(EdgeConnection connection, string room)
+    {
+        if (room.Length == 0 || !connection.TryClaimRoomNotice(room)) return;
+        for (var deadline = Environment.TickCount64 + 15_000;
+             Environment.TickCount64 < deadline;)
+        {
+            TicketProto? ticket;
+            try
+            {
+                ticket = await queueClient!.GetTicketAsync(connection.TenantId!, connection.GameId!,
+                    connection.BindingId!, CancellationToken.None);
+            }
+            catch (RpcException)
+            {
+                // Best-effort push: a transient plane failure is retried inside the window, and
+                // the room fact stays durable — the client can also learn it by reconnecting.
+                await Task.Delay(150, CancellationToken.None);
+                continue;
+            }
+            if (ticket is not ({ State: "Reserved" or "Preparing" or "Committed" })) return;
+            if (ticket.State == "Committed")
+            {
+                await connection.SendJsonAsync(new EdgeMatchStatus
+                {
+                    TicketId = ticket.TicketId,
+                    State = EdgeMatchStates.Matched,
+                    ReservationId = ticket.ReservationId is { Length: > 0 } id ? id : null,
+                    RoomId = room
+                }, CancellationToken.None);
+                return;
+            }
+            // The round pipeline is still driving this reservation: start → prepare → commit
+            // spans several plane round-trips after the room already routes.
+            await Task.Delay(150, CancellationToken.None);
+        }
+    }
+
+    private static async Task RefuseAsync(EdgeConnection connection, RpcException error,
+        string? operationId, CancellationToken cancellation, bool queueErrors = false)
+    {
+        var mapped = queueErrors
+            ? EdgeErrorMapping.FromQueueRpcStatus(error.StatusCode)
+            : EdgeErrorMapping.FromRpcStatus(error.StatusCode);
         // The refusal message stays generic: no platform detail, no tenant, no credential
         // material — the code is the contract, the text is for a human.
         await connection.SendJsonAsync(new EdgeError
@@ -305,7 +463,9 @@ public sealed class EdgeWs(
             {
                 EdgeErrorCodes.SessionRevoked => "The session was refused or has ended.",
                 EdgeErrorCodes.SessionReplaced => "The session was replaced by another login.",
-                EdgeErrorCodes.InvalidMessage => "The request is not valid.",
+                EdgeErrorCodes.InvalidMessage => queueErrors
+                    ? "The queue request is not valid for the mount's current ticket."
+                    : "The request is not valid.",
                 _ => "The request could not be completed."
             },
             OperationId = operationId

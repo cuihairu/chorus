@@ -5,9 +5,10 @@ using Grpc.Core;
 namespace Chorus.DataServer;
 
 /// <summary>
-/// Match queue boundary (architecture 7.1, 7.3). Streamers and the control plane enqueue and
-/// cancel; only the coordinator reads candidate windows and sweeps stale tickets. Cluster-scope
-/// callers name the tenant they act for; tenant-scope callers inherit their certificate tenant.
+/// Match queue boundary (architecture 7.1, 7.3). Streamers, the control plane and the streamer
+/// edge gateway enqueue and cancel; only the coordinator reads candidate windows and sweeps
+/// stale tickets. Cluster-scope callers name the tenant they act for; tenant-scope callers
+/// inherit their certificate tenant.
 /// </summary>
 public sealed class MatchQueueGrpcService(
     RedesignMatchTicketStore ticketStore, TrustedProcessCertificates trustedCertificates)
@@ -15,14 +16,14 @@ public sealed class MatchQueueGrpcService(
 {
     public override Task<ReadyReply> Ready(Empty request, ServerCallContext context)
     {
-        Require(context, "control-server", "streamer-server", "game-server");
+        Require(context, "control-server", "streamer-server", "game-server", "streamer-gateway");
         return Task.FromResult(new ReadyReply { Ready = true, SchemaVersion = "4" });
     }
 
     public override async Task<TicketReply> EnqueueTicket(EnqueueTicketRequest request,
         ServerCallContext context)
     {
-        var caller = Require(context, "streamer-server", "control-server");
+        var caller = Require(context, "streamer-server", "control-server", "streamer-gateway");
         try
         {
             var ticket = await ticketStore.EnqueueTicketAsync(
@@ -51,7 +52,7 @@ public sealed class MatchQueueGrpcService(
     public override async Task<TicketReply> CancelTicket(CancelTicketRequest request,
         ServerCallContext context)
     {
-        var caller = Require(context, "streamer-server", "control-server");
+        var caller = Require(context, "streamer-server", "control-server", "streamer-gateway");
         try
         {
             var ticket = await ticketStore.CancelTicketAsync(
@@ -72,7 +73,7 @@ public sealed class MatchQueueGrpcService(
 
     public override async Task<TicketReply> GetTicket(GetTicketRequest request, ServerCallContext context)
     {
-        var caller = Require(context, "streamer-server", "control-server", "game-server");
+        var caller = Require(context, "streamer-server", "control-server", "game-server", "streamer-gateway");
         try
         {
             var ticket = await ticketStore.GetTicketAsync(

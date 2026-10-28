@@ -226,4 +226,157 @@ public sealed class RedesignM4EdgeUnitTests
         Assert.Equal("session_replaced", EdgeErrorCodes.SessionReplaced);
         Assert.Equal("internal_error", EdgeErrorCodes.InternalError);
     }
+
+    [Fact]
+    public void GameplayAndMatchUplinkAndDownlinkJsonMatchTheContractFields()
+    {
+        // Uplinks: discriminators ride on every frame, optional facts stay absent.
+        var start = JsonSerializer.Serialize(new EdgeStartGameplay
+        {
+            OperationId = "start-op-1", GameId = "game-a", RulesVersion = "rules-1"
+        }, EdgeJson.Options);
+        Assert.Contains("\"type\":\"startGameplay\"", start);
+        Assert.Contains("\"operationId\":\"start-op-1\"", start);
+        Assert.Contains("\"rulesVersion\":\"rules-1\"", start);
+        var bare = JsonSerializer.Serialize(new EdgeStartGameplay
+        {
+            OperationId = "start-op-2", GameId = "game-a"
+        }, EdgeJson.Options);
+        Assert.DoesNotContain("rulesVersion", bare);
+        var join = JsonSerializer.Deserialize<EdgeJoinQueue>(
+            """{"type":"joinQueue","operationId":"join-op-1","queueType":"standard","options":"{\"region\":\"eu\"}"}""",
+            EdgeJson.Options);
+        Assert.Equal("standard", join!.QueueType);
+        Assert.Equal("""{"region":"eu"}""", join.Options);
+        var cancel = JsonSerializer.Deserialize<EdgeCancelQueue>(
+            """{"type":"cancelQueue","operationId":"cancel-op-1","ticketId":"ticket-1","ticketVersion":3}""",
+            EdgeJson.Options);
+        Assert.Equal("ticket-1", cancel!.TicketId);
+        Assert.Equal(3, cancel.TicketVersion);
+
+        // Downlinks: gameplayStatus and matchStatus carry exactly the contract facts.
+        var gameplay = JsonSerializer.Serialize(new EdgeGameplayStatus
+        {
+            BindingId = "binding-1", Generation = 2, State = "Ready"
+        }, EdgeJson.Options);
+        Assert.Contains("\"type\":\"gameplayStatus\"", gameplay);
+        Assert.Contains("\"bindingId\":\"binding-1\"", gameplay);
+        Assert.Contains("\"generation\":2", gameplay);
+        Assert.Contains("\"state\":\"Ready\"", gameplay);
+        var match = JsonSerializer.Serialize(new EdgeMatchStatus
+        {
+            TicketId = "ticket-1", State = "Matched", ReservationId = "res-1", RoomId = "room-1"
+        }, EdgeJson.Options);
+        Assert.Contains("\"type\":\"matchStatus\"", match);
+        Assert.Contains("\"ticketId\":\"ticket-1\"", match);
+        Assert.Contains("\"state\":\"Matched\"", match);
+        Assert.Contains("\"reservationId\":\"res-1\"", match);
+        Assert.Contains("\"roomId\":\"room-1\"", match);
+        var queued = JsonSerializer.Serialize(new EdgeMatchStatus
+        {
+            TicketId = "ticket-2", State = "Queued"
+        }, EdgeJson.Options);
+        Assert.DoesNotContain("reservationId", queued);
+        Assert.DoesNotContain("roomId", queued);
+    }
+
+    [Fact]
+    public void QueuePartitionsAreComposedFromTheFactsTheGatewayCanName()
+    {
+        // Candidates meet only inside one partition: the four named facts decide it, and the
+        // join options blob never widens the window (contracts 2, Match row).
+        Assert.Equal("tenant-a/game-a/rules-1/standard",
+            EdgeQueueKeys.PartitionFor("tenant-a", "game-a", "rules-1", "standard"));
+        Assert.Equal("tenant-a/game-a/rules-1/standard",
+            EdgeQueueKeys.PartitionFor("tenant-a", "game-a", "rules-1", "standard"));
+        // A missing rules version is explicit, not silently shared with rules-1.
+        Assert.Equal("tenant-a/game-a/-/standard",
+            EdgeQueueKeys.PartitionFor("tenant-a", "game-a", null, "standard"));
+        Assert.NotEqual(EdgeQueueKeys.PartitionFor("tenant-a", "game-a", "rules-1", "standard"),
+            EdgeQueueKeys.PartitionFor("tenant-a", "game-a", "rules-2", "standard"));
+        Assert.NotEqual(EdgeQueueKeys.PartitionFor("tenant-a", "game-a", "rules-1", "standard"),
+            EdgeQueueKeys.PartitionFor("tenant-a", "game-a", "rules-1", "vip"));
+    }
+
+    [Fact]
+    public void TicketStatesMapToTheClientVocabulary()
+    {
+        // The store's Committed is the protocol's Matched; every other state passes through
+        // with its own name — the client never sees a store-internal word dressed up.
+        Assert.Equal("Matched", EdgeMatchStates.FromStore("Committed"));
+        Assert.Equal("Queued", EdgeMatchStates.FromStore("Queued"));
+        Assert.Equal("Reserved", EdgeMatchStates.FromStore("Reserved"));
+        Assert.Equal("Cancelled", EdgeMatchStates.FromStore("Cancelled"));
+        Assert.Equal("Expired", EdgeMatchStates.FromStore("Expired"));
+        // The queue's own refusal statuses never borrow the session codes.
+        Assert.Equal(EdgeErrorCodes.InvalidMessage,
+            EdgeErrorMapping.FromQueueRpcStatus(Grpc.Core.StatusCode.FailedPrecondition));
+        Assert.Equal(EdgeErrorCodes.InvalidMessage,
+            EdgeErrorMapping.FromQueueRpcStatus(Grpc.Core.StatusCode.InvalidArgument));
+        Assert.Equal(EdgeErrorCodes.SessionRevoked,
+            EdgeErrorMapping.FromQueueRpcStatus(Grpc.Core.StatusCode.PermissionDenied));
+        // The session mapping is unchanged for the session round-trips.
+        Assert.Equal(EdgeErrorCodes.SessionReplaced,
+            EdgeErrorMapping.FromRpcStatus(Grpc.Core.StatusCode.FailedPrecondition));
+    }
+
+    [Fact]
+    public async Task TheRoutingMonitorNotifiesEachRoomChangeOncePerSubscriber()
+    {
+        var monitor = new EdgeRoutingMonitor(() => throw new InvalidOperationException(
+            "The unit test drives snapshots directly."));
+        var notices = new List<(string Connection, string Room)>();
+        monitor.Subscribe("streamer-1", "connection-1",
+            room => { notices.Add(("connection-1", room)); return Task.CompletedTask; });
+        monitor.Subscribe("streamer-2", "connection-2",
+            room => { notices.Add(("connection-2", room)); return Task.CompletedTask; });
+
+        // First apply: both subscribers learn the room as it is — including "no room yet".
+        await monitor.ApplySnapshotAsync(new Chorus.Redesign.Rpc.RoutingSnapshotReply
+        {
+            Streamers =
+            {
+                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "" },
+                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
+            }
+        });
+        Assert.Equal([("connection-1", ""), ("connection-2", "room-9")], notices);
+
+        // An unrelated change re-notifies only the streamer whose room moved; a repeat of the
+        // same snapshot notifies nobody.
+        notices.Clear();
+        await monitor.ApplySnapshotAsync(new Chorus.Redesign.Rpc.RoutingSnapshotReply
+        {
+            Streamers =
+            {
+                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "room-1" },
+                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
+            }
+        });
+        Assert.Equal([("connection-1", "room-1")], notices);
+        notices.Clear();
+        await monitor.ApplySnapshotAsync(new Chorus.Redesign.Rpc.RoutingSnapshotReply
+        {
+            Streamers =
+            {
+                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "room-1" },
+                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
+            }
+        });
+        Assert.Empty(notices);
+        Assert.Equal("room-1", monitor.RoomFor("streamer-1"));
+        Assert.Null(monitor.RoomFor("streamer-none"));
+
+        // Unsubscribed connections stop hearing about rooms.
+        monitor.Unsubscribe("connection-1");
+        notices.Clear();
+        await monitor.ApplySnapshotAsync(new Chorus.Redesign.Rpc.RoutingSnapshotReply
+        {
+            Streamers =
+            {
+                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "" }
+            }
+        });
+        Assert.Empty(notices);
+    }
 }

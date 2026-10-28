@@ -62,4 +62,20 @@ public sealed class EdgeSessionClient(Func<GrpcChannel> channelFactory, string g
             OperationId = operationId
         }, cancellationToken: cancellation);
     }
+
+    /// <summary>Mounts the live session onto a game (m1 StartGameplay). The access credential —
+    /// not any client-sent identity — names the acting session; the game id is the client's
+    /// only free choice here, and the server still checks it against the tenant's apps.</summary>
+    public async Task<GameplayStatusReply> StartGameplayAsync(string tenantId, string accessCredential,
+        string gameId, string operationId, CancellationToken cancellation)
+    {
+        var client = new StreamerSession.StreamerSessionClient(_channel.Value);
+        return await client.StartGameplayAsync(new StartGameplayRequest
+        {
+            TenantId = tenantId,
+            AccessCredential = accessCredential,
+            GameId = gameId,
+            OperationId = operationId
+        }, cancellationToken: cancellation);
+    }
 }

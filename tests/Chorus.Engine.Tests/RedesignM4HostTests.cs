@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Chorus.Redesign.Platform;
 using Chorus.Redesign.Rpc;
 using Chorus.Redesign.StreamerGateway.Messages;
@@ -355,6 +356,169 @@ public sealed class RedesignM4HostTests
         Assert.Equal(EdgeErrorCodes.SessionRevoked, error.GetProperty("code").GetString());
     }
 
+    // ---- The gameplay and queue round (contracts 3.1, 3.2) ----
+
+    [Fact]
+    public async Task StartGameplayOverTheEdgeMountsTheBindingAndAnswersGameplayStatus()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment);
+        using var client = await RedesignM4WsClient.ConnectAsync(wssPort, environment.RootCertificatePem,
+            environment.NodeAuthorityCertificatePem);
+        await client.HelloAsync();
+
+        var status = await LoginAndStartAsync(client, simulator, "open-m4-start");
+        Assert.False(string.IsNullOrEmpty(status.GetProperty("bindingId").GetString()));
+        Assert.True(status.GetProperty("generation").GetInt64() >= 1);
+        Assert.Equal("Ready", status.GetProperty("state").GetString());
+
+        // The mount leaves the connection usable for the queue round that follows it.
+        await client.SendRawAsync("""{"type":"ping"}""");
+        await client.ExpectAsync(EdgeTypes.Pong, TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task JoinQueuePairsTwoEdgeClientsIntoARoundWithMatchStatusPushes()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment, withMatchmaker: true);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var first = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        using var second = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await first.HelloAsync();
+        await second.HelloAsync();
+        await LoginAndStartAsync(first, simulator, "open-m4-match-a");
+        await LoginAndStartAsync(second, simulator, "open-m4-match-b");
+
+        // Both mounts queue into the same partition; the replies carry the ticket facts.
+        await first.SendAsync(new EdgeJoinQueue { OperationId = "join-a", QueueType = "standard" });
+        var queuedA = await first.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        await second.SendAsync(new EdgeJoinQueue { OperationId = "join-b", QueueType = "standard" });
+        var queuedB = await second.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        Assert.Equal("Queued", queuedA.GetProperty("state").GetString());
+        Assert.Equal("Queued", queuedB.GetProperty("state").GetString());
+        Assert.False(string.IsNullOrEmpty(queuedA.GetProperty("ticketId").GetString()));
+
+        // The coordinator pairs the partition into a round; the routing watch turns the new
+        // room into the match notice — pushed, not polled, on both connections.
+        var matchedA = await first.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        var matchedB = await second.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        Assert.Equal("Matched", matchedA.GetProperty("state").GetString());
+        Assert.Equal("Matched", matchedB.GetProperty("state").GetString());
+        var room = matchedA.GetProperty("roomId").GetString();
+        Assert.False(string.IsNullOrEmpty(room));
+        Assert.Equal(room, matchedB.GetProperty("roomId").GetString());
+        Assert.False(string.IsNullOrEmpty(matchedA.GetProperty("reservationId").GetString()));
+        Assert.Equal(matchedA.GetProperty("reservationId").GetString(),
+            matchedB.GetProperty("reservationId").GetString());
+        Assert.Equal(queuedA.GetProperty("ticketId").GetString(),
+            matchedA.GetProperty("ticketId").GetString());
+    }
+
+    [Fact]
+    public async Task CancelQueueWithdrawsTheTicketAndKeepsTheConnectionUsable()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment);
+        using var client = await RedesignM4WsClient.ConnectAsync(wssPort, environment.RootCertificatePem,
+            environment.NodeAuthorityCertificatePem);
+        await client.HelloAsync();
+        await LoginAndStartAsync(client, simulator, "open-m4-cancel");
+
+        await client.SendAsync(new EdgeJoinQueue { OperationId = "join-1", QueueType = "standard" });
+        var queued = await client.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        var ticketId = queued.GetProperty("ticketId").GetString()!;
+
+        await client.SendAsync(new EdgeCancelQueue { OperationId = "cancel-1", TicketId = ticketId });
+        var cancelled = await client.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        Assert.Equal("Cancelled", cancelled.GetProperty("state").GetString());
+        Assert.Equal(ticketId, cancelled.GetProperty("ticketId").GetString());
+        await client.SendRawAsync("""{"type":"ping"}""");
+        await client.ExpectAsync(EdgeTypes.Pong, TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task AQueueUplinkBeforeGameplayIsRefusedWithInvalidMessage()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment);
+        using var client = await RedesignM4WsClient.ConnectAsync(wssPort, environment.RootCertificatePem,
+            environment.NodeAuthorityCertificatePem);
+        await client.HelloAsync();
+        var secret = RandomNumberGenerator.GetBytes(32);
+        await client.SendAsync(Login(simulator, "open-m4-noqueue", secret));
+        await client.ExpectAsync(EdgeTypes.LoginReady, TimeSpan.FromSeconds(30));
+
+        // A ticket is per mount; with no startGameplay there is no mount to queue or cancel.
+        await client.SendAsync(new EdgeJoinQueue { OperationId = "join-1", QueueType = "standard" });
+        var joinError = await client.ExpectAsync(EdgeTypes.Error, TimeSpan.FromSeconds(30));
+        Assert.Equal(EdgeErrorCodes.InvalidMessage, joinError.GetProperty("code").GetString());
+        await client.SendAsync(new EdgeCancelQueue { OperationId = "cancel-1" });
+        var cancelError = await client.ExpectAsync(EdgeTypes.Error, TimeSpan.FromSeconds(30));
+        Assert.Equal(EdgeErrorCodes.InvalidMessage, cancelError.GetProperty("code").GetString());
+        await client.SendRawAsync("""{"type":"ping"}""");
+        await client.ExpectAsync(EdgeTypes.Pong, TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task AnUnmappedGameIsRefusedAtStartGameplay()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment);
+        using var client = await RedesignM4WsClient.ConnectAsync(wssPort, environment.RootCertificatePem,
+            environment.NodeAuthorityCertificatePem);
+        await client.HelloAsync();
+        var secret = RandomNumberGenerator.GetBytes(32);
+        await client.SendAsync(Login(simulator, "open-m4-badgame", secret));
+        await client.ExpectAsync(EdgeTypes.LoginReady, TimeSpan.FromSeconds(30));
+
+        // The tenant's application map decides which games exist; the refusal is visible and
+        // the session itself is untouched — the connection stays for a corrected retry.
+        await client.SendAsync(new EdgeStartGameplay
+        {
+            OperationId = "start-1", GameId = "game-not-mapped"
+        });
+        var error = await client.ExpectAsync(EdgeTypes.Error, TimeSpan.FromSeconds(30));
+        Assert.Equal(EdgeErrorCodes.SessionRevoked, error.GetProperty("code").GetString());
+        await client.SendRawAsync("""{"type":"ping"}""");
+        await client.ExpectAsync(EdgeTypes.Pong, TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task ADuplicateJoinQueueReplaysTheSameTicket()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment);
+        using var client = await RedesignM4WsClient.ConnectAsync(wssPort, environment.RootCertificatePem,
+            environment.NodeAuthorityCertificatePem);
+        await client.HelloAsync();
+        await LoginAndStartAsync(client, simulator, "open-m4-dup");
+
+        // The same operation replays the same ticket: one candidate, not two windows.
+        await client.SendAsync(new EdgeJoinQueue { OperationId = "join-1", QueueType = "standard" });
+        var first = await client.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        await client.SendAsync(new EdgeJoinQueue { OperationId = "join-1", QueueType = "standard" });
+        var retry = await client.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        Assert.Equal(first.GetProperty("ticketId").GetString(), retry.GetProperty("ticketId").GetString());
+        Assert.Equal("Queued", retry.GetProperty("state").GetString());
+    }
+
+    /// <summary>Logs in over the edge and mounts the game, leaving the connection ready to
+    /// queue. Returns the gameplayStatus frame.</summary>
+    private static async Task<System.Text.Json.JsonElement> LoginAndStartAsync(RedesignM4WsClient client,
+        DevelopmentPlatformSimulator simulator, string openId, string rulesVersion = "rules-1")
+    {
+        var secret = RandomNumberGenerator.GetBytes(32);
+        await client.SendAsync(Login(simulator, openId, secret));
+        await client.ExpectAsync(EdgeTypes.LoginReady, TimeSpan.FromSeconds(30));
+        await client.SendAsync(new EdgeStartGameplay
+        {
+            OperationId = "start-" + openId, GameId = "game-a", RulesVersion = rulesVersion
+        });
+        return await client.ExpectAsync(EdgeTypes.GameplayStatus, TimeSpan.FromSeconds(30));
+    }
+
     private static EdgeLoginWithPlatformLaunch Login(DevelopmentPlatformSimulator simulator,
         string openId, byte[] nextSecret)
     {
@@ -369,13 +533,23 @@ public sealed class RedesignM4HostTests
     /// <summary>The full edge topology: control, data, streamer and the gateway. The
     /// StreamerServer and the gateway both register with the control plane — the session
     /// replacement notice needs the gateway's endpoint in routing, and the faster report
-    /// interval keeps that visibility inside the test windows.</summary>
+    /// interval keeps that visibility inside the test windows. With the matchmaker on, the
+    /// control plane pairs queued mounts into rounds behind a game host, exactly like the M3
+    /// match cluster.</summary>
     private static async Task<(int WssPort, DevelopmentPlatformSimulator Simulator)> StartEdgeClusterAsync(
-        RedesignM0HostTests.HostEnvironment environment)
+        RedesignM0HostTests.HostEnvironment environment, bool withMatchmaker = false)
     {
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
         var accessKey = RandomNumberGenerator.GetBytes(32);
-        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        var controlEnvironment = new Dictionary<string, string>();
+        if (withMatchmaker)
+        {
+            controlEnvironment["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}";
+            controlEnvironment["CHORUS_GAME_ENDPOINTS"] = $"https://localhost:{environment.GamePort}";
+            controlEnvironment["CHORUS_MATCH_INTERVAL_MS"] = "200";
+        }
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            controlEnvironment);
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
 
         // The node exists because an agent registered it; the streamer and gateway hosts then
@@ -400,6 +574,15 @@ public sealed class RedesignM4HostTests
                 ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}""",
                 ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}"
             });
+        if (withMatchmaker)
+        {
+            await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+                new Dictionary<string, string>
+                {
+                    ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(CultureInfo.InvariantCulture)
+                },
+                clientTenant: "tenant-a");
+        }
         var wssPort = RedesignM0HostTests.HostEnvironment.FreePort();
         await environment.StartAsync("Chorus.Redesign.StreamerGateway",
             RedesignM0HostTests.HostEnvironment.FreePort(), "streamer-gateway",
@@ -408,6 +591,7 @@ public sealed class RedesignM4HostTests
                 ["CHORUS_WSS_PORT"] = wssPort.ToString(CultureInfo.InvariantCulture),
                 ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}""",
                 ["CHORUS_STREAMER_ENDPOINT"] = $"https://localhost:{streamerPort}",
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
                 ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
                 ["CHORUS_REPORT_INTERVAL_MS"] = "500"
             });

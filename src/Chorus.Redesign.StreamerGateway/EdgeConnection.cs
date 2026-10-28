@@ -59,6 +59,15 @@ public sealed class EdgeConnection
 
     public bool HasSession => SessionId is { Length: > 0 };
 
+    public string? BindingId { get; private set; }
+    public string? GameId { get; private set; }
+    public string? RulesVersion { get; private set; }
+
+    /// <summary>Queue uplinks need a mount: the binding facts a startGameplay established.</summary>
+    public bool HasGameplay => BindingId is { Length: > 0 };
+
+    private string? _lastNotifiedRoomId;
+
     public void MarkHelloAccepted() => HelloAccepted = true;
 
     public void MarkSession(string tenantId, string sessionId, string streamerId, string accessCredential)
@@ -67,6 +76,22 @@ public sealed class EdgeConnection
         SessionId = sessionId;
         StreamerId = streamerId;
         AccessCredential = accessCredential;
+    }
+
+    public void MarkGameplay(string bindingId, string gameId, string? rulesVersion)
+    {
+        BindingId = bindingId;
+        GameId = gameId;
+        RulesVersion = rulesVersion;
+    }
+
+    /// <summary>Claims the right to push one room notice: true only the first time this room
+    /// is named for this connection, so a routing flap cannot re-announce the same round.</summary>
+    public bool TryClaimRoomNotice(string roomId)
+    {
+        if (string.Equals(_lastNotifiedRoomId, roomId, StringComparison.Ordinal)) return false;
+        _lastNotifiedRoomId = roomId;
+        return true;
     }
 
     /// <summary>Binds the socket's send/close operations behind the serialized lane; called

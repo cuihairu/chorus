@@ -84,4 +84,15 @@ public static class EdgeErrorMapping
         Grpc.Core.StatusCode.InvalidArgument => EdgeErrorCodes.InvalidMessage,
         _ => EdgeErrorCodes.InternalError,
     };
+
+    /// <summary>Maps a MatchQueue RPC refusal. The queue's FailedPrecondition is a queue-state
+    /// refusal (nothing to cancel, already matched), not a session replacement — borrowing the
+    /// session code would tell the client its session moved when it did not.</summary>
+    public static string FromQueueRpcStatus(Grpc.Core.StatusCode status) => status switch
+    {
+        Grpc.Core.StatusCode.PermissionDenied => EdgeErrorCodes.SessionRevoked,
+        Grpc.Core.StatusCode.FailedPrecondition => EdgeErrorCodes.InvalidMessage,
+        Grpc.Core.StatusCode.InvalidArgument => EdgeErrorCodes.InvalidMessage,
+        _ => EdgeErrorCodes.InternalError,
+    };
 }

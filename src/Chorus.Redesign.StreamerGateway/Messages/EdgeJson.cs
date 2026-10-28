@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Chorus.Redesign.StreamerGateway.Messages;
 
@@ -9,5 +10,10 @@ namespace Chorus.Redesign.StreamerGateway.Messages;
 /// </summary>
 public static class EdgeJson
 {
-    public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
+    public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
+    {
+        // Optional facts stay absent from the wire when the gateway has none — a null field
+        // and a missing field must not be distinguishable to the client.
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
 }

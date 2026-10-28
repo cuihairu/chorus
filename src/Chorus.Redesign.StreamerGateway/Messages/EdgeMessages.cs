@@ -95,3 +95,61 @@ public sealed record EdgeSessionReplaced
     public string Type => EdgeTypes.SessionReplaced;
     public required string Reason { get; init; }
 }
+
+/// <summary>StartGameplay (contracts 3.1): mount the live session onto a game. The rules
+/// version folds into the match partition later — candidates on different rules never meet
+/// (contracts 2, Match/ControlServer row).</summary>
+public sealed record EdgeStartGameplay
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.StartGameplay;
+    public required string OperationId { get; init; }
+    public required string GameId { get; init; }
+    public string? RulesVersion { get; init; }
+}
+
+/// <summary>JoinQueue (contracts 3.1): enqueue the mount for matching. The options blob is
+/// opaque to the edge — the partition the gateway composes carries the facts it can name.</summary>
+public sealed record EdgeJoinQueue
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.JoinQueue;
+    public required string OperationId { get; init; }
+    public required string QueueType { get; init; }
+    public string? Options { get; init; }
+}
+
+/// <summary>CancelQueue (contracts 3.1): withdraw the mount's ticket. The ticket facts the
+/// client holds are diagnostics — the mount's own ticket is what the server cancels.</summary>
+public sealed record EdgeCancelQueue
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.CancelQueue;
+    public required string OperationId { get; init; }
+    public string? TicketId { get; init; }
+    public long? TicketVersion { get; init; }
+}
+
+/// <summary>GameplayStatus (contracts 3.2): the mount facts as the binding store sees them.
+/// Arrives as the startGameplay reply; the state vocabulary is the binding store's.</summary>
+public sealed record EdgeGameplayStatus
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.GameplayStatus;
+    public required string BindingId { get; init; }
+    public long Generation { get; init; }
+    public required string State { get; init; }
+    public string? Reason { get; init; }
+}
+
+/// <summary>MatchStatus (contracts 3.2): where the mount's ticket stands. "Matched" is the
+/// edge's word for the store's Committed — the round exists, the room id names it.</summary>
+public sealed record EdgeMatchStatus
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.MatchStatus;
+    public required string TicketId { get; init; }
+    public required string State { get; init; }
+    public string? ReservationId { get; init; }
+    public string? RoomId { get; init; }
+}

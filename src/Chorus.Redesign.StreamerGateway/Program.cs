@@ -62,11 +62,28 @@ var sessionClient = new EdgeSessionClient(
     () => ProcessGrpcClientFactory.Create(new Uri(streamerEndpoint), serverCertificate,
         root, nodeAuthority, clusterId, "streamer-server"),
     identity.ProcessInstanceId);
-var edgeWs = new EdgeWs(edgeOptions, registry, tenantApplications, sessionClient, identity.ProcessInstanceId);
+// The MatchQueue boundary (DataServer) carries the mount's ticket; the routing watch supplies
+// the room facts that turn a committed ticket into a visible match.
+var dataPort = int.Parse(Environment.GetEnvironmentVariable("CHORUS_DATA_PORT") ?? "7501");
+var dataEndpoint = Environment.GetEnvironmentVariable("CHORUS_DATA_ENDPOINT")
+    ?? $"https://localhost:{dataPort}";
+var queueClient = new EdgeQueueClient(
+    () => ProcessGrpcClientFactory.Create(new Uri(dataEndpoint), serverCertificate,
+        root, nodeAuthority, clusterId, "data-server"));
+var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOINT");
+EdgeRoutingMonitor? routingMonitor = null;
+if (controlEndpoint is { Length: > 0 })
+{
+    routingMonitor = new EdgeRoutingMonitor(
+        () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate,
+            root, nodeAuthority, clusterId, "control-server"));
+}
+var edgeWs = new EdgeWs(edgeOptions, registry, tenantApplications, sessionClient,
+    identity.ProcessInstanceId, queueClient, routingMonitor);
 
 // Instance self-registration (architecture 4.4): the gateway reports its internal gRPC
-// endpoint — routing consumers are cluster processes, never public clients.
-var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOINT");
+// endpoint — routing consumers are cluster processes, never public clients. The same control
+// endpoint feeds the routing watch that pushes match notices.
 if (controlEndpoint is { Length: > 0 })
 {
     var reportEndpoint = Environment.GetEnvironmentVariable("CHORUS_REPORT_ENDPOINT")
@@ -75,6 +92,7 @@ if (controlEndpoint is { Length: > 0 })
     var reportIntervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_REPORT_INTERVAL_MS") ?? "2000");
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
+    builder.Services.AddHostedService(_ => new RoutingMonitorHost(routingMonitor!));
 }
 
 builder.Services.AddSingleton(trustedCertificates);
@@ -89,3 +107,10 @@ await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
     ? value : throw new InvalidOperationException($"Set {name} before starting the gateway.");
+
+/// <summary>The routing watch as a hosted service: it lives exactly as long as the host.</summary>
+internal sealed class RoutingMonitorHost(EdgeRoutingMonitor monitor)
+    : Microsoft.Extensions.Hosting.BackgroundService
+{
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) => monitor.RunAsync(stoppingToken);
+}
