@@ -32,6 +32,8 @@ public sealed class RedesignMatchReservationStore(string connectionString,
     public const string Reserved = "Reserved";
     public const string Prepared = "Prepared";
     public const string Expired = "Expired";
+    public const string Committed = "Committed";
+    public const string Aborted = "Aborted";
 
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
 
@@ -369,6 +371,152 @@ public sealed class RedesignMatchReservationStore(string connectionString,
     }
 
     /// <summary>
+    /// Commits the match in one receipt transaction (architecture 7.2.5): the coordinator term
+    /// gates the write, the room ownership epoch fences it, and every ticket commits together
+    /// or not at all. A write carrying a displaced room owner's epoch never commits (AT25
+    /// mechanics).
+    /// </summary>
+    public async Task<MatchReservation> CommitMatchAsync(
+        string tenantId, string gameId, string reservationId, long coordinatorTerm,
+        string holderInstanceId, string roomInstanceId, long roomEpoch, string operationId,
+        CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId));
+        Require(reservationId, nameof(reservationId)); Require(holderInstanceId, nameof(holderInstanceId));
+        Require(roomInstanceId, nameof(roomInstanceId)); Require(operationId, nameof(operationId));
+        if (coordinatorTerm <= 0) throw new ArgumentOutOfRangeException(nameof(coordinatorTerm));
+        if (roomEpoch <= 0) throw new ArgumentOutOfRangeException(nameof(roomEpoch));
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1, JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            ReservationId = reservationId, RoomInstanceId = roomInstanceId, RoomEpoch = roomEpoch
+        }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "match.commit", reservationId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplyCommitMatchAsync(tenantId, gameId, reservationId,
+                coordinatorTerm, holderInstanceId, roomInstanceId, roomEpoch, connection, transaction, token),
+            cancellationToken);
+        return Deserialize(receipt.ResultJson, receipt.Duplicate);
+    }
+
+    private async Task<string> ApplyCommitMatchAsync(string tenantId, string gameId, string reservationId,
+        long coordinatorTerm, string holderInstanceId, string roomInstanceId, long roomEpoch,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        var partitionKey = await ReadPartitionAsync(reservationId, connection, transaction, cancellationToken);
+        await RequireTermAsync(partitionKey, coordinatorTerm, holderInstanceId, connection, transaction,
+            cancellationToken);
+        string roomId;
+        await using (var navigation = new NpgsqlCommand(
+            "SELECT room_id FROM match.reservation WHERE reservation_id=@reservation",
+            connection, transaction))
+        {
+            navigation.Parameters.AddWithValue("reservation", reservationId);
+            roomId = await navigation.ExecuteScalarAsync(cancellationToken) as string
+                ?? throw new RedesignMatchException("The reservation does not exist.");
+        }
+
+        // The ownership fence (unified lock order: ownership before reservation — the retire
+        // path locks the same pair in the same order, so commit and release serialize instead
+        // of deadlocking). A missing row, another instance, another epoch, a dead lease or a
+        // released row never commits.
+        await using (var ownership = new NpgsqlCommand("""
+            SELECT owner_process_instance_id,epoch,lease_until>clock_timestamp(),status
+            FROM control.ownership WHERE kind='room' AND entity_id=@room FOR UPDATE
+            """, connection, transaction))
+        {
+            ownership.Parameters.AddWithValue("room", roomId);
+            await using var reader = await ownership.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken)
+                || reader.GetString(0) != roomInstanceId || reader.GetInt64(1) != roomEpoch
+                || !reader.GetBoolean(2) || reader.GetString(3) != "Active")
+                throw new RedesignStaleOwnerException();
+        }
+
+        await using (var reservation = new NpgsqlCommand("""
+            SELECT status,expires_at>clock_timestamp() FROM match.reservation
+            WHERE reservation_id=@reservation AND tenant_id=@tenant AND game_id=@game FOR UPDATE
+            """, connection, transaction))
+        {
+            reservation.Parameters.AddWithValue("reservation", reservationId);
+            reservation.Parameters.AddWithValue("tenant", tenantId);
+            reservation.Parameters.AddWithValue("game", gameId);
+            await using var reader = await reservation.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new RedesignMatchException("The reservation does not exist.");
+            if (reader.GetString(0) is not (Reserved or Prepared))
+                throw new RedesignMatchException("The reservation is already committed or retired.");
+            if (!reader.GetBoolean(1))
+                throw new RedesignMatchException("The reservation deadline already passed; the sweep owns it.");
+        }
+
+        // Everyone commits together: the tickets leave the active-unique slots in the same
+        // transaction that stamps the reservation.
+        await using (var tickets = new NpgsqlCommand("""
+            UPDATE match.ticket SET state='Committed',version=version+1
+            WHERE reservation_id=@reservation AND state IN ('Reserved','Preparing')
+            """, connection, transaction))
+        {
+            tickets.Parameters.AddWithValue("reservation", reservationId);
+            await tickets.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var commit = new NpgsqlCommand("""
+            UPDATE match.reservation SET status='Committed' WHERE reservation_id=@reservation
+            """, connection, transaction))
+        {
+            commit.Parameters.AddWithValue("reservation", reservationId);
+            await commit.ExecuteNonQueryAsync(cancellationToken);
+        }
+        var committed = await ReadReservationRowAsync(reservationId, connection, transaction, cancellationToken);
+        await WriteOutboxAsync($"{reservationId}/commit", "match.committed", new
+        {
+            ReservationId = reservationId, RoomId = roomId, TenantId = tenantId, GameId = gameId,
+            committed.PartitionKey, committed.CoordinatorTerm, committed.Participants,
+            RoomInstanceId = roomInstanceId, RoomEpoch = roomEpoch
+        }, connection, transaction, cancellationToken);
+        return await ReadReservationJsonAsync(reservationId, connection, transaction, cancellationToken);
+    }
+
+    /// <summary>
+    /// Cancels the reservation under the coordinator's term: the tickets return to the queue
+    /// and a room the reservation already started is released with the full skeleton. A
+    /// committed reservation never aborts.
+    /// </summary>
+    public async Task<MatchReservation> AbortReservationAsync(
+        string tenantId, string gameId, string reservationId, long coordinatorTerm,
+        string holderInstanceId, string operationId, CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId));
+        Require(reservationId, nameof(reservationId)); Require(holderInstanceId, nameof(holderInstanceId));
+        Require(operationId, nameof(operationId));
+        if (coordinatorTerm <= 0) throw new ArgumentOutOfRangeException(nameof(coordinatorTerm));
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1, JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            ReservationId = reservationId
+        }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "match.abort", reservationId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplyAbortReservationAsync(tenantId, gameId, reservationId,
+                coordinatorTerm, holderInstanceId, connection, transaction, token),
+            cancellationToken);
+        return Deserialize(receipt.ResultJson, receipt.Duplicate);
+    }
+
+    private async Task<string> ApplyAbortReservationAsync(string tenantId, string gameId, string reservationId,
+        long coordinatorTerm, string holderInstanceId,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        var partitionKey = await ReadPartitionAsync(reservationId, connection, transaction, cancellationToken);
+        await RequireTermAsync(partitionKey, coordinatorTerm, holderInstanceId, connection, transaction,
+            cancellationToken);
+        if (!await RetireAsync(reservationId, Aborted, "reservation-aborted", "match.aborted",
+                $"{reservationId}/abort", requireExpired: false, connection, transaction, cancellationToken))
+            throw new RedesignMatchException("The reservation is already committed or retired.");
+        return await ReadReservationJsonAsync(reservationId, connection, transaction, cancellationToken);
+    }
+
+    /// <summary>
     /// Retires expired reservations (Reserved or Prepared past the deadline). A terminator, not
     /// a term holder: time decides. A room the reservation already started is aborted with the
     /// full release skeleton (participations, pointers, ownership epoch bump); tickets return
@@ -381,10 +529,12 @@ public sealed class RedesignMatchReservationStore(string connectionString,
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         var expired = 0;
+        // Candidates are picked without locks; RetireAsync re-validates under the row locks, so
+        // a reservation renewed or retired in between is skipped rather than double-processed.
         await using (var sweep = new NpgsqlCommand("""
             SELECT reservation_id FROM match.reservation
             WHERE status IN ('Reserved','Prepared') AND expires_at<clock_timestamp()
-            ORDER BY expires_at LIMIT @max FOR UPDATE SKIP LOCKED
+            ORDER BY expires_at LIMIT @max
             """, connection, transaction))
         {
             sweep.Parameters.AddWithValue("max", max);
@@ -392,11 +542,10 @@ public sealed class RedesignMatchReservationStore(string connectionString,
             await using (var reader = await sweep.ExecuteReaderAsync(cancellationToken))
                 while (await reader.ReadAsync(cancellationToken)) reservationIds.Add(reader.GetString(0));
             foreach (var reservationId in reservationIds)
-            {
-                await RetireAsync(reservationId, Expired, "reservation-expired", connection, transaction,
-                    cancellationToken);
-                expired++;
-            }
+                if (await RetireAsync(reservationId, Expired, "reservation-expired", "match.expired",
+                        $"{reservationId}/expire", requireExpired: true, connection, transaction,
+                        cancellationToken))
+                    expired++;
         }
         await transaction.CommitAsync(cancellationToken);
         return expired;
@@ -419,29 +568,52 @@ public sealed class RedesignMatchReservationStore(string connectionString,
     }
 
     /// <summary>
-    /// The shared release path for retirement (expiry now, explicit abort in M3-3): abort a
+    /// The shared release path for retirement (explicit abort or the expiry sweep): abort a
     /// started room with the full skeleton, release the ownership with an epoch bump, return
     /// the tickets to the queue (unless their own expiry passed) and stamp the reservation.
+    /// Locks the ownership before the reservation — the same pair in the same order as commit —
+    /// so a concurrent commit serializes instead of deadlocking. Returns false when another
+    /// writer already finished the reservation, or renewed it past the deadline, under the locks.
     /// </summary>
-    private static async Task RetireAsync(string reservationId, string status, string reason,
+    private static async Task<bool> RetireAsync(string reservationId, string status, string reason,
+        string outboxKind, string effectId, bool requireExpired,
         NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
-        string roomId; string tenantId; string gameId;
+        string roomId;
+        await using (var navigation = new NpgsqlCommand(
+            "SELECT room_id FROM match.reservation WHERE reservation_id=@reservation",
+            connection, transaction))
+        {
+            navigation.Parameters.AddWithValue("reservation", reservationId);
+            roomId = await navigation.ExecuteScalarAsync(cancellationToken) as string
+                ?? throw new RedesignMatchException("The reservation does not exist.");
+        }
+        await using (var ownershipLock = new NpgsqlCommand("""
+            SELECT 1 FROM control.ownership WHERE kind='room' AND entity_id=@room FOR UPDATE
+            """, connection, transaction))
+        {
+            ownershipLock.Parameters.AddWithValue("room", roomId);
+            await ownershipLock.ExecuteNonQueryAsync(cancellationToken);
+        }
+        string tenantId; string gameId;
         await using (var reservation = new NpgsqlCommand("""
-            SELECT room_id,tenant_id,game_id FROM match.reservation
-            WHERE reservation_id=@reservation FOR UPDATE
+            SELECT tenant_id,game_id,status,expires_at<clock_timestamp()
+            FROM match.reservation WHERE reservation_id=@reservation FOR UPDATE
             """, connection, transaction))
         {
             reservation.Parameters.AddWithValue("reservation", reservationId);
             await using var reader = await reservation.ExecuteReaderAsync(cancellationToken);
             if (!await reader.ReadAsync(cancellationToken))
                 throw new RedesignMatchException("The reservation does not exist.");
-            roomId = reader.GetString(0);
-            tenantId = reader.GetString(1);
-            gameId = reader.GetString(2);
+            tenantId = reader.GetString(0);
+            gameId = reader.GetString(1);
+            if (reader.GetString(2) is not ("Reserved" or "Prepared"))
+                return false;
+            if (requireExpired && !reader.GetBoolean(3))
+                return false;
         }
 
-        string roomStatus = "None";
+        string roomStatus;
         await using (var room = new NpgsqlCommand(
             "SELECT status FROM game.room WHERE room_id=@room FOR UPDATE", connection, transaction))
         {
@@ -532,17 +704,19 @@ public sealed class RedesignMatchReservationStore(string connectionString,
         }
         await using (var outbox = new NpgsqlCommand("""
             INSERT INTO infra.outbox(effect_id,kind,payload,status)
-            VALUES (@effect,'match.expired',@payload::jsonb,'Pending')
+            VALUES (@effect,@kind,@payload::jsonb,'Pending')
             ON CONFLICT (effect_id) DO NOTHING
             """, connection, transaction))
         {
-            outbox.Parameters.AddWithValue("effect", $"{reservationId}/expire");
+            outbox.Parameters.AddWithValue("effect", effectId);
+            outbox.Parameters.AddWithValue("kind", outboxKind);
             outbox.Parameters.AddWithValue("payload", JsonSerializer.Serialize(new
             {
                 ReservationId = reservationId, RoomId = roomId, Reason = reason, ReleasedEpoch = releasedEpoch
             }));
             await outbox.ExecuteNonQueryAsync(cancellationToken);
         }
+        return true;
     }
 
     /// <summary>The coordinator gate (unified lock order: coordinator first). Fails visibly
@@ -586,14 +760,20 @@ public sealed class RedesignMatchReservationStore(string connectionString,
         return command;
     }
 
-    private static async Task<string> ReadReservationJsonAsync(string reservationId,
+    private static async Task<MatchReservation> ReadReservationRowAsync(string reservationId,
         NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
         await using var command = ReadReservationCommand(reservationId, connection, transaction);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
             throw new RedesignMatchException("The reservation does not exist.");
-        var stored = ReadReservation(reader, duplicate: false);
+        return ReadReservation(reader, duplicate: false);
+    }
+
+    private static async Task<string> ReadReservationJsonAsync(string reservationId,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        var stored = await ReadReservationRowAsync(reservationId, connection, transaction, cancellationToken);
         return Serialize(new StoredReservation(stored.ReservationId, stored.RoomId, stored.TenantId,
             stored.GameId, stored.PartitionKey, stored.CoordinatorTerm,
             new DateTimeOffset(stored.ExpiresAtUtc).ToUnixTimeMilliseconds(), stored.Status,

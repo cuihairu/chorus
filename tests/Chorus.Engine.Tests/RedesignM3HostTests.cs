@@ -199,7 +199,7 @@ public sealed class RedesignM3HostTests
                 });
                 Assert.Equal("Queued", enqueued.Ticket.State);
 
-                // Only the control plane reserves; a streamer certificate never does.
+                // Only the control plane reserves or commits; a streamer certificate never does.
                 var match = new Match.MatchClient(streamerChannel);
                 var denied = await Assert.ThrowsAsync<RpcException>(() => match.ReserveMatchAsync(
                     new ReserveMatchRequest
@@ -213,6 +213,14 @@ public sealed class RedesignM3HostTests
                         } }
                     }).ResponseAsync);
                 Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
+                var deniedCommit = await Assert.ThrowsAsync<RpcException>(() => match.CommitMatchAsync(
+                    new CommitMatchRequest
+                    {
+                        TenantId = "tenant-a", GameId = "game-a", ReservationId = "reservation-none",
+                        CoordinatorTerm = 1, HolderInstanceId = "control-m3-3", RoomInstanceId = "gs-1",
+                        RoomEpoch = 1, OperationId = "m3-commit-0"
+                    }).ResponseAsync);
+                Assert.Equal(StatusCode.PermissionDenied, deniedCommit.StatusCode);
             }
 
             // The coordinator reserves under its term on the data plane; a stale term refuses.
@@ -249,7 +257,72 @@ public sealed class RedesignM3HostTests
                 Assert.Equal(1, reserved.Reservation.CoordinatorTerm);
                 Assert.Single(reserved.Reservation.Participants);
 
-                // The deadline passes; the sweep retires the reservation without a term.
+                // A second match walks the whole path — reserve, claim the room ownership on
+                // the control plane, prepare, commit — and the sweep only retires the first.
+                var guest = await MountAsync(environment, simulator, "m3-host-4");
+                var queue = new MatchQueue.MatchQueueClient(dataChannel);
+                await queue.EnqueueTicketAsync(new EnqueueTicketRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", BindingId = guest.BindingId,
+                    SessionId = guest.SessionId, PartitionKey = partition, OperationId = "m3-enqueue-4"
+                });
+                using var controlPlane = environment.Channel(environment.ControlPort, controlCertificate,
+                    "control-server");
+                var ownership = new ControlService.ControlServiceClient(controlPlane);
+                var roomClaim = await ownership.ClaimOwnershipAsync(new OwnershipRequest
+                {
+                    Kind = "room", EntityId = "room-m3-4", OwnerInstanceId = "gs-m3-4",
+                    LeaseSeconds = 30, TenantId = "tenant-a", GameId = "game-a"
+                });
+                var walk = await match.ReserveMatchAsync(new ReserveMatchRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", PartitionKey = partition,
+                    CoordinatorTerm = 1, HolderInstanceId = "control-m3-3", RoomId = "room-m3-4",
+                    ReservationSeconds = 30, OperationId = "m3-reserve-4",
+                    Participants = { new ReservedParticipantProto
+                    {
+                        BindingId = guest.BindingId, ParticipantId = guest.StreamerId, Role = "Host"
+                    } }
+                });
+                var wrongEpoch = await Assert.ThrowsAsync<RpcException>(() => match.CommitMatchAsync(
+                    new CommitMatchRequest
+                    {
+                        TenantId = "tenant-a", GameId = "game-a",
+                        ReservationId = walk.Reservation.ReservationId,
+                        CoordinatorTerm = 1, HolderInstanceId = "control-m3-3", RoomInstanceId = "gs-m3-4",
+                        RoomEpoch = roomClaim.Epoch + 9, OperationId = "m3-commit-4"
+                    }).ResponseAsync);
+                Assert.Equal(StatusCode.FailedPrecondition, wrongEpoch.StatusCode);
+                await match.MarkPreparedAsync(new MarkPreparedRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a",
+                    ReservationId = walk.Reservation.ReservationId,
+                    CoordinatorTerm = 1, HolderInstanceId = "control-m3-3",
+                    PreparedReceiptJson = """{"tick":0}""", OperationId = "m3-prepare-4"
+                });
+                var committed = await match.CommitMatchAsync(new CommitMatchRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a",
+                    ReservationId = walk.Reservation.ReservationId,
+                    CoordinatorTerm = 1, HolderInstanceId = "control-m3-3", RoomInstanceId = "gs-m3-4",
+                    RoomEpoch = roomClaim.Epoch, OperationId = "m3-commit-4"
+                });
+                Assert.Equal("Committed", committed.Reservation.Status);
+                var guestTicket = await queue.GetTicketAsync(new GetTicketRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", BindingId = guest.BindingId
+                });
+                Assert.Equal("Committed", guestTicket.Ticket.State);
+                var aborted = await Assert.ThrowsAsync<RpcException>(() => match.AbortReservationAsync(
+                    new AbortReservationRequest
+                    {
+                        TenantId = "tenant-a", GameId = "game-a",
+                        ReservationId = walk.Reservation.ReservationId,
+                        CoordinatorTerm = 1, HolderInstanceId = "control-m3-3", OperationId = "m3-abort-4"
+                    }).ResponseAsync);
+                Assert.Equal(StatusCode.FailedPrecondition, aborted.StatusCode);
+
+                // The deadline passes; the sweep retires only the first reservation.
                 await Task.Delay(TimeSpan.FromMilliseconds(1500));
                 var swept = await match.ExpireReservationsAsync(new ExpireReservationsRequest { Max = 10 });
                 Assert.Equal(1, swept.Expired);

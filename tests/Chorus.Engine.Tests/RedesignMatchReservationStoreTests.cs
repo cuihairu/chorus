@@ -282,6 +282,213 @@ public sealed class RedesignMatchReservationStoreTests
             ("effect", $"{reservation.ReservationId}/expire")));
     }
 
+    [Fact]
+    public async Task CommitIsFencedByTermOwnershipAndDeadline()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var coordinator = new RedesignCoordinatorStore(database.ConnectionString);
+        var tickets = new RedesignMatchTicketStore(database.ConnectionString);
+        var reservations = new RedesignMatchReservationStore(database.ConnectionString);
+
+        var term = await coordinator.ClaimTermAsync(Partition, "control-a", 60);
+        var (p1, b1) = await MountAsync(identityStore, bindingStore, "live-key-f1", "reserve-f1");
+        var (p2, b2) = await MountAsync(identityStore, bindingStore, "live-key-f2", "reserve-f2");
+        await tickets.EnqueueTicketAsync("tenant-a", "game-a", b1.BindingId, b1.SessionId,
+            Partition, "enqueue-op-1");
+        await tickets.EnqueueTicketAsync("tenant-a", "game-a", b2.BindingId, b2.SessionId,
+            Partition, "enqueue-op-2");
+        var reservation = await reservations.ReserveAsync("tenant-a", "game-a", Partition, term.Term,
+            "control-a", "room-m-1",
+            [new ReservedParticipant(b1.BindingId, p1.StreamerId, "Host"),
+             new ReservedParticipant(b2.BindingId, p2.StreamerId, "Guest")],
+            30, "reserve-op-1");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-m-1", "gs-1", 30);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-m-1", "gs-1", claim.Epoch,
+            [new RoundParticipant(b1.BindingId, p1.StreamerId, "Host"),
+             new RoundParticipant(b2.BindingId, p2.StreamerId, "Guest")],
+            "1.0.0", "cfg-1", "pkg-1", "room-op-1");
+        await reservations.MarkPreparedAsync("tenant-a", "game-a", reservation.ReservationId,
+            term.Term, "control-a", """{"tick":0,"state":"ready"}""", "prepare-op-1");
+
+        // A stale term, a displaced room instance and a wrong epoch never commit (AT10/AT25
+        // mechanics); the fence is the ownership row, not a claim in memory.
+        await Assert.ThrowsAsync<RedesignStaleTermException>(() => reservations.CommitMatchAsync(
+            "tenant-a", "game-a", reservation.ReservationId, term.Term + 1, "control-a",
+            "gs-1", claim.Epoch, "commit-op-x"));
+        await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => reservations.CommitMatchAsync(
+            "tenant-a", "game-a", reservation.ReservationId, term.Term, "control-a",
+            "gs-2", claim.Epoch, "commit-op-x"));
+        await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => reservations.CommitMatchAsync(
+            "tenant-a", "game-a", reservation.ReservationId, term.Term, "control-a",
+            "gs-1", claim.Epoch + 5, "commit-op-x"));
+
+        var committed = await reservations.CommitMatchAsync("tenant-a", "game-a",
+            reservation.ReservationId, term.Term, "control-a", "gs-1", claim.Epoch, "commit-op-1");
+        Assert.Equal(RedesignMatchReservationStore.Committed, committed.Status);
+        Assert.Equal("Committed", (await tickets.GetTicketAsync("tenant-a", "game-a", b1.BindingId))!.State);
+        Assert.Equal("Committed", (await tickets.GetTicketAsync("tenant-a", "game-a", b2.BindingId))!.State);
+
+        // The retry replays; a second operation on a committed reservation refuses visibly.
+        var retry = await reservations.CommitMatchAsync("tenant-a", "game-a",
+            reservation.ReservationId, term.Term, "control-a", "gs-1", claim.Epoch, "commit-op-1");
+        Assert.True(retry.Duplicate);
+        await Assert.ThrowsAsync<RedesignMatchException>(() => reservations.CommitMatchAsync(
+            "tenant-a", "game-a", reservation.ReservationId, term.Term, "control-a",
+            "gs-1", claim.Epoch, "commit-op-2"));
+
+        // The committed tickets left the active slots — but the mounts now participate in the
+        // live round, so they refuse to queue again until it ends.
+        await Assert.ThrowsAsync<RedesignMatchException>(() => tickets.EnqueueTicketAsync(
+            "tenant-a", "game-a", b1.BindingId, b1.SessionId, Partition, "enqueue-op-3"));
+
+        // An expired reservation is owned by the sweep — commit refuses even with the fence held.
+        var (p3, b3) = await MountAsync(identityStore, bindingStore, "live-key-f3", "reserve-f3");
+        await tickets.EnqueueTicketAsync("tenant-a", "game-a", b3.BindingId, b3.SessionId,
+            Partition, "enqueue-op-4");
+        var late = await reservations.ReserveAsync("tenant-a", "game-a", Partition, term.Term,
+            "control-a", "room-m-2",
+            [new ReservedParticipant(b3.BindingId, p3.StreamerId, "Host")], 30, "reserve-op-2");
+        var lateClaim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-m-2",
+            "gs-1", 30);
+        await ShiftReservationExpiryAsync(database.ConnectionString, "room-m-2");
+        await Assert.ThrowsAsync<RedesignMatchException>(() => reservations.CommitMatchAsync(
+            "tenant-a", "game-a", late.ReservationId, term.Term, "control-a", "gs-1", lateClaim.Epoch,
+            "commit-op-3"));
+        Assert.Equal(1L, await ScalarAsync(database.ConnectionString,
+            $"SELECT count(*) FROM infra.outbox WHERE effect_id='{reservation.ReservationId}/commit' AND kind='match.committed'"));
+    }
+
+    [Fact]
+    public async Task ASuccessorCommitsAPreparedReservationWithoutReReserving()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var coordinator = new RedesignCoordinatorStore(database.ConnectionString);
+        var tickets = new RedesignMatchTicketStore(database.ConnectionString);
+        var reservations = new RedesignMatchReservationStore(database.ConnectionString);
+
+        // The coordinator dies after prepare: the successor reads the frozen reservation with
+        // its prepare receipt and commits the SAME room — it never reserves a second one (AT11).
+        var term = await coordinator.ClaimTermAsync(Partition, "control-a", 60);
+        var (p1, b1) = await MountAsync(identityStore, bindingStore, "live-key-s5", "reserve-s5");
+        var (p2, b2) = await MountAsync(identityStore, bindingStore, "live-key-s6", "reserve-s6");
+        await tickets.EnqueueTicketAsync("tenant-a", "game-a", b1.BindingId, b1.SessionId,
+            Partition, "enqueue-op-1");
+        await tickets.EnqueueTicketAsync("tenant-a", "game-a", b2.BindingId, b2.SessionId,
+            Partition, "enqueue-op-2");
+        var reservation = await reservations.ReserveAsync("tenant-a", "game-a", Partition, term.Term,
+            "control-a", "room-m-1",
+            [new ReservedParticipant(b1.BindingId, p1.StreamerId, "Host"),
+             new ReservedParticipant(b2.BindingId, p2.StreamerId, "Guest")],
+            60, "reserve-op-1");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-m-1", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-m-1", "gs-1", claim.Epoch,
+            [new RoundParticipant(b1.BindingId, p1.StreamerId, "Host"),
+             new RoundParticipant(b2.BindingId, p2.StreamerId, "Guest")],
+            "1.0.0", "cfg-1", "pkg-1", "room-op-1");
+        await reservations.MarkPreparedAsync("tenant-a", "game-a", reservation.ReservationId,
+            term.Term, "control-a", """{"tick":0,"state":"ready"}""", "prepare-op-1");
+
+        var takeover = await coordinator.ClaimTermAsync(Partition, "control-b", 60);
+        var found = await reservations.GetReservationAsync("tenant-a", "game-a",
+            reservation.ReservationId);
+        Assert.Equal(RedesignMatchReservationStore.Prepared, found!.Status);
+        Assert.NotNull(found.PreparedReceiptJson);
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse("""{"tick":0,"state":"ready"}"""),
+            JsonNode.Parse(found.PreparedReceiptJson)));
+
+        var committed = await reservations.CommitMatchAsync("tenant-a", "game-a",
+            reservation.ReservationId, takeover.Term, "control-b", "gs-1", claim.Epoch,
+            "successor-commit-1");
+        Assert.Equal(RedesignMatchReservationStore.Committed, committed.Status);
+        Assert.Equal(1L, await ScalarAsync(database.ConnectionString,
+            "SELECT count(*) FROM game.room WHERE tenant_id='tenant-a' AND game_id='game-a'"));
+        Assert.Equal("Committed", (await tickets.GetTicketAsync("tenant-a", "game-a", b1.BindingId))!.State);
+        Assert.Equal("Committed", (await tickets.GetTicketAsync("tenant-a", "game-a", b2.BindingId))!.State);
+    }
+
+    [Fact]
+    public async Task AbortReleasesEverythingAndTheSweepAgrees()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var coordinator = new RedesignCoordinatorStore(database.ConnectionString);
+        var tickets = new RedesignMatchTicketStore(database.ConnectionString);
+        var reservations = new RedesignMatchReservationStore(database.ConnectionString,
+            maxActiveReservations: 1);
+
+        var term = await coordinator.ClaimTermAsync(Partition, "control-a", 60);
+        var (p1, b1) = await MountAsync(identityStore, bindingStore, "live-key-a1", "reserve-a1");
+        var (p2, b2) = await MountAsync(identityStore, bindingStore, "live-key-a2", "reserve-a2");
+        await tickets.EnqueueTicketAsync("tenant-a", "game-a", b1.BindingId, b1.SessionId,
+            Partition, "enqueue-op-1");
+        await tickets.EnqueueTicketAsync("tenant-a", "game-a", b2.BindingId, b2.SessionId,
+            Partition, "enqueue-op-2");
+        var reservation = await reservations.ReserveAsync("tenant-a", "game-a", Partition, term.Term,
+            "control-a", "room-m-1",
+            [new ReservedParticipant(b1.BindingId, p1.StreamerId, "Host"),
+             new ReservedParticipant(b2.BindingId, p2.StreamerId, "Guest")],
+            30, "reserve-op-1");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-m-1", "gs-1", 30);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-m-1", "gs-1", claim.Epoch,
+            [new RoundParticipant(b1.BindingId, p1.StreamerId, "Host"),
+             new RoundParticipant(b2.BindingId, p2.StreamerId, "Guest")],
+            "1.0.0", "cfg-1", "pkg-1", "room-op-1");
+
+        // A stale term never aborts another coordinator's reservation.
+        await Assert.ThrowsAsync<RedesignStaleTermException>(() => reservations.AbortReservationAsync(
+            "tenant-a", "game-a", reservation.ReservationId, term.Term + 1, "control-b",
+            "abort-op-x"));
+
+        var aborted = await reservations.AbortReservationAsync("tenant-a", "game-a",
+            reservation.ReservationId, term.Term, "control-a", "abort-op-1");
+        Assert.Equal(RedesignMatchReservationStore.Aborted, aborted.Status);
+        var retry = await reservations.AbortReservationAsync("tenant-a", "game-a",
+            reservation.ReservationId, term.Term, "control-a", "abort-op-1");
+        Assert.True(retry.Duplicate);
+
+        // The full release: room aborted, ownership released with an epoch bump, tickets back
+        // in the queue with their reservation link cleared.
+        Assert.Equal("Aborted", await ScalarAsync(database.ConnectionString,
+            "SELECT status FROM game.room WHERE room_id='room-m-1'"));
+        Assert.Equal("Released", await ScalarAsync(database.ConnectionString,
+            "SELECT status FROM control.ownership WHERE kind='room' AND entity_id='room-m-1'"));
+        Assert.Equal(claim.Epoch + 1, await ScalarAsync(database.ConnectionString,
+            "SELECT epoch FROM control.ownership WHERE kind='room' AND entity_id='room-m-1'"));
+        var ticket1 = await tickets.GetTicketAsync("tenant-a", "game-a", b1.BindingId);
+        Assert.Equal(RedesignMatchTicketStore.Queued, ticket1!.State);
+        Assert.Null(ticket1.ReservationId);
+        Assert.Equal(1L, await ScalarAsync(database.ConnectionString,
+            "SELECT count(*) FROM infra.outbox WHERE effect_id='room-m-1/0/abort' AND kind='round.aborted'"));
+        Assert.Equal(1L, await ScalarAsync(database.ConnectionString,
+            $"SELECT count(*) FROM infra.outbox WHERE effect_id='{reservation.ReservationId}/abort' AND kind='match.aborted'"));
+
+        // The sweep agrees there is nothing left; a later commit runs into the released
+        // ownership fence, and the released slot reserves again.
+        Assert.Equal(0, await reservations.ExpireReservationsAsync(10));
+        await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => reservations.CommitMatchAsync(
+            "tenant-a", "game-a", reservation.ReservationId, term.Term, "control-a",
+            "gs-1", claim.Epoch, "commit-op-1"));
+        await Assert.ThrowsAsync<RedesignMatchException>(() => reservations.AbortReservationAsync(
+            "tenant-a", "game-a", reservation.ReservationId, term.Term, "control-a", "abort-op-2"));
+        var reserved = await reservations.ReserveAsync("tenant-a", "game-a", Partition, term.Term,
+            "control-a", "room-m-2",
+            [new ReservedParticipant(b1.BindingId, p1.StreamerId, "Host"),
+             new ReservedParticipant(b2.BindingId, p2.StreamerId, "Guest")],
+            30, "reserve-op-2");
+        Assert.Equal(RedesignMatchReservationStore.Reserved, reserved.Status);
+    }
+
     private static async Task<object?> ScalarAsync(string connectionString, string sql,
         params (string Name, object Value)[] parameters)
     {

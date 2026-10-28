@@ -109,6 +109,67 @@ public sealed class MatchGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    public override async Task<ReservationReply> CommitMatch(CommitMatchRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "control-server");
+        try
+        {
+            var reservation = await reservationStore.CommitMatchAsync(
+                TenantFor(caller, request.TenantId), request.GameId, request.ReservationId,
+                request.CoordinatorTerm, request.HolderInstanceId, request.RoomInstanceId,
+                request.RoomEpoch, request.OperationId, context.CancellationToken);
+            return Reply(reservation, found: true);
+        }
+        catch (RedesignStaleTermException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The term is no longer held by this coordinator."));
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The room is fenced by another owner."));
+        }
+        catch (RedesignMatchException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    public override async Task<ReservationReply> AbortReservation(AbortReservationRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "control-server");
+        try
+        {
+            var reservation = await reservationStore.AbortReservationAsync(
+                TenantFor(caller, request.TenantId), request.GameId, request.ReservationId,
+                request.CoordinatorTerm, request.HolderInstanceId, request.OperationId,
+                context.CancellationToken);
+            return Reply(reservation, found: true);
+        }
+        catch (RedesignStaleTermException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The term is no longer held by this coordinator."));
+        }
+        catch (RedesignMatchException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
     public override async Task<ReservationReply> GetReservation(GetReservationRequest request,
         ServerCallContext context)
     {

@@ -152,6 +152,28 @@ message GetReservationRequest {
   string reservation_id = 3;
 }
 
+message CommitMatchRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string reservation_id = 3;
+  int64 coordinator_term = 4;
+  string holder_instance_id = 5;
+  // The room owner the coordinator prepared on: commit is fenced by this instance and epoch —
+  // a write from a displaced room owner never commits (AT25 mechanics).
+  string room_instance_id = 6;
+  int64 room_epoch = 7;
+  string operation_id = 8;
+}
+
+message AbortReservationRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string reservation_id = 3;
+  int64 coordinator_term = 4;
+  string holder_instance_id = 5;
+  string operation_id = 6;
+}
+
 message ReservationProto {
   string reservation_id = 1;
   string room_id = 2;
@@ -184,6 +206,11 @@ service Match {
   rpc RenewReservation(RenewReservationRequest) returns (ReservationReply);
   // Records the prepare receipt once the host derived tick-0 and the room ownership is held.
   rpc MarkPrepared(MarkPreparedRequest) returns (ReservationReply);
+  // Commits the match in one transaction: the tickets commit together or not at all, fenced
+  // by the coordinator term and the room ownership epoch.
+  rpc CommitMatch(CommitMatchRequest) returns (ReservationReply);
+  // Cancels the reservation: tickets return to the queue and a started room is released.
+  rpc AbortReservation(AbortReservationRequest) returns (ReservationReply);
   rpc GetReservation(GetReservationRequest) returns (ReservationReply);
   // The sweep that retires expired reservations and releases everything they held.
   rpc ExpireReservations(ExpireReservationsRequest) returns (ExpireReservationsReply);
