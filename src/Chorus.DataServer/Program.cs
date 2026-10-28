@@ -40,11 +40,16 @@ builder.Services.AddSingleton(new RedesignIdentityStore(connectionString));
 builder.Services.AddSingleton(new RedesignBindingStore(connectionString));
 builder.Services.AddSingleton(new RedesignInputEventStore(connectionString));
 builder.Services.AddSingleton(new RedesignPlatformTaskStore(connectionString));
-builder.Services.AddSingleton(new RedesignRoomStore(connectionString));
+builder.Services.AddSingleton(new RedesignRoomStore(connectionString,
+    maxActiveRooms: int.TryParse(
+        Environment.GetEnvironmentVariable("CHORUS_MAX_ACTIVE_ROOMS"), out var cap) && cap > 0
+        ? cap
+        : null));
 builder.Services.AddSingleton(new RedesignRoundInputStore(connectionString));
 builder.Services.AddSingleton(new RedesignFrameStore(connectionString));
 builder.Services.AddSingleton(new RedesignRecoveryStore(connectionString));
 builder.Services.AddSingleton(new RedesignSettlementStore(connectionString));
+builder.Services.AddSingleton(new RedesignRetentionStore(connectionString));
 builder.Services.AddGrpc();
 
 var app = builder.Build();
@@ -56,6 +61,7 @@ app.MapGrpcService<RoundGrpcService>();
 app.MapGrpcService<RoundInputGrpcService>();
 app.MapGrpcService<FrameGrpcService>();
 app.MapGrpcService<SettlementGrpcService>();
+app.MapGrpcService<RetentionGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

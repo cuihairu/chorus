@@ -293,6 +293,33 @@ service GameHost {
   rpc RecoverRoom(RecoverRoomRequest) returns (RecoverRoomReply);
 }
 
+// Retention on the data plane (architecture 9 data retention, AT21). The control plane
+// releases a settled round's frame prefix below its recovery anchor; the guards are part of
+// the contract, so a refusal is data, not noise.
+service Retention {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  rpc PruneRound(PruneRoundRequest) returns (PruneRoundReply);
+}
+
+message PruneRoundRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string operation_id = 3;
+  string tenant_id = 4;
+  // A deliberate ops override of the settled-round retention window. The default keeps raw
+  // events and frames for troubleshooting; pressure never prunes quietly (AT21).
+  bool override_retention_window = 5;
+}
+
+message PruneRoundReply {
+  string room_id = 1;
+  // The anchor the prefix was released below: everything at or after it stays.
+  int64 keep_tick = 2;
+  int64 frames_deleted = 3;
+  int64 snapshots_deleted = 4;
+  bool duplicate = 5;
+}
+
 // Client sync fan-out on the game host (architecture 8.3). Only committed frames are
 // published: a fresh or lagging subscriber receives a full snapshot before any delta, a
 // subscriber current at the head continues with deltas alone, and a subscriber whose queue

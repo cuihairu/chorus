@@ -42,6 +42,11 @@ public sealed class RoundGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
         }
+        catch (RedesignCapacityException error)
+        {
+            // Pressure refuses the round and is counted (AT21); it never deletes to make room.
+            throw new RpcException(new Status(StatusCode.ResourceExhausted, error.Message));
+        }
         catch (IdempotencyConflictException)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));

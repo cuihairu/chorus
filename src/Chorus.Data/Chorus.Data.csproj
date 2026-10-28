@@ -19,6 +19,7 @@
     <EmbeddedResource Include="Redesign/0008_platform_task_coordination.sql" />
     <EmbeddedResource Include="Redesign/0009_round_generation.sql" />
     <EmbeddedResource Include="Redesign/0010_settlement_manifest_leaderboard.sql" />
+    <EmbeddedResource Include="Redesign/0011_retention_capacity.sql" />
   </ItemGroup>
 
 </Project>

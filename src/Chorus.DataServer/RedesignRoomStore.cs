@@ -11,6 +11,12 @@ public sealed class RoundAdmissionException : Exception
     public RoundAdmissionException(string message) : base(message) { }
 }
 
+/// <summary>
+/// The capacity guard (architecture 9 data retention, AT21): pressure on the shared store
+/// rejects new rounds visibly with a counted reason — it never frees space by deleting.
+/// </summary>
+public sealed class RedesignCapacityException(string message) : Exception(message);
+
 public sealed record RoundParticipant(string BindingId, string ParticipantId, string Role);
 
 public sealed record RoundAdmission(string RoomId, long RoundGeneration, string Status, long Epoch, bool Duplicate);
@@ -33,7 +39,8 @@ public sealed record RoundStatus(
 /// pointers moved, before the commit. An exception there plays a process dying between the
 /// pointer update and the acknowledgment; the rollback leaves no room behind.
 /// </param>
-public sealed class RedesignRoomStore(string connectionString, Action? crashAfterPointerUpdate = null)
+public sealed class RedesignRoomStore(string connectionString, Action? crashAfterPointerUpdate = null,
+    int? maxActiveRooms = null)
 {
     public const string Preparing = "Preparing";
     public const string Aborted = "Aborted";
@@ -79,15 +86,49 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
                 participant.BindingId, participant.ParticipantId, participant.Role
             })
         }));
-        var receipt = await _receipts.ExecuteAsync(
-            new OperationIdentity(tenantId, gameId, "round.start", roomId, operationId),
-            fingerprint,
-            (connection, transaction, token) => ApplyStartAsync(tenantId, gameId, roomId, ownerInstanceId,
-                epoch, ordered, moduleVersion, configHash, packageHash, connection, transaction, token),
-            cancellationToken);
+        OperationReceipt receipt;
+        try
+        {
+            receipt = await _receipts.ExecuteAsync(
+                new OperationIdentity(tenantId, gameId, "round.start", roomId, operationId),
+                fingerprint,
+                (connection, transaction, token) => ApplyStartAsync(tenantId, gameId, roomId, ownerInstanceId,
+                    epoch, ordered, moduleVersion, configHash, packageHash, connection, transaction, token),
+                cancellationToken);
+        }
+        catch (RedesignCapacityException)
+        {
+            await CountRejectionAsync("start-round:active-rooms", cancellationToken);
+            throw;
+        }
         var result = JsonSerializer.Deserialize<RoundAdmission>(receipt.ResultJson)
             ?? throw new InvalidOperationException("The stored round receipt is unreadable.");
         return result with { Duplicate = receipt.Duplicate };
+    }
+
+    /// <summary>
+    /// Counts a capacity rejection where it belongs — outside the refused admission's
+    /// transaction, so the visible evidence survives the rollback the rejection causes.
+    /// </summary>
+    private async Task CountRejectionAsync(string kind, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = new NpgsqlConnection(connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var counter = new NpgsqlCommand("""
+                INSERT INTO ops.capacity_rejection(kind,count,last_rejected_at)
+                VALUES (@kind,1,clock_timestamp())
+                ON CONFLICT (kind) DO UPDATE
+                SET count = ops.capacity_rejection.count + 1, last_rejected_at = clock_timestamp()
+                """, connection);
+            counter.Parameters.AddWithValue("kind", kind);
+            await counter.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (PostgresException)
+        {
+            // The counter is a metric on the refusal path; never let it mask the refusal.
+        }
     }
 
     private async Task<string> ApplyStartAsync(string tenantId, string gameId, string roomId,
@@ -95,6 +136,25 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
         string moduleVersion, string configHash, string packageHash,
         NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
+        if (maxActiveRooms is { } cap)
+        {
+            // Admissions serialize on one advisory lock so concurrent starts cannot race
+            // past the cap; the count is every non-terminal room, because suspended rounds
+            // still hold recovery-relevant data (AT21).
+            await using (var admissionLock = new NpgsqlCommand(
+                "SELECT pg_advisory_xact_lock(hashtext('game.room:admission'))", connection, transaction))
+                await admissionLock.ExecuteNonQueryAsync(cancellationToken);
+            await using (var active = new NpgsqlCommand("""
+                SELECT count(*) FROM game.room
+                WHERE status NOT IN ('Aborted','Settled','Closed')
+                """, connection, transaction))
+            {
+                if (Convert.ToInt64(await active.ExecuteScalarAsync(cancellationToken)) >= cap)
+                    throw new RedesignCapacityException(
+                        $"The node already runs {cap} non-terminal rooms; new rounds are rejected " +
+                        "until capacity frees — retention never deletes quietly to make room.");
+            }
+        }
         var ownershipEpoch = await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
             connection, transaction, cancellationToken);
         long roundGeneration = 0;

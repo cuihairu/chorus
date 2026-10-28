@@ -1839,6 +1839,151 @@ public sealed class RedesignM2HostTests
         }
     }
 
+    [Fact]
+    public async Task CapacityPressureRejectsNewRoundsAndRetentionNeverBreaksTheChain()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        // One active room is all this node admits: pressure refuses new rounds visibly with
+        // a counted reason instead of freeing space quietly (AT21).
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server",
+            new Dictionary<string, string> { ["CHORUS_MAX_ACTIVE_ROOMS"] = "1" });
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-ret-a", "live-m2-15-a");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
+        var gameHost = new GameHost.GameHostClient(hostChannel);
+        using var controlDataChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
+
+        using var claim = await RenewableClaim.ClaimAsync(control, new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-15",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-15", OwnerInstanceId = "game-1", Epoch = claim.Owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-15",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" }
+            }
+        })).Status);
+        var secondOwner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-15b",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        var refused = await Assert.ThrowsAsync<RpcException>(() => rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-15b", OwnerInstanceId = "game-1", Epoch = secondOwner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-15b",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" }
+            }
+        }).ResponseAsync);
+        Assert.Equal(StatusCode.ResourceExhausted, refused.StatusCode);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var counter = new NpgsqlCommand(
+                "SELECT count FROM ops.capacity_rejection WHERE kind='start-round:active-rooms'",
+                connection);
+            Assert.Equal(1L, Convert.ToInt64(await counter.ExecuteScalarAsync()));
+        }
+
+        // The admitted round runs to settlement, then the retention boundary answers with its
+        // guards: the settled round is inside its window, and an explicit override frees the
+        // prefix below the verified anchor without touching the chain above it.
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-15", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = claim.Owner.Epoch,
+            OperationId = "run-op-15", DurationTicks = 20, RandomSeed = 1515, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" }
+            }
+        })).Status);
+
+        FinalizeRoundReply finalized = new();
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                finalized = await new Settlement.SettlementClient(controlDataChannel).FinalizeRoundAsync(
+                    new FinalizeRoundRequest
+                    {
+                        RoomId = "room-m2-15", GameId = "game-a", OperationId = "finalize-15", TenantId = "tenant-a"
+                    });
+            }
+            catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition) { }
+            if (finalized.Status == "Settled") break;
+            await Task.Delay(200);
+        }
+        Assert.Equal("Settled", finalized.Status);
+
+        // The settled round sits inside its retention window: the default answer is a visible
+        // refusal, and only the explicit override releases anything.
+        var retention = new Retention.RetentionClient(controlDataChannel);
+        var windowed = await Assert.ThrowsAsync<RpcException>(() => retention.PruneRoundAsync(
+            new PruneRoundRequest
+            {
+                RoomId = "room-m2-15", GameId = "game-a", OperationId = "prune-15", TenantId = "tenant-a"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, windowed.StatusCode);
+        Assert.Contains("retention window", windowed.Status.Detail);
+        var pruned = await retention.PruneRoundAsync(new PruneRoundRequest
+        {
+            RoomId = "room-m2-15", GameId = "game-a", OperationId = "prune-15",
+            TenantId = "tenant-a", OverrideRetentionWindow = true
+        });
+        // The admission snapshot at tick 0 is the room's only snapshot, so the honest reply
+        // frees nothing rather than thinning the room's single fallback anchor.
+        Assert.Equal(0L, pruned.KeepTick);
+        Assert.Equal(0L, pruned.FramesDeleted);
+        var recovery = await new FrameStore.FrameStoreClient(gameChannel).LoadRecoveryAsync(
+            new LoadRecoveryRequest { RoomId = "room-m2-15", GameId = "game-a" });
+        Assert.Equal("Settled", recovery.Status);
+        Assert.Equal(20L, recovery.LastTick);
+        Assert.Equal(20, recovery.Frames.Count);
+        Assert.Equal(1L, recovery.Frames[0].Tick);
+        // Retention belongs to the control plane alone.
+        using var streamerCertificate = environment.Certificate("tenant-a", "streamer-server", "ret-edge");
+        using var streamerChannel = environment.Channel(environment.DataPort, streamerCertificate, "data-server");
+        var denied = await Assert.ThrowsAsync<RpcException>(() =>
+            new Retention.RetentionClient(streamerChannel).PruneRoundAsync(new PruneRoundRequest
+            {
+                RoomId = "room-m2-15", GameId = "game-a", OperationId = "prune-15-denied", TenantId = "tenant-a"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
+    }
+
     /// <summary>
     /// A claimed ownership with background renewal: the control plane extends an active
     /// owner's lease every 20 seconds without bumping the epoch (architecture 4.2), so a
