@@ -6,10 +6,11 @@ namespace Chorus.ControlServer;
 
 /// <summary>
 /// The control plane's outbound channel directory (architecture 7.2): pooled, mutually
-/// authenticated channels to the data plane and the game hosts, seeded from configuration
-/// until instance self-registration arrives (M3-5). The endpoint string doubles as the game
-/// host's process instance id — the room owner the coordinator writes into ownership and
-/// commit fences, which is exactly what a routing snapshot will carry later.
+/// authenticated channels to the data plane and the game hosts, seeded from configuration.
+/// Each entry names the host instance and where it serves — "id=endpoint" pairs, or a bare
+/// endpoint whose address doubles as the instance id (M3-4 convention). The instance id is
+/// what the coordinator writes into ownership and commit fences; the self-reported routing
+/// snapshot (M3-5) joins it back to the endpoint the host serves on.
 /// </summary>
 public sealed class ClusterDirectory(
     X509Certificate2 clientCertificate, X509Certificate2 root, X509Certificate2 nodeAuthority,
@@ -19,9 +20,17 @@ public sealed class ClusterDirectory(
         new Uri(dataEndpoint), clientCertificate, root, nodeAuthority, clusterId, "data-server");
 
     private readonly (string InstanceId, GrpcChannel Channel)[] _gameHosts = gameEndpoints
-        .Select(endpoint => (endpoint,
-            ProcessGrpcClientFactory.Create(new Uri(endpoint), clientCertificate, root, nodeAuthority,
-                clusterId, "game-server")))
+        .Select(entry =>
+        {
+            var separator = entry.IndexOf('=');
+            // "game-a=https://host:port" names the instance; a bare endpoint is its own id.
+            var (instanceId, endpoint) = separator < 0
+                ? (entry, entry)
+                : (entry[..separator], entry[(separator + 1)..]);
+            return (instanceId,
+                ProcessGrpcClientFactory.Create(new Uri(endpoint), clientCertificate, root, nodeAuthority,
+                    clusterId, "game-server"));
+        })
         .ToArray();
 
     private int _cursor;

@@ -161,9 +161,11 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
             foreach (var slot in _slots.Values)
             {
                 var ready = false;
+                // The agent knows the node-local serving address: the manifest host with the
+                // slot's port — exactly what the routing snapshot needs to reach the process.
+                var endpoint = new UriBuilder(_manifest.ControlEndpoint) { Port = slot.Spec.Port }.Uri;
                 try
                 {
-                    var endpoint = new UriBuilder(_manifest.ControlEndpoint) { Port = slot.Spec.Port }.Uri;
                     using var roleChannel = ProcessGrpcClientFactory.Create(endpoint,
                         _agentCertificate, _root, _nodeAuthority, _manifest.ClusterId, slot.Spec.Role);
                     if (slot.Spec.Role == "control-server")
@@ -186,7 +188,8 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                     Readiness = ready ? "Ready" : "NotReady",
                     Health = ready ? "Healthy" : "Degraded", Admission = "Accepting",
                     EntityRecovery = "NotStarted",
-                    StartedUnixMs = new DateTimeOffset(slot.StartedAtUtc).ToUnixTimeMilliseconds()
+                    StartedUnixMs = new DateTimeOffset(slot.StartedAtUtc).ToUnixTimeMilliseconds(),
+                    Endpoint = endpoint.ToString()
                 }, cancellationToken: token);
             }
         }

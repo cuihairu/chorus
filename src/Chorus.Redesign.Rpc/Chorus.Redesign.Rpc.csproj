@@ -9,6 +9,7 @@
     <PackageReference Include="Grpc.Core.Api" Version="2.83.0" />
     <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
     <PackageReference Include="Grpc.Tools" Version="2.83.0" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="9.0.0" />
     <Protobuf Include="Protos/m0.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m1.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m2.proto" GrpcServices="Both" />

@@ -25,19 +25,54 @@ public sealed class ControlGrpcService(
 
     public override async Task<ProcessReply> ReportProcess(ReportProcessRequest request, ServerCallContext context)
     {
-        var caller = await RequireAsync(context, "node-agent");
-        CheckNode(caller, request.NodeId, request.AgentInstanceId);
-        if (request.Role is not ("control-server" or "data-server") ||
-            request.SlotId != $"{request.NodeId}/{request.Role}" ||
-            request.StartedUnixMs <= 0)
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid bootstrap slot report."));
-        var status = await store.ReportProcessAsync(request.NodeId, request.AgentInstanceId,
+        // Two reporters speak for a process: the supervising node agent (bootstrap roles) and
+        // the process itself (game/streamer hosts, which know their own endpoint). The caller
+        // certificate decides which — an agent cannot claim a self-report and a process cannot
+        // impersonate its agent.
+        var caller = await RequireAsync(context,
+            "node-agent", "data-server", "streamer-server", "game-server", "control-server");
+        string agentInstanceId;
+        var selfReport = false;
+        if (caller.Role == "node-agent")
+        {
+            CheckNode(caller, request.NodeId, request.AgentInstanceId);
+            if (request.Role is not ("control-server" or "data-server") ||
+                request.SlotId != $"{request.NodeId}/{request.Role}" ||
+                request.StartedUnixMs <= 0)
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid bootstrap slot report."));
+            agentInstanceId = request.AgentInstanceId;
+        }
+        else
+        {
+            selfReport = true;
+            if (request.Role is not ("streamer-server" or "game-server") || caller.Role != request.Role ||
+                caller.ProcessInstanceId != request.ProcessInstanceId || caller.NodeId != request.NodeId ||
+                caller.TenantId != "@cluster" ||
+                !SlotAllowsReplicas(request.SlotId, request.NodeId, request.Role) ||
+                request.StartedUnixMs <= 0)
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid self slot report."));
+            // A self-reporting process is its own agent: the store's agent identity check
+            // matches agent_instance_id, so the process id plays both roles.
+            agentInstanceId = request.ProcessInstanceId;
+        }
+        var status = await store.ReportProcessAsync(request.NodeId, agentInstanceId,
             request.SlotId, request.Role, request.ProcessInstanceId, request.ReportSequence,
             request.Lifecycle, request.Readiness, request.Health, request.Admission,
             request.EntityRecovery, DateTimeOffset.FromUnixTimeMilliseconds(request.StartedUnixMs).UtcDateTime,
+            request.Endpoint is { Length: > 0 } endpoint ? endpoint : null, selfReport,
             context.CancellationToken);
         return new ProcessReply { Accepted = status.Accepted, Readiness = status.Readiness,
             EntityRecovery = status.EntityRecovery };
+    }
+
+    /// <summary>Self-report slots follow "{node}/{role}" with an optional "#2", "#3"… replica
+    /// suffix — one slot per process instance, instances distinguished by the suffix.</summary>
+    private static bool SlotAllowsReplicas(string slotId, string nodeId, string role)
+    {
+        var prefix = $"{nodeId}/{role}";
+        if (slotId == prefix) return true;
+        return slotId.Length > prefix.Length + 1 && slotId.StartsWith(prefix, StringComparison.Ordinal) &&
+            slotId[prefix.Length] == '#' && slotId[(prefix.Length + 1)..].All(char.IsDigit);
     }
 
     public override async Task<OwnershipReply> ClaimOwnership(OwnershipRequest request, ServerCallContext context)

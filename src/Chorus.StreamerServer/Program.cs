@@ -17,6 +17,8 @@ var serverCertificate = X509Certificate2.CreateFromPem(File.ReadAllText(Required
 var trustedCertificates = new TrustedProcessCertificates();
 var port = int.Parse(Environment.GetEnvironmentVariable("CHORUS_PORT") ?? "7502");
 var dataPort = int.Parse(Environment.GetEnvironmentVariable("CHORUS_DATA_PORT") ?? "7501");
+var dataEndpoint = Environment.GetEnvironmentVariable("CHORUS_DATA_ENDPOINT")
+    ?? $"https://localhost:{dataPort}";
 
 builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Any, port, listen =>
 {
@@ -52,7 +54,7 @@ if (Environment.GetEnvironmentVariable("CHORUS_PLATFORM_SIMULATOR") == "true")
 
 var accessCredentialKey = Convert.FromHexString(Required("CHORUS_ACCESS_CREDENTIAL_KEY"));
 Grpc.Net.Client.GrpcChannel DataChannel() => ProcessGrpcClientFactory.Create(
-    new Uri($"https://localhost:{dataPort}"), serverCertificate, root, nodeAuthority, clusterId, "data-server");
+    new Uri(dataEndpoint), serverCertificate, root, nodeAuthority, clusterId, "data-server");
 
 builder.Services.AddSingleton(trustedCertificates);
 var actorRegistry = new StreamerActorRegistry();
@@ -64,6 +66,20 @@ builder.Services.AddSingleton(new RedesignStreamerLoginCoordinator(
     actorRegistry,
     readOnlyTenants,
     accessCredentialKey));
+// Instance self-registration (architecture 4.4): without a supervising node agent, the host
+// tells the control plane itself where it serves, so routing can reach it.
+var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOINT");
+if (controlEndpoint is { Length: > 0 })
+{
+    var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])
+        ?? throw new InvalidOperationException("The StreamerServer certificate carries no process identity.");
+    var reportEndpoint = Environment.GetEnvironmentVariable("CHORUS_REPORT_ENDPOINT")
+        ?? $"https://localhost:{port}";
+    var slotId = Environment.GetEnvironmentVariable("CHORUS_SLOT_ID") ?? $"{identity.NodeId}/{identity.Role}";
+    var reportIntervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_REPORT_INTERVAL_MS") ?? "2000");
+    builder.Services.AddHostedService(_ => new ProcessSelfReporter(
+        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
+}
 builder.Services.AddGrpc();
 
 var app = builder.Build();

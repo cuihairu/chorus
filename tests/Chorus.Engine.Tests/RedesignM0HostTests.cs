@@ -152,8 +152,8 @@ public sealed class RedesignM0HostTests
         public int GamePort { get; } = FreePort();
         public string DatabaseConnectionString => _connectionString;
 
-        /// <summary>The spawned host processes by project — benchmark CPU accounting (test infra).</summary>
-        public IReadOnlyList<(Process Process, string Project)> HostProcesses =>
+        /// <summary>The spawned host processes by instance id — benchmark CPU accounting (test infra).</summary>
+        public IReadOnlyList<(Process Process, string Instance)> HostProcesses =>
             _projectByProcess.Select(entry => (entry.Key, entry.Value)).ToList();
 
         public static async Task<HostEnvironment> CreateAsync()
@@ -199,11 +199,19 @@ public sealed class RedesignM0HostTests
                 _root, _nodeAuthority, "cluster-a", role);
 
         public async Task StartAsync(string project, int port, string role,
-            IReadOnlyDictionary<string, string>? extraEnvironment = null, string? clientTenant = null)
+            IReadOnlyDictionary<string, string>? extraEnvironment = null, string? clientTenant = null,
+            string? instanceId = null)
         {
-            using var certificate = Certificate("@cluster", role, project);
-            var certPath = Path.Combine(_directory, project + ".pem");
-            var keyPath = Path.Combine(_directory, project + ".key");
+            // The instance id names this process: certificate identity, key files and the kill
+            // registry. The default keeps the single-instance behavior of earlier rounds; two
+            // instances of one project pass distinct ids — including endpoint-shaped ids, made
+            // filename-safe below while staying exact as an identity.
+            var instance = instanceId ?? project;
+            var instanceFiles = string.Concat(instance.Select(ch =>
+                char.IsLetterOrDigit(ch) || ch is '.' or '-' or '_' ? ch : '-'));
+            using var certificate = Certificate("@cluster", role, instance);
+            var certPath = Path.Combine(_directory, instanceFiles + ".pem");
+            var keyPath = Path.Combine(_directory, instanceFiles + ".key");
             File.WriteAllText(certPath, certificate.ExportCertificatePem());
             using (var key = certificate.GetECDsaPrivateKey())
                 File.WriteAllText(keyPath, key!.ExportPkcs8PrivateKeyPem());
@@ -227,14 +235,14 @@ public sealed class RedesignM0HostTests
             {
                 // Some hosts serve under a cluster certificate but speak for a tenant on the
                 // data plane (game-server): they get a second, tenant-scoped client identity.
-                using var clientCertificate = Certificate(clientTenant, role, project + "-client");
-                File.WriteAllText(Path.Combine(_directory, project + "-client.pem"),
+                using var clientCertificate = Certificate(clientTenant, role, instance + "-client");
+                File.WriteAllText(Path.Combine(_directory, instanceFiles + "-client.pem"),
                     clientCertificate.ExportCertificatePem());
                 using (var clientKey = clientCertificate.GetECDsaPrivateKey())
-                    File.WriteAllText(Path.Combine(_directory, project + "-client.key"),
+                    File.WriteAllText(Path.Combine(_directory, instanceFiles + "-client.key"),
                         clientKey!.ExportPkcs8PrivateKeyPem());
-                start.Environment["CHORUS_CLIENT_CERT_PEM"] = Path.Combine(_directory, project + "-client.pem");
-                start.Environment["CHORUS_CLIENT_KEY_PEM"] = Path.Combine(_directory, project + "-client.key");
+                start.Environment["CHORUS_CLIENT_CERT_PEM"] = Path.Combine(_directory, instanceFiles + "-client.pem");
+                start.Environment["CHORUS_CLIENT_KEY_PEM"] = Path.Combine(_directory, instanceFiles + "-client.key");
             }
             var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start " + project);
             var output = new System.Text.StringBuilder();
@@ -244,7 +252,7 @@ public sealed class RedesignM0HostTests
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             _processes.Add(process);
-            _projectByProcess[process] = project;
+            _projectByProcess[process] = instance;
             using var caller = Certificate("@cluster",
                 role == "streamer-server" ? "streamer-server" : "node-agent", "ready-probe");
             using var channel = Channel(port, caller, role);
@@ -270,13 +278,14 @@ public sealed class RedesignM0HostTests
         }
 
         /// <summary>
-        /// Kills a started host abruptly (simulated crash). Bounded synchronous wait: the hosts are
-        /// setsid children whose redirected pipes would keep an async exit wait hanging. The process
-        /// stays registered so dispose skips it as already exited; the project can be started again.
+        /// Kills a started host abruptly (simulated crash) by instance id — the project name for
+        /// default starts, the instance id for multi-instance starts. Bounded synchronous wait: the
+        /// hosts are setsid children whose redirected pipes would keep an async exit wait hanging.
+        /// The process stays registered so dispose skips it as already exited; it can be started again.
         /// </summary>
-        public void Kill(string project)
+        public void Kill(string instance)
         {
-            foreach (var process in _projectByProcess.Where(pair => pair.Value == project).Select(pair => pair.Key).ToList())
+            foreach (var process in _projectByProcess.Where(pair => pair.Value == instance).Select(pair => pair.Key).ToList())
             {
                 if (process.HasExited) continue;
                 process.Kill(entireProcessTree: true);
@@ -422,7 +431,8 @@ public sealed class RedesignM0HostTests
 
         private sealed record JournalEntry(string SlotId, string ProcessInstanceId, int Pid, DateTime StartedAtUtc);
 
-        private static int FreePort()
+        /// <summary>An unused loopback port for extra host instances beyond the four defaults.</summary>
+        public static int FreePort()
         {
             var listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();

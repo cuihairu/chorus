@@ -236,3 +236,62 @@ service Match {
   // The partitions holding unretired reservations: recovery discovery without queued tickets.
   rpc ListReservationPartitions(chorus.redesign.m0.Empty) returns (ListPartitionsReply);
 }
+
+// Routing (architecture 4.4). The control plane publishes a versioned full snapshot — rooms
+// with their owner epochs and endpoints, live streamer bindings, registered instances — plus
+// an incremental watch. Consumers re-pull the full snapshot when the stream breaks or a
+// version arrives out of nowhere; routing never carries secrets, and an expired route is not
+// blindly written to. The version is a content hash, not a sequence: any mutation changes it,
+// so a missed watch notice shows up as a version mismatch on the next pull.
+message RoomRouteProto {
+  string room_id = 1;
+  string tenant_id = 2;
+  string game_id = 3;
+  string owner_instance_id = 4;
+  int64 epoch = 5;
+  // Empty when the owner instance has not reported an endpoint.
+  string endpoint = 6;
+  string status = 7;
+}
+
+message StreamerRouteProto {
+  string streamer_id = 1;
+  string binding_id = 2;
+  // Empty while the mount is not in a room.
+  string room_id = 3;
+  string state = 4;
+}
+
+message InstanceRouteProto {
+  string process_instance_id = 1;
+  string role = 2;
+  string node_id = 3;
+  string slot_id = 4;
+  // Empty when the process has not reported an endpoint.
+  string endpoint = 5;
+  string readiness = 6;
+  string admission = 7;
+}
+
+message RoutingSnapshotReply {
+  int64 version = 1;
+  repeated RoomRouteProto rooms = 2;
+  repeated StreamerRouteProto streamers = 3;
+  repeated InstanceRouteProto instances = 4;
+}
+
+message WatchRoutingRequest {
+  // The version the consumer already holds; the stream opens with a notice when it differs.
+  int64 known_version = 1;
+}
+
+message RoutingNotice { int64 version = 1; }
+
+service Routing {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  // The versioned full snapshot; re-pull whenever a watch notice, break or gap says so.
+  rpc GetRoutingSnapshot(chorus.redesign.m0.Empty) returns (RoutingSnapshotReply);
+  // A notice stream: emits the new version whenever the routed content changes. The notice
+  // carries no payload — the consumer answers it with a full snapshot pull.
+  rpc WatchRouting(WatchRoutingRequest) returns (stream RoutingNotice);
+}

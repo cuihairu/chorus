@@ -3,6 +3,7 @@ using Chorus.Redesign.Platform;
 using Chorus.Redesign.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
+using RoutingService = Chorus.Redesign.Rpc.Routing;
 
 namespace Chorus.Engine.Tests;
 
@@ -507,6 +508,214 @@ public sealed class RedesignM3HostTests
         var orphanRoom = await new RoundStore.RoundStoreClient(gameChannel).GetRoundAsync(
             new GetRoundRequest { RoomId = "room-m3-6", GameId = "game-a" });
         Assert.False(orphanRoom.Found);
+    }
+
+    [Fact]
+    public async Task UnsupervisedHostsSelfRegisterIntoTheVersionedRoutingSnapshot()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+
+        // The node exists because an agent registered it; the hosts then report themselves
+        // into that node — the certificate must be the claimed instance (architecture 4.4).
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-m3-7"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-m3-7" });
+        }
+
+        using var routingCertificate = environment.Certificate("@cluster", "control-server", "control-m3-7");
+        using var routingChannel = environment.Channel(environment.ControlPort, routingCertificate, "control-server");
+        var routing = new RoutingService.RoutingClient(routingChannel);
+        var before = await routing.GetRoutingSnapshotAsync(new Empty());
+        Assert.Empty(before.Instances);
+        Assert.Empty(before.Rooms);
+        Assert.Empty(before.Streamers);
+
+        var gamePortA = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gamePortB = RedesignM0HostTests.HostEnvironment.FreePort();
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+        await environment.StartAsync("Chorus.GameServer", gamePortA, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, null, "500"),
+            clientTenant: "tenant-a", instanceId: "game-m3-7a");
+        await environment.StartAsync("Chorus.GameServer", gamePortB, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, "node-a/game-server#2", "500"),
+            clientTenant: "tenant-a", instanceId: "game-m3-7b");
+
+        var registered = await WaitForAsync(async () =>
+            (await routing.GetRoutingSnapshotAsync(new Empty())).Instances.Count == 2, TimeSpan.FromSeconds(30));
+        Assert.True(registered, "The self-reporting hosts never appeared in the routing snapshot.");
+
+        var current = await routing.GetRoutingSnapshotAsync(new Empty());
+        Assert.NotEqual(before.Version, current.Version);
+        Assert.Contains(current.Instances, instance => instance.ProcessInstanceId == "game-m3-7a"
+            && instance.Role == "game-server" && instance.NodeId == "node-a"
+            && instance.SlotId == "node-a/game-server" && instance.Endpoint == $"https://localhost:{gamePortA}"
+            && instance.Readiness == "Ready" && instance.Admission == "Open");
+        Assert.Contains(current.Instances, instance => instance.ProcessInstanceId == "game-m3-7b"
+            && instance.SlotId == "node-a/game-server#2" && instance.Endpoint == $"https://localhost:{gamePortB}"
+            && instance.Readiness == "Ready");
+        // The version hashes routed content, not time: a quiet cluster keeps its version.
+        Assert.Equal(current.Version, (await routing.GetRoutingSnapshotAsync(new Empty())).Version);
+
+        // A host cannot claim another role's slot report — the refusal is visible.
+        using var impostor = environment.Certificate("@cluster", "streamer-server", "impostor-m3-7");
+        using var impostorChannel = environment.Channel(environment.ControlPort, impostor, "control-server");
+        var refused = await Assert.ThrowsAsync<RpcException>(() =>
+            new ControlService.ControlServiceClient(impostorChannel).ReportProcessAsync(new ReportProcessRequest
+            {
+                NodeId = "node-a", AgentInstanceId = "game-m3-7a", SlotId = "node-a/game-server",
+                ProcessInstanceId = "game-m3-7a", ReportSequence = 99, Lifecycle = "Running",
+                Readiness = "Ready", Health = "Healthy", Admission = "Open", EntityRecovery = "Steady",
+                StartedUnixMs = 1, Role = "game-server", Endpoint = "https://localhost:1"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.InvalidArgument, refused.StatusCode);
+    }
+
+    [Fact]
+    public async Task RoomsSpreadAcrossInstancesSurfaceInSnapshotsAndWatchNotices()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var gamePortA = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gamePortB = RedesignM0HostTests.HostEnvironment.FreePort();
+        var endpointA = $"https://localhost:{gamePortA}";
+        var endpointB = $"https://localhost:{gamePortB}";
+        const string instanceA = "game-m3-8a";
+        const string instanceB = "game-m3-8b";
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        var coordinatorEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+            // Named host instances: the coordinator owns rooms as these ids; the routing
+            // snapshot joins them back to the endpoints the hosts self-reported.
+            ["CHORUS_GAME_ENDPOINTS"] = $"{instanceA}={endpointA},{instanceB}={endpointB}",
+            ["CHORUS_MATCH_INTERVAL_MS"] = "200"
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", coordinatorEnvironment);
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-m3-8"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-m3-8" });
+        }
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+        await environment.StartAsync("Chorus.GameServer", gamePortA, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, null, "500"),
+            clientTenant: "tenant-a", instanceId: instanceA);
+        await environment.StartAsync("Chorus.GameServer", gamePortB, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, "node-a/game-server#2", "500"),
+            clientTenant: "tenant-a", instanceId: instanceB);
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        const string partition = "tenant-a/game-a/rules-1/region-1/simulator/standard";
+        var mounts = new List<(string StreamerId, string SessionId, string BindingId)>();
+        for (var index = 0; index < 4; index++)
+            mounts.Add(await MountAsync(environment, simulator, $"m3-host-8{index}"));
+        foreach (var (mount, index) in mounts.Select((mount, index) => (mount, index)))
+            await EnqueueAsync(environment, mount, partition, $"m3-enqueue-8{index}");
+
+        // Four mounts, two pairs; the round-robin coordinator spreads them over both hosts.
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-8");
+        using var dataChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
+        var queue = new MatchQueue.MatchQueueClient(dataChannel);
+        var settled = await WaitForAsync(async () =>
+        {
+            foreach (var mount in mounts)
+            {
+                var ticket = await queue.GetTicketAsync(
+                    new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = mount.BindingId });
+                if (ticket.Ticket.State != "Committed") return false;
+            }
+            return true;
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(settled, "The coordinator did not commit both pairs.");
+
+        using var routingChannel = environment.Channel(environment.ControlPort, controlCertificate,
+            "control-server");
+        var routing = new RoutingService.RoutingClient(routingChannel);
+        var snapshot = await routing.GetRoutingSnapshotAsync(new Empty());
+        Assert.Equal(2, snapshot.Rooms.Count);
+        Assert.All(snapshot.Rooms, room =>
+        {
+            Assert.True(room.Epoch > 0, "A live room carries its ownership epoch.");
+            Assert.Equal("Active", room.Status);
+            Assert.True(room.OwnerInstanceId == instanceA || room.OwnerInstanceId == instanceB,
+                "The owner is one of the configured hosts.");
+            // The self-reported endpoint join: the owner resolves to the address it serves on.
+            Assert.Equal(room.OwnerInstanceId == instanceA ? endpointA : endpointB, room.Endpoint);
+        });
+        Assert.Equal(2, snapshot.Rooms.Select(room => room.OwnerInstanceId).Distinct().Count());
+
+        // Streamer routes: every mount is bound to the room its pair committed, two per room.
+        Assert.Equal(4, snapshot.Streamers.Count);
+        var roomIds = snapshot.Rooms.Select(room => room.RoomId).ToHashSet();
+        foreach (var roomId in roomIds)
+            Assert.Equal(2, snapshot.Streamers.Count(route => route.RoomId == roomId));
+        foreach (var mount in mounts)
+        {
+            var routes = snapshot.Streamers.Where(route => route.BindingId == mount.BindingId).ToList();
+            Assert.Single(routes);
+            Assert.Equal(mount.StreamerId, routes[0].StreamerId);
+            Assert.Contains(routes[0].RoomId, roomIds);
+        }
+
+        // Instances carry the endpoints the coordinator wrote as owners.
+        Assert.Equal(2, snapshot.Instances.Count);
+        Assert.Contains(snapshot.Instances, instance =>
+            instance.ProcessInstanceId == instanceA && instance.Endpoint == endpointA);
+        Assert.Contains(snapshot.Instances, instance =>
+            instance.ProcessInstanceId == instanceB && instance.Endpoint == endpointB);
+
+        // The watch (architecture 4.4): a new mount changes the routed content, the notice
+        // arrives, and the consumer answers it with a full pull — break or gap means re-pull.
+        var version = snapshot.Version;
+        using var call = routing.WatchRouting(new WatchRoutingRequest { KnownVersion = version });
+        var fifth = await MountAsync(environment, simulator, "m3-host-8x");
+        long noticed = 0;
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (noticed == 0 && DateTime.UtcNow < deadline)
+        {
+            using var tick = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            try
+            {
+                if (await call.ResponseStream.MoveNext(tick.Token))
+                    noticed = call.ResponseStream.Current.Version;
+            }
+            catch (RpcException) when (tick.IsCancellationRequested) { }
+        }
+        Assert.NotEqual(0, noticed);
+        Assert.NotEqual(version, noticed);
+        var repulled = await routing.GetRoutingSnapshotAsync(new Empty());
+        Assert.Equal(noticed, repulled.Version);
+        Assert.Contains(repulled.Streamers, route => route.BindingId == fifth.BindingId);
+    }
+
+    private static Dictionary<string, string> GameEnvironment(
+        int dataPort, string controlEndpoint, string? slotId, string reportIntervalMs)
+    {
+        var variables = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = dataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_CONTROL_ENDPOINT"] = controlEndpoint,
+            ["CHORUS_REPORT_INTERVAL_MS"] = reportIntervalMs
+        };
+        if (slotId is not null) variables["CHORUS_SLOT_ID"] = slotId;
+        return variables;
     }
 
     private static async Task<DevelopmentPlatformSimulator> StartMatchClusterAsync(

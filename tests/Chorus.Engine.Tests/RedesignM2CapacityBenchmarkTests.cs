@@ -354,6 +354,6 @@ public sealed class RedesignM2CapacityBenchmarkTests(ITestOutputHelper output)
 
     private static IReadOnlyDictionary<string, double> CpuSeconds(RedesignM0HostTests.HostEnvironment environment) =>
         environment.HostProcesses
-            .GroupBy(entry => entry.Project)
+            .GroupBy(entry => entry.Instance)
             .ToDictionary(group => group.Key, group => group.Sum(entry => entry.Process.TotalProcessorTime.TotalSeconds));
 }

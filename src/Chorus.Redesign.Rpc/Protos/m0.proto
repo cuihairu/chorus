@@ -62,6 +62,8 @@ message ReportProcessRequest {
   string entity_recovery = 10;
   int64 started_unix_ms = 11;
   string role = 12;
+  // The endpoint the process serves on; empty when the reporter cannot know it.
+  string endpoint = 13;
 }
 message ProcessReply { bool accepted = 1; string readiness = 2; string entity_recovery = 3; }
 message OwnershipRequest {
