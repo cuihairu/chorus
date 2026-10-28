@@ -12,6 +12,9 @@ public sealed record InstanceRoute(string ProcessInstanceId, string Role, string
     string? Endpoint, string Readiness, string Admission);
 public sealed record RoutingSnapshot(long Version, IReadOnlyList<RoomRoute> Rooms,
     IReadOnlyList<StreamerRoute> Streamers, IReadOnlyList<InstanceRoute> Instances);
+public sealed record DeploymentPlan(string SlotId, string NodeId, string Role, string DesiredState,
+    string DesiredVersion, string PackageHash, long PlanGeneration, string? CommandId,
+    DateTime? CommandExpiresAtUtc);
 
 /// <summary>M0 control writes. Database time and row locks decide ownership and report order.</summary>
 public sealed class RedesignControlStore(string connectionString)
@@ -262,4 +265,87 @@ public sealed class RedesignControlStore(string connectionString)
             return hash;
         }
     }
+
+    /// <summary>
+    /// Applies a deployment plan (architecture 10.2). The plan generation is monotonic: an
+    /// older plan never overwrites a newer one, so a re-delivered or reordered command is a
+    /// visible no-op for the store, and the agent never sees the plan history rewind.
+    /// </summary>
+    public async Task<DeploymentPlan> ApplyPlanAsync(string nodeId, string slotId, string role,
+        string desiredState, string desiredVersion, string packageHash, long planGeneration,
+        string? commandId, DateTime? commandExpiresAtUtc, CancellationToken cancellationToken = default)
+    {
+        if (planGeneration <= 0) throw new ArgumentOutOfRangeException(nameof(planGeneration));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            INSERT INTO control.deployment(slot_id,node_id,role,desired_version,plan_generation,
+                desired_state,package_hash,command_id,command_expires_at)
+            VALUES (@slot,@node,@role,@version,@generation,@state,@package,@command,@expires)
+            ON CONFLICT(slot_id) DO UPDATE
+            SET node_id=excluded.node_id,role=excluded.role,desired_version=excluded.desired_version,
+                plan_generation=excluded.plan_generation,desired_state=excluded.desired_state,
+                package_hash=excluded.package_hash,command_id=excluded.command_id,
+                command_expires_at=excluded.command_expires_at,updated_at=clock_timestamp()
+            WHERE excluded.plan_generation>=control.deployment.plan_generation
+            RETURNING slot_id,node_id,role,desired_state,desired_version,package_hash,
+                plan_generation,command_id,command_expires_at
+            """, connection);
+        command.Parameters.AddWithValue("slot", slotId);
+        command.Parameters.AddWithValue("node", nodeId);
+        command.Parameters.AddWithValue("role", role);
+        command.Parameters.AddWithValue("version", desiredVersion);
+        command.Parameters.AddWithValue("generation", planGeneration);
+        command.Parameters.AddWithValue("state", desiredState);
+        command.Parameters.AddWithValue("package", packageHash);
+        if (commandId is null) command.Parameters.AddWithValue("command", DBNull.Value);
+        else command.Parameters.AddWithValue("command", commandId);
+        if (commandExpiresAtUtc is null) command.Parameters.AddWithValue("expires", DBNull.Value);
+        else command.Parameters.AddWithValue("expires", commandExpiresAtUtc);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            // The generation guard refused the write: return the plan that won.
+            await reader.DisposeAsync();
+            await using var current = new NpgsqlCommand("""
+                SELECT slot_id,node_id,role,desired_state,desired_version,package_hash,
+                    plan_generation,command_id,command_expires_at
+                FROM control.deployment WHERE slot_id=@slot
+                """, connection);
+            current.Parameters.AddWithValue("slot", slotId);
+            await using var currentReader = await current.ExecuteReaderAsync(cancellationToken);
+            if (!await currentReader.ReadAsync(cancellationToken))
+                throw new InvalidOperationException("The deployment plan disappeared mid-apply.");
+            return ReadPlan(currentReader);
+        }
+        return ReadPlan(reader);
+    }
+
+    /// <summary>The plans of one node — the WatchPlans face. Unapplied bootstrap rows surface
+    /// with their seed values ('bootstrap' version, generation 1).</summary>
+    public async Task<IReadOnlyList<DeploymentPlan>> ListPlansAsync(string nodeId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        var plans = new List<DeploymentPlan>();
+        await using (var command = new NpgsqlCommand("""
+            SELECT slot_id,node_id,role,desired_state,desired_version,package_hash,
+                plan_generation,command_id,command_expires_at
+            FROM control.deployment WHERE node_id=@node ORDER BY slot_id
+            """, connection))
+        {
+            command.Parameters.AddWithValue("node", nodeId);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                plans.Add(ReadPlan(reader));
+        }
+        return plans;
+    }
+
+    private static DeploymentPlan ReadPlan(NpgsqlDataReader reader) => new(
+        reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
+        reader.GetString(4), reader.GetString(5), reader.GetInt64(6),
+        reader.IsDBNull(7) ? null : reader.GetString(7),
+        reader.IsDBNull(8) ? null : reader.GetDateTime(8));
 }

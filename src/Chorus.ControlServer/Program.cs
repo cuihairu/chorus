@@ -60,6 +60,7 @@ var app = builder.Build();
 app.MapGrpcService<ControlGrpcService>();
 app.MapGrpcService<CoordinatorGrpcService>();
 app.MapGrpcService<RoutingGrpcService>();
+app.MapGrpcService<DeploymentGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

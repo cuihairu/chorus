@@ -293,7 +293,9 @@ public sealed class RedesignM0HostTests
             }
         }
 
-        public async Task<Process> StartBootstrapAgentAsync()
+        public async Task<Process> StartBootstrapAgentAsync(string? gameProject = null, int? gamePort = null,
+            IReadOnlyDictionary<string, string>? toolEnvironment = null,
+            IReadOnlyDictionary<string, string>? agentEnvironment = null, bool joinCluster = false)
         {
             var root = FindRoot();
             var configuration = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))!.Name;
@@ -305,12 +307,33 @@ public sealed class RedesignM0HostTests
             var nodePassword = "test-node-password-" + Guid.NewGuid().ToString("N");
             var prepare = new ProcessStartInfo("dotnet") { UseShellExecute = false, RedirectStandardError = true };
             prepare.ArgumentList.Add(tool);
-            foreach (var argument in new[] { bootstrapDirectory, "cluster-a", "node-bootstrap", control, data })
+            // Join mode provisions the node under this environment's own trust domain, so the
+            // agent-hosted servers accept environment-minted clients and vice versa.
+            var nodeId = joinCluster ? "node-a" : "node-bootstrap";
+            foreach (var argument in new[] { bootstrapDirectory, "cluster-a", nodeId, control, data })
                 prepare.ArgumentList.Add(argument);
             prepare.Environment["CHORUS_ROOT_PFX_PASSWORD"] = rootPassword;
             prepare.Environment["CHORUS_NODE_AUTHORITY_PFX_PASSWORD"] = nodePassword;
+            if (joinCluster)
+            {
+                Directory.CreateDirectory(bootstrapDirectory);
+                var rootJoin = Path.Combine(bootstrapDirectory, "join-root.pfx");
+                var nodeJoin = Path.Combine(bootstrapDirectory, "join-node.pfx");
+                File.WriteAllBytes(rootJoin, _root.Export(X509ContentType.Pkcs12, rootPassword));
+                File.WriteAllBytes(nodeJoin, _nodeAuthority.Export(X509ContentType.Pkcs12, nodePassword));
+                prepare.Environment["CHORUS_ROOT_PFX_FILE"] = rootJoin;
+                prepare.Environment["CHORUS_NODE_AUTHORITY_PFX_FILE"] = nodeJoin;
+            }
             prepare.Environment["CHORUS_CONTROL_PORT"] = ControlPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
             prepare.Environment["CHORUS_DATA_PORT"] = DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (gameProject is { Length: > 0 } && gamePort is { } port)
+            {
+                prepare.Environment["CHORUS_GAME_DLL"] = Path.Combine(root, "src", gameProject, "bin",
+                    configuration, "net10.0", gameProject + ".dll");
+                prepare.Environment["CHORUS_GAME_PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            foreach (var (name, value) in toolEnvironment ?? new Dictionary<string, string>())
+                prepare.Environment[name] = value;
             using (var toolProcess = Process.Start(prepare) ?? throw new InvalidOperationException("BootstrapTool did not start."))
             {
                 var error = await toolProcess.StandardError.ReadToEndAsync();
@@ -328,6 +351,8 @@ public sealed class RedesignM0HostTests
             agentStart.Environment["CHORUS_ROOT_CA_PEM"] = Path.Combine(bootstrapDirectory, "node", "root-ca.pem");
             agentStart.Environment["CHORUS_NODE_AUTHORITY_PFX_PASSWORD"] = nodePassword;
             agentStart.Environment["CHORUS_AGENT_STATE_DIR"] = state;
+            foreach (var (name, value) in agentEnvironment ?? new Dictionary<string, string>())
+                agentStart.Environment[name] = value;
             var process = Process.Start(agentStart) ?? throw new InvalidOperationException("NodeAgent did not start.");
             var output = new System.Text.StringBuilder();
             _hostOutput.Add(process, output);
@@ -336,12 +361,14 @@ public sealed class RedesignM0HostTests
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             _processes.Add(process);
+            _projectByProcess[process] = "node-agent";
             _agents.Add(process);
             return process;
         }
 
         public async Task<(string AgentInstanceId, int ReadyProcesses)> WaitForAgentReportsAsync(
-            Process agent, string? expectedPreviousAgent)
+            Process agent, string? expectedPreviousAgent, int expectedReady = 2,
+            string nodeId = "node-bootstrap")
         {
             var deadline = DateTime.UtcNow.AddSeconds(35);
             while (DateTime.UtcNow < deadline)
@@ -356,21 +383,37 @@ public sealed class RedesignM0HostTests
                     FROM control.node AS node
                     LEFT JOIN control.process AS process
                       ON process.node_id=node.node_id AND process.agent_instance_id=node.agent_instance_id
-                    WHERE node.node_id='node-bootstrap'
+                    WHERE node.node_id=$1
                     GROUP BY node.agent_instance_id
                     """, connection);
+                command.Parameters.AddWithValue(nodeId);
                 await using var reader = await command.ExecuteReaderAsync();
                 if (await reader.ReadAsync())
                 {
                     var instance = reader.GetString(0);
                     var ready = reader.GetInt32(1);
-                    if (ready == 2 && (expectedPreviousAgent is null || instance != expectedPreviousAgent))
+                    if (ready == expectedReady && (expectedPreviousAgent is null || instance != expectedPreviousAgent))
                         return (instance, ready);
                 }
                 await Task.Delay(200);
             }
-            throw new TimeoutException("NodeAgent did not report two ready seed processes. " + AgentOutput(agent));
+            throw new TimeoutException(
+                $"NodeAgent did not report {expectedReady} ready seed processes. " + AgentOutput(agent));
         }
+
+        /// <summary>The agent's local command/process journal — plan evidence without trusting
+        /// the control plane's view of the node.</summary>
+        public IReadOnlyList<(string SlotId, int Pid, string DesiredState, string CommandId)> AgentJournal()
+        {
+            var path = Path.Combine(_directory, "agent-state", "process-journal.json");
+            if (!File.Exists(path)) return [];
+            var entries = JsonSerializer.Deserialize<AgentJournalEntry[]>(File.ReadAllText(path)) ?? [];
+            return entries.Select(entry => (entry.SlotId, entry.Pid,
+                entry.DesiredState ?? "Running", entry.CommandId ?? "")).ToList();
+        }
+
+        private sealed record AgentJournalEntry(string SlotId, string ProcessInstanceId, int Pid,
+            DateTime StartedAtUtc, string? DesiredState, string? CommandId);
 
         private string AgentOutput(Process agent) => _hostOutput.TryGetValue(agent, out var output) ? output.ToString() : "";
 

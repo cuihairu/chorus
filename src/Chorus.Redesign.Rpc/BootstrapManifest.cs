@@ -41,7 +41,7 @@ public static class BootstrapManifest
         if (payload.ExpiresAtUnixMs <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() ||
             string.IsNullOrWhiteSpace(payload.ClusterId) || string.IsNullOrWhiteSpace(payload.NodeId) ||
             payload.SeedSlots is null || payload.SeedSlots.Length == 0 ||
-            payload.SeedSlots.Any(slot => slot.Role is not ("control-server" or "data-server") ||
+            payload.SeedSlots.Any(slot => slot.Role is not ("control-server" or "data-server" or "game-server") ||
                 slot.SlotId != $"{payload.NodeId}/{slot.Role}" || slot.Port is < 1 or > 65535 ||
                 string.IsNullOrWhiteSpace(slot.AssemblyPath) || string.IsNullOrWhiteSpace(slot.Sha256Hex)))
             throw new InvalidOperationException("Bootstrap manifest content is invalid or expired.");

@@ -295,3 +295,46 @@ service Routing {
   // carries no payload — the consumer answers it with a full snapshot pull.
   rpc WatchRouting(WatchRoutingRequest) returns (stream RoutingNotice);
 }
+
+// Deployment plans (architecture 10.2). The control plane owns DeploymentSpec; a plan names
+// the slot, the desired state and the command identity. The agent applies plans idempotently
+// — a re-delivered CommandId must never pull a second process — and the plan generation is
+// monotonic, so a stale plan never rewinds history.
+message DeploymentPlanProto {
+  string slot_id = 1;
+  string node_id = 2;
+  string role = 3;
+  // Running keeps the process supervised and restarted; Draining stops it gracefully;
+  // Stopped stops it and keeps it down.
+  string desired_state = 4;
+  string desired_version = 5;
+  string package_hash = 6;
+  int64 plan_generation = 7;
+  // Empty for plan rows that were never commanded (bootstrap seeds).
+  string command_id = 8;
+  // 0 = the command has no expiry of its own.
+  int64 command_expires_unix_ms = 9;
+}
+
+message ApplyPlanRequest {
+  string node_id = 1;
+  string slot_id = 2;
+  string role = 3;
+  string desired_state = 4;
+  string desired_version = 5;
+  string package_hash = 6;
+  int64 plan_generation = 7;
+  string command_id = 8;
+  int64 command_expires_unix_ms = 9;
+}
+
+message WatchPlansRequest { string node_id = 1; }
+
+service Deployment {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  // Issues a plan (the M3-9 admin face wraps this with audit; here the control plane speaks).
+  rpc ApplyPlan(ApplyPlanRequest) returns (DeploymentPlanProto);
+  // The agent's plan stream: emits the node's full plan set whenever it changes, and once
+  // on connect — a reconnected agent re-receives its plans and must not re-pull processes.
+  rpc WatchPlans(WatchPlansRequest) returns (stream DeploymentPlanProto);
+}

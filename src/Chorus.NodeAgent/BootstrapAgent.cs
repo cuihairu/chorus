@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -9,13 +10,29 @@ using Microsoft.Extensions.Logging;
 
 namespace Chorus.NodeAgent;
 
+/// <summary>
+/// The node agent (architecture 10.1-10.2): pulls the signed bootstrap seeds, supervises them,
+/// reports processes to the control plane and applies deployment plans idempotently. Commands
+/// are journaled before they execute, a re-delivered CommandId never pulls a second process,
+/// and a process is only signalled after its PID and start time match the journal — a reused
+/// PID is never killed blindly.
+/// </summary>
 public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundService
 {
-    private sealed record JournalEntry(string SlotId, string ProcessInstanceId, int Pid, DateTime StartedAtUtc);
+    private sealed record JournalEntry(string SlotId, string ProcessInstanceId, int Pid, DateTime StartedAtUtc,
+        string DesiredState, string CommandId);
     private sealed record ManagedSlot(BootstrapSeedSlot Spec, string InstanceId, Process Process,
         DateTime StartedAtUtc, WindowsJob? Job);
 
+    /// <summary>Agent-level variables the seed hosts inherit — the lab topology the agent
+    /// itself runs under (coordinator endpoints), never node-authority secrets.</summary>
+    private static readonly string[] PassthroughVariables =
+        ["CHORUS_GAME_ENDPOINTS", "CHORUS_MATCH_INTERVAL_MS", "CHORUS_DATA_ENDPOINT"];
+
+    private readonly object _gate = new();
     private readonly Dictionary<string, ManagedSlot> _slots = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _desiredState = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _lastCommandBySlot = new(StringComparer.Ordinal);
     private BootstrapManifestPayload _manifest = null!;
     private string _stateDirectory = null!;
     private string _journalPath = null!;
@@ -31,29 +48,39 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         ReclaimPreviousInstances();
         try
         {
+            var plans = WatchPlansAsync(stoppingToken);
             while (!stoppingToken.IsCancellationRequested)
             {
-                foreach (var spec in _manifest.SeedSlots)
+                lock (_gate)
                 {
-                    if (!_slots.TryGetValue(spec.SlotId, out var running) || running.Process.HasExited)
+                    foreach (var spec in _manifest.SeedSlots)
                     {
-                        running?.Job?.Dispose();
-                        running?.Process.Dispose();
-                        _slots[spec.SlotId] = StartSlot(spec);
-                        SaveJournal();
+                        // A plan can park a slot down (Draining/Stopped): the supervisor does
+                        // not restart what the control plane asked to stop.
+                        if (_desiredState.GetValueOrDefault(spec.SlotId, "Running") != "Running") continue;
+                        if (!_slots.TryGetValue(spec.SlotId, out var running) || running.Process.HasExited)
+                        {
+                            running?.Job?.Dispose();
+                            running?.Process.Dispose();
+                            _slots[spec.SlotId] = StartSlot(spec);
+                            SaveJournal();
+                        }
                     }
                 }
-
                 await ReportAsync(stoppingToken);
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
+            await plans;
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
         finally
         {
-            foreach (var slot in _slots.Values) StopSlot(slot);
-            _slots.Clear();
-            SaveJournal();
+            lock (_gate)
+            {
+                foreach (var slot in _slots.Values) StopSlot(slot);
+                _slots.Clear();
+                SaveJournal();
+            }
             _agentCertificate.Dispose();
             _nodeAuthority.Dispose();
             _root.Dispose();
@@ -85,6 +112,20 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(_stateDirectory,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         _journalPath = Path.Combine(_stateDirectory, "process-journal.json");
+        LoadJournalState();
+    }
+
+    /// <summary>Restores the persisted desired states and applied commands — a restarted agent
+    /// keeps the plans it already received and does not undo them (architecture 10.1).</summary>
+    private void LoadJournalState()
+    {
+        if (!File.Exists(_journalPath)) return;
+        var entries = JsonSerializer.Deserialize<JournalEntry[]>(File.ReadAllText(_journalPath)) ?? [];
+        foreach (var entry in entries)
+        {
+            _desiredState[entry.SlotId] = entry.DesiredState;
+            if (entry.CommandId.Length > 0) _lastCommandBySlot[entry.SlotId] = entry.CommandId;
+        }
     }
 
     private ManagedSlot StartSlot(BootstrapSeedSlot spec)
@@ -127,6 +168,9 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         start.Environment.Remove("CHORUS_NODE_AUTHORITY_PFX_PASSWORD");
         start.Environment.Remove("CHORUS_BOOTSTRAP_MANIFEST");
         start.Environment.Remove("CHORUS_ROOT_PFX_PASSWORD");
+        foreach (var name in PassthroughVariables)
+            if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } value)
+                start.Environment[name] = value;
         start.Environment["CHORUS_DATABASE_CONNECTION_STRING"] = Required("CHORUS_DATABASE_CONNECTION_STRING");
         start.Environment["CHORUS_CLUSTER_ID"] = _manifest.ClusterId;
         start.Environment["CHORUS_ROOT_CA_PEM"] = Path.GetFullPath(Required("CHORUS_ROOT_CA_PEM"));
@@ -135,6 +179,28 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         start.Environment["CHORUS_TLS_CERT_PEM"] = certificatePath;
         start.Environment["CHORUS_TLS_KEY_PEM"] = keyPath;
         start.Environment["CHORUS_PORT"] = spec.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (spec.Role == "game-server")
+        {
+            // The game host speaks to the data plane this node seeds, and for a tenant it
+            // serves: the agent mints its tenant-scoped client identity from the same grant.
+            if (_manifest.SeedSlots.FirstOrDefault(slot => slot.Role == "data-server") is { } dataSlot)
+                start.Environment["CHORUS_DATA_PORT"] = dataSlot.Port.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture);
+            if (Environment.GetEnvironmentVariable("CHORUS_GAME_CLIENT_TENANT") is { Length: > 0 } tenant)
+            {
+                using var clientCertificate = ProcessCertificateIssuer.CreateProcess(_nodeAuthority,
+                    new ProcessIdentity(_manifest.ClusterId, tenant, _manifest.NodeId, spec.Role,
+                        instanceId + "-client"),
+                    DateTimeOffset.UtcNow.AddHours(24), "localhost");
+                var clientCertificatePath = Path.Combine(certDirectory, "process-client.pem");
+                var clientKeyPath = Path.Combine(certDirectory, "process-client.key");
+                File.WriteAllText(clientCertificatePath, clientCertificate.ExportCertificatePem());
+                using (var clientKey = clientCertificate.GetECDsaPrivateKey())
+                    File.WriteAllText(clientKeyPath, clientKey!.ExportPkcs8PrivateKeyPem());
+                start.Environment["CHORUS_CLIENT_CERT_PEM"] = clientCertificatePath;
+                start.Environment["CHORUS_CLIENT_KEY_PEM"] = clientKeyPath;
+            }
+        }
         var process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {spec.SlotId}.");
         var job = OperatingSystem.IsWindows() ? WindowsJob.Attach(process) : null;
         logger.LogInformation("Started bootstrap slot {SlotId} as instance {InstanceId}", spec.SlotId, instanceId);
@@ -158,7 +224,9 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                         ? "cgroup-v2-detected-not-enforced" : "not-enforced"
                 })
             }, cancellationToken: token);
-            foreach (var slot in _slots.Values)
+            List<ManagedSlot> snapshot;
+            lock (_gate) snapshot = [.. _slots.Values];
+            foreach (var slot in snapshot)
             {
                 var ready = false;
                 // The agent knows the node-local serving address: the manifest host with the
@@ -170,6 +238,9 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                         _agentCertificate, _root, _nodeAuthority, _manifest.ClusterId, slot.Spec.Role);
                     if (slot.Spec.Role == "control-server")
                         ready = (await new ControlService.ControlServiceClient(roleChannel)
+                            .ReadyAsync(new Empty(), cancellationToken: token)).Ready;
+                    else if (slot.Spec.Role == "game-server")
+                        ready = (await new GameHost.GameHostClient(roleChannel)
                             .ReadyAsync(new Empty(), cancellationToken: token)).Ready;
                     else
                         ready = (await new DataService.DataServiceClient(roleChannel)
@@ -199,12 +270,119 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         }
     }
 
+    /// <summary>
+    /// The agent's plan stream: reconnects forever, and applies every arriving plan
+    /// idempotently. An outage ends the stream; the control plane re-emits the full plan set
+    /// on reconnect and the deduplicated commands must not disturb running processes.
+    /// </summary>
+    private async Task WatchPlansAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                using var channel = ProcessGrpcClientFactory.Create(new Uri(_manifest.ControlEndpoint),
+                    _agentCertificate, _root, _nodeAuthority, _manifest.ClusterId, "control-server");
+                var deployment = new Deployment.DeploymentClient(channel);
+                using var call = deployment.WatchPlans(
+                    new WatchPlansRequest { NodeId = _manifest.NodeId }, cancellationToken: stoppingToken);
+                while (await call.ResponseStream.MoveNext(stoppingToken))
+                    ApplyPlanLocally(call.ResponseStream.Current);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+            catch (Exception error) when (error is RpcException or HttpRequestException)
+            {
+                logger.LogWarning(error, "WatchPlans broke; retrying");
+                try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+            }
+        }
+    }
+
+    private void ApplyPlanLocally(DeploymentPlanProto plan)
+    {
+        lock (_gate)
+        {
+            var spec = _manifest.SeedSlots.FirstOrDefault(slot => slot.SlotId == plan.SlotId);
+            if (spec is null)
+            {
+                // The node holds only its bootstrap packages (architecture 10.1): a plan for an
+                // unknown slot has nothing to run on — refuse, do not improvise.
+                logger.LogWarning("Plan {SlotId} names a slot this node does not bootstrap; ignored", plan.SlotId);
+                return;
+            }
+            if (plan.CommandExpiresUnixMs > 0 && DateTimeOffset.FromUnixTimeMilliseconds(plan.CommandExpiresUnixMs)
+                .UtcDateTime <= DateTimeOffset.UtcNow)
+            {
+                logger.LogWarning("Plan {SlotId} command {CommandId} arrived after its expiry; ignored",
+                    plan.SlotId, plan.CommandId);
+                return;
+            }
+            if (plan.CommandId.Length > 0 && _lastCommandBySlot.TryGetValue(plan.SlotId, out var applied)
+                && applied == plan.CommandId)
+                return; // a re-delivered command never acts twice
+            // Journal first: the command is durable before it executes (architecture 10.2).
+            if (plan.CommandId.Length > 0) _lastCommandBySlot[plan.SlotId] = plan.CommandId;
+            _desiredState[plan.SlotId] = plan.DesiredState is "Running" or "Draining" or "Drained" or "Stopped"
+                ? plan.DesiredState : "Running";
+            SaveJournal();
+            switch (_desiredState[plan.SlotId])
+            {
+                case "Running":
+                    if (!_slots.TryGetValue(plan.SlotId, out var running) || running.Process.HasExited)
+                    {
+                        if (_slots.TryGetValue(plan.SlotId, out var previous))
+                        {
+                            previous.Job?.Dispose();
+                            previous.Process.Dispose();
+                        }
+                        _slots[plan.SlotId] = StartSlot(spec);
+                        SaveJournal();
+                    }
+                    break;
+                case "Draining":
+                case "Drained":
+                case "Stopped":
+                    if (_slots.TryGetValue(plan.SlotId, out var stopping)) StopSlotGracefully(stopping);
+                    break;
+            }
+            logger.LogInformation("Applied plan {SlotId} state {State} command {CommandId} generation {Generation}",
+                plan.SlotId, plan.DesiredState, plan.CommandId, plan.PlanGeneration);
+        }
+    }
+
+    /// <summary>Graceful stop: signal only after the PID and start time match the journal, ask
+    /// politely first (SIGTERM), then enforce. The stopped slot keeps its journal row with the
+    /// desired state so a restarted agent does not lift the stop on its own.</summary>
+    private void StopSlotGracefully(ManagedSlot slot)
+    {
+        try
+        {
+            if (!slot.Process.HasExited &&
+                Math.Abs((slot.Process.StartTime.ToUniversalTime() - slot.StartedAtUtc).TotalSeconds) < 1)
+            {
+                if (OperatingSystem.IsLinux()) _ = kill(slot.Process.Id, 15);
+                else slot.Process.Kill(entireProcessTree: false);
+                slot.Process.WaitForExit(TimeSpan.FromSeconds(10));
+                if (!slot.Process.HasExited) slot.Process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (InvalidOperationException) { }
+        catch (ArgumentException) { }
+        slot.Job?.Dispose();
+        slot.Process.Dispose();
+        _slots.Remove(slot.Spec.SlotId);
+        // Keep the slot's journal entry parked (Pid 0) so the desired state survives.
+        SaveJournal();
+    }
+
     private void ReclaimPreviousInstances()
     {
         if (!File.Exists(_journalPath)) return;
         var previous = JsonSerializer.Deserialize<JournalEntry[]>(File.ReadAllText(_journalPath)) ?? [];
         foreach (var entry in previous)
         {
+            if (entry.Pid <= 0) continue;
             try
             {
                 using var process = Process.GetProcessById(entry.Pid);
@@ -218,8 +396,15 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
 
     private void SaveJournal()
     {
-        var entries = _slots.Values.Select(slot => new JournalEntry(slot.Spec.SlotId,
-            slot.InstanceId, slot.Process.Id, slot.StartedAtUtc)).ToArray();
+        var entries = _manifest.SeedSlots.Select(spec => _slots.TryGetValue(spec.SlotId, out var slot)
+                ? new JournalEntry(spec.SlotId, slot.InstanceId, slot.Process.HasExited ? 0 : slot.Process.Id,
+                    slot.StartedAtUtc, _desiredState.GetValueOrDefault(spec.SlotId, "Running"),
+                    _lastCommandBySlot.GetValueOrDefault(spec.SlotId, ""))
+                // A stopped slot keeps its row parked so the desired state and command id persist.
+                : new JournalEntry(spec.SlotId, "", 0, DateTime.MinValue,
+                    _desiredState.GetValueOrDefault(spec.SlotId, "Running"),
+                    _lastCommandBySlot.GetValueOrDefault(spec.SlotId, "")))
+            .ToArray();
         var pending = _journalPath + ".pending";
         File.WriteAllText(pending, JsonSerializer.Serialize(entries));
         File.Move(pending, _journalPath, overwrite: true);
@@ -238,4 +423,7 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
 
     private static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value : throw new InvalidOperationException($"Set {name} before starting NodeAgent.");
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int kill(int pid, int signal);
 }

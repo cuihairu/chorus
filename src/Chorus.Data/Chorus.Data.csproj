@@ -24,6 +24,7 @@
     <EmbeddedResource Include="Redesign/0013_match_reservation_scope.sql" />
     <EmbeddedResource Include="Redesign/0014_match_ticket_streamer.sql" />
     <EmbeddedResource Include="Redesign/0015_process_endpoint.sql" />
+    <EmbeddedResource Include="Redesign/0016_deployment_plan.sql" />
   </ItemGroup>
 
 </Project>

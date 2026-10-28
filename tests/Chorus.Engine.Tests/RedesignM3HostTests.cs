@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using Chorus.Redesign.Platform;
 using Chorus.Redesign.Rpc;
@@ -716,6 +718,232 @@ public sealed class RedesignM3HostTests
         };
         if (slotId is not null) variables["CHORUS_SLOT_ID"] = slotId;
         return variables;
+    }
+
+    [Fact]
+    public async Task PlanCommandsAreIdempotentOnTheNodeAgent()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var agent = await environment.StartBootstrapAgentAsync(joinCluster: true);
+        await environment.WaitForAgentReportsAsync(agent, expectedPreviousAgent: null, nodeId: "node-a");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-10");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var deployment = new Deployment.DeploymentClient(controlChannel);
+        const string dataSlot = "node-a/data-server";
+
+        var before = environment.AgentJournal().Single(entry => entry.SlotId == dataSlot);
+        Assert.True(before.Pid > 0);
+
+        // Drain the data slot: the agent stops it gracefully, journals the command first,
+        // and the slot stays down — the supervisor does not restart what a plan stopped.
+        var drained = await deployment.ApplyPlanAsync(new ApplyPlanRequest
+        {
+            NodeId = "node-a", SlotId = dataSlot, Role = "data-server",
+            DesiredState = "Draining", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            PlanGeneration = 5, CommandId = "m3-drain-data-1"
+        });
+        Assert.Equal(5, drained.PlanGeneration);
+        var stopped = await WaitForAsync(() => Task.FromResult(environment.AgentJournal()
+            .Single(entry => entry.SlotId == dataSlot) is { Pid: 0, DesiredState: "Draining" }
+            && IsProcessGone(before.Pid)), TimeSpan.FromSeconds(30));
+        Assert.True(stopped, "The agent did not drain the data slot.");
+        Assert.Equal("m3-drain-data-1", environment.AgentJournal()
+            .Single(entry => entry.SlotId == dataSlot).CommandId);
+
+        // A re-delivered command id is a visible no-op on the node.
+        var repeated = await deployment.ApplyPlanAsync(new ApplyPlanRequest
+        {
+            NodeId = "node-a", SlotId = dataSlot, Role = "data-server",
+            DesiredState = "Draining", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            PlanGeneration = 5, CommandId = "m3-drain-data-1"
+        });
+        Assert.Equal(5, repeated.PlanGeneration);
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        Assert.Equal(0, environment.AgentJournal().Single(entry => entry.SlotId == dataSlot).Pid);
+
+        // An expired command is refused even at a fresh generation.
+        var expired = await deployment.ApplyPlanAsync(new ApplyPlanRequest
+        {
+            NodeId = "node-a", SlotId = dataSlot, Role = "data-server",
+            DesiredState = "Stopped", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            PlanGeneration = 6, CommandId = "m3-late-stop-1",
+            CommandExpiresUnixMs = DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeMilliseconds()
+        });
+        Assert.Equal(6, expired.PlanGeneration);
+        await Task.Delay(TimeSpan.FromSeconds(3));
+
+        // Running again restarts the slot exactly once, with a fresh instance.
+        var restarted = await deployment.ApplyPlanAsync(new ApplyPlanRequest
+        {
+            NodeId = "node-a", SlotId = dataSlot, Role = "data-server",
+            DesiredState = "Running", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            PlanGeneration = 7, CommandId = "m3-start-data-1"
+        });
+        Assert.Equal(7, restarted.PlanGeneration);
+        var running = await WaitForAsync(() => Task.FromResult(environment.AgentJournal()
+            .Single(entry => entry.SlotId == dataSlot) is { Pid: > 0, DesiredState: "Running" }
+            && !IsProcessGone(environment.AgentJournal().Single(entry => entry.SlotId == dataSlot).Pid)),
+            TimeSpan.FromSeconds(30));
+        Assert.True(running, "The agent did not restart the data slot.");
+
+        // A stale generation never rewinds: the store answers with the plan that won and the
+        // node keeps its running slot.
+        var stale = await deployment.ApplyPlanAsync(new ApplyPlanRequest
+        {
+            NodeId = "node-a", SlotId = dataSlot, Role = "data-server",
+            DesiredState = "Stopped", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            PlanGeneration = 3, CommandId = "m3-stale-stop-1"
+        });
+        Assert.Equal(7, stale.PlanGeneration);
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        Assert.True(environment.AgentJournal().Single(entry => entry.SlotId == dataSlot).Pid > 0);
+    }
+
+    [Fact]
+    public async Task ControlOutagePausesMatchingAndPlansDoNotRepullProcesses()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var agentEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_GAME_ENDPOINTS"] = $"https://localhost:{gamePort}",
+            ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+            ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+            ["CHORUS_GAME_CLIENT_TENANT"] = "tenant-a"
+        };
+        // The whole match path on one supervised node: control (coordinator) + data + game.
+        var agent = await environment.StartBootstrapAgentAsync("Chorus.GameServer", gamePort,
+            toolEnvironment: null, agentEnvironment, joinCluster: true);
+        await environment.WaitForAgentReportsAsync(agent, expectedPreviousAgent: null, expectedReady: 3,
+            nodeId: "node-a");
+
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+            });
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        const string partition = "tenant-a/game-a/rules-1/region-1/simulator/standard";
+        var first = await MountAsync(environment, simulator, "m3-host-10a");
+        var second = await MountAsync(environment, simulator, "m3-host-10b");
+        await EnqueueAsync(environment, first, partition, "m3-enqueue-10a");
+        await EnqueueAsync(environment, second, partition, "m3-enqueue-10b");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-11");
+        using var dataChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
+        var queue = new MatchQueue.MatchQueueClient(dataChannel);
+        var committed = await WaitForAsync(async () =>
+        {
+            var a = await queue.GetTicketAsync(
+                new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = first.BindingId });
+            var b = await queue.GetTicketAsync(
+                new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = second.BindingId });
+            return a.Ticket.State == "Committed" && b.Ticket.State == "Committed"
+                && a.Ticket.ReservationId == b.Ticket.ReservationId;
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(committed, "The agent-hosted coordinator did not commit the pair.");
+
+        var reservation = await new Match.MatchClient(dataChannel).GetReservationAsync(
+            new GetReservationRequest { TenantId = "tenant-a", GameId = "game-a", ReservationId =
+                (await queue.GetTicketAsync(new GetTicketRequest
+                { TenantId = "tenant-a", GameId = "game-a", BindingId = first.BindingId })).Ticket.ReservationId });
+        var roomId = reservation.Reservation.RoomId;
+
+        // The committed room finishes on the data plane by contract — no control plane needed.
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-m3-11");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        var finished = await WaitForAsync(async () =>
+            (await rounds.GetRoundAsync(new GetRoundRequest { RoomId = roomId, GameId = "game-a" })).Status
+                != "Running", TimeSpan.FromSeconds(30));
+        Assert.True(finished, "The committed round never finished on the data plane.");
+
+        var instances = await SlotInstancesAsync(environment);
+        var journal = environment.AgentJournal().ToDictionary(entry => entry.SlotId);
+        var controlPid = journal["node-a/control-server"].Pid;
+
+        // The control plane freezes (alive, deaf). The data plane keeps serving; matching
+        // pauses once the coordinator term lease expires — the queued pair stays queued.
+        _ = kill(controlPid, 19);
+        var third = await MountAsync(environment, simulator, "m3-host-10c");
+        var fourth = await MountAsync(environment, simulator, "m3-host-10d");
+        await EnqueueAsync(environment, third, partition, "m3-enqueue-10c");
+        await EnqueueAsync(environment, fourth, partition, "m3-enqueue-10d");
+        await Task.Delay(TimeSpan.FromSeconds(20));
+        var thirdTicket = await queue.GetTicketAsync(
+            new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = third.BindingId });
+        var fourthTicket = await queue.GetTicketAsync(
+            new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = fourth.BindingId });
+        Assert.Equal("Queued", thirdTicket.Ticket.State);
+        Assert.Equal("Queued", fourthTicket.Ticket.State);
+        // The data plane still serves reads for the finished room while control is deaf.
+        var duringOutage = await rounds.GetRoundAsync(new GetRoundRequest { RoomId = roomId, GameId = "game-a" });
+        Assert.True(duringOutage.Found);
+
+        // The frozen control process dies for real (no SIGCONT — the old coordinator never
+        // wakes to pair the queue); the agent restarts it and re-receives the plans, without
+        // re-pulling the data and game slots it already supervises.
+        _ = kill(controlPid, 9);
+        var recovered = await WaitForAsync(async () =>
+        {
+            var current = await SlotInstancesAsync(environment);
+            return current["node-a/control-server"] != instances["node-a/control-server"]
+                && current["node-a/data-server"] == instances["node-a/data-server"]
+                && current["node-a/game-server"] == instances["node-a/game-server"];
+        }, TimeSpan.FromSeconds(40));
+        Assert.True(recovered, "The agent did not restart control without touching its siblings.");
+
+        var afterJournal = environment.AgentJournal().ToDictionary(entry => entry.SlotId);
+        Assert.Equal(journal["node-a/data-server"].Pid, afterJournal["node-a/data-server"].Pid);
+        Assert.Equal(journal["node-a/game-server"].Pid, afterJournal["node-a/game-server"].Pid);
+
+        // The successor coordinator takes the term and pairs the paused queue.
+        var thirdBinding = third.BindingId;
+        var fourthBinding = fourth.BindingId;
+        var resumed = await WaitForAsync(async () =>
+        {
+            var thirdTicket = await queue.GetTicketAsync(new GetTicketRequest
+                { TenantId = "tenant-a", GameId = "game-a", BindingId = thirdBinding });
+            var fourthTicket = await queue.GetTicketAsync(new GetTicketRequest
+                { TenantId = "tenant-a", GameId = "game-a", BindingId = fourthBinding });
+            return thirdTicket.Ticket.State == "Committed" && fourthTicket.Ticket.State == "Committed"
+                && thirdTicket.Ticket.ReservationId == fourthTicket.Ticket.ReservationId;
+        }, TimeSpan.FromSeconds(60));
+        Assert.True(resumed, "The successor coordinator did not pair the paused queue.");
+    }
+
+    private static bool IsProcessGone(int pid)
+    {
+        try { using var process = Process.GetProcessById(pid); return process.HasExited; }
+        catch (ArgumentException) { return true; }
+    }
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int kill(int pid, int signal);
+
+    /// <summary>The newest process instance per slot of the supervised node.</summary>
+    private static async Task<Dictionary<string, string>> SlotInstancesAsync(
+        RedesignM0HostTests.HostEnvironment environment)
+    {
+        await using var connection = new Npgsql.NpgsqlConnection(environment.DatabaseConnectionString);
+        await connection.OpenAsync();
+        await using var command = new Npgsql.NpgsqlCommand("""
+            SELECT DISTINCT ON (slot_id) slot_id,process_instance_id
+            FROM control.process WHERE node_id='node-a'
+            ORDER BY slot_id, observed_at DESC
+            """, connection);
+        var result = new Dictionary<string, string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) result[reader.GetString(0)] = reader.GetString(1);
+        return result;
     }
 
     private static async Task<DevelopmentPlatformSimulator> StartMatchClusterAsync(
