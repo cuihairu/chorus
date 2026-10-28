@@ -129,6 +129,38 @@ M2-7 的保留/清理半项——「保留/清理守卫（只删 Settled 房最�
 - 证据：store 4 例（`RedesignRetentionStoreTests`，专库族 `chorus_m2_retention_<guid>` 白名单内）——active 房拒/窗内拒/Pending 注入行拒（override 也不放行）三连拒后释放输入即诚实 no-op（KeepTick 0）；锚点对（快照 0 admission+20 ckpt+40/80 PutSnapshot → keep 40、删 39 帧+2 快照、恢复链 41..120 连续且 [80,40] 双锚俱在、事件/结果/账目证据全数未动、同 operation 重试回放 39、新 operation 零删）；单 admission 快照房零删；容量=1 下第二局 ResourceExhausted+计数恰 1、abort 后同 operation id 干净准入。host 1 例（`CapacityPressureRejectsNewRoundsAndRetentionNeverBreaksTheChain`，CHORUS_MAX_ACTIVE_ROOMS=1 四宿主真实进程）：真实 StartRound 被拒可见+计数=1→首局 20 tick 跑到 Settled（finalize 重试循环）→窗内 PruneRound FailedPrecondition 含 "retention window"→override 后诚实 no-op（唯一快照=tick 0 admission）→LoadRecovery（game-server 证书，@cluster 证书读不到租户房）链完整 1..20→streamer 证书 PruneRound PermissionDenied。Release 全量 **1219/1219**（轨迹 …1214→1219）。
 - AT 台账增量：**AT21 的 M2 单节点部分闭合**——保留守卫（Settled 才剪、回退对之上不破坏、零未处置输入才许、保留窗、fail-visible 拒绝）与压力半边（拒绝新局+计数、绝不静默删）均可演示；跨节点容量模型与盘压测量属 M4。
 
+## M2-7b 已落地：全流程出口证据与单节点基准（96ca847、b71515d、71ad16d，M2 出口）
+
+M2-7 的出口半项——「全流程场景测试（复用 RoundDemoScenario 加断线/重连段）、可选单节点基准、AT13–21+AT27 台账收口」。
+
+### 断线/重连旅程与三方一致（M2-7b-1，96ca847）
+
+- `RoundDemoScenario` 增断线变体：`disconnectGuestEdge` 参数与 `GuestDisconnectTick=12`——guest 边在 tick 12 断开（host 边照常），房间继续跑；400ms 后携 (LastAppliedTick, LastAppliedStateVersion) 基线重连。ReadEdgeAsync 重写为双腿一条 Apply 规则：delta 只认自己链上的 base_version、result 只在自己头到达、**重连快照必须严格高于离开基线**（否则抛出）——重连=基线落后于头时回答全量 Snapshot，链无缝续到冻结 result。
+- `DisconnectedEdgeRejoinsTheJourneyAndTheRecordAgreesThreeWays`（验收 line 86 纪律：数据库状态、客户端输出、副作用记录三方一致）：双边缘 FinalTick 恰 120/版本/result 一致、guest 恰 2 枚快照（基线+重连各一）、双边缘各恰一条 demo-boost-1 回执；DB 侧 game.room Settled@120、game.result 的 RankingOf == 双边缘 result 的 RankingOf、settlement.grant Granted=2、player.ledger 对 `settlement:room-demo-1/%` 恰 2 行且 DISTINCT operation_id==count(*)（每 grant 恰一账本效果）、infra.outbox 含 round.started@`{room}/0/start`、round.activated@`/0/activate`、round.settled@`/0/settle`。控制台与测试同一代码路径。Release 全量 **1220/1220**（轨迹 …1219→1220）。
+
+### 单节点 100 房基准（M2-7b-2，b71515d+71ad16d，环境门控）
+
+- `RedesignM2CapacityBenchmarkTests.HundredRoomsWithAHotRoomReportSingleNodeDistributions`（`CHORUS_RUN_M2_CAPACITY=1` 才跑，缺省走 skip-path 计入门禁；Trait Category=Capacity）：四真实宿主上 100 并发房（每房 1 streamer 挂载、独立 claim+并发续租、100 tick@50ms）+ 热房以 500 durable 事件/s 为目标喂入（热房=最后准备的房，先准备的房会在 setup 期间完赛，喂终态房只得诚实的 OutOfRound）。断言只查「跑成了」：100/100 完成计数、帧数恰 10000、热房 routed>0、喂入零服务器错误；**从不断言延迟阈值**——报告是诚实数据不是门控。
+- **基准逼出的两处修复**：
+  1. **路由死锁（生产修复 b71515d，RedesignRoundInputStore）**：ApplyRoutingAsync 原先无锁读房态、先取 cursor 再 INSERT delivery——delivery 外键的 FOR KEY SHARE 是第一次碰房行、晚于 cursor；并发 CommitFrame 持房 FOR UPDATE 等 cursor → 40P01 死锁（堆栈实证：RouteEvents 挂在 FK 检查、锁元组在 game.room）。修复=按 §6.5 统一锁序把 Pass 4 拆三步：先解析目标房，再**按序 FOR UPDATE 锁全部目标房**（与 bindings 同款排序锁），最后才 cursor+delivery。副产修复：原无锁房态读可与结算竞态（房刚 Settled 仍可能落 delivery），锁读后终态房诚实记 OutOfRound。
+  2. **百租约不能顺序续（基准测试侧）**：LeaseSeconds 上限 60，100 条租约顺序续一圈在负载下 30s+，20s 节奏整圈可超 60s → 所有权栅栏拒掉 setup 中的房（FailedPrecondition 实证）。修复=Task.WhenAll 并发续租、10s 节奏，epoch 漂移与 claim 失败仍视为真失败。
+- 2026-10-28 本机一轮数据（**单开发机基线，非生产容量主张；完整容量模型属 M4**）：100 房全数完成、帧 10000/10000、热房喂 825（Routed=800 + OutOfRound=25，后者为热房结算后的终态审计行）、达成 15 events/s（目标 500——满载下 ingest/route RPC 延迟数十秒）、单房完成墙钟 p50=111s / p95=187s / p99=188s（名义 5s，排队主导）、聚合帧率 41 frames/s、CPU game-server 4.7s / data-server 43.2s、WAL 6.9 MB。结论与 ROOM-11 同向：单开发机瓶颈是提交延迟而非吞吐；帧全数提交、825 事件全数有去向、零静默丢失。Release 全量 **1221/1221**（轨迹 …1220→1221）。
+
+### AT13–21 + AT27 台账收口（M2 单节点）
+
+- **AT13**：隔离半边 M2-3（模块 FailAfterTick 连续失败→Suspended 可见、同进程他房继续）、分布半边本基准（100 并发房，Tick/提交/CPU/WAL 分布如实报告）。单节点闭合；正式容量口径（2000 帧/s 目标等）属 M4、不冒领。
+- **AT14**：M2-2（同 CommitId 重试回原结果、低序晚交可见拒、水位不越洞、FullCheckpoint 同事务、崩溃注入收敛、宿主 Kill 边界）。
+- **AT15**：M2-6/6b（慢订阅者不阻塞快者、溢出后全量追上、断链不应用不连续 delta；重连快照证据见上方旅程）。
+- **AT16/17**：**如实标注 M4**——模块确定性契约在位（DeterministicReplay、逐帧哈希验证、恢复逐帧验后继），但跨 OS 重放与配置升级/版本钉住验证未做，不折算。
+- **AT18**：M0 播种 + M2-5（默认资产可用、余额/流水一致、profile.patch 不覆盖账本资产）。
+- **AT19**：M2-4（快照原子可见、坏最新回退、全坏 RecoveryFailed/Suspended、Finishing 恢复不重启战斗 tick、恢复后与孪生房 result 逐字节相等）。
+- **AT20**：M2-5（第 N 笔 kill 只补未完成 grant、每 grant 恰一账本效果、FinalizeRound 各缝崩溃收敛、绑定可开下一代）。
+- **AT21**：M2-7a 单节点部分（Settled 才剪、回退对之上不破坏、零未处置输入才许、保留窗、压力拒绝计数、OutOfRound 终态审计永不 GC）；跨节点盘压与容量模型属 M4。
+- **AT27**：M2-2 帧半边 + M2-5 结算半边 + M2-7a 保留回执（commit 已完成而 RPC 响应丢失：原 OperationId 查回原结果、无重复效果）。
+- **M2 出口演示（acceptance line 106）**：一局从启动（claim→StartRound→PrepareRoom）、输入（平台礼物路由 + durable 客户端命令回执）、断线（guest 边 tick 12 断）、重连（基线携入、快照无缝续链）到结算（FinalizeRound→Settled→排行榜）由 RoundDemoScenario 断线变体 + 三方一致测试 + 控制台同一代码路径全程演示——非仅 WebSocket 收发。
+
+M2 七轮全部完成。multi-worker、跨节点容量、真实平台接入、match 票据、BootstrapManifest 的 game-server 槽位扩展属 M3/M4。
+
 ## M2 后续顺序
 
 1. ~~局准入与 RoundGeneration、事件按局路由、AbortRound~~（已落地，见上）。
@@ -137,6 +169,6 @@ M2-7 的保留/清理半项——「保留/清理守卫（只删 Settled 房最�
 4. ~~快照与恢复：PutSnapshot/LoadRecovery、确定性重放、坏快照回退（AT19）~~（已落地，见上）。
 5. ~~结算 §6.4 + FinalizeRound §6.6 + 排行榜投影 + 默认资产库存守卫（AT18、AT20、AT27 结算部分）~~（已落地，见上）。
 6. ~~客户端同步协议（Subscribe：Snapshot/Delta/CommandReceipt/RoundResult/ResyncRequired）+ 双主播控制台示例 `Chorus.RoundDemo`~~（均已落地，见上）。
-7. 全局出口证据：全流程场景测试（复用 RoundDemoScenario 加断线/重连段）、可选单节点基准、~~保留/清理守卫~~（已落地，见 M2-7a）、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）。
+7. ~~全局出口证据：全流程场景测试（复用 RoundDemoScenario 加断线/重连段）、可选单节点基准、保留/清理守卫、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）~~（均已落地，见 M2-7a 与 M2-7b）。
 
 GameServer 已建（无 DB 凭据，全部持久状态走 gRPC→DataServer）；match 票据与 BootstrapManifest 的 game-server 槽位扩展属 M3。
