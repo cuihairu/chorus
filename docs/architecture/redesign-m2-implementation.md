@@ -117,6 +117,18 @@ M2-6 剩余半项——「新 `src/Chorus.RoundDemo` 控制台示例（双主播
 
 本项不新增 AT 闭合——它是 M2-7 全流程出口证据的场景载体（全流程场景测试直接复用本场景加断线/重连段）。
 
+## M2-7a 已落地：保留/清理守卫与容量压力（86beb94，AT21）
+
+M2-7 的保留/清理半项——「保留/清理守卫（只删 Settled 房最后两个 verified 快照之前的帧前缀、零未处置输入才许，破坏恢复链或丢未处置事件即 fail-visible；盘压→拒绝新局+计数，绝不静默删）」。
+
+- 迁移 `0011_retention_capacity.sql`：新 `ops` schema；`game.room` 增 `pruned_before_tick bigint NOT NULL DEFAULT 0`；`ops.capacity_rejection(kind PK, count, last_rejected_at)`——压力拒绝是计数事实而非日志。迁移步 10→11、表 32→33（含 ops），schema 测试同步。
+- `RedesignRetentionStore.PruneRoundAsync`：一个回执事务（`retention.prune`，canonical={RoomId, OverrideRetentionWindow}），守卫依次 fail-visible——房间 FOR UPDATE 须 `Settled`；`Settled` 起算 7 天保留窗（`DefaultSettledRetention`），未过窗须显式 override；`input.delivery(consumer_scope='room:<id>', state='Pending')` 必须为零（未处置输入绝不删）；然后才定锚点。删除=帧与快照 `tick_id<keep` 各一条 DELETE + `pruned_before_tick=GREATEST`；`input.event`/`input.delivery`/`game.result`/`settlement.grant`/账本一概不触——去重、审计与结算证据长于帧存活。回执回放使重试返回原结果（Duplicate），后续 operation 得诚实零删。
+- **锚点语义（本轮排障成果）**：`verified` 只标记 PutSnapshot 的存储再验证入账路径（RecoverRoom 重放后落头走它）；admission tick-0（RoomStore.PrepareRound）与帧内 FullCheckpoint 写的都是 `verified=false`——普通局一生可以只有 unverified 快照。恢复读的真实契约是「从最老的**任意**快照起逐帧回放、坏最新快照回退下一枚」，故保留必须保住的不变量是**最后两枚快照的回退对 + 老者之上的全部帧**。锚点初版误作 verified-only：普通 Settled 局将永远无可验证锚、永远不可剪（fail-useless）；已改为任一种类最后两枚取老者，`verified` 不再参与保留决策（两条快照写入路径都随单事务落地、回放逐帧验 hash，不是弱锚）。零快照（防御分支）仍拒绝。
+- gRPC：`m2.proto` 新 `Retention` 服务（Ready/PruneRound，注册于 DataServer）仅 control-server 可调；@cluster 证书必须具名 tenant（ResolveTenant 同控制面惯例），租户证书越权代他租户→PermissionDenied；`RedesignRetentionException`→FailedPrecondition（拒绝是数据不是静默 no）、重试异请求→InvalidArgument。
+- 容量守卫：`RedesignRoomStore` 增 `maxActiveRooms`（Program.cs 读 `CHORUS_MAX_ACTIVE_ROOMS`）；`ApplyStartAsync` 顶部先取 advisory 事务锁（`hashtext('game.room:admission')`）再统计非终态房（`status NOT IN ('Aborted','Settled','Closed')`），≥cap 抛 `RedesignCapacityException`；StartRound 捕获后在回执事务**外**（准入事务已回滚）UPSERT 计数，gRPC 映射 ResourceExhausted。回执存储的 duplicate 早退保证同一 operation 重试不重复计数；拒绝操作零回执残留，同一 operation id 释放容量后重试即干净准入。
+- 证据：store 4 例（`RedesignRetentionStoreTests`，专库族 `chorus_m2_retention_<guid>` 白名单内）——active 房拒/窗内拒/Pending 注入行拒（override 也不放行）三连拒后释放输入即诚实 no-op（KeepTick 0）；锚点对（快照 0 admission+20 ckpt+40/80 PutSnapshot → keep 40、删 39 帧+2 快照、恢复链 41..120 连续且 [80,40] 双锚俱在、事件/结果/账目证据全数未动、同 operation 重试回放 39、新 operation 零删）；单 admission 快照房零删；容量=1 下第二局 ResourceExhausted+计数恰 1、abort 后同 operation id 干净准入。host 1 例（`CapacityPressureRejectsNewRoundsAndRetentionNeverBreaksTheChain`，CHORUS_MAX_ACTIVE_ROOMS=1 四宿主真实进程）：真实 StartRound 被拒可见+计数=1→首局 20 tick 跑到 Settled（finalize 重试循环）→窗内 PruneRound FailedPrecondition 含 "retention window"→override 后诚实 no-op（唯一快照=tick 0 admission）→LoadRecovery（game-server 证书，@cluster 证书读不到租户房）链完整 1..20→streamer 证书 PruneRound PermissionDenied。Release 全量 **1219/1219**（轨迹 …1214→1219）。
+- AT 台账增量：**AT21 的 M2 单节点部分闭合**——保留守卫（Settled 才剪、回退对之上不破坏、零未处置输入才许、保留窗、fail-visible 拒绝）与压力半边（拒绝新局+计数、绝不静默删）均可演示；跨节点容量模型与盘压测量属 M4。
+
 ## M2 后续顺序
 
 1. ~~局准入与 RoundGeneration、事件按局路由、AbortRound~~（已落地，见上）。
@@ -125,6 +137,6 @@ M2-6 剩余半项——「新 `src/Chorus.RoundDemo` 控制台示例（双主播
 4. ~~快照与恢复：PutSnapshot/LoadRecovery、确定性重放、坏快照回退（AT19）~~（已落地，见上）。
 5. ~~结算 §6.4 + FinalizeRound §6.6 + 排行榜投影 + 默认资产库存守卫（AT18、AT20、AT27 结算部分）~~（已落地，见上）。
 6. ~~客户端同步协议（Subscribe：Snapshot/Delta/CommandReceipt/RoundResult/ResyncRequired）+ 双主播控制台示例 `Chorus.RoundDemo`~~（均已落地，见上）。
-7. 全局出口证据：全流程场景测试（复用 RoundDemoScenario 加断线/重连段）、可选单节点基准、保留/清理守卫、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）。
+7. 全局出口证据：全流程场景测试（复用 RoundDemoScenario 加断线/重连段）、可选单节点基准、~~保留/清理守卫~~（已落地，见 M2-7a）、AT13–21+AT27 台账收口（AT16/17 如实标注 M4）。
 
 GameServer 已建（无 DB 凭据，全部持久状态走 gRPC→DataServer）；match 票据与 BootstrapManifest 的 game-server 槽位扩展属 M3。
