@@ -86,16 +86,11 @@ Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --url
 
 ## 架构概览
 
-```mermaid
-flowchart TB
-  P["抖音 / 快手平台"] -->|"HTTPS 回调"| PGW["platform-gw<br/>/ingress/{platform}"]
-  C["主播客户端"] <-->|"hello / welcome / ack / snapshot"| SGW["streamer-gw<br/>/ws"]
-  PGW <-->|"gw→eng 命令 + eng→gw 心跳"| W["Chorus.EngineHost<br/>SessionActor × N · IGameModule"]
-  SGW <-->|"gw→eng 命令（ACK/上下线）+ eng→gw 快照/欢迎/心跳（引擎扇出）"| W
-```
+![Chorus 七类进程与 GameServer 房间管理架构](docs/public/images/architecture-zh.svg)
 
-单进程形态（`Chorus.Server`）把两侧装进同一进程，无 IPC 跳。完整进程拓扑与组件 file:line 索引见
-当前架构总览；后台/管理端接口见接口参考。
+七类进程角色；每个 GameServer 内由 RoomRuntime 管理多个 RoomActor，各房间独立推进 Tick。
+此图展示重设计架构，网关集成及生产验收仍在推进；上文的启动示例仍对应旧版宿主。
+详见[完整架构设计](docs/architecture/architecture.md)和[验收边界](docs/architecture/redesign-acceptance.md)。
 
 ## 产品边界
 

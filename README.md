@@ -89,17 +89,11 @@ Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --url
 
 ## Architecture Overview
 
-```mermaid
-flowchart TB
-  P["Douyin / Kuaishou platforms"] -->|"HTTPS callback"| PGW["platform-gw<br/>/ingress/{platform}"]
-  C["Streamer clients"] <-->|"hello / welcome / ack / snapshot"| SGW["streamer-gw<br/>/ws"]
-  PGW <-->|"gw→eng commands + eng→gw heartbeats"| W["Chorus.EngineHost<br/>SessionActor × N · IGameModule"]
-  SGW <-->|"gw→eng commands (ack/connect) + eng→gw snapshots/welcomes/heartbeats (engine fan-out)"| W
-```
+![Chorus process architecture and GameServer room management](docs/public/images/architecture-en.svg)
 
-The single-process shape (`Chorus.Server`) puts both sides in one process with no IPC hop.
-Full process topology and a component file:line index: [current architecture overview](docs/design/architecture-overview.md).
-Backend/admin-facing endpoints: [API reference](docs/reference/api.md).
+Seven process roles. Each GameServer contains a RoomRuntime managing multiple RoomActors, each with its own tick loop.
+This diagram shows the target redesign; gateway integration and production validation are ongoing. The startup examples above still describe the legacy hosts.
+See the [full architecture design (Chinese)](docs/architecture/architecture.md) and [acceptance scope (Chinese)](docs/architecture/redesign-acceptance.md).
 
 ## Product Boundary
 

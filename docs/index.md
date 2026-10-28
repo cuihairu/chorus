@@ -20,3 +20,12 @@ features:
     details: Real-time broadcast of state changes within a room, with ordering and consistency checks.
   - title: Failover
     details: Automatically migrate rooms when a node becomes unreachable, minimizing disruption.
+---
+
+## Process architecture and room management
+
+Seven process roles. Each GameServer manages multiple rooms, with a serial tick loop per RoomActor. This diagram shows the target redesign; gateway integration and production validation are ongoing.
+
+![Seven Chorus process roles, with RoomRuntime and multiple RoomActors inside GameServer](/images/architecture-en.svg)
+
+[Open full SVG](/images/architecture-en.svg) · [Architecture design and implementation scope (Chinese)](/architecture/architecture)

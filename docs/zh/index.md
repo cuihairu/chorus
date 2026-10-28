@@ -20,3 +20,12 @@ features:
     details: 房间内状态变更实时广播，支持顺序与一致性校验。
   - title: 故障切换
     details: 节点失联时自动迁移房间，最小化中断。
+---
+
+## 进程架构与房间管理
+
+七类进程角色；一个 GameServer 管理多个房间，每个 RoomActor 串行推进自己的 Tick。图示为重设计架构，网关集成及生产验收仍在推进。
+
+![Chorus 七类进程架构，以及 GameServer 内的 RoomRuntime 和多个 RoomActor](/images/architecture-zh.svg)
+
+[打开完整 SVG](/images/architecture-zh.svg) · [架构设计与实现边界](/architecture/architecture)
