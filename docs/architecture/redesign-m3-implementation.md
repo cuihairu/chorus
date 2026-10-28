@@ -44,6 +44,20 @@
 - 证据：host +2 例（真实四宿主：control 带 CHORUS_GAME_ENDPOINTS/DATA_ENDPOINT/MATCH_INTERVAL_MS=200、data、streamer 模拟器、game 带 CHORUS_DATA_PORT+tenant-a 客户证书）：**AT10 配对**——双主播各自证书入队→协调者自动成局→双票 Committed 同 reservation→GetReservation Committed→GetRound 双参与（无需任何人工编排）；第三挂载排队后取消→Cancelled 永不配对→partition 排空（ListPartitions 空）；**AT11 杀协调者收敛**——首个控制面不带 game 端点（纯控制面、匹配为空转），测试扮演协调者 ClaimTerm(term 1)+Reserve 后 Kill+带端点重启：继任者接管 term、孤儿预留无 ownership→AbortReservation 票回队、同一周期重配对成新房间（≠room-m3-6）双票 Committed，孤儿房 GetRound 不存在——无半入场、不建第二房。Release 全量 1236→1238/1238（首轮 1 抖动 Kestrel bind（容量测试端口竞争）、二轮 1 抖动 IpcAckResync 时序——两故障各独立复跑绿、三轮全绿）。
 - AT 台账增量：**AT10 配对半边单机形式闭合**（双主播自动成局进真实房）；**AT11 继任者宿主形式闭合**（杀协调者→继任者收敛、不建第二房、不留半入场）；**AT12 取消竞态宿主形式续进**（排队后取消不配对）。跨机形式（独立机器/分区证明）仍 open，与前序各轮同口径：同宿主多进程=mechanics 证据，不冒领跨机门槛。
 
+## M3-5 已落地：实例注册、路由快照与多实例宿主环境（d73aa4b）
+
+按架构 §4.4「控制面提供版本化全量快照+增量 Watch，消费者断流或版本缺口时重新全量拉取；路由只含内部终点、实例和 epoch，不含秘密」：
+
+- 迁移 0015（迁移 14→15、表数不变 34）：`control.process.endpoint text` nullable——上报进程的服务地址，路由快照据此把 owner/streamer join 到可达端点；bootstrap 时代报告可缺省。
+- ReportProcess 双路径：node-agent 路径不变（control/data 角色、slot=`{node}/{role}`）；新增 game/streamer **自报**——证书即身份（caller.Role==request.Role、ProcessInstanceId 一致、NodeId 一致、@cluster 租户），slot 约定 `{node}/{role}[#{n}]`（一进程一 slot，复号 #2/#3 区分实例），store 侧 agent_instance_id=process id（自报进程是自己的代理；node 行存在即可，代理轮换仍受 FOR UPDATE 串行）。跨角色/跨实例自报→InvalidArgument 可见拒。`m0.proto` ReportProcessRequest.endpoint=13；BootstrapAgent 报告带端点（manifest 主机+slot 端口=节点本地服务地址）。
+- GameServer/StreamerServer：`CHORUS_DATA_ENDPOINT` 覆盖数据面 localhost 硬编码；可选 `CHORUS_CONTROL_ENDPOINT` 开启 `ProcessSelfReporter`（Chorus.Redesign.Rpc 共享 BackgroundService，hosting.abstractions 引入：`CHORUS_REPORT_ENDPOINT` 默认 `https://localhost:{CHORUS_PORT}`、`CHORUS_SLOT_ID` 默认 `{node}/{role}`、`CHORUS_REPORT_INTERVAL_MS` 默认 2000；拒收/不可达仅记日志重试，节点未注册时收敛不崩溃）。
+- 路由快照：`RedesignControlStore.ReadRoutingSnapshotAsync`——rooms=control.ownership(kind=room) LEFT JOIN control.process（owner→endpoint join）、streamers=live.binding 活跃态 JOIN live.session（current_room_id 即房间指针，无需 participation 侧推）、instances=control.process JOIN control.deployment（role 在 deployment 上）。**版本=64 位 FNV-1a 内容哈希，非单调序列**（有意偏离并记录）：任何路由内容变化必产生新版本，漏看 notice 的消费者在任何一次后续全量拉取上都会发现版本不一致——比单调号更强的缺口检测；碰撞可接受（版本只表示「内容变了」，不作身份）。内容行覆盖 rooms/streamers/instances 全部路由字段，不含 report_sequence/observed_at 等心跳噪声——安静集群版本稳定。
+- `m3.proto Routing`（ControlServer，内部角色全开放）：GetRoutingSnapshot（版本化全量：rooms 携 epoch/owner/endpoint/status、streamers 携 binding/room/state、instances 携 slot/endpoint/readiness/admission——无秘密）+ WatchRouting（500ms 轮询 server stream：版本变化发 notice，notice 无 payload，消费者以全量拉取回应；断流/缺口=重拉，Watch 是投递优化非可靠日志）。
+- `ClusterDirectory`：`CHORUS_GAME_ENDPOINTS` 扩 `id=endpoint` 命名对（裸端点沿用 M3-4「端点串即 id」约定）——协调者以具名 instance id 持有 ownership，快照 join 解析回自报端点。坑位记录：端点串不能直接作证书 instance id（SPIFFE 段校验拒绝含 '/' 的段），具名对是正解。
+- HostEnvironment 多实例：StartAsync 增可选 instanceId（证书身份/键文件/Kill 注册表按 instance 区分，默认=项目名完全向后兼容；instance 作文件名时安全化）；Kill(instance)；FreePort 公开。M2 容量基准的 HostProcesses 元组名同步 Project→Instance。
+- 证据：host +2 例（真实进程）：**自报注册**——node-agent 证书 RegisterNode 后双 GameServer 以 500ms 自报→快照 instances 双条（endpoint=各自端口、slot `node-a/game-server` 与 `#2`、Ready/Open）；内容哈希版本——安静集群两次拉取版本相等、注册前后版本不同；streamer 证书冒名 game-server 自报→InvalidArgument。**跨实例路由与 Watch**——control `CHORUS_GAME_ENDPOINTS=game-a=…,game-b=…` 双具名实例+data/streamer+双 game 自报→四挂载入队→协调者轮转两对成局：快照 rooms 恰 2、owner 分属两实例、epoch>0、Active、endpoint join 解析回各自服务地址；streamer 路由 4 条各指向成局房间（每房恰 2 挂载）；instances 携双端点；WatchRouting(known_version=v) 开流后新挂载→notice 版本≠v→全量重拉版本=notice 且新 binding 在列。Release 全量 1238→1240/1240（一次过）。
+- AT 台账增量：**跨机路由基础单机形式闭合**（版本化全量快照+Watch notice+owner 端点 join+断流重拉语义）；AT25 前置（多实例宿主环境）就绪；跨机形式仍 open（同口径：单机多进程=mechanics 证据）。
+
 ## M3 后续顺序
 
-M3-5 实例注册与路由快照+HostEnvironment 多实例 → M3-6 部署计划/WatchPlans/NodeAgent 幂等（AT24 单机半边）→ M3-7 生产续租+TransferOwnership/TakeoverRoom+SIGSTOP 分区近似接管（AT25 单机 mechanics）→ M3-8 平台任务执行器（PlatformGateway 重设计宿主+TaskReconciler）→ M3-9 Admin 状态/故障命令/审计+AT31 全链追溯+台账收口。
+M3-6 部署计划/WatchPlans/NodeAgent 幂等（AT24 单机半边）→ M3-7 生产续租+TransferOwnership/TakeoverRoom+SIGSTOP 分区近似接管（AT25 单机 mechanics）→ M3-8 平台任务执行器（PlatformGateway 重设计宿主+TaskReconciler）→ M3-9 Admin 状态/故障命令/审计+AT31 全链追溯+台账收口。
