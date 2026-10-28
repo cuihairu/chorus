@@ -84,6 +84,17 @@
 - AT 台账增量：**AT25 单机 mechanics 闭合**（活性闸续租+双 epoch 事务接管+Recovering 栅栏+旧持有者 fencing 停车+新持有者按 head 恢复跑完）；独立机/真分区形式 open（SIGSTOP=进程级分区近似，同宿主不冒领跨机门槛）。**Streamer 实体接管如实拆出**：现 streamer attach 路径（M1 代数/会话轮换）不持 control.ownership 行，接管前置=streamer 侧先落地所有权声明，属独立交付（记 M3 后续顺序）。
 - Release 全量 1242→1243/1243（一次过）。
 
+## M3-7b 已落地：Streamer 实体接管与会话轮换栅栏（00e2cd9）
+
+M3-7 拆出的独立交付：streamer 实体进 control.ownership 体系，控制面可把静默持有者的实体移交给第二实例，恢复由客户端驱动（Resume），旧实例经会话轮换失效。
+
+- **streamer 侧所有权声明（前置）**：`StreamerOwnershipRegistrar`（StreamerServer，仅 CHORUS_CONTROL_ENDPOINT 配置时构造）——把「本实例授予了会话」记为「本实例持有该实体」：Login（游戏从租户应用映射可知）与 StartGameplay（游戏随挂载请求）后必声明；Resume 后当恢复出的 facts 携带活跃挂载时按其 GameId 声明（无挂载的实体的 scope 在 Login/挂载时落定——无 scope 的声明不存在）。声明失败只记 stderr 警告、**绝不拖垮会话路径**（会话域才是会话的权威，ownership 是路由画像；断控实例照常服务）。`ClaimOwnership` 角色面放宽：streamer-server 可自声明，但 **kind 仅 'streamer' 且 OwnerInstanceId 必须等于自身 ProcessInstanceId**（只能代表自己声明；房的权威仍由控制面持有）。租约 `CHORUS_STREAMER_LEASE_SECONDS`（默认 15）；活性续租复用 M3-7 `OwnershipRenewalService`——实例活着（自报行新鲜）租约被代续，静默即到期可接管。
+- **移交事务（控制面单域）**：`RedesignControlStore.TransferOwnershipAsync`——事务内 FOR UPDATE：行失踪/持有者≠from（过时命令搬不动已易主实体）/非 Active→可见拒；UPDATE owner→to、epoch+1、租约延至 now+lease、**status='Recovering'**。**续租器只续 Active**（store 测试直接钉死：holder 进程活着也不续 Recovering 行）——无人完成的移交自行到期、回到可接管。**确认即新持有者自己的声明**：同 holder+活租约保 epoch、status 回 Active（ClaimOwnershipAsync 既有语义，零新代码）；在旧持有者侧则 epoch 再 +1（会话域才裁决谁能说话，ownership 行只记真相）。
+- **Takeover 面**：`TransferOwnership`（m3，ControlServer）kind 分派：'room' 走 M3-7 DataServer 双 epoch 事务；'streamer' 走上式控制面事务；其他 kind 仍可见拒「尚未支持」。**无 TakeoverStreamer**：房间需要 confirm→RecoverRoom 两步是因为数据面栅栏在 Recovering 期间连新持有者也拒；streamer 的完成是客户端驱动——主播经新实例 Resume，轮换即恢复（M1 RecoverAsync 从数据库重演 facts，挂载在案）+ 确认（B 的声明）一步落定。
+- **路由画像**：`StreamerRouteProto` 增 `owner_instance_id`/`epoch`（快照 streamer 查询 LEFT JOIN control.ownership kind='streamer'；无持有者时空串/0——控外宿主不破）。内容哈希行随之扩展：移交即版本变化，Watch 感知。
+- 证据：store +2 例（`TransferBumpsEpochUnderTheNamedHolderAndTheNewClaimConfirms`：错 from 拒/scope 不符拒/Recovering 期二连移交拒/同 holder 活租约声明=确认保 epoch/迟到旧持有者声明=可见再夺 epoch+1；`RecoveringOwnershipIsNotRenewedEvenWhileTheHolderReportsLive`：活性闸不救 Recovering）；host +1 例 `ASilentStreamerHolderIsTakenOverAndTheOldSessionIsFencedByRotation`（真实进程，一次过）：control（短续租 500ms/6s/闸 3s）+data+**双 StreamerServer**（streamer-a/streamer-b 同模拟器/访问键/租户映射，各自 slot `node-a/streamer-server[#2]` 与自报）→node-agent RegisterNode→经 A Login+StartGameplay→**A 声明可观测**（GetOwnership owner=streamer-a/Active；路由快照 streamer 行 owner/epoch 在案）→**SIGSTOP A**→租约到期（活性闸闭合）→`TransferOwnership(kind=streamer,to=streamer-b)`：epoch+1/Recovering→**经 B Resume**（旧 resume secret 轮换）：B 恢复 actor（GameplayStatus 报出 A 挂载的同一 BindingId——实体换实例不丢玩法）且 B 声明确认（owner=streamer-b/同 epoch/Active）→路由快照跟随（owner=streamer-b、epoch+1）→**SIGCONT A 后旧访问凭证经 A 读路径即 PermissionDenied**（轮换后 SessionVersion 不再当前——被夺实例连读都说不了话）→新凭证经 B 一切如常。**诚实边界**：SIGSTOP=进程级分区近似，跨机形式 open；streamer 域的「写栅栏」是会话轮换而非 ownership epoch（会话单一权威是 M1 设计——无帧式 epoch 检查，这是设计而非缺口）。
+- Release 全量 1243→1246/1246（一次过）。
+
 ## M3 后续顺序
 
-M3-7b Streamer 实体接管（streamer 侧所有权声明先行+TransferOwnership(kind=streamer)+第二 StreamerServer 恢复 actor+会话轮换失效旧实例）→ M3-8 平台任务执行器（PlatformGateway 重设计宿主+TaskReconciler）→ M3-9 Admin 状态/故障命令/审计+AT31 全链追溯+台账收口。
+M3-8 平台任务执行器（PlatformGateway 重设计宿主+TaskReconciler+outbox platform.call 首个真实消费者闭环）→ M3-9 Admin 状态/故障命令/审计+AT31 全链追溯+台账收口。
