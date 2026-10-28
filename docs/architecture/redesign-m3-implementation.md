@@ -106,6 +106,29 @@ M3-7 拆出的独立交付：streamer 实体进 control.ownership 体系，控�
 - 证据：store +1 例 `ReadyTaskDiscoveryExposesDueWorkAndStaleExecutionsOnly`（七任务七态：到期 Pending ✓/Completed ✗/未到期 Retryable ✗/已到期 Retryable ✓/活租约 Executing ✗/过期租约 Executing ✓/OutcomeUnknown ✓——发现窗精确暴露可交接工作）；host +2 例（真实进程 + 进程内 SimulatedPlatform——HttpListener 模拟外部平台：按 operationId 幂等记账、可 hold 住调用制造「执行者死在调用半途」、drop 决定在到达时定格）：`PlatformTasksExecuteThroughTheGatewayAndCloseTheOutboxEffect`（单执行者：Enqueue→Completed attempt 1、观察态含 applied、租约者=执行者实例、**outbox `{taskId}:1`='Recorded' 与唯一一次平台调用对账**）；`AKilledExecutorIsReplacedByQueryWithoutDoubleExecution`（双挂载双任务、gateway-a 持两调用在途（后继者尚不存在——无抢租竞态）→kill→平台真相落地（op-exec 事后真执行了/op-drop 根本没到平台）→启动 gateway-b 接管：**op-exec 按官方记录 Completed attempt 1/epoch 3/平台调用仍 1 次**/outbox `{id}:1`='Recorded'；**op-drop 查询得 not-executed→Retryable（outbox `{id}:1`='NotExecuted'）→重发 attempt 2/epoch 4/两次调用一次执行**/outbox `{id}:2`='Recorded'——双效果零、每 attempt 的 outbox 账目与平台调用数逐条对上）。
 - 首轮全量 1248/1249 暴露真缺陷：reconciler 串行 foreach 使一个挂起的平台调用饿死同轮所有任务（15s 调用超时先于测试 kill 自行走完 OutcomeUnknown→查询→Retryable）——改并发分支+HTTP fail-soft 后隔离绿；二轮 1248/1249=AT25 已知并行负载抖动（隔离绿）；三轮 1247/1249（本测试 1 例负载抖动，隔离绿×3）；四轮全量 **1249/1249 绿**（1246→1249）。
 
-## M3 后续顺序
+## M3-9 已落地：Admin 状态/故障命令/审计与 AT31 全链追溯（6f37a92）
 
-M3-9 Admin 状态/故障命令/审计（control.audit M3-1 已建表）+AT31 全链追溯+台账收口。
+按架构 operations 6「诊断面只读 join、破坏性命令强制 RequestId+operator+reason+scope 且幂等、全部落审计」：ControlServer 上的 Admin 边界收口 M3，AT31 礼物→帧→奖励全链可追溯。
+
+- **迁移 0017**（表 34→35、迁移 16→17）：`control.audit` 唯一索引 `ux_control_audit_request(request_id, command)`——审计先行的幂等地基（23505=这对请求已花掉，命令不再执行）；`control.queue_gate`（partition_key PK、suspended、updated_at/by——队列闸门的当前状态行，非历史）。
+- **m3.proto `Admin` 服务**（ControlServer，全部仅 control-server 角色）：Ready/GetStreamerSnapshot/GetRoomSnapshot/TraceRound 六读 + SuspendMatchQueue/ResumeMatchQueue/RetryRoomRecovery/DrainProcess/RetrySettlement/ReconcilePlatformTask 六命令。
+- **RedesignAdminStore**（全部 join-only 读 + 审计/闸门原语）：WriteAuditAsync（INSERT control.audit；23505→false）；SetQueueGateAsync（upsert RETURNING）/ListSuspendedPartitionsAsync（协调者每周期读）/GetQueueGateAsync（重放回报现值用）；GetStreamerSnapshotAsync（streamer_state→live.binding⋈live.session→最新 match.ticket→control.ownership kind='streamer' 最新版→live.task by binding）；GetRoomSnapshotAsync（room→ownership kind='room'→participation→result+grant 聚合 LEFT JOIN count(g.grant_key)/count(*) FILTER Granted——null 行不计）；**TraceRoundAsync**（AT31 六查询链：input.delivery⋈input.event 按路由序、game.frame 按 tick、infra.outbox `starts_with(effect_id, room||'/')`、result 最新版、grant 清单、player.ledger `operation_id IN (grant)`——事件→帧→效应→结果→授予→台账一链返回）；ReadProcessLifecycleAsync/DrainProcessAsync（UPDATE lifecycle='Draining'，未知→null）。
+- **AdminGrpcService 审计先行语义**：每命令先写 control.audit（request_id+operator+reason+scope+command+detail）再动作；同 (request_id, command) 重放=可见 Duplicate 且回报**当前**状态——被重放的旧 suspend 撤销不了后来的 resume（gate 现值）；**失败命令的 request id 也已花掉**（RetryRoomRecovery 幽灵实例 NotFound 后，同 id 重放即 Duplicate，不再二次尝试）；retry 的结算命令以 OperationId="admin:"+requestId 复用 CommitResult 每回执幂等（已 Granted 行重放为零待办）；RetryRoomRecovery 与 TakeoverRoom 同构（ConfirmRoomOwnership→经 ClusterDirectory.GameHostChannel 调 RecoverRoom）；入参不完整→InvalidArgument、未知 room→NotFound（在审计前，房间不存在无需记账）。
+- **RequeueTask**（m1.proto PlatformTask 增补，仅 control-server）：NeedsAttention→Retryable、task_epoch+1、next_attempt=now、租约清空（死 attempt 的 owner 留在历史列，与执行者接管同语义）；非 NeedsAttention→TaskStateConflictException 可见拒——已完成的业务绝不因 admin 重启。
+- **队列闸门集成**：MatchCoordinatorService 每周期 ListSuspendedPartitions——挂起分区**只停 PairPartition，RecoverPartition 照跑**（挂起配对不冻结孤儿回收，in-flight 预留继续收敛）。
+- 证据：store 3 例（`RedesignAdminStoreTests`，库族 chorus_m3_admin_：审计 (request_id,command) 去重且 SQL 行含 operator/reason/command；gate upsert 后 suspend 集可查、resume 翻同一行、未挂起分区读 null；直种 SQL 组装全链 TraceRound——2 事件按序/2 帧 input_refs+effects/outbox 2 效果/result/一 Granted 一 Planned/仅 Granted 落 1 台账行，room+streamer 双快照（含 ownership、participant、grants 聚合、binding.current_room_id），未知 room/streamer found=false 不抛）+store +1 例（Requeue：NeedsAttention→Retryable epoch+1 立即入 ListReadyTasks、gw-b 正常执行者路径收尾 Completed、Completed/Queued 双拒）；host 2 例（`RedesignM3AdminHostTests`）：**AT31 单机形式**（挂载→ClaimOwnership→StartRound→SQL Running→2 礼物 Ingest→Route→tick1+final tick2 两 grants→**故意不发 CommitResult=结算未跑的线上事故**→TraceRound 前后对比：修复前 grants 全 Planned/ledger 空（断链可见）/修复后（RetrySettlement alice/理由）grants 全 Granted+ledger 两行 delta 与授予对账→同 id 重放 Duplicate→RetryRoomRecovery 幽灵实例 NotFound→同 id 重放=已花掉→GetStreamerSnapshot binding.current_room_id 指向该房→streamer 角色 PermissionDenied→SQL 种 NeedsAttention→ReconcilePlatformTask（bob）→Retryable epoch+1→control.audit 行 operator/command 逐一核对）；**队列闸门**（先 suspend（carol/事故号）→双票入队→2.5s 多个协调周期后仍 Queued（配对停摆）→suspend 重放=现值 true+Duplicate→resume 新 request id→**旧 suspend 再重放报 Suspended=false——不能再挂起**→60s 内同 ReservationId 成局→DrainProcess 生命周期='Draining'+重放 Duplicate+幽灵 NotFound（其审计行也在案——失败的命令同样记账）→audit 三行与 queue_gate SQL 现值收口）。
+- Gate 记录（11 轮，如实）：R1/R2 1253/1255（AT25+AKill 已知并行负载抖动，各自隔离绿）；R3 1253（AT25+M2 恢复轮换，隔离绿）；R4 1254（AKill 45s 窗口不足）；R5 1254（legacy transport 固定端口冲突，46ms 隔离绿）；R6-R10 机器外部负载 16→24（用户并行会话占用，非代码因素），期间把两处真实时序不变量按负载重标（`37538e9`）——**AKill 的正确不变量**：held call 冻结期任务仅当**租约活**时对 ListReadyTasks 不可见，故 lease(60s)>调用到达延迟、deadline(70s)、callTimeout(120s) 都不得在 kill 前对 held call 触发、后继等待须落在 post-kill 窗口(150s)内；AT25 头部等待 25→40s、下界 130→110（>tick-100 快照锚即保语义）；R11 负载低谷（5min 均值 9）**1255/1255 全绿**（1249→1255）。
+
+## M3 台账收口（2026-10-29）
+
+| 出口 | 状态 | 依据 |
+|---|---|---|
+| AT10 匹配（Reserve→Commit 跨协调者崩溃） | **单机闭合/跨机 open** | M3-2/3/4 store+host：term 校验、预留原子入场、杀协调者继任者收敛（同 RoomId/同 ReservationId）；跨机=独立主机环境 open |
+| AT11（Prepare 后协调者死不建第二房） | **单机闭合/跨机 open** | M3-3/4：prepared 凭证续提交或撤销、孤儿释放回队 |
+| AT12（取消/重复入队/双协调者 term 交错） | **单机闭合/跨机 open** | M3-1..4 全链；双实例 term 抢占旧 term 拒 |
+| AT24（停全部 Control 后 Agent 幂等） | **单机 mechanics 闭合/独立机 open** | M3-6：命令日志先行、同 slot 不双拉、旧计划重发不重复拉进程 |
+| AT25（分区接管 fencing） | **单机 mechanics 闭合/独立机 open** | M3-7/7b：SIGSTOP=进程级分区近似（same-failure-domain 如实标注）、旧 epoch 写被拒、Streamer 实体接管；独立主机网络隔离形式 open |
+| AT28（实际失电 100 房恢复） | **open** | 硬件阻塞，整体留待独立主机环境 |
+| AT31（礼物→帧→奖励全链追溯） | **闭合** | M3-9：TraceRound 六链 join 只读 + 结算未跑→RetrySettlement 受控修复→链路闭合，全程审计 |
+
+M3 九轮全部落地（M3-1 4cd31f7 … M3-8 e6caaa3、M3-9 6f37a92）。下一里程碑按验收顺序为 M4（StreamerGateway WSS 生产边缘，见架构 contracts §3 目标态）；硬件阻塞项（AT24/25/28 独立机形式、M0 双 OS 出口、ROOM-07/09/11/12）维持 open 待环境。
