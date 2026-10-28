@@ -93,6 +93,14 @@ public sealed class PlatformTaskGrpcService(
         return Reply(state);
     }
 
+    public override async Task<TaskListReply> ListReadyTasks(TaskListRequest request, ServerCallContext context)
+    {
+        Require(context, "control-server", "platform-gateway");
+        var tasks = await taskStore.ListReadyTasksAsync(
+            request.Max is <= 0 or > 64 ? 16 : request.Max, context.CancellationToken);
+        return new TaskListReply { Tasks = { tasks.Select(Reply) } };
+    }
+
     private static async Task<TaskStateReply> ExecuteAsync(Func<Task<PlatformTaskState>> action)
     {
         try

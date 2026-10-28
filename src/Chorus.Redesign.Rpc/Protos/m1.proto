@@ -321,6 +321,12 @@ message TaskResolveRequest {
 
 message TaskGetRequest { string task_id = 1; }
 
+// Executor discovery: due work (Pending/Retryable past its next attempt, OutcomeUnknown) plus
+// tasks left Executing by a holder whose lease expired — the reassignment candidates.
+message TaskListRequest { int32 max = 1; }
+
+message TaskListReply { repeated TaskStateReply tasks = 1; }
+
 message TaskStateReply {
   string task_id = 1;
   string binding_id = 2;
@@ -396,4 +402,5 @@ service PlatformTask {
   rpc MarkNeedsAttention(TaskStopRequest) returns (TaskStateReply);
   rpc ResolveOutcome(TaskResolveRequest) returns (TaskStateReply);
   rpc GetTask(TaskGetRequest) returns (TaskStateReply);
+  rpc ListReadyTasks(TaskListRequest) returns (TaskListReply);
 }

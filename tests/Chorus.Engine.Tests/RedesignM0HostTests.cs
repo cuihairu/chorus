@@ -272,6 +272,8 @@ public sealed class RedesignM0HostTests
                         await new StreamerSession.StreamerSessionClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     else if (role == "game-server")
                         await new GameHost.GameHostClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
+                    else if (role == "platform-gateway")
+                        await new PlatformGatewayFace.PlatformGatewayFaceClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     else
                         await new DataService.DataServiceClient(channel).ReadyAsync(new Empty(), deadline: DateTime.UtcNow.AddSeconds(1));
                     return;

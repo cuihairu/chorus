@@ -180,6 +180,67 @@ public sealed class RedesignPlatformTaskStoreTests
             (await taskStore.BeginAttemptAsync(expired.TaskId, "gw-b", TimeSpan.FromSeconds(30))).Status);
     }
 
+    [Fact]
+    public async Task ReadyTaskDiscoveryExposesDueWorkAndStaleExecutionsOnly()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var taskStore = new RedesignPlatformTaskStore(database.ConnectionString);
+        var binding1 = await MountAsync(identityStore, bindingStore, "live-key-list-1");
+        var binding2 = await MountAsync(identityStore, bindingStore, "live-key-list-2");
+        var binding3 = await MountAsync(identityStore, bindingStore, "live-key-list-3");
+        var desired = """{"kind":"screen-link","state":"active"}""";
+
+        // Due now: a fresh pending task.
+        await taskStore.EnqueueDesiredAsync(binding1.BindingId, "op-list-1", desired);
+        // Never listed: completed work.
+        var done = await taskStore.EnqueueDesiredAsync(binding1.BindingId, "op-list-2", desired);
+        await taskStore.AcquireLeaseAsync(done.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(done.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        await taskStore.CompleteAttemptAsync(done.TaskId, "gw-a", """{"state":"active"}""");
+        // Not due yet: a retry backing off into the future.
+        var backoff = await taskStore.EnqueueDesiredAsync(binding1.BindingId, "op-list-3", desired);
+        await taskStore.AcquireLeaseAsync(backoff.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(backoff.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        await taskStore.MarkRetryFailedAsync(backoff.TaskId, "gw-a", "platform 503",
+            DateTimeOffset.UtcNow.AddMinutes(10));
+        // Due again: a retry whose backoff has passed.
+        var dueRetry = await taskStore.EnqueueDesiredAsync(binding1.BindingId, "op-list-4", desired);
+        // Executing under a live lease: not reassignable.
+        var live = await taskStore.EnqueueDesiredAsync(binding2.BindingId, "op-list-5", desired);
+        await taskStore.AcquireLeaseAsync(live.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(live.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        // Executing under an expired lease: the reassignment candidate.
+        var stale = await taskStore.EnqueueDesiredAsync(binding3.BindingId, "op-list-6", desired);
+        await taskStore.AcquireLeaseAsync(stale.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        await taskStore.BeginAttemptAsync(stale.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        // OutcomeUnknown: awaiting a verifier with the official record.
+        var unknown = await taskStore.EnqueueDesiredAsync(binding1.BindingId, "op-list-7", desired);
+        await taskStore.AcquireLeaseAsync(unknown.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(unknown.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        await taskStore.MarkOutcomeUnknownAsync(unknown.TaskId, "gw-a", "call timed out");
+        // op-list-4 needs its due-retry state: attempt and fail with a passed backoff.
+        await taskStore.AcquireLeaseAsync(dueRetry.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(dueRetry.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        await taskStore.MarkRetryFailedAsync(dueRetry.TaskId, "gw-a", "platform 503",
+            DateTimeOffset.UtcNow.AddMinutes(-1));
+        // The stale execution's lease is backdated past expiry.
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var backdate = new NpgsqlCommand(
+                "UPDATE live.task SET lease_until=clock_timestamp()-interval '1 second' WHERE task_id=@task",
+                connection);
+            backdate.Parameters.AddWithValue("task", stale.TaskId);
+            await backdate.ExecuteNonQueryAsync();
+        }
+
+        var ready = await taskStore.ListReadyTasksAsync(16);
+        Assert.Equal(["op-list-1", "op-list-4", "op-list-6", "op-list-7"],
+            ready.Select(task => task.OperationId).OrderBy(operation => operation, StringComparer.Ordinal).ToArray());
+    }
+
     private static async Task<BindingGrant> MountAsync(
         RedesignIdentityStore identityStore, RedesignBindingStore bindingStore, string canonicalKey)
     {

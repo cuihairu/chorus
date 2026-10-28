@@ -360,6 +360,38 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         return row is null ? null : ToState(row, Duplicate: false);
     }
 
+    /// <summary>
+    /// Executor discovery: due work the lease protocol hands out — Pending, Retryable past its
+    /// backoff, OutcomeUnknown awaiting a verifier — plus tasks left Executing by a holder whose
+    /// lease expired (the reassignment candidates: a new lease holder resolves the official
+    /// outcome after the old attempt's deadline instead of re-issuing the call). Completed and
+    /// NeedsAttention never appear; a live lease never appears.
+    /// </summary>
+    public async Task<IReadOnlyList<PlatformTaskState>> ListReadyTasksAsync(int max,
+        CancellationToken cancellationToken = default)
+    {
+        if (max <= 0) throw new ArgumentOutOfRangeException(nameof(max));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT task_id,binding_id,binding_generation,task_epoch,operation_id,status,attempt_count,
+                desired::text,observed::text,last_error,next_attempt,lease_owner,lease_until,
+                attempt_owner,attempt_deadline
+            FROM live.task
+            WHERE (status IN ('Pending','Retryable','OutcomeUnknown')
+                    AND (next_attempt IS NULL OR next_attempt<=clock_timestamp()))
+               OR (status='Executing' AND lease_until IS NOT NULL AND lease_until<clock_timestamp())
+            ORDER BY next_attempt NULLS FIRST, task_id
+            LIMIT @max
+            """, connection);
+        command.Parameters.AddWithValue("max", max);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var tasks = new List<PlatformTaskState>();
+        while (await reader.ReadAsync(cancellationToken))
+            tasks.Add(ToState(ReadRow(reader), Duplicate: false));
+        return tasks;
+    }
+
     private sealed record TaskRow(
         string TaskId, string BindingId, long BindingGeneration, long TaskEpoch, string OperationId,
         string Status, int AttemptCount, string Desired, string? Observed, string? LastError,
@@ -389,17 +421,19 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         command.Parameters.AddWithValue("task", taskId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;
-        return new TaskRow(
-            reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3),
-            reader.GetString(4), reader.GetString(5), reader.GetInt32(6), reader.GetString(7),
-            reader.IsDBNull(8) ? null : reader.GetString(8),
-            reader.IsDBNull(9) ? null : reader.GetString(9),
-            reader.IsDBNull(10) ? null : new DateTimeOffset(reader.GetDateTime(10), TimeSpan.Zero),
-            reader.IsDBNull(11) ? null : reader.GetString(11),
-            reader.IsDBNull(12) ? null : new DateTimeOffset(reader.GetDateTime(12), TimeSpan.Zero),
-            reader.IsDBNull(13) ? null : reader.GetString(13),
-            reader.IsDBNull(14) ? null : new DateTimeOffset(reader.GetDateTime(14), TimeSpan.Zero));
+        return ReadRow(reader);
     }
+
+    private static TaskRow ReadRow(NpgsqlDataReader reader) => new(
+        reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetInt64(3),
+        reader.GetString(4), reader.GetString(5), reader.GetInt32(6), reader.GetString(7),
+        reader.IsDBNull(8) ? null : reader.GetString(8),
+        reader.IsDBNull(9) ? null : reader.GetString(9),
+        reader.IsDBNull(10) ? null : new DateTimeOffset(reader.GetDateTime(10), TimeSpan.Zero),
+        reader.IsDBNull(11) ? null : reader.GetString(11),
+        reader.IsDBNull(12) ? null : new DateTimeOffset(reader.GetDateTime(12), TimeSpan.Zero),
+        reader.IsDBNull(13) ? null : reader.GetString(13),
+        reader.IsDBNull(14) ? null : new DateTimeOffset(reader.GetDateTime(14), TimeSpan.Zero));
 
     private static PlatformTaskState ToState(TaskRow row, bool Duplicate) => new(
         row.TaskId, row.BindingId, row.BindingGeneration, row.TaskEpoch, row.OperationId, row.Status,

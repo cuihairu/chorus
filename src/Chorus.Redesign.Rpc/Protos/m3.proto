@@ -386,3 +386,10 @@ message TakeoverRoomReply {
   string status = 4;
   int64 last_tick = 5;
 }
+
+// The PlatformGateway executor host (M3-8, architecture 6.3). The gateway is an executor, not a
+// data owner: its face carries readiness for supervisors and routing consumers, while the task
+// lease protocol it drives lives on the DataServer's PlatformTask service.
+service PlatformGatewayFace {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+}
