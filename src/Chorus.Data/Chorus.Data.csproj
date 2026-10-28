@@ -21,6 +21,7 @@
     <EmbeddedResource Include="Redesign/0010_settlement_manifest_leaderboard.sql" />
     <EmbeddedResource Include="Redesign/0011_retention_capacity.sql" />
     <EmbeddedResource Include="Redesign/0012_match_ticket_audit.sql" />
+    <EmbeddedResource Include="Redesign/0013_match_reservation_scope.sql" />
   </ItemGroup>
 
 </Project>

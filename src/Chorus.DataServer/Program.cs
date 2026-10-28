@@ -40,12 +40,16 @@ builder.Services.AddSingleton(new RedesignIdentityStore(connectionString));
 builder.Services.AddSingleton(new RedesignBindingStore(connectionString));
 builder.Services.AddSingleton(new RedesignInputEventStore(connectionString));
 builder.Services.AddSingleton(new RedesignPlatformTaskStore(connectionString));
+// Rooms and match reservations share the same admission cap: a reserved match holds its
+// slot from reserve until commit or retirement.
+var maxActive = int.TryParse(
+    Environment.GetEnvironmentVariable("CHORUS_MAX_ACTIVE_ROOMS"), out var cap) && cap > 0
+    ? cap
+    : (int?)null;
 builder.Services.AddSingleton(new RedesignMatchTicketStore(connectionString));
-builder.Services.AddSingleton(new RedesignRoomStore(connectionString,
-    maxActiveRooms: int.TryParse(
-        Environment.GetEnvironmentVariable("CHORUS_MAX_ACTIVE_ROOMS"), out var cap) && cap > 0
-        ? cap
-        : null));
+builder.Services.AddSingleton(new RedesignMatchReservationStore(connectionString,
+    maxActiveReservations: maxActive));
+builder.Services.AddSingleton(new RedesignRoomStore(connectionString, maxActiveRooms: maxActive));
 builder.Services.AddSingleton(new RedesignRoundInputStore(connectionString));
 builder.Services.AddSingleton(new RedesignFrameStore(connectionString));
 builder.Services.AddSingleton(new RedesignRecoveryStore(connectionString));
@@ -59,6 +63,7 @@ app.MapGrpcService<StreamerIdentityGrpcService>();
 app.MapGrpcService<PlatformIngestGrpcService>();
 app.MapGrpcService<PlatformTaskGrpcService>();
 app.MapGrpcService<MatchQueueGrpcService>();
+app.MapGrpcService<MatchGrpcService>();
 app.MapGrpcService<RoundGrpcService>();
 app.MapGrpcService<RoundInputGrpcService>();
 app.MapGrpcService<FrameGrpcService>();

@@ -102,3 +102,89 @@ service Coordinator {
   rpc ReleaseTerm(TermRequest) returns (TermReply);
   rpc GetTerm(GetTermRequest) returns (TermReply);
 }
+
+// Match reservations (architecture 7.2, 10.1). The coordinator reserves the whole candidate
+// set under its term in one receipt transaction; the reservation holds admission capacity
+// until it commits or an expiry sweep retires it — tickets return to the queue, a started
+// room is aborted and the ownership released, so capacity never leaks (AT11).
+message ReservedParticipantProto {
+  string binding_id = 1;
+  string participant_id = 2;
+  string role = 3;
+}
+
+message ReserveMatchRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string partition_key = 3;
+  int64 coordinator_term = 4;
+  string holder_instance_id = 5;
+  string room_id = 6;
+  repeated ReservedParticipantProto participants = 7;
+  int32 reservation_seconds = 8;
+  string operation_id = 9;
+}
+
+message RenewReservationRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string reservation_id = 3;
+  int64 coordinator_term = 4;
+  string holder_instance_id = 5;
+  int32 reservation_seconds = 6;
+  string operation_id = 7;
+}
+
+message MarkPreparedRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string reservation_id = 3;
+  int64 coordinator_term = 4;
+  string holder_instance_id = 5;
+  // The host's prepare receipt (tick-0 state evidence) stored for a successor coordinator.
+  string prepared_receipt_json = 6;
+  string operation_id = 7;
+}
+
+message GetReservationRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string reservation_id = 3;
+}
+
+message ReservationProto {
+  string reservation_id = 1;
+  string room_id = 2;
+  string tenant_id = 3;
+  string game_id = 4;
+  string partition_key = 5;
+  int64 coordinator_term = 6;
+  int64 expires_unix_ms = 7;
+  string status = 8;
+  repeated ReservedParticipantProto participants = 9;
+  string prepared_receipt_json = 10;
+}
+
+message ReservationReply {
+  bool found = 1;
+  bool duplicate = 2;
+  ReservationProto reservation = 3;
+}
+
+message ExpireReservationsRequest { int32 max = 1; }
+
+message ExpireReservationsReply { int64 expired = 1; }
+
+service Match {
+  rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
+  // Reserves the candidate set under the coordinator's term. Every participant must hold
+  // exactly one queued ticket of the same partition.
+  rpc ReserveMatch(ReserveMatchRequest) returns (ReservationReply);
+  // Extends a live reservation; an expired one is owned by the sweep and cannot revive.
+  rpc RenewReservation(RenewReservationRequest) returns (ReservationReply);
+  // Records the prepare receipt once the host derived tick-0 and the room ownership is held.
+  rpc MarkPrepared(MarkPreparedRequest) returns (ReservationReply);
+  rpc GetReservation(GetReservationRequest) returns (ReservationReply);
+  // The sweep that retires expired reservations and releases everything they held.
+  rpc ExpireReservations(ExpireReservationsRequest) returns (ExpireReservationsReply);
+}

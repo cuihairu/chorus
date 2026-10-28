@@ -148,6 +148,121 @@ public sealed class RedesignM3HostTests
         Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
     }
 
+    [Fact]
+    public async Task ReservationsFlowThroughTheControlPlaneOnly()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var mount = await MountAsync(environment, simulator, "m3-host-3");
+        const string partition = "tenant-a/game-a/rules-1/region-1/simulator/standard";
+
+        // The coordinator claims its term on the control plane first.
+        using (var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-3"))
+        {
+            using (var controlChannel = environment.Channel(environment.ControlPort, controlCertificate,
+                "control-server"))
+            {
+                var coordinator = new Coordinator.CoordinatorClient(controlChannel);
+                var term = await coordinator.ClaimTermAsync(new TermRequest
+                {
+                    PartitionKey = partition, HolderInstanceId = "control-m3-3", LeaseSeconds = 30
+                });
+                Assert.Equal(1, term.Term);
+            }
+
+            // The streamer enqueues through its own certificate.
+            using (var streamerCertificate = environment.Certificate("tenant-a", "streamer-server",
+                "streamer-m3-3"))
+            using (var streamerChannel = environment.Channel(environment.DataPort, streamerCertificate,
+                "data-server"))
+            {
+                var queue = new MatchQueue.MatchQueueClient(streamerChannel);
+                var enqueued = await queue.EnqueueTicketAsync(new EnqueueTicketRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", BindingId = mount.BindingId,
+                    SessionId = mount.SessionId, PartitionKey = partition, OperationId = "m3-enqueue-3"
+                });
+                Assert.Equal("Queued", enqueued.Ticket.State);
+
+                // Only the control plane reserves; a streamer certificate never does.
+                var match = new Match.MatchClient(streamerChannel);
+                var denied = await Assert.ThrowsAsync<RpcException>(() => match.ReserveMatchAsync(
+                    new ReserveMatchRequest
+                    {
+                        TenantId = "tenant-a", GameId = "game-a", PartitionKey = partition,
+                        CoordinatorTerm = 1, HolderInstanceId = "control-m3-3", RoomId = "room-m3-3",
+                        ReservationSeconds = 30, OperationId = "m3-reserve-1",
+                        Participants = { new ReservedParticipantProto
+                        {
+                            BindingId = mount.BindingId, ParticipantId = mount.StreamerId, Role = "Host"
+                        } }
+                    }).ResponseAsync);
+                Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
+            }
+
+            // The coordinator reserves under its term on the data plane; a stale term refuses.
+            using (var dataChannel = environment.Channel(environment.DataPort, controlCertificate,
+                "data-server"))
+            {
+                var match = new Match.MatchClient(dataChannel);
+                var stale = await Assert.ThrowsAsync<RpcException>(() => match.ReserveMatchAsync(
+                    new ReserveMatchRequest
+                    {
+                        TenantId = "tenant-a", GameId = "game-a", PartitionKey = partition,
+                        CoordinatorTerm = 7, HolderInstanceId = "control-m3-3", RoomId = "room-m3-3",
+                        ReservationSeconds = 30, OperationId = "m3-reserve-2",
+                        Participants = { new ReservedParticipantProto
+                        {
+                            BindingId = mount.BindingId, ParticipantId = mount.StreamerId, Role = "Host"
+                        } }
+                    }).ResponseAsync);
+                Assert.Equal(StatusCode.FailedPrecondition, stale.StatusCode);
+
+                var reserved = await match.ReserveMatchAsync(new ReserveMatchRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", PartitionKey = partition,
+                    CoordinatorTerm = 1, HolderInstanceId = "control-m3-3", RoomId = "room-m3-3",
+                    ReservationSeconds = 1, OperationId = "m3-reserve-3",
+                    Participants = { new ReservedParticipantProto
+                    {
+                        BindingId = mount.BindingId, ParticipantId = mount.StreamerId, Role = "Host"
+                    } }
+                });
+                Assert.True(reserved.Found);
+                Assert.Equal("Reserved", reserved.Reservation.Status);
+                Assert.Equal("room-m3-3", reserved.Reservation.RoomId);
+                Assert.Equal(1, reserved.Reservation.CoordinatorTerm);
+                Assert.Single(reserved.Reservation.Participants);
+
+                // The deadline passes; the sweep retires the reservation without a term.
+                await Task.Delay(TimeSpan.FromMilliseconds(1500));
+                var swept = await match.ExpireReservationsAsync(new ExpireReservationsRequest { Max = 10 });
+                Assert.Equal(1, swept.Expired);
+                var retired = await match.GetReservationAsync(new GetReservationRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", ReservationId = reserved.Reservation.ReservationId
+                });
+                Assert.True(retired.Found);
+                Assert.Equal("Expired", retired.Reservation.Status);
+            }
+        }
+    }
+
     private static async Task<(string StreamerId, string SessionId, string BindingId)> MountAsync(
         RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator, string openId)
     {
