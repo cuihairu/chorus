@@ -260,6 +260,10 @@ message StreamerRouteProto {
   // Empty while the mount is not in a room.
   string room_id = 3;
   string state = 4;
+  // The streamer-server instance holding the entity (kind 'streamer' ownership); empty while
+  // no holder is on record — e.g. a host outside the control plane.
+  string owner_instance_id = 5;
+  int64 epoch = 6;
 }
 
 message InstanceRouteProto {

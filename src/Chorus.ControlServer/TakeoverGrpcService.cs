@@ -4,13 +4,16 @@ using Grpc.Core;
 namespace Chorus.ControlServer;
 
 /// <summary>
-/// The entity takeover boundary (architecture 10.3): the control plane moves a live room's
-/// authority to a new instance once the current holder went silent. TransferOwnership is the
-/// handover — it bumps both epochs in one transaction and parks the room Recovering, so the
-/// old owner's frame and snapshot writes are fenced from that instant. TakeoverRoom completes
-/// it: confirm flips the ownership Active under the new holder, then the new instance recovers
-/// from the head at the bumped epoch and resumes ticking. Room takeover only; other kinds
-/// refuse visibly until their recovery path lands.
+/// The entity takeover boundary (architecture 10.3): the control plane moves a live entity's
+/// authority to a new instance once the current holder went silent. Rooms: TransferOwnership
+/// bumps both epochs in one transaction and parks the room Recovering, so the old owner's
+/// frame and snapshot writes are fenced from that instant; TakeoverRoom completes it — confirm
+/// flips the ownership Active under the new holder, then the new instance recovers from the
+/// head at the bumped epoch and resumes ticking. Streamer entities: the handover is a single
+/// control-plane transaction, and the completion is client-driven — the streamer resumes
+/// through the new instance, whose own claim confirms the row (same holder, live lease keeps
+/// the epoch) while session rotation fences everything the displaced instance might still say.
+/// Other kinds refuse visibly until their recovery path lands.
 /// </summary>
 public sealed class TakeoverGrpcService(
     ClusterDirectory directory, RedesignControlStore controlStore,
@@ -30,7 +33,7 @@ public sealed class TakeoverGrpcService(
         TransferOwnershipRequest request, ServerCallContext context)
     {
         Require(context, "control-server");
-        if (request.Kind != "room")
+        if (request.Kind is not ("room" or "streamer"))
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 $"Takeover of kind '{request.Kind}' is not supported yet."));
         if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId) ||
@@ -38,12 +41,29 @@ public sealed class TakeoverGrpcService(
             request.LeaseSeconds is <= 0 or > 60)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The takeover request is incomplete."));
         // The control plane is the authority: the handover names the current holder so a stale
-        // command cannot move a room that already changed hands.
+        // command cannot move an entity that already changed hands.
         var ownership = await controlStore.GetOwnershipAsync(
-            request.TenantId, request.GameId, "room", request.EntityId, context.CancellationToken);
+            request.TenantId, request.GameId, request.Kind, request.EntityId, context.CancellationToken);
         if (ownership is not { Status: "Active" })
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
-                "The room ownership is not Active; it cannot transfer."));
+                "The entity ownership is not Active; it cannot transfer."));
+        if (request.Kind == "streamer")
+        {
+            try
+            {
+                var moved = await controlStore.TransferOwnershipAsync(request.TenantId, request.GameId,
+                    "streamer", request.EntityId, ownership.OwnerInstanceId, request.ToInstanceId,
+                    request.LeaseSeconds, context.CancellationToken);
+                return new TransferOwnershipReply
+                {
+                    OwnerInstanceId = moved.OwnerInstanceId, Epoch = moved.Epoch, Status = moved.Status
+                };
+            }
+            catch (InvalidOperationException error)
+            {
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+            }
+        }
         var takeover = await _rounds.TransferRoomOwnershipAsync(new TransferRoomOwnershipRequest
         {
             TenantId = request.TenantId, GameId = request.GameId, RoomId = request.EntityId,

@@ -59,16 +59,11 @@ Grpc.Net.Client.GrpcChannel DataChannel() => ProcessGrpcClientFactory.Create(
 builder.Services.AddSingleton(trustedCertificates);
 var actorRegistry = new StreamerActorRegistry();
 builder.Services.AddSingleton(actorRegistry);
-builder.Services.AddSingleton(new RedesignStreamerLoginCoordinator(
-    new RedesignPlatformGateway(adapters, allowNotProductionReady),
-    new StreamerIdentityChannel(DataChannel),
-    new StreamerProfileChannel(DataChannel),
-    actorRegistry,
-    readOnlyTenants,
-    accessCredentialKey));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
-// tells the control plane itself where it serves, so routing can reach it.
+// tells the control plane itself where it serves, so routing can reach it. The same identity
+// puts the hosted streamer entities on the control-plane ownership record (architecture 10.3).
 var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOINT");
+StreamerOwnershipRegistrar? ownershipRegistrar = null;
 if (controlEndpoint is { Length: > 0 })
 {
     var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])
@@ -77,9 +72,22 @@ if (controlEndpoint is { Length: > 0 })
         ?? $"https://localhost:{port}";
     var slotId = Environment.GetEnvironmentVariable("CHORUS_SLOT_ID") ?? $"{identity.NodeId}/{identity.Role}";
     var reportIntervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_REPORT_INTERVAL_MS") ?? "2000");
+    var leaseSeconds = int.Parse(Environment.GetEnvironmentVariable("CHORUS_STREAMER_LEASE_SECONDS") ?? "15");
+    ownershipRegistrar = new StreamerOwnershipRegistrar(
+        () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate, root, nodeAuthority,
+            clusterId, "control-server"),
+        identity.ProcessInstanceId, leaseSeconds);
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
 }
+builder.Services.AddSingleton(new RedesignStreamerLoginCoordinator(
+    new RedesignPlatformGateway(adapters, allowNotProductionReady),
+    new StreamerIdentityChannel(DataChannel),
+    new StreamerProfileChannel(DataChannel),
+    actorRegistry,
+    readOnlyTenants,
+    accessCredentialKey,
+    ownershipRegistrar: ownershipRegistrar));
 builder.Services.AddGrpc();
 
 var app = builder.Build();

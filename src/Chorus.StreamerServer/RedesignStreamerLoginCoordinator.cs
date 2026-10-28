@@ -92,7 +92,8 @@ public sealed class RedesignStreamerLoginCoordinator(
     StreamerActorRegistry actorRegistry,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> tenantApplications,
     byte[] accessCredentialKey,
-    Func<DateTimeOffset>? clock = null)
+    Func<DateTimeOffset>? clock = null,
+    StreamerOwnershipRegistrar? ownershipRegistrar = null)
 {
     public async Task<StreamerLoginReady> LoginAsync(string callerTenantId, LoginCommand command,
         CancellationToken cancellationToken = default)
@@ -114,6 +115,10 @@ public sealed class RedesignStreamerLoginCoordinator(
         var grant = await identityStore.LoginAsync(callerTenantId, streamerId, command.GatewayInstanceId,
             command.ConnectionId, command.NextResumeSecret, cancellationToken);
         await actor.OnSessionGrantedAsync(grant, cancellationToken);
+        // This instance now speaks for the entity: put it on the control-plane record so routing
+        // names the holder and the registrar keeps the lease while the process is live.
+        if (ownershipRegistrar is not null)
+            await ownershipRegistrar.ClaimAsync(callerTenantId, gameId, streamerId, cancellationToken);
         return Ready(grant);
     }
 
@@ -124,8 +129,14 @@ public sealed class RedesignStreamerLoginCoordinator(
             command.GatewayInstanceId, command.ConnectionId, command.ResumeOperationId,
             command.PreviousSecret, command.NextSecret, cancellationToken);
         var actor = actorRegistry.GetOrAdd(callerTenantId, grant.StreamerId);
-        await actor.RecoverAsync(identityStore, grant.SessionId, cancellationToken);
+        var facts = await actor.RecoverAsync(identityStore, grant.SessionId, cancellationToken);
         await actor.OnSessionGrantedAsync(grant, cancellationToken);
+        // A resume through this instance is a takeover by session rotation: the facts derived
+        // above name the mounted game, so the claim lands under that scope. An entity with no
+        // binding yet claims at login or at the mount instead — a scope-less claim cannot exist.
+        if (ownershipRegistrar is not null && facts.ActiveBinding is { } binding)
+            await ownershipRegistrar.ClaimAsync(callerTenantId, binding.GameId, grant.StreamerId,
+                cancellationToken);
         return Ready(grant);
     }
 
@@ -193,6 +204,10 @@ public sealed class RedesignStreamerLoginCoordinator(
             gameId, operationId, cancellationToken);
         var actor = actorRegistry.Find(callerTenantId, access.StreamerId);
         if (actor is not null) await actor.OnGameplayBindingAsync(binding, cancellationToken);
+        // The mount names the game scope, so an entity that skipped the claim until now (a
+        // resume before any binding) goes on the record here.
+        if (ownershipRegistrar is not null)
+            await ownershipRegistrar.ClaimAsync(callerTenantId, gameId, access.StreamerId, cancellationToken);
         return binding;
     }
 

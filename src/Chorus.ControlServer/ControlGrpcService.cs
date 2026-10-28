@@ -77,11 +77,22 @@ public sealed class ControlGrpcService(
 
     public override async Task<OwnershipReply> ClaimOwnership(OwnershipRequest request, ServerCallContext context)
     {
-        await RequireAsync(context, "control-server");
+        var caller = await RequireAsync(context, "control-server", "streamer-server");
         if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId) ||
             string.IsNullOrWhiteSpace(request.Kind) || string.IsNullOrWhiteSpace(request.EntityId) ||
             string.IsNullOrWhiteSpace(request.OwnerInstanceId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Ownership request is incomplete."));
+        // A streamer server self-registers the entities it hosts: its claim names itself, and it
+        // owns streamer entities only — a room's authority is claimed by the control plane.
+        if (StringComparer.Ordinal.Equals(caller.Role, "streamer-server"))
+        {
+            if (!StringComparer.Ordinal.Equals(request.Kind, "streamer"))
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    "A streamer server owns streamer entities only."));
+            if (!StringComparer.Ordinal.Equals(request.OwnerInstanceId, caller.ProcessInstanceId))
+                throw new RpcException(new Status(StatusCode.InvalidArgument,
+                    "A streamer server can only claim ownership for itself."));
+        }
         var result = await store.ClaimOwnershipAsync(request.TenantId, request.GameId, request.Kind,
             request.EntityId, request.OwnerInstanceId, request.LeaseSeconds, context.CancellationToken);
         return OwnerReply(result);

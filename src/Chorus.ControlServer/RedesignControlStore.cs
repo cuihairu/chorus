@@ -7,7 +7,8 @@ public sealed record ProcessStatus(bool Accepted, string Readiness, string Entit
 public sealed record OwnerStatus(string OwnerInstanceId, long Epoch, DateTime LeaseUntilUtc, string Status);
 public sealed record RoomRoute(string RoomId, string TenantId, string GameId, string OwnerInstanceId,
     long Epoch, string? Endpoint, string Status);
-public sealed record StreamerRoute(string StreamerId, string BindingId, string RoomId, string State);
+public sealed record StreamerRoute(string StreamerId, string BindingId, string RoomId, string State,
+    string? OwnerInstanceId, long Epoch);
 public sealed record InstanceRoute(string ProcessInstanceId, string Role, string NodeId, string SlotId,
     string? Endpoint, string Readiness, string Admission);
 public sealed record RoutingSnapshot(long Version, IReadOnlyList<RoomRoute> Rooms,
@@ -197,6 +198,65 @@ public sealed class RedesignControlStore(string connectionString)
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Control-plane handover of a single-domain ownership (architecture 10.3, the streamer
+    /// form): bumps the epoch, moves the holder and parks the row Recovering in one transaction.
+    /// Until the new holder's own claim confirms the row (same holder with a live lease keeps
+    /// the epoch and returns it Active), the renewal registrar leaves it alone — a handover
+    /// nobody completes expires and becomes takeable again. The old holder's data-plane writes
+    /// for a streamer entity are fenced by the session domain, not by this row: rotation already
+    /// replaced the session it might speak for. The <paramref name="fromInstance"/> guard makes
+    /// a stale command visible instead of moving an entity that changed hands meanwhile.
+    /// </summary>
+    public async Task<OwnerStatus> TransferOwnershipAsync(string tenantId, string gameId, string kind,
+        string entityId, string fromInstance, string toInstance, int leaseSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        if (leaseSeconds is <= 0 or > 60) throw new ArgumentOutOfRangeException(nameof(leaseSeconds));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var lockCommand = new NpgsqlCommand("""
+            SELECT owner_process_instance_id,status FROM control.ownership
+            WHERE tenant_id=@tenant AND game_id=@game AND kind=@kind AND entity_id=@entity
+            FOR UPDATE
+            """, connection, transaction))
+        {
+            BindOwner(lockCommand, tenantId, gameId, kind, entityId);
+            await using var reader = await lockCommand.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new InvalidOperationException("The ownership vanished mid-transfer.");
+            var holder = reader.GetString(0);
+            var status = reader.GetString(1);
+            if (!StringComparer.Ordinal.Equals(holder, fromInstance))
+                throw new InvalidOperationException($"The entity is held by {holder}, not {fromInstance}.");
+            if (!StringComparer.Ordinal.Equals(status, "Active"))
+                throw new InvalidOperationException("The ownership is not Active; it cannot transfer.");
+            await reader.DisposeAsync();
+        }
+        await using (var command = new NpgsqlCommand("""
+            UPDATE control.ownership
+            SET owner_process_instance_id=@to,epoch=epoch+1,
+                lease_until=clock_timestamp()+@lease*interval '1 second',
+                status='Recovering',version=version+1
+            WHERE tenant_id=@tenant AND game_id=@game AND kind=@kind AND entity_id=@entity
+            RETURNING owner_process_instance_id,epoch,lease_until,status
+            """, connection, transaction))
+        {
+            BindOwner(command, tenantId, gameId, kind, entityId);
+            command.Parameters.AddWithValue("to", toInstance);
+            command.Parameters.AddWithValue("lease", leaseSeconds);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new InvalidOperationException("The ownership vanished mid-transfer.");
+            var takeover = new OwnerStatus(reader.GetString(0), reader.GetInt64(1),
+                reader.GetDateTime(2), reader.GetString(3));
+            await reader.DisposeAsync();
+            await transaction.CommitAsync(cancellationToken);
+            return takeover;
+        }
+    }
+
     private static void BindOwner(NpgsqlCommand command, string tenantId, string gameId, string kind, string entityId)
     {
         command.Parameters.AddWithValue("tenant", tenantId);
@@ -236,9 +296,12 @@ public sealed class RedesignControlStore(string connectionString)
 
         var streamers = new List<StreamerRoute>();
         await using (var command = new NpgsqlCommand("""
-            SELECT s.streamer_id,b.binding_id,b.current_room_id,b.state
+            SELECT s.streamer_id,b.binding_id,b.current_room_id,b.state,
+                o.owner_process_instance_id,COALESCE(o.epoch,0)
             FROM live.binding b
             JOIN live.session s ON s.live_session_id=b.live_session_id
+            LEFT JOIN control.ownership o ON o.kind='streamer' AND o.tenant_id=b.tenant_id
+                AND o.game_id=b.game_id AND o.entity_id=s.streamer_id
             WHERE b.state IN ('Starting','Ready','Running','AwaitingPlatformClose')
             ORDER BY s.streamer_id,b.binding_id
             """, connection))
@@ -246,7 +309,8 @@ public sealed class RedesignControlStore(string connectionString)
         {
             while (await reader.ReadAsync(cancellationToken))
                 streamers.Add(new StreamerRoute(reader.GetString(0), reader.GetString(1),
-                    reader.IsDBNull(2) ? "" : reader.GetString(2), reader.GetString(3)));
+                    reader.IsDBNull(2) ? "" : reader.GetString(2), reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5)));
         }
 
         var instances = new List<InstanceRoute>();
@@ -266,7 +330,8 @@ public sealed class RedesignControlStore(string connectionString)
 
         var version = ContentHash(rooms.Select(r =>
             $"room|{r.RoomId}|{r.TenantId}|{r.GameId}|{r.OwnerInstanceId}|{r.Epoch}|{r.Endpoint ?? ""}|{r.Status}")
-            .Concat(streamers.Select(s => $"streamer|{s.StreamerId}|{s.BindingId}|{s.RoomId}|{s.State}"))
+            .Concat(streamers.Select(s =>
+                $"streamer|{s.StreamerId}|{s.BindingId}|{s.RoomId}|{s.State}|{s.OwnerInstanceId ?? ""}|{s.Epoch}"))
             .Concat(instances.Select(i =>
                 $"instance|{i.ProcessInstanceId}|{i.Role}|{i.NodeId}|{i.SlotId}|{i.Endpoint ?? ""}|{i.Readiness}|{i.Admission}")));
         return new RoutingSnapshot(version, rooms, streamers, instances);
