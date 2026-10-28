@@ -223,7 +223,12 @@ public sealed class RedesignM3PlatformTaskHostTests
         await using var command = new NpgsqlCommand(
             "SELECT status FROM infra.outbox WHERE effect_id=@effect", connection);
         command.Parameters.AddWithValue("effect", effectId);
-        Assert.Equal(status, await command.ExecuteScalarAsync());
+        // The outbox effect trails the task state it closes — completion is observable before
+        // the effect row lands under load. The expected status is final, so waiting for it
+        // cannot flip a match; the window carries the external load margin.
+        var reached = await WaitForAsync(async () =>
+            await command.ExecuteScalarAsync() as string == status, TimeSpan.FromSeconds(30));
+        Assert.True(reached, $"The outbox effect {effectId} never reached {status}.");
     }
 
     private static async Task<bool> WaitForAsync(Func<Task<bool>> probe, TimeSpan timeout)
