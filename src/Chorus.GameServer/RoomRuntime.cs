@@ -13,7 +13,7 @@ namespace Chorus.GameServer;
 /// the data plane, activates the round and starts the actor. The process holds no database
 /// credentials — every persistent fact travels through the data-plane channel.
 /// </summary>
-public sealed class RoomRuntime : IAsyncDisposable
+public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
 {
     private readonly Grpc.Net.Client.GrpcChannel _dataChannel;
     private readonly RoundStore.RoundStoreClient _rounds;

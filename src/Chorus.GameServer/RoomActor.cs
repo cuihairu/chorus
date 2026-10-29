@@ -10,19 +10,29 @@ namespace Chorus.GameServer;
 /// <summary>
 /// One running room (architecture 7, 8.2): a single loop that wakes on the module cadence,
 /// reads the round inbox, applies one pure tick and commits it. The commit id is derived from
-/// the tick, so a reply lost mid-flight replays the stored receipt on the next wake instead of
-/// double-committing. Module failures isolate per room: three consecutive strikes suspend the
-/// room visibly and stop this actor while other rooms keep ticking.
+/// the tick, and the frame is held pending until the store returns a verdict: a reply lost
+/// mid-flight resends the exact original request — the store replays its stored receipt —
+/// and a committed or duplicate receipt advances the head exactly once. Module failures
+/// isolate per room: three consecutive strikes suspend the room visibly and stop this actor
+/// while other rooms keep ticking.
 /// </summary>
 internal sealed class RoomActor : IAsyncDisposable
 {
+    /// <summary>
+    /// One tick held from the first send until a verdict (FIX-FRAME-01): the exact request
+    /// to resend after an unknown outcome — never rebuilt from a re-read inbox — plus the
+    /// candidate material one verdict publishes exactly once (FIX-FRAME-02).
+    /// </summary>
+    private sealed record PendingFrame(long Tick, long BaseVersion, ReadInboxReply Inbox,
+        TickOutcome Outcome, CommitFrameRequest Request);
+
     private const int MaxInputsPerTick = 200;
     private const int MaxConsecutiveModuleFailures = 3;
     // Durable client commands ride the inbox on this platform; their dedup key is the
     // command id the subscriber correlates receipts against (architecture 6.3).
     private const string ClientCommandPlatform = "@chorus";
 
-    private readonly RoomRuntime _runtime;
+    private readonly IRoomLifecycle _runtime;
     private readonly FrameStore.FrameStoreClient _frames;
     private readonly ExampleGameModule _module;
     private readonly string _gameId;
@@ -42,13 +52,14 @@ internal sealed class RoomActor : IAsyncDisposable
     private long _stateVersion;
     private string? _finalResultJson;
     private int _consecutiveModuleFailures;
+    private PendingFrame? _pending;
     private volatile bool _stopped;
     private volatile bool _finalCommitted;
     // Set under the publish gate when the loop exits: Subscribe must never register
     // against an actor whose publishing loop is gone.
     private bool _loopEnded;
 
-    public RoomActor(RoomRuntime runtime, FrameStore.FrameStoreClient frames, ExampleGameModule module,
+    public RoomActor(IRoomLifecycle runtime, FrameStore.FrameStoreClient frames, ExampleGameModule module,
         string gameId, string roomId, string ownerInstanceId, long epoch, string configHash,
         ExampleGameState initialState, IReadOnlyDictionary<string, string> participantByBinding,
         long lastTick = 0, long stateVersion = 1)
@@ -125,47 +136,110 @@ internal sealed class RoomActor : IAsyncDisposable
 
     private async Task TickOnceAsync(CancellationToken cancellationToken)
     {
-        ReadInboxReply inbox;
-        try
+        // FIX-FRAME-01: a frame is built once and held until the store returns a verdict.
+        // While it is unconfirmed the loop neither re-reads the inbox nor re-applies the
+        // tick: a rebuild could consume different inputs and change the content under the
+        // same commit id, which the store would reject as a conflict.
+        if (_pending is null)
         {
-            inbox = await _frames.ReadInboxAsync(
-                new ReadInboxRequest { RoomId = _roomId, GameId = _gameId, MaxEvents = MaxInputsPerTick },
-                deadline: Deadline(), cancellationToken: cancellationToken);
-        }
-        catch (RpcException)
-        {
-            return; // transient read failure: the next wake reads the same inbox
-        }
-        // Everything in the inbox is consumed this tick; only bindings this host mapped at
-        // prepare time become module inputs, so a foreign delivery is acknowledged into the
-        // frame record without inventing a participant.
-        var inputs = new List<NormalizedInput>(inbox.Items.Count);
-        foreach (var item in inbox.Items)
-            if (item.BindingId is { Length: > 0 } binding
-                && _participantByBinding.TryGetValue(binding, out var participant))
-                inputs.Add(new NormalizedInput(participant, item.PayloadJson));
-
-        var tick = _lastTick + 1;
-        TickOutcome outcome;
-        try
-        {
-            outcome = _module.ApplyTick(_state, tick, inputs);
-        }
-        catch (Exception error) when (error is not OperationCanceledException)
-        {
-            // A deterministic module failure repeats identically on retry; after three
-            // strikes the room is parked visibly (AT13 isolation) and the actor stops.
-            if (++_consecutiveModuleFailures >= MaxConsecutiveModuleFailures)
+            ReadInboxReply inbox;
+            try
             {
-                _stopped = true;
-                await _runtime.SuspendRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch,
-                    $"module failed {_consecutiveModuleFailures} consecutive ticks: {error.Message}",
-                    cancellationToken).ConfigureAwait(false);
+                inbox = await _frames.ReadInboxAsync(
+                    new ReadInboxRequest { RoomId = _roomId, GameId = _gameId, MaxEvents = MaxInputsPerTick },
+                    deadline: Deadline(), cancellationToken: cancellationToken);
             }
-            return;
-        }
-        _consecutiveModuleFailures = 0;
+            catch (RpcException)
+            {
+                return; // transient read failure: the next wake reads the same inbox
+            }
+            // Everything in the inbox is consumed this tick; only bindings this host mapped at
+            // prepare time become module inputs, so a foreign delivery is acknowledged into the
+            // frame record without inventing a participant.
+            var inputs = new List<NormalizedInput>(inbox.Items.Count);
+            foreach (var item in inbox.Items)
+                if (item.BindingId is { Length: > 0 } binding
+                    && _participantByBinding.TryGetValue(binding, out var participant))
+                    inputs.Add(new NormalizedInput(participant, item.PayloadJson));
 
+            var tick = _lastTick + 1;
+            TickOutcome outcome;
+            try
+            {
+                outcome = _module.ApplyTick(_state, tick, inputs);
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                // A deterministic module failure repeats identically on retry; after three
+                // strikes the room is parked visibly (AT13 isolation) and the actor stops.
+                if (++_consecutiveModuleFailures >= MaxConsecutiveModuleFailures)
+                {
+                    _stopped = true;
+                    await _runtime.SuspendRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch,
+                        $"module failed {_consecutiveModuleFailures} consecutive ticks: {error.Message}",
+                        cancellationToken).ConfigureAwait(false);
+                }
+                return;
+            }
+            _consecutiveModuleFailures = 0;
+            _pending = new PendingFrame(tick, _stateVersion, inbox, outcome,
+                BuildCommitRequest(tick, inbox, outcome));
+        }
+
+        var pendingFrame = _pending;
+        FrameReceiptReply receipt;
+        var retry = 0;
+        while (true)
+        {
+            try
+            {
+                receipt = await _frames.CommitFrameAsync(pendingFrame.Request, deadline: Deadline(),
+                    cancellationToken: cancellationToken);
+                break;
+            }
+            catch (RpcException error) when (error.StatusCode
+                is StatusCode.FailedPrecondition or StatusCode.InvalidArgument)
+            {
+                // The room left Running or the tick chain diverged; both need replay-based
+                // recovery (M2-4). Park the room visibly instead of guessing forward. The
+                // suspension itself may be fenced out too (an expired owner lease), so the
+                // evidence line must not depend on it landing.
+                _stopped = true;
+                Console.Error.WriteLine(
+                    $"room {_roomId} stopping: frame commit rejected at tick {pendingFrame.Tick}: {error.Status.Detail}");
+                await _runtime.SuspendRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch,
+                    $"frame commit rejected at tick {pendingFrame.Tick}: {error.Status.Detail}",
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (RpcException)
+            {
+                // FIX-FRAME-03: the outcome is unknown — the frame may have committed and
+                // only the reply was lost. Resend the exact request with bounded backoff
+                // until a verdict arrives: a duplicate commit replays the stored receipt
+                // (FIX-FRAME-02). Cancelling the loop is the only way out; suspending on a
+                // maybe-committed frame would abandon a room that is still live.
+                await Task.Delay(CommitRetryBackoff(retry++), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        _pending = null;
+        // Publish under the gate also advances the actor head there, so subscribers only
+        // ever observe a coherent committed triple (8.3). A committed and a duplicate
+        // receipt are the same verdict: the frame takes a single step forward.
+        PublishCommittedFrame(pendingFrame.BaseVersion, pendingFrame.Inbox, pendingFrame.Outcome,
+            receipt);
+        if (pendingFrame.Outcome.Final)
+        {
+            // The room is Finishing; settle the committed manifest now. Settlement is
+            // idempotent per grant, so a lost reply just means recovery retries it.
+            _stopped = true;
+            await _runtime.SettleRoomAsync(_gameId, _roomId, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private CommitFrameRequest BuildCommitRequest(long tick, ReadInboxReply inbox, TickOutcome outcome)
+    {
         var commit = new CommitFrameRequest
         {
             RoomId = _roomId, GameId = _gameId, OwnerInstanceId = _ownerInstanceId, Epoch = _epoch,
@@ -210,43 +284,11 @@ internal sealed class RoomActor : IAsyncDisposable
                         OperationId = $"{_roomId}/grant/{player}", AssetId = "points", Delta = score
                     });
         }
-
-        FrameReceiptReply receipt;
-        try
-        {
-            receipt = await _frames.CommitFrameAsync(commit, deadline: Deadline(),
-                cancellationToken: cancellationToken);
-        }
-        catch (RpcException error) when (error.StatusCode
-            is StatusCode.FailedPrecondition or StatusCode.InvalidArgument)
-        {
-            // The room left Running or the tick chain diverged; both need replay-based
-            // recovery (M2-4). Park the room visibly instead of guessing forward. The
-            // suspension itself may be fenced out too (an expired owner lease), so the
-            // evidence line must not depend on it landing.
-            _stopped = true;
-            Console.Error.WriteLine(
-                $"room {_roomId} stopping: frame commit rejected at tick {tick}: {error.Status.Detail}");
-            await _runtime.SuspendRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch,
-                $"frame commit rejected at tick {tick}: {error.Status.Detail}",
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
-        catch (RpcException)
-        {
-            return; // outcome unknown: the same commit id replays its receipt next wake (8.2)
-        }
-        // Publish under the gate also advances the actor head there, so subscribers only
-        // ever observe a coherent committed triple (8.3).
-        PublishCommittedFrame(_stateVersion, inbox, outcome, receipt);
-        if (outcome.Final)
-        {
-            // The room is Finishing; settle the committed manifest now. Settlement is
-            // idempotent per grant, so a lost reply just means recovery retries it.
-            _stopped = true;
-            await _runtime.SettleRoomAsync(_gameId, _roomId, cancellationToken).ConfigureAwait(false);
-        }
+        return commit;
     }
+
+    private static TimeSpan CommitRetryBackoff(int retry) =>
+        TimeSpan.FromMilliseconds(Math.Min(250 * (1L << Math.Min(retry, 5)), 8_000));
 
     /// <summary>
     /// Fans the just-committed frame out to every subscriber (architecture 8.3): a coherent
@@ -395,4 +437,17 @@ internal sealed class RoomActor : IAsyncDisposable
         catch (OperationCanceledException) { }
         _cancellation.Dispose();
     }
+}
+
+/// <summary>
+/// The actor's asks of its host runtime — parking a damaged room visibly and settling a
+/// committed manifest. Kept to exactly the two calls the actor makes, so the commit-retry
+/// contract can be exercised against a scripted runtime instead of a whole host.
+/// </summary>
+internal interface IRoomLifecycle
+{
+    Task SuspendRoomAsync(string gameId, string roomId, string ownerInstanceId, long epoch,
+        string reason, CancellationToken cancellationToken = default);
+
+    Task SettleRoomAsync(string gameId, string roomId, CancellationToken cancellationToken = default);
 }

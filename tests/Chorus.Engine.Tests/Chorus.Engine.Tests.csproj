@@ -35,6 +35,7 @@
     <ProjectReference Include="..\..\src\Chorus.DataServer\Chorus.DataServer.csproj" />
     <ProjectReference Include="..\..\src\Chorus.ControlServer\Chorus.ControlServer.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Redesign.StreamerGateway\Chorus.Redesign.StreamerGateway.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.GameServer\Chorus.GameServer.csproj" />
   </ItemGroup>
 
   <ItemGroup>

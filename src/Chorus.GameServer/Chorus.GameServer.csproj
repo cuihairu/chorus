@@ -9,4 +9,7 @@
     <ProjectReference Include="../Chorus.Redesign.Rpc/Chorus.Redesign.Rpc.csproj" />
     <ProjectReference Include="../Chorus.Redesign.ExampleGame/Chorus.Redesign.ExampleGame.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Chorus.Engine.Tests" />
+  </ItemGroup>
 </Project>
