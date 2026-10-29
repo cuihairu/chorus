@@ -152,6 +152,57 @@ public sealed class RedesignRecoveryStoreTests
     }
 
     [Fact]
+    public async Task AConcurrentCommitNeverLeaksIntoTheSelectedHead()
+    {
+        await using var arrange = await Arrange.RunningRoomWithInboxAsync("gift-1", "gift-2");
+        var ids = await arrange.PendingEventIds();
+        await arrange.FrameStore.CommitFrameAsync("tenant-a", "game-a", "room-1",
+            new FrameCommit("commit-view-1", "gs-1", arrange.Epoch, 0, 1, [ids[0]], [1, 1, 1], [],
+                "1.0.0", "cfg-1"));
+        await arrange.FrameStore.CommitFrameAsync("tenant-a", "game-a", "room-1",
+            new FrameCommit("commit-view-2", "gs-1", arrange.Epoch, 1, 2, [ids[1]], [2, 2, 2], [],
+                "1.0.0", "cfg-1"));
+        var payload = new byte[] { 5, 6, 7, 8 };
+        var store = new RedesignRecoveryStore(arrange.Database.ConnectionString);
+        await store.PutSnapshotAsync("tenant-a", "game-a", "room-1", "gs-1", arrange.Epoch, 2,
+            payload, SHA256.HashData(payload), 1, "snap-view-2");
+
+        // The view holds between the head read and the material loads: whatever commits in
+        // that window must stay invisible to the plan being loaded (FIX-READ-01).
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var loading = new RedesignRecoveryStore(arrange.Database.ConnectionString,
+            afterHeadRead: () => { entered.SetResult(); release.Task.GetAwaiter().GetResult(); })
+            .LoadRecoveryAsync("tenant-a", "game-a", "room-1");
+        await entered.Task;
+        var laterPayload = new byte[] { 9, 9 };
+        await arrange.FrameStore.CommitFrameAsync("tenant-a", "game-a", "room-1",
+            new FrameCommit("commit-view-3", "gs-1", arrange.Epoch, 2, 3, [], [3, 3, 3], [],
+                "1.0.0", "cfg-1"));
+        await store.PutSnapshotAsync("tenant-a", "game-a", "room-1", "gs-1", arrange.Epoch, 3,
+            laterPayload, SHA256.HashData(laterPayload), 1, "snap-view-3");
+        release.SetResult();
+
+        var plan = await loading;
+        Assert.NotNull(plan);
+        // The selected head is the immutable boundary: the epoch, tick and state version the
+        // first read fixed are what the whole plan — and any paging over it — must cover.
+        Assert.Equal(2, plan!.LastTick);
+        Assert.Equal(3, plan.StateVersion); // activation plus two commits; the third is not ours
+        Assert.Equal(arrange.Epoch, plan.Epoch);
+        Assert.Equal([1L, 2L], plan.Frames.Select(frame => frame.Tick).ToArray());
+        Assert.All(plan.Snapshots, snapshot => Assert.True(snapshot.Tick <= 2,
+            "a snapshot committed after the view opened leaked in"));
+
+        // The pause proved itself: the next read, on a fresh view, sees everything the held
+        // view refused — the test cannot pass by failing to commit at all.
+        var after = await store.LoadRecoveryAsync("tenant-a", "game-a", "room-1");
+        Assert.Equal(3, after!.LastTick);
+        Assert.Equal(4, after.StateVersion);
+        Assert.Contains(after.Snapshots, snapshot => snapshot.Tick == 3 && snapshot.Verified);
+    }
+
+    [Fact]
     public async Task ARecoveringOwnerPinsTheRecoveryHeadWhileEveryNormalWriteStaysFencedOut()
     {
         await using var arrange = await Arrange.RunningRoomWithInboxAsync("gift-1");

@@ -1,3 +1,4 @@
+using System.Data;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Chorus.Data.Redesign;
@@ -35,7 +36,13 @@ public sealed record RecoveryPlan(
 /// insert, before the commit. An exception there plays the owner dying between the write and
 /// the acknowledgment; the rollback leaves no partial snapshot behind.
 /// </param>
-public sealed class RedesignRecoveryStore(string connectionString, Action? crashAfterSnapshotInsert = null)
+/// <param name="afterHeadRead">
+/// Fault-injection seam for read-view tests: invoked inside the recovery read transaction
+/// after the head row is read, before any material loads. Whatever commits while it holds
+/// must stay invisible to the plan it is loading.
+/// </param>
+public sealed class RedesignRecoveryStore(string connectionString, Action? crashAfterSnapshotInsert = null,
+    Action? afterHeadRead = null)
 {
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
 
@@ -152,9 +159,14 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
     }
 
     /// <summary>
-    /// The read-only recovery plan, or null for an unknown room. Snapshots come newest-first;
-    /// frames cover the oldest snapshot's tick + 1 through the head, so a recoverer can walk
-    /// any candidate snapshot forward to the head and verify every frame hash on the way.
+    /// The read-only recovery plan, or null for an unknown room. The whole plan derives from
+    /// one repeatable-read snapshot (FIX-READ-01): the head the first read sees fixes the
+    /// epoch, LastTick and StateVersion, and the material loads cannot mix in a frame, a
+    /// snapshot or a status a concurrent commit produced after that instant — the selected
+    /// head is also the immutable boundary any later paging must stay within. Snapshots come
+    /// newest-first; frames cover the oldest snapshot's tick + 1 through the head, so a
+    /// recoverer can walk any candidate snapshot forward to the head and verify every frame
+    /// hash on the way.
     /// </summary>
     public async Task<RecoveryPlan?> LoadRecoveryAsync(string tenantId, string gameId, string roomId,
         CancellationToken cancellationToken = default)
@@ -162,12 +174,14 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
         Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
+        await using var view = await connection.BeginTransactionAsync(
+            IsolationLevel.RepeatableRead, cancellationToken);
         string status; long epoch, lastTick, stateVersion; long oldestSnapshotTick;
         await using (var room = new NpgsqlCommand("""
             SELECT status,epoch,last_tick,state_version,
                 COALESCE((SELECT min(tick_id) FROM game.snapshot WHERE room_id=@room), 0)
             FROM game.room WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
-            """, connection))
+            """, connection, view))
         {
             room.Parameters.AddWithValue("room", roomId);
             room.Parameters.AddWithValue("tenant", tenantId);
@@ -180,11 +194,12 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
             stateVersion = reader.GetInt64(3);
             oldestSnapshotTick = reader.GetInt64(4);
         }
+        afterHeadRead?.Invoke();
         var snapshots = new List<RecoverySnapshot>();
         await using (var list = new NpgsqlCommand("""
             SELECT tick_id,schema_version,payload,payload_hash,verified FROM game.snapshot
             WHERE room_id=@room ORDER BY tick_id DESC
-            """, connection))
+            """, connection, view))
         {
             list.Parameters.AddWithValue("room", roomId);
             await using var reader = await list.ExecuteReaderAsync(cancellationToken);
@@ -197,7 +212,7 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
             SELECT d.event_id,d.sequence,e.binding_id,e.payload::text,d.state
             FROM input.delivery d JOIN input.event e ON e.event_id=d.event_id
             WHERE d.consumer_scope=@scope AND d.room_id=@room ORDER BY d.sequence
-            """, connection))
+            """, connection, view))
         {
             inbox.Parameters.AddWithValue("scope", "room:" + roomId);
             inbox.Parameters.AddWithValue("room", roomId);
@@ -211,7 +226,7 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
         await using (var log = new NpgsqlCommand("""
             SELECT tick_id,input_refs,state_hash,module_version,config_hash FROM game.frame
             WHERE room_id=@room AND tick_id > @fromTick ORDER BY tick_id
-            """, connection))
+            """, connection, view))
         {
             log.Parameters.AddWithValue("room", roomId);
             log.Parameters.AddWithValue("fromTick", oldestSnapshotTick);
@@ -225,7 +240,7 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
         await using (var mounts = new NpgsqlCommand("""
             SELECT participant_id,binding_id,role,state FROM game.participation
             WHERE room_id=@room ORDER BY participant_id
-            """, connection))
+            """, connection, view))
         {
             mounts.Parameters.AddWithValue("room", roomId);
             await using var reader = await mounts.ExecuteReaderAsync(cancellationToken);
@@ -233,8 +248,12 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
                 participants.Add(new RoundParticipantState(reader.GetString(0), reader.GetString(1),
                     reader.GetString(2), reader.GetString(3)));
         }
-        return new RecoveryPlan(roomId, status, epoch, lastTick, stateVersion, snapshots, deliveries,
+        var plan = new RecoveryPlan(roomId, status, epoch, lastTick, stateVersion, snapshots, deliveries,
             frames, participants);
+        // The read-only view closes with the plan; a rollback would answer identically, so
+        // the commit is just the cheapest exit that keeps the connection reusable.
+        await view.CommitAsync(cancellationToken);
+        return plan;
     }
 
     private static async Task LockRoomOwnershipAsync(string tenantId, string gameId, string roomId,
