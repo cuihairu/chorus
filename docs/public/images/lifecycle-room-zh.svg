@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1726" viewBox="0 0 1100 1726" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
+<title id="title">房间全生命周期：匹配到销毁</title>
+<desc id="desc">目标契约：路由安装确认后才开战；投递停止确认后才通知平台。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px}.small{font-size:16px;fill:#52647b}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1100" height="1726" rx="20" fill="#f8fafc"/>
+<text x="35" y="43" class="title">房间全生命周期 · 匹配 → 路由 → 战斗 → 关闭 → 销毁</text>
+<text x="35" y="77" class="small">目标契约；待开战房间不推进 Tick。平台结果未知时不得最终释放。</text>
+<rect x="35" y="105" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="134" class="name">01  匹配主播</text>
+<text x="55" y="160" class="body">ControlServer</text>
+<text x="55" y="184" class="small">选择具备资格的直播挂载，预留参与者。</text>
+<path d="M550 202 V227" class="edge"/>
+<rect x="35" y="227" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="256" class="name">02  分配并创建房间</text>
+<text x="55" y="282" class="body">ControlServer → GameServer</text>
+<text x="55" y="306" class="small">分配 RoomId、owner 和 epoch；创建待开战 RoomActor。</text>
+<path d="M550 324 V349" class="edge"/>
+<rect x="35" y="349" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="378" class="name">03  提交入场关系</text>
+<text x="55" y="404" class="body">ControlServer</text>
+<text x="55" y="428" class="small">提交 BindingId → RoomId；准备失败则撤销预留。</text>
+<path d="M550 446 V471" class="edge"/>
+<rect x="35" y="471" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="500" class="name">04  注册并下发路由</text>
+<text x="55" y="526" class="body">ControlServer → PlatformGateway</text>
+<text x="55" y="550" class="small">组合直播挂载 → 房间 → 实例地址 / epoch，发布路由版本。</text>
+<path d="M550 568 V593" class="edge"/>
+<rect x="35" y="593" width="1030" height="97" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="622" class="name">05  确认路由已安装</text>
+<text x="55" y="648" class="body">PlatformGateway → ControlServer</text>
+<text x="55" y="672" class="small">确认安装的路由版本；未确认则不能开始战斗。</text>
+<path d="M550 690 V715" class="edge"/>
+<rect x="35" y="715" width="1030" height="97" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="744" class="name">06  授权并开始战斗</text>
+<text x="55" y="770" class="body">ControlServer → GameServer</text>
+<text x="55" y="794" class="small">路由确认后才激活待开战 RoomActor。</text>
+<path d="M550 812 V837" class="edge"/>
+<rect x="35" y="837" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="866" class="name">07  持续战斗并刷新状态</text>
+<text x="55" y="892" class="body">PlatformGateway → RoomActor → StreamerGateway</text>
+<text x="55" y="916" class="small">事件直推房间；计算并持久提交 Tick；持续广播已提交状态。</text>
+<path d="M550 934 V959" class="edge"/>
+<rect x="35" y="959" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="988" class="name">08  结束战斗并冻结结果</text>
+<text x="55" y="1014" class="body">RoomActor → ControlServer</text>
+<text x="55" y="1038" class="small">提交最终帧，停止战斗 Tick，处置收尾窗口输入。</text>
+<path d="M550 1056 V1081" class="edge"/>
+<rect x="35" y="1081" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1110" class="name">09  关闭房间路由</text>
+<text x="55" y="1136" class="body">ControlServer → PlatformGateway / GameServer</text>
+<text x="55" y="1160" class="small">撤销旧局路由版本，接收端阻止该局新输入。</text>
+<path d="M550 1178 V1203" class="edge"/>
+<rect x="35" y="1203" width="1030" height="97" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="1232" class="name">10  确认旧局投递已停止</text>
+<text x="55" y="1258" class="body">PlatformGateway → ControlServer</text>
+<text x="55" y="1282" class="small">处理在途事件，确认全部持有效路由授权的 Gateway。</text>
+<path d="M550 1300 V1325" class="edge"/>
+<rect x="35" y="1325" width="1030" height="97" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="1354" class="name">11  确认后才通知直播平台</text>
+<text x="55" y="1380" class="body">ControlServer → PlatformGateway → Live platform</text>
+<text x="55" y="1404" class="small">授权结束任务；取得平台成功结果或有依据的无需调用凭据。</text>
+<path d="M550 1422 V1447" class="edge"/>
+<rect x="35" y="1447" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1476" class="name">12  完成结算并释放占位</text>
+<text x="55" y="1502" class="body">ControlServer → DataServer / StreamerServer</text>
+<text x="55" y="1526" class="small">确认输入终态、奖励和平台收尾，原子释放旧局占位。</text>
+<path d="M550 1544 V1569" class="edge"/>
+<rect x="35" y="1569" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1598" class="name">13  销毁旧房间</text>
+<text x="55" y="1624" class="body">ControlServer → GameServer</text>
+<text x="55" y="1648" class="small">移除对应 RoomActor，保留结果、账本及去重历史。</text>
+<text x="35" y="1709" class="small">异常处理：保持同一操作 ID 重试；路由或 owner 冲突时暂停；不得跳过确认屏障。</text>
+</svg>

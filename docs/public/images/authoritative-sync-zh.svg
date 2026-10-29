@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1590" viewBox="0 0 1240 1590" role="img" aria-labelledby="title desc">
+<title id="title">多主播权威帧同步与断线追赶</title>
+<desc id="desc">同房间只有一个权威，提交后广播；重连用头部快照追赶；全员离线策略由玩法配置；命令由服务端验证。目标契约。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.name{font-size:21px;font-weight:700}.body{font-size:17px}.small{font-size:15px;fill:#52647b}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1240" height="1590" rx="20" fill="#f8fafc"/>
+<text x="35" y="45" class="title" text-anchor="start">多主播帧同步 · 同一房间只有一个权威</text>
+<text x="35" y="78" class="body" text-anchor="start">目标契约 · 客户端提交操作意图，以服务端已提交状态为准</text>
+<rect x="15" y="110" width="310" height="65" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="170" y="149" class="name" text-anchor="middle">主播 A 客户端</text>
+<path d="M170 175 V960" fill="none" stroke="#b5c2d3" stroke-dasharray="6 5"/>
+<rect x="465" y="110" width="310" height="65" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="620" y="149" class="name" text-anchor="middle">权威 RoomActor＋持久化</text>
+<path d="M620 175 V960" fill="none" stroke="#b5c2d3" stroke-dasharray="6 5"/>
+<rect x="915" y="110" width="310" height="65" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1070" y="149" class="name" text-anchor="middle">主播 B 客户端</text>
+<path d="M1070 175 V960" fill="none" stroke="#b5c2d3" stroke-dasharray="6 5"/>
+<path d="M170 230 L620 230" class="edge"/>
+<text x="395.0" y="218" class="small" text-anchor="middle">操作 ID＋会话＋房间／epoch</text>
+<rect x="395" y="265" width="450" height="80" rx="10" fill="#eef8f5" stroke="#86c9b3"/>
+<text x="620" y="295" class="name" text-anchor="middle">鉴权 → 排序 → 计算 Tick</text>
+<text x="620" y="325" class="body" text-anchor="middle">原子提交状态、输入消费与效果</text>
+<path d="M620 395 L170 395" class="edge"/>
+<text x="395.0" y="383" class="small" text-anchor="middle">Delta: epoch=7, tick=100, base=100, version=101</text>
+<path d="M620 435 L1070 435" class="edge"/>
+<text x="845.0" y="423" class="small" text-anchor="middle">Delta: epoch=7, tick=100, base=100, version=101</text>
+<text x="170" y="483" class="body" text-anchor="middle">A 在 tick 100 断线</text>
+<path d="M620 540 L1070 540" class="edge"/>
+<text x="845.0" y="528" class="small" text-anchor="middle">B 继续接收：已提交 tick 101 … 130</text>
+<path d="M170 625 L620 625" class="edge"/>
+<text x="395.0" y="613" class="small" text-anchor="middle">恢复会话；已应用 tick=100／version=101</text>
+<text x="620" y="677" class="body" text-anchor="middle">验证会话与参与关系；取得 tick 130 的一致头部</text>
+<path d="M620 740 L170 740" class="edge"/>
+<text x="395.0" y="728" class="small" text-anchor="middle">Snapshot: epoch=7, tick=130, version=131</text>
+<text x="170" y="782" class="small" text-anchor="middle">替换基线，不重发历史奖励</text>
+<path d="M620 850 L170 850" class="edge"/>
+<text x="395.0" y="838" class="small" text-anchor="middle">Delta: tick=131, base=131, version=132</text>
+<path d="M620 895 L1070 895" class="edge"/>
+<text x="845.0" y="883" class="small" text-anchor="middle">Delta: tick=131, base=131, version=132</text>
+<text x="620" y="950" class="body" text-anchor="middle">双方收敛到同一已提交版本，画面显示时间可有网络延迟差异。</text>
+<rect x="35" y="990" width="1170" height="255" rx="12" fill="#edf5ff" stroke="#93b9e3"/>
+<text x="55" y="1025" class="name" text-anchor="start">全部控制主播离线：按玩法配置持久执行策略</text>
+<text x="55" y="1065" class="body" text-anchor="start">ContinueToEnd：继续至终局，保留结果，不替离线主播自动排下一局。</text>
+<text x="55" y="1102" class="body" text-anchor="start">PauseAtBoundary：宽限期后提交暂停边界，冻结逻辑计时，不能只停内存 Timer。</text>
+<text x="55" y="1139" class="body" text-anchor="start">FinishByRule：调用玩法定义的终局／中止／补偿规则，不伪造正常胜负。</text>
+<text x="55" y="1176" class="body" text-anchor="start">暂停期间输入：明确有界暂存、局外处置或拒绝规则，不静默丢礼物。</text>
+<text x="55" y="1213" class="body" text-anchor="start">恢复：达到配置的在线人数且基线就绪 → 提交恢复边界 → 继续 Tick。</text>
+<rect x="35" y="1270" width="1170" height="245" rx="12" fill="#fff6e8" stroke="#ddbc88"/>
+<text x="55" y="1305" class="name" text-anchor="start">一致性与防作弊校验</text>
+<text x="55" y="1345" class="body" text-anchor="start">仅应用 epoch 和 baseVersion 匹配的增量；不匹配则请求快照。</text>
+<text x="55" y="1382" class="body" text-anchor="start">服务端校验控制会话、参与关系、动作规则、序号及频率。</text>
+<text x="55" y="1419" class="body" text-anchor="start">礼物／点赞事实来自已验证平台事件，不接受客户端自报积分。</text>
+<text x="55" y="1456" class="body" text-anchor="start">ACK 只是同步线索，不能据此发奖；状态哈希不能证明客户端诚实。</text>
+<text x="55" y="1493" class="body" text-anchor="start">慢客户端不阻塞另一端；出站队列溢出后用已提交快照重建基线。</text>
+<text x="35" y="1555" class="small" text-anchor="start">时序图省略 Gateway 中转跳数；目标策略细节及当前实现差距见配套文档。</text>
+</svg>

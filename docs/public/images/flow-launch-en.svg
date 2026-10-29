@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1604" viewBox="0 0 1100 1604" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">Streamer client launch lifecycle</title>
+<desc id="desc">Target lifecycle; platform facts and implementation status are documented on the lifecycle page.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px}.small{font-size:16px;fill:#52647b}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1100" height="1604" rx="20" fill="#f8fafc"/>
+<text x="35" y="43" class="title">Streamer client launch lifecycle</text>
+<text x="35" y="77" class="small">Independent target flow · Actors and confirmation points shown at every step</text>
+<rect x="35" y="105" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="134" class="name">01  Open the live companion / platform entry</text>
+<text x="55" y="160" class="body">Streamer + platform</text>
+<text x="55" y="184" class="small">Sign in and select an authorized gameplay entry.</text>
+<path d="M550 202 V227" class="edge"/>
+<rect x="35" y="227" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="256" class="name">02  Launch the game client</text>
+<text x="55" y="282" class="body">Platform → Game client</text>
+<text x="55" y="306" class="small">Local companion launch or supported cloud launch; adapter-specific.</text>
+<path d="M550 324 V349" class="edge"/>
+<rect x="35" y="349" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="378" class="name">03  Read launch credentials</text>
+<text x="55" y="404" class="body">Game client</text>
+<text x="55" y="428" class="small">Douyin: launch token; Kuaishou: roomCode / binding context.</text>
+<path d="M550 446 V471" class="edge"/>
+<rect x="35" y="471" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="500" class="name">04  Connect to Chorus</text>
+<text x="55" y="526" class="body">Game client → StreamerGateway</text>
+<text x="55" y="550" class="small">Send launch context and a stable LoginAttemptId over WSS.</text>
+<path d="M550 568 V593" class="edge"/>
+<rect x="35" y="593" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="622" class="name">05  Verify identity / establish platform binding</text>
+<text x="55" y="648" class="body">StreamerServer → PlatformGateway → Platform</text>
+<text x="55" y="672" class="small">Exchange official credentials; no client-supplied identity is trusted.</text>
+<path d="M550 690 V715" class="edge"/>
+<rect x="35" y="715" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="744" class="name">06  Load the streamer entity</text>
+<text x="55" y="770" class="body">StreamerServer → DataServer</text>
+<text x="55" y="794" class="small">Resolve identity and restore profile, binding and any unfinished round.</text>
+<path d="M550 812 V837" class="edge"/>
+<rect x="35" y="837" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="866" class="name">07  Commit the session; show LoginReady</text>
+<text x="55" y="892" class="body">StreamerServer → StreamerGateway → Client</text>
+<text x="55" y="916" class="small">Rotate control session; register Chorus resume credentials.</text>
+<path d="M550 934 V959" class="edge"/>
+<rect x="35" y="959" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="988" class="name">08  Confirm gameplay readiness</text>
+<text x="55" y="1014" class="body">StreamerServer ↔ PlatformGateway</text>
+<text x="55" y="1038" class="small">Persist and confirm required binding / event-subscription tasks.</text>
+<path d="M550 1056 V1081" class="edge"/>
+<rect x="35" y="1081" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1110" class="name">09  Register the live binding</text>
+<text x="55" y="1136" class="body">StreamerServer → ControlServer</text>
+<text x="55" y="1160" class="small">Register validated platform live context and BindingGeneration.</text>
+<path d="M550 1178 V1203" class="edge"/>
+<rect x="35" y="1203" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1232" class="name">10  Resume an existing round or request matching</text>
+<text x="55" y="1258" class="body">StreamerServer → ControlServer</text>
+<text x="55" y="1282" class="small">Existing round: restore it; new round: check eligibility and queue.</text>
+<path d="M550 1300 V1325" class="edge"/>
+<rect x="35" y="1325" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1354" class="name">11  Prepare a room and confirm its route</text>
+<text x="55" y="1380" class="body">ControlServer → GameServer / PlatformGateway</text>
+<text x="55" y="1404" class="small">Commit participation; publish route; receive installation ACK.</text>
+<path d="M550 1422 V1447" class="edge"/>
+<rect x="35" y="1447" width="1030" height="97" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="1476" class="name">12  Start battle and display committed state</text>
+<text x="55" y="1502" class="body">ControlServer → RoomActor → Client</text>
+<text x="55" y="1526" class="small">Activate only after route ACK; stream snapshots / deltas.</text>
+<text x="35" y="1587" class="small">Target design; no implementation or production acceptance is implied.</text>
+</svg>

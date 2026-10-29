@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1604" viewBox="0 0 1100 1604" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
+<title id="title">主播客户端启动生命周期</title>
+<desc id="desc">目标流程；平台依据与实现状态见生命周期文档。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px}.small{font-size:16px;fill:#52647b}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1100" height="1604" rx="20" fill="#f8fafc"/>
+<text x="35" y="43" class="title">主播客户端启动生命周期</text>
+<text x="35" y="77" class="small">独立目标流程 · 每步标明负责进程和确认点</text>
+<rect x="35" y="105" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="134" class="name">01  打开直播伴侣或平台玩法入口</text>
+<text x="55" y="160" class="body">Streamer + platform</text>
+<text x="55" y="184" class="small">主播登录平台，选择已获授权的玩法入口。</text>
+<path d="M550 202 V227" class="edge"/>
+<rect x="35" y="227" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="256" class="name">02  平台拉起游戏客户端</text>
+<text x="55" y="282" class="body">Platform → Game client</text>
+<text x="55" y="306" class="small">本地拉起或平台支持的云启动，具体入口按平台适配。</text>
+<path d="M550 324 V349" class="edge"/>
+<rect x="35" y="349" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="378" class="name">03  接收启动凭据</text>
+<text x="55" y="404" class="body">Game client</text>
+<text x="55" y="428" class="small">抖音为启动 token；快手为 roomCode 等绑定上下文。</text>
+<path d="M550 446 V471" class="edge"/>
+<rect x="35" y="471" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="500" class="name">04  建立 Chorus 连接</text>
+<text x="55" y="526" class="body">Game client → StreamerGateway</text>
+<text x="55" y="550" class="small">通过 WSS 提交启动上下文和稳定的 LoginAttemptId。</text>
+<path d="M550 568 V593" class="edge"/>
+<rect x="35" y="593" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="622" class="name">05  验证身份并按平台契约建立绑定</text>
+<text x="55" y="648" class="body">StreamerServer → PlatformGateway → Platform</text>
+<text x="55" y="672" class="small">调用官方接口验证；必要时绑定，不能信任客户端自报身份。</text>
+<path d="M550 690 V715" class="edge"/>
+<rect x="35" y="715" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="744" class="name">06  加载主播实体</text>
+<text x="55" y="770" class="body">StreamerServer → DataServer</text>
+<text x="55" y="794" class="small">解析可信身份，恢复资料、挂载和未结束对局；数据服务负责读写。</text>
+<path d="M550 812 V837" class="edge"/>
+<rect x="35" y="837" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="866" class="name">07  提交会话并显示 LoginReady</text>
+<text x="55" y="892" class="body">StreamerServer → StreamerGateway → Client</text>
+<text x="55" y="916" class="small">轮换控制会话并登记 Chorus 恢复凭据；不复用平台 token 重连。</text>
+<path d="M550 934 V959" class="edge"/>
+<rect x="35" y="959" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="988" class="name">08  确认玩法挂载就绪</text>
+<text x="55" y="1014" class="body">StreamerServer ↔ PlatformGateway</text>
+<text x="55" y="1038" class="small">保存并确认所需平台绑定或事件订阅任务；未就绪不排队。</text>
+<path d="M550 1056 V1081" class="edge"/>
+<rect x="35" y="1081" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1110" class="name">09  注册直播场次与挂载映射</text>
+<text x="55" y="1136" class="body">StreamerServer → ControlServer</text>
+<text x="55" y="1160" class="small">注册已验证的平台直播上下文及挂载代；此时可以尚无游戏房间。</text>
+<path d="M550 1178 V1203" class="edge"/>
+<rect x="35" y="1203" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1232" class="name">10  恢复旧局，或发起匹配</text>
+<text x="55" y="1258" class="body">StreamerServer → ControlServer</text>
+<text x="55" y="1282" class="small">已有未结束对局则恢复原局；新局校验资格后排队。</text>
+<path d="M550 1300 V1325" class="edge"/>
+<rect x="35" y="1325" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1354" class="name">11  准备房间并确认路由</text>
+<text x="55" y="1380" class="body">ControlServer → GameServer / PlatformGateway</text>
+<text x="55" y="1404" class="small">提交入场关系，发布路由并收到安装确认。</text>
+<path d="M550 1422 V1447" class="edge"/>
+<rect x="35" y="1447" width="1030" height="97" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="1476" class="name">12  开始战斗并展示权威状态</text>
+<text x="55" y="1502" class="body">ControlServer → RoomActor → Client</text>
+<text x="55" y="1526" class="small">路由确认后才激活战斗，持续接收快照和增量。</text>
+<text x="35" y="1587" class="small">目标设计，不代表实现或生产联调已经通过。</text>
+</svg>

@@ -31,3 +31,11 @@ PlatformGateway resolves the room and its owner, then pushes events directly to 
 ![Seven Chorus process roles, with RoomRuntime and multiple RoomActors inside GameServer](/images/architecture-en.svg)
 
 [Open full SVG](/images/architecture-en.svg) · [Architecture design and implementation scope (Chinese)](/architecture/architecture)
+
+## Lifecycle flows
+
+Follow the [streamer, player/audience and live-platform lifecycle flows](/design/lifecycle-flows), including reconnects, event acceptance, gateway close confirmation and room destruction.
+
+Independent flows: [client launch](/design/lifecycle-flows#streamer-client-launch-lifecycle) · [one gift event](/design/lifecycle-flows#lifecycle-of-one-gift-event) · [a like event](/design/lifecycle-flows#lifecycle-of-a-like-event).
+
+[Frame synchronization, reconnect and all-offline policy](/design/authoritative-sync) · [Built-in capabilities and leaderboards](/design/developer-capabilities)

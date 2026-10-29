@@ -38,7 +38,7 @@ Chorus 是直播互动游戏的服务端平台。主播通过平台启动玩法�
 - 基础产品是弹幕互动；可操作嘉宾、小游戏扩展使用额外适配器，不强制普通观众登录连接。
 - 同平台、同游戏、同玩法规则版本匹配；跨平台账号合并和跨平台匹配默认关闭。
 - 单地域集群，跨地域容灾作为独立部署，不在第一版做跨地域实时写入。
-- 断线后当前局继续，保留重连位置；本局结束后结算，不替离线主播自动排下一局。无进行中对局时保留该玩法配置的 `OfflineGraceDuration`，默认取 `MaxRoundDuration`；无配置则玩法不得上线。
+- 默认 ContinueToEnd：断线后当前局继续，保留重连位置；本局结束后结算，不替离线主播自动排下一局。玩法可显式选择持久边界暂停或按规则终结，详见[帧同步与离线策略](../zh/design/authoritative-sync.md)；后两种策略尚待实现验收。无进行中对局时保留该玩法配置的 `OfflineGraceDuration`，默认取 `MaxRoundDuration`；无配置则玩法不得上线。
 - 主动退出、明确关播、封禁与意外断线是不同原因；关播停止新匹配，对当前局采用玩法的 `OnHostUnavailable` 规则，但保留结果和可恢复状态至本局清理期限。
 - 服务器故障后恢复当前局；不能恢复时执行明确的中止与补偿流程，不伪造成功结算。
 - 通用的资料、资产、积分、库存、排名和奖励提供实现；平台支付、分成和退款不由 Chorus 擅自执行。
@@ -179,6 +179,26 @@ ControlServer 提供版本化全量快照 + 增量 Watch，消费者断流或版
 
 跨进程递送提示可丢失，持久收件箱和已提交状态不可依赖提示存在。恢复者用持久游标补扫；Watch 不是可靠日志的替代品。
 
+### 4.5 独立房间 epoch 的 GM 测试操作（目标契约）
+
+每个房间拥有独立的 ownership epoch；不与进程启动代、连接代、挂载代、RoundGeneration 或其他房间共享。迁移仍正常推进 epoch；另外提供保持当前 owner 不变的 `BumpRoomEpoch`，用于单独测试 fencing、路由刷新与恢复。现有 Admin 服务尚无该指令，实施见 TODO §22.11。
+
+建议 GM 命令形态（尚非可执行 CLI）：
+
+```text
+room epoch get --tenant <tenant> --game <game> --room <room>
+room epoch bump --tenant <tenant> --game <game> --room <room> --expected <old> --operation-id <id> --reason <reason>
+room epoch bump --tenant <tenant> --game <game> --room <room> --expected <old> --to <larger-value> --operation-id <id> --reason <reason>
+```
+
+未给 `--to` 时取 old+1；指定值必须大于现值且不溢出。禁止将权威 epoch 调小或重置，以免历史请求重新有效。测试任意旧 epoch 的报文应由故障注入客户端构造，不修改权威存储。
+
+ControlServer 的 GM 边界认证操作者、租户/游戏/房间范围并记录理由，随后请求数据服务执行受限事务：按既定锁序锁定该 room ownership 和 game.room，校验 expected epoch、两处当前 epoch 一致及房间处于允许操作状态；原子推进两处 epoch，保持 owner 不变，标为 Recovering 并保存幂等回执/审计证据。缺行、不一致、期望值冲突、终局已释放或越权均明确拒绝。数据服务执行明确数值更新及事务约束，不决定何时做 GM 操作。
+
+命令提交后，旧 RoomActor 与旧路由仍持有旧 epoch，新的写入必须被数据面拒绝；不能静默更新旧 Actor 内存来绕过这个测试。ControlServer 持久记录路由变更并通知 Gateway 暂停旧版本，返回存储提交与路由确认各自的状态。响应至少包含 operation_id、room_id、owner、old_epoch、new_epoch、ownership_status 和 route_sync_status；超时后按同 OperationId 查询/重试，不再加一次。
+
+该操作只使指定房间进入需要恢复的状态，不自动终局、不发平台结束通知、不修改其他房间。需要继续战斗时，由操作者显式调用同 owner 的恢复操作，经正常恢复和路由确认屏障重新激活。旧 epoch 的历史已提交帧和收据仍可读取；不能追加新效果。正常 epoch 验证保持启用，不提供“关闭 fencing”开关。
+
 ## 5. 主播登录、实体激活和挂载
 
 ### 5.1 正常启动
@@ -246,6 +266,8 @@ epoch 不能取消已发往平台的旧 HTTP 请求。适配器应按挂载串�
 本节为目标契约，尚未实现的步骤按 `todo.md` §22.10 逐项验收。业务收尾由 ControlServer 的持久结束协调器推进；StreamerServer 提供挂载事实并控制下一局资格；PlatformGateway 执行路由安装/撤销和平台调用；GameServer 管理房间执行及退出；DataServer 仅执行数据读写、事务约束和版本校验，不选择事件目标、不调度收尾或解释平台业务。
 
 **路由来源和首次生效：** StreamerServer 在挂载提交后向 ControlServer 注册已验证的平台直播场次、BindingId 和 Generation。匹配入场关系提交且 GameServer 确认 RoomActor 已准备接收后，ControlServer 组合挂载与 `RoomId→OwnerInstance/Endpoint/Epoch` 发布路由。PlatformGateway 安装并确认路由版本后，才能直接向房间推送事件。Gateway 启动/重连须先同步快照再接续版本更新；缺失或未确认路由不能猜测玩家所在房间。
+
+**战斗启动屏障：** PrepareRoom 仅创建待开战实体，不启动 Tick；ControlServer 在入场提交且 PlatformGateway 确认路由安装后，单独授权 GameServer 激活战斗。现有 PrepareRoom 提前激活实现需要迁移，见 FIX-END-16。
 
 **结束的严格先后顺序：**
 

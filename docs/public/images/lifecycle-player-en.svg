@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1078" viewBox="0 0 1100 1078" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">Player / audience lifecycle</title>
+<desc id="desc">Baseline: viewers interact through the live platform, without a Chorus connection. Target lifecycle; implementation and acceptance are tracked separately.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.name{font-size:21px;font-weight:700}.body{font-size:16px;fill:#435570}.small{font-size:15px;fill:#52647b}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1100" height="1078" rx="20" fill="#f8fafc"/>
+<text x="35" y="45" class="title">Player / audience lifecycle</text>
+<text x="35" y="76" class="body">Baseline: viewers interact through the live platform, without a Chorus connection.</text>
+<rect x="35" y="110" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="143" class="name">01  Enter a live stream</text>
+<text x="55" y="172" class="body">Watch the streamer and the current gameplay.</text>
+<path d="M335 194 V226" class="edge"/>
+<rect x="35" y="226" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="259" class="name">02  Check whether a round is open</text>
+<text x="55" y="288" class="body">The live gameplay binding identifies the target round.</text>
+<path d="M335 310 V342" class="edge"/>
+<rect x="35" y="342" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="375" class="name">03  Send a comment, like or gift</text>
+<text x="55" y="404" class="body">The platform supplies event identity and live context.</text>
+<path d="M335 426 V458" class="edge"/>
+<rect x="35" y="458" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="491" class="name">04  Verify and route the event</text>
+<text x="55" y="520" class="body">PlatformGateway pushes to the routed RoomActor.</text>
+<path d="M335 542 V574" class="edge"/>
+<rect x="35" y="574" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="607" class="name">05  Durably accept the event</text>
+<text x="55" y="636" class="body">GameServer persists through DataServer before ACK.</text>
+<path d="M335 658 V690" class="edge"/>
+<rect x="35" y="690" width="600" height="84" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="723" class="name">06  Apply the event in a committed tick</text>
+<text x="55" y="752" class="body">Deduplicate, order and apply; then publish the effect.</text>
+<path d="M335 774 V806" class="edge"/>
+<rect x="35" y="806" width="600" height="84" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="839" class="name">07  See the result and reward status</text>
+<text x="55" y="868" class="body">A frozen result and completed rewards are distinct.</text>
+<path d="M335 890 V922" class="edge"/>
+<rect x="35" y="922" width="600" height="84" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="955" class="name">08  Continue watching or leave</text>
+<text x="55" y="984" class="body">A later round is a new participation context.</text>
+<path d="M635 268 H685" class="edge"/>
+<rect x="685" y="226" width="385" height="110" rx="10" fill="#fff6e8" stroke="#ddbc88"/>
+<text x="702" y="255" class="name">No active round / input closed</text>
+<text x="702" y="284" class="body">Use the explicit out-of-round policy.</text>
+<text x="702" y="311" class="body">Do not guess a room or imply a game effect.</text>
+<path d="M635 616 H685" class="edge"/>
+<rect x="685" y="574" width="385" height="110" rx="10" fill="#fff6e8" stroke="#ddbc88"/>
+<text x="702" y="603" class="name">Retries / late arrivals</text>
+<text x="702" y="632" class="body">Keep the first accepted round attribution.</text>
+<text x="702" y="659" class="body">Deduplicate; terminal handling after closure.</text>
+<text x="35" y="1059" class="small">Target design · Durable acceptance ≠ applied effect · Close ACK precedes platform-end call</text>
+</svg>

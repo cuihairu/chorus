@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1726" viewBox="0 0 1100 1726" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">Lifecycle of one gift event</title>
+<desc id="desc">Target lifecycle; platform facts and implementation status are documented on the lifecycle page.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px}.small{font-size:16px;fill:#52647b}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1100" height="1726" rx="20" fill="#f8fafc"/>
+<text x="35" y="43" class="title">Lifecycle of one gift event</text>
+<text x="35" y="77" class="small">Independent target flow · Actors and confirmation points shown at every step</text>
+<rect x="35" y="105" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="134" class="name">01  Viewer sends a gift</text>
+<text x="55" y="160" class="body">Viewer → Live platform</text>
+<text x="55" y="184" class="small">The platform owns the gift transaction; Chorus consumes its event.</text>
+<path d="M550 202 V227" class="edge"/>
+<rect x="35" y="227" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="256" class="name">02  Platform delivers the gift event</text>
+<text x="55" y="282" class="body">Live platform → PlatformGateway</text>
+<text x="55" y="306" class="small">Receive official event / order identity and source live context.</text>
+<path d="M550 324 V349" class="edge"/>
+<rect x="35" y="349" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="378" class="name">03  Verify and normalize</text>
+<text x="55" y="404" class="body">PlatformGateway</text>
+<text x="55" y="428" class="small">Validate source; retain gift ID, quantity, units and stable EventId.</text>
+<path d="M550 446 V471" class="edge"/>
+<rect x="35" y="471" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="500" class="name">04  Resolve the gameplay binding</text>
+<text x="55" y="526" class="body">PlatformGateway: installed route map</text>
+<text x="55" y="550" class="small">Use verified platform live context, not the gifting viewer ID.</text>
+<path d="M550 568 V593" class="edge"/>
+<rect x="35" y="593" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="622" class="name">05  Resolve the room and its owner</text>
+<text x="55" y="648" class="body">ControlServer route snapshot → PlatformGateway</text>
+<text x="55" y="672" class="small">Binding generation → RoomId / round generation → endpoint / epoch.</text>
+<path d="M550 690 V715" class="edge"/>
+<rect x="35" y="715" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="744" class="name">06  Push directly to the target GameServer</text>
+<text x="55" y="770" class="body">PlatformGateway → GameServer</text>
+<text x="55" y="794" class="small">Carry EventId, source proof, binding / round generation and epoch.</text>
+<path d="M550 812 V837" class="edge"/>
+<rect x="35" y="837" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="866" class="name">07  Deliver to the matching RoomActor</text>
+<text x="55" y="892" class="body">GameServer RoomRuntime → RoomActor</text>
+<text x="55" y="916" class="small">Check source, room, epoch and admission; reject stale routing.</text>
+<path d="M550 934 V959" class="edge"/>
+<rect x="35" y="959" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="988" class="name">08  Durably accept and deduplicate</text>
+<text x="55" y="1014" class="body">GameServer → DataServer</text>
+<text x="55" y="1038" class="small">Save the explicit target; enforce the event key and request hash.</text>
+<path d="M550 1056 V1081" class="edge"/>
+<rect x="35" y="1081" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1110" class="name">09  Acknowledge durable acceptance</text>
+<text x="55" y="1136" class="body">GameServer → PlatformGateway → Platform</text>
+<text x="55" y="1160" class="small">Return the adapter-specific callback ACK only after persistence.</text>
+<path d="M550 1178 V1203" class="edge"/>
+<rect x="35" y="1203" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1232" class="name">10  Order accepted inputs for a tick</text>
+<text x="55" y="1258" class="body">RoomActor</text>
+<text x="55" y="1282" class="small">Use the accepted event order; retries do not add another input.</text>
+<path d="M550 1300 V1325" class="edge"/>
+<rect x="35" y="1325" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1354" class="name">11  Map gift to a gameplay action</text>
+<text x="55" y="1380" class="body">RoomActor → Game module</text>
+<text x="55" y="1404" class="small">Configured gift ID / quantity maps to a skill, unit or score.</text>
+<path d="M550 1422 V1447" class="edge"/>
+<rect x="35" y="1447" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1476" class="name">12  Commit candidate state and effects</text>
+<text x="55" y="1502" class="body">GameServer → DataServer</text>
+<text x="55" y="1526" class="small">Atomically commit the frame, consumed input and effect references.</text>
+<path d="M550 1544 V1569" class="edge"/>
+<rect x="35" y="1569" width="1030" height="97" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="1598" class="name">13  Refresh the game display</text>
+<text x="55" y="1624" class="body">GameServer → StreamerGateway → Game client</text>
+<text x="55" y="1648" class="small">Broadcast committed snapshot / delta; viewers see the live output.</text>
+<text x="35" y="1709" class="small">Target design; no implementation or production acceptance is implied.</text>
+</svg>

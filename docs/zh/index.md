@@ -31,3 +31,11 @@ PlatformGateway 根据直播挂载、对局归属及所有权目录，将事件�
 ![Chorus 七类进程架构，以及 GameServer 内的 RoomRuntime 和多个 RoomActor](/images/architecture-zh.svg)
 
 [打开完整 SVG](/images/architecture-zh.svg) · [架构设计与实现边界](/architecture/architecture)
+
+## 生命周期流程图
+
+查看[主播、玩家／观众和直播平台三个视角的生命周期](/zh/design/lifecycle-flows)，包含重连、事件接受、Gateway 关闭确认及房间销毁。
+
+独立流程：[直播伴侣拉起客户端](/zh/design/lifecycle-flows#主播客户端启动生命周期) · [一笔礼物消息](/zh/design/lifecycle-flows#一笔礼物消息的生命周期) · [一次点赞消息](/zh/design/lifecycle-flows#一次点赞消息的生命周期)。
+
+[帧同步、断线追赶与全员离线策略](/zh/design/authoritative-sync) · [开箱即用能力与排行榜](/zh/design/developer-capabilities)

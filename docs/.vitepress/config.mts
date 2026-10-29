@@ -14,6 +14,10 @@ const guideLinks = [
   "/guide/quickstart-frame-sync",
 ];
 const designLinks = [
+  "/design/authoritative-sync",
+  "/design/developer-capabilities",
+  "/design/gameserver-threading-current",
+  "/design/lifecycle-flows",
   "/design/architecture",
   "/design/architecture-overview",
   "/design/frame-sync",

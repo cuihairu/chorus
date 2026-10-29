@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1310" viewBox="0 0 1100 1310" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
+<title id="title">主播生命周期</title>
+<desc id="desc">主播实体独立于连接和单局房间。 目标生命周期；实现与验收另行跟踪。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.name{font-size:21px;font-weight:700}.body{font-size:16px;fill:#435570}.small{font-size:15px;fill:#52647b}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1100" height="1310" rx="20" fill="#f8fafc"/>
+<text x="35" y="45" class="title">主播生命周期</text>
+<text x="35" y="76" class="body">主播实体独立于连接和单局房间。</text>
+<rect x="35" y="110" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="143" class="name">01  从直播平台启动玩法</text>
+<text x="55" y="172" class="body">PlatformGateway 验证平台启动身份。</text>
+<path d="M335 194 V226" class="edge"/>
+<rect x="35" y="226" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="259" class="name">02  登录并加载主播实体</text>
+<text x="55" y="288" class="body">StreamerServer 恢复资料并建立会话。</text>
+<path d="M335 310 V342" class="edge"/>
+<rect x="35" y="342" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="375" class="name">03  建立直播玩法挂载</text>
+<text x="55" y="404" class="body">注册直播场次、BindingId 和挂载代。</text>
+<path d="M335 426 V458" class="edge"/>
+<rect x="35" y="458" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="491" class="name">04  排队匹配并准备房间</text>
+<text x="55" y="520" class="body">ControlServer 分配，GameServer 准备 RoomActor。</text>
+<path d="M335 542 V574" class="edge"/>
+<rect x="35" y="574" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="607" class="name">05  确认路由生效后进入对局</text>
+<text x="55" y="636" class="body">提交参与关系；Gateway 安装并确认路由。</text>
+<path d="M335 658 V690" class="edge"/>
+<rect x="35" y="690" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="723" class="name">06  参与对局并接收权威状态</text>
+<text x="55" y="752" class="body">平台事件直接推送至对应 RoomActor。</text>
+<path d="M335 774 V806" class="edge"/>
+<rect x="35" y="806" width="600" height="84" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="839" class="name">07  冻结结果并处理收尾输入</text>
+<text x="55" y="868" class="body">停止战斗 Tick；已接受输入仍须完成终态处置。</text>
+<path d="M335 890 V922" class="edge"/>
+<rect x="35" y="922" width="600" height="84" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="955" class="name">08  等待 Gateway 停止投递确认</text>
+<text x="55" y="984" class="body">ControlServer 收集带版本的关闭屏障确认。</text>
+<path d="M335 1006 V1038" class="edge"/>
+<rect x="35" y="1038" width="600" height="84" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="1071" class="name">09  等待平台收尾与结算完成</text>
+<text x="55" y="1100" class="body">屏障完成后，Gateway 才可执行平台结束通知。</text>
+<path d="M335 1122 V1154" class="edge"/>
+<rect x="35" y="1154" width="600" height="84" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="1187" class="name">10  释放旧局并销毁房间实体</text>
+<text x="55" y="1216" class="body">先 Finalize，再销毁旧 Actor，恢复下一局资格。</text>
+<path d="M635 732 H685" class="edge"/>
+<rect x="685" y="690" width="385" height="110" rx="10" fill="#fff6e8" stroke="#ddbc88"/>
+<text x="702" y="719" class="name">意外断线</text>
+<text x="702" y="748" class="body">当前局继续；重连恢复原局。</text>
+<text x="702" y="775" class="body">离线主播不自动进入下一局。</text>
+<path d="M635 1196 H685" class="edge"/>
+<rect x="685" y="1154" width="385" height="110" rx="10" fill="#fff6e8" stroke="#ddbc88"/>
+<text x="702" y="1183" class="name">继续玩法或主动退出</text>
+<text x="702" y="1212" class="body">在线且具备资格：返回排队。</text>
+<text x="702" y="1239" class="body">退出：关闭挂载，保留资料与结果。</text>
+<text x="35" y="1291" class="small">目标设计 · 持久接受不等于效果生效 · 内部关闭确认先于平台结束调用</text>
+</svg>

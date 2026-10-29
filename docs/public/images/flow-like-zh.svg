@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1604" viewBox="0 0 1100 1604" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
+<title id="title">一次点赞消息的生命周期</title>
+<desc id="desc">目标流程；平台依据与实现状态见生命周期文档。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px}.small{font-size:16px;fill:#52647b}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1100" height="1604" rx="20" fill="#f8fafc"/>
+<text x="35" y="43" class="title">一次点赞消息的生命周期</text>
+<text x="35" y="77" class="small">独立目标流程 · 每步标明负责进程和确认点</text>
+<rect x="35" y="105" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="134" class="name">01  玩家在直播间点赞</text>
+<text x="55" y="160" class="body">Viewer → Live platform</text>
+<text x="55" y="184" class="small">一次点击是平台操作，不保证平台逐次回调。</text>
+<path d="M550 202 V227" class="edge"/>
+<rect x="35" y="227" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="256" class="name">02  平台发送点赞事件或计数批次</text>
+<text x="55" y="282" class="body">Live platform → PlatformGateway</text>
+<text x="55" y="306" class="small">保留官方计数、批次标识及来源直播上下文。</text>
+<path d="M550 324 V349" class="edge"/>
+<rect x="35" y="349" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="378" class="name">03  验签并归一化点赞计数</text>
+<text x="55" y="404" class="body">PlatformGateway</text>
+<text x="55" y="428" class="small">明确增量计数；累计计数仅按平台契约转换，不能直接累加。</text>
+<path d="M550 446 V471" class="edge"/>
+<rect x="35" y="471" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="500" class="name">04  定位挂载、游戏房间和实例</text>
+<text x="55" y="526" class="body">PlatformGateway: ControlServer route cache</text>
+<text x="55" y="550" class="small">直播上下文 → 挂载／对局 → GameServer 地址及 epoch。</text>
+<path d="M550 568 V593" class="edge"/>
+<rect x="35" y="593" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="622" class="name">05  直接推送点赞输入</text>
+<text x="55" y="648" class="body">PlatformGateway → GameServer</text>
+<text x="55" y="672" class="small">携带计数、批次／事件标识和已固定的局归属。</text>
+<path d="M550 690 V715" class="edge"/>
+<rect x="35" y="715" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="744" class="name">06  校验并投递对应房间</text>
+<text x="55" y="770" class="body">RoomRuntime → RoomActor</text>
+<text x="55" y="794" class="small">校验 epoch、挂载代及输入窗口。</text>
+<path d="M550 812 V837" class="edge"/>
+<rect x="35" y="837" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="866" class="name">07  按明确的可靠性等级接受</text>
+<text x="55" y="892" class="body">GameServer → DataServer</text>
+<text x="55" y="916" class="small">当前持久基线：先保存已接受计数，再返回成功回执。</text>
+<path d="M550 934 V959" class="edge"/>
+<rect x="35" y="959" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="988" class="name">08  确认平台投递</text>
+<text x="55" y="1014" class="body">GameServer → PlatformGateway → Platform</text>
+<text x="55" y="1038" class="small">确认已接受批次，不承诺平台未提供的逐次点击完整性。</text>
+<path d="M550 1056 V1081" class="edge"/>
+<rect x="35" y="1081" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1110" class="name">09  在明确 Tick 窗口内合并</text>
+<text x="55" y="1136" class="body">RoomActor input reducer</text>
+<text x="55" y="1160" class="small">对可加规则保留已接受总量和归属；是否合并由玩法契约决定。</text>
+<path d="M550 1178 V1203" class="edge"/>
+<rect x="35" y="1203" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1232" class="name">10  触发点赞对应玩法行为</text>
+<text x="55" y="1258" class="body">RoomActor → Game module</text>
+<text x="55" y="1282" class="small">例如累计能量或达到配置阈值触发行为；不是框架固定规则。</text>
+<path d="M550 1300 V1325" class="edge"/>
+<rect x="35" y="1325" width="1030" height="97" rx="10" fill="#fff" stroke="#a5bdcc"/>
+<text x="55" y="1354" class="name">11  提交消费记录和新状态</text>
+<text x="55" y="1380" class="body">GameServer → DataServer</text>
+<text x="55" y="1404" class="small">保存已消费批次、合并计数及生成的状态／效果。</text>
+<path d="M550 1422 V1447" class="edge"/>
+<rect x="35" y="1447" width="1030" height="97" rx="10" fill="#eef8f5" stroke="#a5bdcc"/>
+<text x="55" y="1476" class="name">12  发布已提交效果并刷新画面</text>
+<text x="55" y="1502" class="body">GameServer → StreamerGateway → Game client</text>
+<text x="55" y="1526" class="small">有稳定去重依据的重复批次不得再次推进能量条或触发效果。</text>
+<text x="35" y="1587" class="small">目标设计，不代表实现或生产联调已经通过。</text>
+</svg>
