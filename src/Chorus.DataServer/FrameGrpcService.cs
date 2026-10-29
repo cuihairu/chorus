@@ -159,19 +159,35 @@ public sealed class FrameGrpcService(
         var caller = Require(context, "game-server", "control-server");
         try
         {
+            var depth = request.CandidateDepth > 0 ? request.CandidateDepth
+                : RedesignRecoveryStore.CandidateDepth;
             var plan = await recoveryStore.LoadRecoveryAsync(caller.TenantId, request.GameId,
-                request.RoomId,
-                request.CandidateDepth > 0 ? request.CandidateDepth
-                    : RedesignRecoveryStore.CandidateDepth,
-                context.CancellationToken);
+                request.RoomId, depth, context.CancellationToken);
             if (plan is null) return new LoadRecoveryReply { Found = false };
-            return new LoadRecoveryReply
+            // FIX-READ-05: one bounded page of the plan per reply. A continuation re-reads
+            // the plan and refuses to continue a read whose view moved — pages are never
+            // stitched from two heads. Cancelling is simply not asking for the next page.
+            RecoveryPageToken cursor;
+            if (request.PageToken.Length == 0)
             {
-                Found = true, RoomId = plan.RoomId, Status = plan.Status, Epoch = plan.Epoch,
-                LastTick = plan.LastTick, StateVersion = plan.StateVersion,
+                cursor = new RecoveryPageToken(depth, plan.Epoch, plan.LastTick, 0, 0);
+            }
+            else
+            {
+                cursor = RecoveryPager.Decode(request.PageToken.Span)
+                    ?? throw new ArgumentException("The page token is not a recovery cursor.");
+                if (cursor.Depth != depth || cursor.Epoch != plan.Epoch || cursor.Head != plan.LastTick)
+                    throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                        "The recovery view moved; restart the read."));
+            }
+            var (page, next) = RecoveryPager.TakePage(plan, cursor);
+            var reply = new LoadRecoveryReply
+            {
+                Found = true, RoomId = page.RoomId, Status = page.Status, Epoch = page.Epoch,
+                LastTick = page.LastTick, StateVersion = page.StateVersion,
                 Snapshots =
                 {
-                    plan.Snapshots.Select(snapshot => new RecoverySnapshotProto
+                    page.Snapshots.Select(snapshot => new RecoverySnapshotProto
                     {
                         Tick = snapshot.Tick, SchemaVersion = snapshot.SchemaVersion,
                         Payload = Google.Protobuf.ByteString.CopyFrom(snapshot.Payload),
@@ -181,7 +197,7 @@ public sealed class FrameGrpcService(
                 },
                 Deliveries =
                 {
-                    plan.Deliveries.Select(delivery => new RecoveryDeliveryProto
+                    page.Deliveries.Select(delivery => new RecoveryDeliveryProto
                     {
                         EventId = delivery.EventId, Sequence = delivery.Sequence,
                         BindingId = delivery.BindingId ?? "", PayloadJson = delivery.PayloadJson,
@@ -190,7 +206,7 @@ public sealed class FrameGrpcService(
                 },
                 Frames =
                 {
-                    plan.Frames.Select(frame => new RecoveryFrameProto
+                    page.Frames.Select(frame => new RecoveryFrameProto
                     {
                         Tick = frame.Tick, StateHash = Google.Protobuf.ByteString.CopyFrom(frame.StateHash),
                         ModuleVersion = frame.ModuleVersion, ConfigHash = frame.ConfigHash,
@@ -199,13 +215,16 @@ public sealed class FrameGrpcService(
                 },
                 Participants =
                 {
-                    plan.Participants.Select(participant => new RoundParticipantStateProto
+                    page.Participants.Select(participant => new RoundParticipantStateProto
                     {
                         ParticipantId = participant.ParticipantId, BindingId = participant.BindingId,
                         Role = participant.Role, State = participant.State
                     })
                 }
             };
+            if (next is not null)
+                reply.NextPageToken = Google.Protobuf.ByteString.CopyFrom(RecoveryPager.Encode(next));
+            return reply;
         }
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }

@@ -286,6 +286,12 @@ message LoadRecoveryRequest {
   // the store's normal fallback pair; a recoverer whose whole window failed re-reads with
   // a deeper window on demand instead of declaring the history dead while anchors remain.
   int32 candidate_depth = 3;
+  // Opaque pagination cursor (FIX-READ-05). Empty starts at the head of the plan; the
+  // reply's next_page_token continues exactly past the last row this page carried. Each
+  // page re-reads the plan and is refused if the room head or epoch moved, so pages are
+  // never stitched from two views. A reader cancels by simply not asking for the next
+  // page — no page holds server state.
+  bytes page_token = 4;
 }
 
 message RecoverySnapshotProto {
@@ -323,6 +329,9 @@ message LoadRecoveryReply {
   repeated RecoveryDeliveryProto deliveries = 8;
   repeated RecoveryFrameProto frames = 9;
   repeated RoundParticipantStateProto participants = 10;
+  // Present when more rows follow in the same view; absent on the last page. The head
+  // fields above ride on every page so a reader can verify the view never moved.
+  bytes next_page_token = 11;
 }
 
 service RoundStore {

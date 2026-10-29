@@ -1152,11 +1152,12 @@ public sealed class RedesignM2HostTests
     [Fact]
     public async Task ADeeplyCorruptWindowFallsBackBeyondTheDefaultPair()
     {
-        // FIX-READ-04, the host leg: both anchors of the normal candidate window are
-        // corrupt on disk, and an older anchor still exists below them. The recovery must
-        // deepen the read on demand, replay the whole battle from the tick-0 anchor with
-        // per-frame verification, and finish the round — never park while an untried
-        // anchor remains.
+        // FIX-READ-04, the host leg: every anchor above the admission row is corrupt on
+        // disk. The recovery must deepen the read on demand — past two whole windows —
+        // replay the whole battle from the tick-0 anchor with per-frame verification, and
+        // finish the round, never park while an untried anchor remains. The 400-plus
+        // frame replay also travels as bounded pages (FIX-READ-05): no single reply on
+        // the wire carries the whole plan.
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
         var accessKey = RandomNumberGenerator.GetBytes(32);
@@ -1213,7 +1214,7 @@ public sealed class RedesignM2HostTests
         Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
         {
             RoomId = "room-m2-11", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
-            OperationId = "run-op-11", DurationTicks = 300, RandomSeed = 999, TickMs = 10,
+            OperationId = "run-op-11", DurationTicks = 500, RandomSeed = 999, TickMs = 10,
             Participants =
             {
                 new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
@@ -1221,7 +1222,7 @@ public sealed class RedesignM2HostTests
             }
         })).Status);
         long head = 0;
-        var crashDeadline = DateTime.UtcNow.AddSeconds(40);
+        var crashDeadline = DateTime.UtcNow.AddSeconds(90);
         while (DateTime.UtcNow < crashDeadline)
         {
             await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
@@ -1229,10 +1230,10 @@ public sealed class RedesignM2HostTests
                 await connection.OpenAsync();
                 (_, head) = await FrameStatsAsync(connection, "room-m2-11");
             }
-            if (head >= 240) break;
+            if (head >= 420) break;
             await Task.Delay(100);
         }
-        Assert.InRange(head, 240, 299);
+        Assert.InRange(head, 420, 499);
         environment.Kill("Chorus.GameServer");
         // The head at actual process death is the recovery ground truth. A frame commit
         // already in flight to the DataServer can land after the kill signal, so the head
@@ -1250,7 +1251,7 @@ public sealed class RedesignM2HostTests
             }
             if (!headSettled) await Task.Delay(150);
         }
-        Assert.InRange(head, 240, 299);
+        Assert.InRange(head, 420, 499);
 
         // Both anchors of the normal window are corrupt — one lost its bytes, one lost its
         // hash commitment — while the tick-0 anchor below them stays honest.
@@ -1259,15 +1260,17 @@ public sealed class RedesignM2HostTests
             await connection.OpenAsync();
             await using (var anchors = new NpgsqlCommand(
                 "SELECT count(*) FROM game.snapshot WHERE room_id='room-m2-11'", connection))
-                Assert.Equal(3L, Convert.ToInt64(await anchors.ExecuteScalarAsync()));
+                Assert.Equal(5L, Convert.ToInt64(await anchors.ExecuteScalarAsync()));
+            // Every anchor above the admission row dies, in both corruption shapes — the
+            // fallback has to deepen past two windows before the tick-0 anchor appears.
             await using (var corruptPayload = new NpgsqlCommand("""
                 UPDATE game.snapshot SET payload=convert_to('corrupted','UTF8')
-                WHERE room_id='room-m2-11' AND tick_id=200
+                WHERE room_id='room-m2-11' AND tick_id IN (200,400)
                 """, connection))
                 await corruptPayload.ExecuteNonQueryAsync();
             await using (var corruptHash = new NpgsqlCommand("""
                 UPDATE game.snapshot SET payload_hash=decode('0000000000000000000000000000000000000000000000000000000000000000','hex')
-                WHERE room_id='room-m2-11' AND tick_id=100
+                WHERE room_id='room-m2-11' AND tick_id IN (100,300)
                 """, connection))
                 await corruptHash.ExecuteNonQueryAsync();
         }
@@ -1287,7 +1290,7 @@ public sealed class RedesignM2HostTests
         Assert.Equal(head, fallback.LastTick);
         Assert.Equal((int)head, fallback.ReplayedFrames);
 
-        var finishDeadline = DateTime.UtcNow.AddSeconds(40);
+        var finishDeadline = DateTime.UtcNow.AddSeconds(60);
         string roomStatus = "";
         while (DateTime.UtcNow < finishDeadline)
         {
@@ -1304,8 +1307,8 @@ public sealed class RedesignM2HostTests
         {
             await connection.OpenAsync();
             var (frames, maxTick) = await FrameStatsAsync(connection, "room-m2-11");
-            Assert.Equal(300L, frames);
-            Assert.Equal(300L, maxTick);
+            Assert.Equal(500L, frames);
+            Assert.Equal(500L, maxTick);
             string resultJson;
             await using (var result = new NpgsqlCommand(
                 "SELECT result::text FROM game.result WHERE room_id='room-m2-11'", connection))

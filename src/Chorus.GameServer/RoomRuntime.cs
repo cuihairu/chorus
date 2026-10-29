@@ -315,10 +315,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         LoadRecoveryReply plan;
         while (true)
         {
-            plan = await _frames.LoadRecoveryAsync(new LoadRecoveryRequest
-            {
-                RoomId = request.RoomId, GameId = request.GameId, CandidateDepth = depth
-            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            plan = await LoadWholePlanAsync(request.RoomId, request.GameId, depth, cancellationToken);
             if (!plan.Found)
                 return new RecoverRoomReply
                 {
@@ -497,6 +494,49 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 Note = "No snapshot replays to the head with matching frame hashes; " +
                        "the suspension was refused and the ownership stays Recovering."
             };
+    }
+
+    /// <summary>
+    /// The whole recovery plan of one view, page by page (FIX-READ-05): each reply carries
+    /// a bounded slice — an explicit row and byte limit, never a grown message ceiling —
+    /// and the cursor of the next, with the head fields riding on every page. Assembly
+    /// refuses a page whose head or epoch differs from the first (the server already
+    /// refuses to continue a moved view; this is the client-side check), and a reader
+    /// that stops asking for the next page cancels the read on its own — no page holds
+    /// server state.
+    /// </summary>
+    private async Task<LoadRecoveryReply> LoadWholePlanAsync(string roomId, string gameId,
+        int depth, CancellationToken cancellationToken)
+    {
+        LoadRecoveryReply whole = new();
+        ByteString next = ByteString.Empty;
+        var first = true;
+        do
+        {
+            var page = await _frames.LoadRecoveryAsync(new LoadRecoveryRequest
+            {
+                RoomId = roomId, GameId = gameId, CandidateDepth = depth, PageToken = next
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            if (!page.Found) return page;
+            if (!first && (page.Epoch != whole.Epoch || page.LastTick != whole.LastTick))
+                throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                    "The recovery view moved between pages; restart the read."));
+            if (first)
+            {
+                whole = new LoadRecoveryReply
+                {
+                    Found = true, RoomId = page.RoomId, Status = page.Status, Epoch = page.Epoch,
+                    LastTick = page.LastTick, StateVersion = page.StateVersion
+                };
+                first = false;
+            }
+            whole.Snapshots.AddRange(page.Snapshots);
+            whole.Deliveries.AddRange(page.Deliveries);
+            whole.Frames.AddRange(page.Frames);
+            whole.Participants.AddRange(page.Participants);
+            next = page.NextPageToken;
+        } while (next.Length > 0);
+        return whole;
     }
 
     /// <summary>
