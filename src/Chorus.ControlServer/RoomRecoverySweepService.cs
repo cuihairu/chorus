@@ -50,6 +50,22 @@ public sealed class RoomRecoverySweepService(RedesignControlStore controlStore, 
 
     private async Task SweepOneAsync(RoomRecoveryOperation expired, CancellationToken cancellationToken)
     {
+        // FIX-TAKE-08: a recovery whose reply was lost still converges by the persistent
+        // state. The ownership row is the authority, so an expired operation whose room
+        // already runs Active under exactly its target and epoch is simply recorded
+        // Activated — never reassigned away from a healthy holder, never re-bumped.
+        var ownership = await controlStore.GetOwnershipAsync(
+            expired.TenantId, expired.GameId, "room", expired.RoomId, cancellationToken);
+        if (ownership is { Status: "Active" } && ownership.OwnerInstanceId == expired.ToInstance
+            && ownership.Epoch == expired.TargetEpoch)
+        {
+            await controlStore.CompleteRoomRecoveryAsync(expired.TenantId, expired.GameId, expired.RoomId,
+                recovered: true, lastTick: expired.LastTick, lastError: null, cancellationToken);
+            logger.LogInformation(
+                "Room {RoomId} recovery {OperationId} already converged on {Instance}; recorded Activated",
+                expired.RoomId, expired.OperationId, expired.ToInstance);
+            return;
+        }
         var attempts = await controlStore.CountRoomRecoveryOperationsAsync(
             expired.TenantId, expired.GameId, expired.RoomId, cancellationToken);
         var replacement = directory.GameHostIds
