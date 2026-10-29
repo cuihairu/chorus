@@ -11,7 +11,8 @@ namespace Chorus.Engine.Tests;
 /// Snapshot persistence and recovery reads (architecture 8.2, 10.3): a snapshot row is
 /// visible only whole (a write that dies mid-transaction leaves nothing behind), the store
 /// verifies the payload hash itself, and the recovery plan hands the recoverer the room head,
-/// every snapshot, the delivery log and the frames after the oldest snapshot.
+/// every snapshot, the inputs the loaded frames reference and the frames after the oldest
+/// snapshot.
 /// </summary>
 public sealed class RedesignRecoveryStoreTests
 {
@@ -237,12 +238,59 @@ public sealed class RedesignRecoveryStoreTests
         Assert.Equal(101, plan.Frames[0].Tick);
         Assert.Equal(250, plan.Frames[^1].Tick);
         // The read is measured, not guessed (FIX-READ-02): the row counts and payload bytes
-        // the plan moved are part of its own answer.
+        // the plan moved are part of its own answer. The one consumed input lives at tick 1,
+        // below the loaded span, so the delivery read pays zero for it (FIX-READ-03).
         Assert.NotNull(plan.Reads);
         Assert.Equal(2, plan.Reads!.SnapshotRows);
         Assert.Equal(150, plan.Reads.FrameRows);
-        Assert.Equal(1, plan.Reads.DeliveryRows);
+        Assert.Equal(0, plan.Reads.DeliveryRows);
+        Assert.Empty(plan.Deliveries);
         Assert.True(plan.Reads.PayloadBytes > 0);
+    }
+
+    [Fact]
+    public async Task OnlyTheInputsTheLoadedSpanReferencesRideInThePlan()
+    {
+        // Four consumed inputs and two that no frame ever cites: the delivery history has
+        // both layers FIX-READ-03 must not pay for — inputs consumed below the loaded
+        // candidate, and inputs that were routed but never referenced at all.
+        await using var arrange = await Arrange.RunningRoomWithInboxAsync(
+            "gift-r3-1", "gift-r3-2", "gift-r3-3", "gift-r3-4", "gift-r3-5", "gift-r3-6");
+        var ids = await arrange.PendingEventIds();
+        var store = new RedesignRecoveryStore(arrange.Database.ConnectionString);
+        for (var tick = 1; tick <= 4; tick++)
+        {
+            await arrange.FrameStore.CommitFrameAsync("tenant-a", "game-a", "room-1",
+                new FrameCommit($"commit-r3-{tick}", "gs-1", arrange.Epoch, tick - 1, tick,
+                    [ids[tick - 1]], [(byte)tick, (byte)tick], [], "1.0.0", "cfg-1"));
+            if (tick == 2)
+            {
+                var anchor = new byte[] { 4, 4 };
+                await store.PutSnapshotAsync("tenant-a", "game-a", "room-1", "gs-1",
+                    arrange.Epoch, 2, anchor, SHA256.HashData(anchor), 1, "snap-r3-2");
+            }
+        }
+
+        // The fallback pair loads the whole history: every consumed input is referenced by a
+        // loaded frame, so exactly those four ride along — the two never cited stay unread.
+        var full = await store.LoadRecoveryAsync("tenant-a", "game-a", "room-1");
+        Assert.NotNull(full);
+        Assert.Equal([2L, 0L], full!.Snapshots.Select(snapshot => snapshot.Tick).ToArray());
+        Assert.Equal([1L, 2L, 3L, 4L], full.Frames.Select(frame => frame.Tick).ToArray());
+        Assert.Equal(ids.Take(4), full.Deliveries.Select(delivery => delivery.EventId));
+        Assert.All(full.Deliveries, delivery => Assert.True(delivery.Consumed));
+        Assert.Equal(4, full.Reads!.DeliveryRows);
+
+        // A one-candidate read that walks from the verified tick-2 anchor: its span is ticks
+        // 3-4, so only those two inputs load. The history below the anchor — and the
+        // deliveries beside the span entirely — add nothing to the plan.
+        var bounded = await store.LoadRecoveryAsync("tenant-a", "game-a", "room-1",
+            candidateDepth: 1);
+        Assert.NotNull(bounded);
+        Assert.Equal([2L], bounded!.Snapshots.Select(snapshot => snapshot.Tick).ToArray());
+        Assert.Equal([3L, 4L], bounded.Frames.Select(frame => frame.Tick).ToArray());
+        Assert.Equal(ids.Skip(2).Take(2), bounded.Deliveries.Select(delivery => delivery.EventId));
+        Assert.Equal(2, bounded.Reads!.DeliveryRows);
     }
 
     [Fact]

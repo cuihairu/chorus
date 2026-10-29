@@ -34,8 +34,8 @@ public sealed record RecoveryReadStats(
 /// store-verified full snapshot to the last committed frame: the store re-checks the payload
 /// hash, so a row that is visible is complete and intact — a snapshot written half-way is
 /// never visible. LoadRecovery is the read-only recovery plan: the room head, every snapshot
-/// newest-first, the delivery log in routing order, the frames after the oldest snapshot and
-/// the participation mapping, all in one consistent read.
+/// newest-first, the inputs the loaded frames reference, the frames after the oldest snapshot
+/// and the participation mapping, all in one consistent read.
 /// </summary>
 /// <param name="crashAfterSnapshotInsert">
 /// Fault-injection seam for restart tests: invoked inside the transaction after the snapshot
@@ -180,7 +180,9 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
     /// interval, never by the whole history; a room whose history is shorter than the
     /// candidate window simply loads what exists. Snapshots come newest-first, so a
     /// recoverer can walk any candidate snapshot forward to the head and verify every frame
-    /// hash on the way.
+    /// hash on the way. Deliveries load on demand from those frames (FIX-READ-03): only the
+    /// input ids the loaded span cites are read, so a long delivery history below or beside
+    /// the span adds nothing to the plan.
     /// </summary>
     public async Task<RecoveryPlan?> LoadRecoveryAsync(string tenantId, string gameId, string roomId,
         int candidateDepth = CandidateDepth, CancellationToken cancellationToken = default)
@@ -221,21 +223,6 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
                 snapshots.Add(new RecoverySnapshot(reader.GetInt64(0), reader.GetInt32(1),
                     (byte[])reader[2], (byte[])reader[3], reader.GetBoolean(4)));
         }
-        var deliveries = new List<RecoveryDelivery>();
-        await using (var inbox = new NpgsqlCommand("""
-            SELECT d.event_id,d.sequence,e.binding_id,e.payload::text,d.state
-            FROM input.delivery d JOIN input.event e ON e.event_id=d.event_id
-            WHERE d.consumer_scope=@scope AND d.room_id=@room ORDER BY d.sequence
-            """, connection, view))
-        {
-            inbox.Parameters.AddWithValue("scope", "room:" + roomId);
-            inbox.Parameters.AddWithValue("room", roomId);
-            await using var reader = await inbox.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-                deliveries.Add(new RecoveryDelivery(reader.GetString(0), reader.GetInt64(1),
-                    reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetString(3),
-                    reader.GetString(4) == "Consumed"));
-        }
         var frames = new List<RecoveryFrame>();
         await using (var log = new NpgsqlCommand("""
             SELECT tick_id,input_refs,state_hash,module_version,config_hash FROM game.frame
@@ -252,6 +239,29 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
                     JsonSerializer.Deserialize<List<string>>(reader.GetString(1)) ?? [],
                     (byte[])reader[2], reader.GetString(3), reader.GetString(4)));
         }
+        // Only the inputs the loaded frames actually reference (FIX-READ-03): a delivery
+        // history no frame in the span cites never rides along — the replay resolves its
+        // inputs from the frames it walks, and nothing else reads the log here.
+        var referenced = frames.SelectMany(frame => frame.InputEventIds)
+            .ToHashSet(StringComparer.Ordinal);
+        var deliveries = new List<RecoveryDelivery>();
+        if (referenced.Count > 0)
+            await using (var inbox = new NpgsqlCommand("""
+                SELECT d.event_id,d.sequence,e.binding_id,e.payload::text,d.state
+                FROM input.delivery d JOIN input.event e ON e.event_id=d.event_id
+                WHERE d.consumer_scope=@scope AND d.room_id=@room AND d.event_id=ANY(@events)
+                ORDER BY d.sequence
+                """, connection, view))
+            {
+                inbox.Parameters.AddWithValue("scope", "room:" + roomId);
+                inbox.Parameters.AddWithValue("room", roomId);
+                inbox.Parameters.AddWithValue("events", referenced.ToArray());
+                await using var reader = await inbox.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                    deliveries.Add(new RecoveryDelivery(reader.GetString(0), reader.GetInt64(1),
+                        reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetString(3),
+                        reader.GetString(4) == "Consumed"));
+            }
         var participants = new List<RoundParticipantState>();
         await using (var mounts = new NpgsqlCommand("""
             SELECT participant_id,binding_id,role,state FROM game.participation
