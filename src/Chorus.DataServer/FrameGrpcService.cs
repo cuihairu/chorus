@@ -120,6 +120,39 @@ public sealed class FrameGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    public override async Task<SnapshotReceiptReply> PutRecoverySnapshot(PutRecoverySnapshotRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "game-server");
+        try
+        {
+            var receipt = await recoveryStore.PutRecoverySnapshotAsync(caller.TenantId, request.GameId,
+                request.RoomId, request.OwnerInstanceId, request.Epoch, request.Tick,
+                request.SnapshotPayload.ToByteArray(), request.SnapshotHash.ToByteArray(),
+                request.SnapshotSchemaVersion, request.OperationId, context.CancellationToken);
+            return new SnapshotReceiptReply
+            {
+                RoomId = receipt.RoomId, Tick = receipt.Tick,
+                SnapshotSchemaVersion = receipt.SchemaVersion, Verified = receipt.Verified,
+                Duplicate = receipt.Duplicate
+            };
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The recovery snapshot fence rejected the caller."));
+        }
+        catch (FrameConflictException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different snapshot."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
     public override async Task<LoadRecoveryReply> LoadRecovery(LoadRecoveryRequest request,
         ServerCallContext context)
     {

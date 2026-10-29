@@ -236,6 +236,21 @@ message PutSnapshotRequest {
   string operation_id = 9;
 }
 
+// The Recovering-state twin of PutSnapshotRequest (contracts 6.2.1): same payload, but the
+// fence admits exactly the takeover-named owner at the bumped epoch while the room ownership
+// is Recovering — a normal frame or snapshot write still refuses.
+message PutRecoverySnapshotRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  int64 tick = 5;
+  bytes snapshot_payload = 6;
+  bytes snapshot_hash = 7;
+  int32 snapshot_schema_version = 8;
+  string operation_id = 9;
+}
+
 message SnapshotReceiptReply {
   string room_id = 1;
   int64 tick = 2;
@@ -331,6 +346,10 @@ service FrameStore {
   // Recovery boundary: the owner persists store-verified snapshots; the owner and the
   // control plane read the recovery plan (architecture 8.2, 10.3).
   rpc PutSnapshot(PutSnapshotRequest) returns (SnapshotReceiptReply);
+  // The Recovering-only snapshot entry (contracts 6.2.1): the takeover-named owner pins a
+  // verified snapshot at the recovery head while the frame fence stays closed; activation
+  // is a separate fenced confirm.
+  rpc PutRecoverySnapshot(PutRecoverySnapshotRequest) returns (SnapshotReceiptReply);
   rpc LoadRecovery(LoadRecoveryRequest) returns (LoadRecoveryReply);
 }
 

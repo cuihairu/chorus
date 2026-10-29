@@ -71,12 +71,49 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
         return result with { Duplicate = receipt.Duplicate };
     }
 
+    /// <summary>
+    /// The Recovering-only snapshot entry (contracts 6.2.1): the takeover-named owner pins a
+    /// store-verified snapshot at the recovery head while the ownership is Recovering. The
+    /// fence admits exactly that owner at the bumped epoch with a live lease — the old owner,
+    /// a wrong epoch and every normal frame or snapshot write stay out. The write never
+    /// activates the room: Recovering becomes Active only through the fenced confirm.
+    /// Idempotent per (room, operation).
+    /// </summary>
+    public async Task<SnapshotReceipt> PutRecoverySnapshotAsync(string tenantId, string gameId,
+        string roomId, string ownerInstanceId, long epoch, long tick, byte[] payload, byte[] payloadHash,
+        int schemaVersion, string operationId, CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
+        Require(ownerInstanceId, nameof(ownerInstanceId)); Require(operationId, nameof(operationId));
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(payloadHash);
+        if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
+        if (schemaVersion <= 0) throw new ArgumentOutOfRangeException(nameof(schemaVersion));
+        if (!payloadHash.AsSpan().SequenceEqual(SHA256.HashData(payload)))
+            throw new ArgumentException("The snapshot hash does not match its payload.");
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1, JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            RoomId = roomId, Tick = tick, Hash = payloadHash, SchemaVersion = schemaVersion
+        }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "snapshot.recovery", roomId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplyPutAsync(tenantId, gameId, roomId, ownerInstanceId,
+                epoch, tick, payload, payloadHash, schemaVersion, connection, transaction, token,
+                requiredOwnershipStatus: "Recovering"),
+            cancellationToken);
+        var result = JsonSerializer.Deserialize<SnapshotReceipt>(receipt.ResultJson)
+            ?? throw new InvalidOperationException("The stored snapshot receipt is unreadable.");
+        return result with { Duplicate = receipt.Duplicate };
+    }
+
     private async Task<string> ApplyPutAsync(string tenantId, string gameId, string roomId,
         string ownerInstanceId, long epoch, long tick, byte[] payload, byte[] payloadHash, int schemaVersion,
-        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken,
+        string requiredOwnershipStatus = "Active")
     {
         await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
-            connection, transaction, cancellationToken);
+            connection, transaction, cancellationToken, requiredOwnershipStatus);
         await using (var room = new NpgsqlCommand("""
             SELECT status,last_tick FROM game.room
             WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game FOR UPDATE
@@ -202,7 +239,7 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
 
     private static async Task LockRoomOwnershipAsync(string tenantId, string gameId, string roomId,
         string ownerInstanceId, long epoch, NpgsqlConnection connection, NpgsqlTransaction transaction,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string requiredOwnershipStatus = "Active")
     {
         await using var ownership = new NpgsqlCommand("""
             SELECT tenant_id,game_id,owner_process_instance_id,epoch,lease_until>clock_timestamp(),status
@@ -212,7 +249,8 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
         await using var reader = await ownership.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken) || reader.GetString(0) != tenantId ||
             reader.GetString(1) != gameId || reader.GetString(2) != ownerInstanceId ||
-            reader.GetInt64(3) != epoch || !reader.GetBoolean(4) || reader.GetString(5) != "Active")
+            reader.GetInt64(3) != epoch || !reader.GetBoolean(4) ||
+            reader.GetString(5) != requiredOwnershipStatus)
             throw new RedesignStaleOwnerException();
     }
 

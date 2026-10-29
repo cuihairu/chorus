@@ -151,6 +151,99 @@ public sealed class RedesignRecoveryStoreTests
         Assert.Null(await store.LoadRecoveryAsync("tenant-a", "game-a", "room-none"));
     }
 
+    [Fact]
+    public async Task ARecoveringOwnerPinsTheRecoveryHeadWhileEveryNormalWriteStaysFencedOut()
+    {
+        await using var arrange = await Arrange.RunningRoomWithInboxAsync("gift-1");
+        var ids = await arrange.PendingEventIds();
+        await arrange.FrameStore.CommitFrameAsync("tenant-a", "game-a", "room-1",
+            new FrameCommit("commit-take-2-1", "gs-1", arrange.Epoch, 0, 1, [ids[0]], [9, 9, 9], [],
+                "1.0.0", "cfg-1"));
+        var store = new RedesignRecoveryStore(arrange.Database.ConnectionString);
+        var takeover = await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-1", "gs-2", 15);
+        Assert.Equal("Recovering", takeover.Status);
+
+        var payload = new byte[] { 3, 1, 4 };
+        var hash = SHA256.HashData(payload);
+        // The frame fence stays closed for everyone while Recovering — the new owner included.
+        await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => arrange.FrameStore.CommitFrameAsync(
+            "tenant-a", "game-a", "room-1",
+            new FrameCommit("commit-take-2-2", "gs-2", takeover.Epoch, 1, 2, [], [8, 8, 8], [],
+                "1.0.0", "cfg-1")));
+        await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => store.PutSnapshotAsync(
+            "tenant-a", "game-a", "room-1", "gs-2", takeover.Epoch, 1, payload, hash, 1, "snap-take-2"));
+
+        // The takeover-named owner pins the verified recovery head; the pin never activates.
+        var pinned = await store.PutRecoverySnapshotAsync("tenant-a", "game-a", "room-1", "gs-2",
+            takeover.Epoch, 1, payload, hash, 1, "recovery-take-2");
+        Assert.False(pinned.Duplicate);
+        Assert.True(pinned.Verified);
+        Assert.Equal(1, pinned.Tick);
+        var replay = await store.PutRecoverySnapshotAsync("tenant-a", "game-a", "room-1", "gs-2",
+            takeover.Epoch, 1, payload, hash, 1, "recovery-take-2");
+        Assert.True(replay.Duplicate);
+
+        // The old owner, a wrong epoch and a non-head tick are all refused.
+        await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => store.PutRecoverySnapshotAsync(
+            "tenant-a", "game-a", "room-1", "gs-1", takeover.Epoch, 1, payload, hash, 1, "recovery-take-2b"));
+        await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => store.PutRecoverySnapshotAsync(
+            "tenant-a", "game-a", "room-1", "gs-2", takeover.Epoch + 1, 1, payload, hash, 1, "recovery-take-2c"));
+        await Assert.ThrowsAsync<FrameConflictException>(() => store.PutRecoverySnapshotAsync(
+            "tenant-a", "game-a", "room-1", "gs-2", takeover.Epoch, 0, payload, hash, 1, "recovery-take-2d"));
+
+        var plan = await store.LoadRecoveryAsync("tenant-a", "game-a", "room-1");
+        Assert.NotNull(plan);
+        Assert.Equal(takeover.Epoch, plan!.Epoch);
+        Assert.Equal("Running", plan.Status); // the battle state, not an activation claim
+        Assert.Contains(plan.Snapshots, snapshot => snapshot.Tick == 1 && snapshot.Verified);
+        await using (var connection = new NpgsqlConnection(arrange.Database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var ownership = new NpgsqlCommand(
+                "SELECT status FROM control.ownership WHERE kind='room' AND entity_id='room-1'", connection);
+            Assert.Equal("Recovering", Convert.ToString(await ownership.ExecuteScalarAsync()));
+        }
+    }
+
+    [Fact]
+    public async Task TheRecoverySnapshotEntryClosesOnceTheOwnershipIsActiveAgain()
+    {
+        await using var arrange = await Arrange.RunningRoomWithInboxAsync("gift-1");
+        var ids = await arrange.PendingEventIds();
+        await arrange.FrameStore.CommitFrameAsync("tenant-a", "game-a", "room-1",
+            new FrameCommit("commit-take-2-e", "gs-1", arrange.Epoch, 0, 1, [ids[0]], [9, 9, 9], [],
+                "1.0.0", "cfg-1"));
+        var store = new RedesignRecoveryStore(arrange.Database.ConnectionString);
+        var payload = new byte[] { 5, 9 };
+        var hash = SHA256.HashData(payload);
+
+        // An Active room never sees the recovery entry: the normal PutSnapshot is its path.
+        await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => store.PutRecoverySnapshotAsync(
+            "tenant-a", "game-a", "room-1", "gs-1", arrange.Epoch, 1, payload, hash, 1, "recovery-take-2e"));
+
+        var takeover = await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-1", "gs-2", 15);
+        Assert.True((await store.PutRecoverySnapshotAsync("tenant-a", "game-a", "room-1", "gs-2",
+            takeover.Epoch, 1, payload, hash, 1, "recovery-take-2f")).Verified);
+        var confirmed = await arrange.RoomStore.ConfirmRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-2");
+        Assert.Equal("Active", confirmed.Status);
+
+        // After the fenced confirm the recovery entry closes again…
+        await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => store.PutRecoverySnapshotAsync(
+            "tenant-a", "game-a", "room-1", "gs-2", takeover.Epoch, 1, payload, hash, 1, "recovery-take-2g"));
+        // …while an exact replay of the original recovery operation still reads its receipt,
+        // and the frame fence reopened only through the confirm: the new owner commits.
+        var replay = await store.PutRecoverySnapshotAsync("tenant-a", "game-a", "room-1", "gs-2",
+            takeover.Epoch, 1, payload, hash, 1, "recovery-take-2f");
+        Assert.True(replay.Duplicate);
+        var resumed = await arrange.FrameStore.CommitFrameAsync("tenant-a", "game-a", "room-1",
+            new FrameCommit("commit-take-2-h", "gs-2", takeover.Epoch, 1, 2, [], [7, 7, 7], [],
+                "1.0.0", "cfg-1"));
+        Assert.Equal(2, resumed.Tick);
+    }
+
     /// <summary>Test arrange: an admitted, activated room with routed, pending inputs.</summary>
     private sealed class Arrange : IAsyncDisposable
     {
