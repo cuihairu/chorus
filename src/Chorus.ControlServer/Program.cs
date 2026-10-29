@@ -53,6 +53,9 @@ builder.Services.AddHostedService<OwnershipRenewalService>();
 // The recovery-deadline sweep (FIX-TAKE-05): closes expired open recoveries — reassigning
 // to a different host under a newer epoch, or parking them for an operator.
 builder.Services.AddHostedService<RoomRecoverySweepService>();
+// The stall governor (FIX-TAKE-07): acts on rooms whose head froze while their host's
+// heartbeat stayed fresh — migrating silent stalls, parking deterministic module faults.
+builder.Services.AddHostedService<RoomStallGovernanceService>();
 // The match coordinator hosts inside the control plane (ADR-R02) once game endpoints are
 // configured; without them this is a plain control plane, matching nothing.
 if (gameEndpoints is { Length: > 0 })

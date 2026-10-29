@@ -109,7 +109,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
                 GameId = request.GameId, SnapshotPayload = ByteString.CopyFrom(payload),
                 SnapshotHash = ByteString.CopyFrom(hash), SnapshotSchemaVersion = initial.SchemaVersion,
-                OperationId = request.OperationId + "/prepare"
+                OperationId = request.OperationId + "/prepare", TickMs = request.TickMs
             }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
             await _rounds.ActivateRoundAsync(new ActivateRoundRequest
             {
@@ -118,7 +118,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
 
             var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
-                request.OwnerInstanceId, request.Epoch, configHash, initial, bindings);
+                request.OwnerInstanceId, request.Epoch, configHash, initial, bindings,
+                hangAfterTick: request.HangAfterTick, hangMs: request.HangMs);
             actor.LoopEnded = Retire;
             if (!_actors.TryAdd(request.RoomId, actor))
             {

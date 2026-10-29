@@ -129,8 +129,10 @@ public sealed class RedesignRoomProgressUnitTests
                 connection);
             Assert.Equal(1, await staleHeartbeat.ExecuteNonQueryAsync());
             await using var room = new NpgsqlCommand("""
-                INSERT INTO game.room(room_id,tenant_id,game_id,status,epoch,package_hash,module_version,config_hash)
-                VALUES ('room-paused','tenant-a','game-a','Suspended',1,'pkg','1.0.0','cfg')
+                INSERT INTO game.room(room_id,tenant_id,game_id,status,epoch,package_hash,module_version,config_hash,tick_ms)
+                VALUES ('room-paused','tenant-a','game-a','Suspended',1,'pkg','1.0.0','cfg',25),
+                       ('room-frozen','tenant-a','game-a','Running',1,'pkg','1.0.0','cfg',25),
+                       ('room-stopped','tenant-a','game-a','Running',1,'pkg','1.0.0','cfg',40)
                 """, connection);
             await room.ExecuteNonQueryAsync();
         }
@@ -142,8 +144,13 @@ public sealed class RedesignRoomProgressUnitTests
         Assert.Equal("game-1", frozen.ProcessInstanceId);
         Assert.Equal("Running", frozen.State);
         Assert.Null(frozen.StopReason);
+        // The identity facts governance needs ride along, so it acts without a second read.
+        Assert.Equal("tenant-a", frozen.TenantId);
+        Assert.Equal("game-a", frozen.GameId);
+        Assert.Equal(25, frozen.TickMs);
         var stopped = stalled.Single(room => room.RoomId == "room-stopped");
         Assert.Contains("boom", stopped.StopReason);
+        Assert.Equal(40, stopped.TickMs);
     }
 
     private sealed record ProgressRow(DateTime ProgressAt, DateTime ReportedAt,

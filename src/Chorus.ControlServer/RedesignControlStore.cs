@@ -281,9 +281,11 @@ public sealed class RedesignControlStore(string connectionString)
     public sealed record RoomProgressEntry(string RoomId, long Epoch, string State, long LastTick,
         long? LastCommittedUnixMs, string? StopReason);
 
-    /// <summary>One stalled room as the stall query names it (FIX-TAKE-06).</summary>
-    public sealed record StalledRoom(string ProcessInstanceId, string RoomId, long Epoch,
-        string State, long LastTick, string? StopReason);
+    /// <summary>One stalled room as the stall query names it (FIX-TAKE-06). The tenant, game
+    /// and prepared tick cadence ride along so governance can act without a second read
+    /// (FIX-TAKE-07); they are null only when the room's own row is already gone.</summary>
+    public sealed record StalledRoom(string ProcessInstanceId, string? TenantId, string? GameId,
+        string RoomId, long Epoch, string State, long LastTick, int TickMs, string? StopReason);
 
     /// <summary>
     /// Records one report's per-room progress (FIX-TAKE-06), in one transaction with the
@@ -355,7 +357,8 @@ public sealed class RedesignControlStore(string connectionString)
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
-            SELECT r.process_instance_id, r.room_id, r.epoch, r.state, r.last_tick, r.stop_reason
+            SELECT r.process_instance_id, g.tenant_id, g.game_id, r.room_id, r.epoch, r.state,
+                r.last_tick, g.tick_ms, r.stop_reason
             FROM control.room_progress r
             JOIN control.process p ON p.process_instance_id = r.process_instance_id
             LEFT JOIN game.room g ON g.room_id = r.room_id
@@ -373,9 +376,12 @@ public sealed class RedesignControlStore(string connectionString)
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var stalled = new List<StalledRoom>();
         while (await reader.ReadAsync(cancellationToken))
-            stalled.Add(new StalledRoom(reader.GetString(0), reader.GetString(1), reader.GetInt64(2),
-                reader.GetString(3), reader.GetInt64(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5)));
+            stalled.Add(new StalledRoom(reader.GetString(0),
+                await reader.IsDBNullAsync(1, cancellationToken) ? null : reader.GetString(1),
+                await reader.IsDBNullAsync(2, cancellationToken) ? null : reader.GetString(2),
+                reader.GetString(3), reader.GetInt64(4), reader.GetString(5), reader.GetInt64(6),
+                await reader.IsDBNullAsync(7, cancellationToken) ? 0 : reader.GetInt32(7),
+                await reader.IsDBNullAsync(8, cancellationToken) ? null : reader.GetString(8)));
         return stalled;
     }
 

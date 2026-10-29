@@ -81,6 +81,11 @@ internal sealed class RoomActor : IAsyncDisposable
     private RoomRunState _runState = RoomRunState.Running;
     private string? _stopReason;
     private DateTimeOffset? _lastCommittedAt;
+    // FIX-TAKE-07 test seam: the frozen-Running producer. Only the actor a prepare built
+    // with the seam hangs — the actor a takeover recovers never carries it, so a migrated
+    // room resumes from the pinned head instead of freezing again.
+    private readonly int _hangAfterTick;
+    private readonly int _hangMs;
     private volatile bool _stopped;
     private volatile bool _finalCommitted;
     // Set under the publish gate when the loop exits: Subscribe must never register
@@ -90,7 +95,7 @@ internal sealed class RoomActor : IAsyncDisposable
     public RoomActor(IRoomLifecycle runtime, FrameStore.FrameStoreClient frames, ExampleGameModule module,
         string gameId, string roomId, string ownerInstanceId, long epoch, string configHash,
         ExampleGameState initialState, IReadOnlyDictionary<string, string> participantByBinding,
-        long lastTick = 0, long stateVersion = 1)
+        long lastTick = 0, long stateVersion = 1, int hangAfterTick = 0, int hangMs = 0)
     {
         _runtime = runtime;
         _frames = frames;
@@ -106,6 +111,8 @@ internal sealed class RoomActor : IAsyncDisposable
         // room resumes from the head its frames already committed.
         _lastTick = lastTick;
         _stateVersion = stateVersion;
+        _hangAfterTick = hangAfterTick;
+        _hangMs = hangMs;
     }
 
     public void Start() => _run = Task.Run(() => RunAsync(_cancellation.Token));
@@ -200,6 +207,15 @@ internal sealed class RoomActor : IAsyncDisposable
                     inputs.Add(new NormalizedInput(participant, item.PayloadJson));
 
             var tick = _lastTick + 1;
+            // The seam freezes the loop before the tick is applied or committed: the head
+            // stays pinned while the process keeps reporting — exactly the stalled-room
+            // evidence the control plane's governance acts on (FIX-TAKE-07).
+            if (_hangAfterTick > 0 && tick >= _hangAfterTick && _hangMs > 0)
+            {
+                var hangUntil = Environment.TickCount64 + _hangMs;
+                while (Environment.TickCount64 < hangUntil && !_cancellation.IsCancellationRequested)
+                    Thread.Sleep(50);
+            }
             TickOutcome outcome;
             try
             {

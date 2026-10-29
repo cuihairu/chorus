@@ -434,6 +434,9 @@ message PrepareRoundRequest {
   bytes snapshot_hash = 6;
   int32 snapshot_schema_version = 7;
   string operation_id = 8;
+  // The room's tick cadence, persisted with the room so a stall governor can recover it
+  // on another host without guessing (FIX-TAKE-07).
+  int32 tick_ms = 9;
 }
 
 message ActivateRoundRequest {
@@ -471,6 +474,12 @@ message PrepareRoomRequest {
   int32 fail_after_tick = 8;
   int32 tick_ms = 9;
   repeated GameParticipantProto participants = 10;
+  // FIX-TAKE-07 test seam: when set, this prepare's actor freezes deterministically at
+  // this tick for hang_ms while the process keeps reporting — the frozen-Running signal
+  // the stall governor acts on. Recovery never carries the seam: the actor a takeover
+  // builds resumes from the pinned head without hanging.
+  int32 hang_after_tick = 11;
+  int32 hang_ms = 12;
 }
 
 message PrepareRoomReply {

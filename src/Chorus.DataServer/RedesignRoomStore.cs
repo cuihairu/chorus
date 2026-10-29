@@ -381,7 +381,7 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
     /// </summary>
     public async Task<RoundAdmission> PrepareRoundAsync(string tenantId, string gameId, string roomId,
         string ownerInstanceId, long epoch, byte[] snapshotPayload, byte[] snapshotHash, int schemaVersion,
-        string operationId, CancellationToken cancellationToken = default)
+        string operationId, int tickMs = 50, CancellationToken cancellationToken = default)
     {
         Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
         Require(ownerInstanceId, nameof(ownerInstanceId)); Require(operationId, nameof(operationId));
@@ -397,7 +397,7 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
             new OperationIdentity(tenantId, gameId, "round.prepare", roomId, operationId),
             fingerprint,
             (connection, transaction, token) => ApplyPrepareAsync(tenantId, gameId, roomId, ownerInstanceId,
-                epoch, snapshotPayload, snapshotHash, schemaVersion, connection, transaction, token),
+                epoch, snapshotPayload, snapshotHash, schemaVersion, tickMs, connection, transaction, token),
             cancellationToken);
         var result = JsonSerializer.Deserialize<RoundAdmission>(receipt.ResultJson)
             ?? throw new InvalidOperationException("The stored prepare receipt is unreadable.");
@@ -406,7 +406,7 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
 
     private async Task<string> ApplyPrepareAsync(string tenantId, string gameId, string roomId,
         string ownerInstanceId, long epoch, byte[] snapshotPayload, byte[] snapshotHash, int schemaVersion,
-        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+        int tickMs, NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
         var ownershipEpoch = await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
             connection, transaction, cancellationToken);
@@ -433,6 +433,18 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
             snapshot.Parameters.AddWithValue("payload", snapshotPayload);
             snapshot.Parameters.AddWithValue("hash", snapshotHash);
             await snapshot.ExecuteNonQueryAsync(cancellationToken);
+        }
+        // The prepared cadence is a room fact the stall governor needs at recovery time
+        // (FIX-TAKE-07): the host that pins the initial state also pins the tick cadence.
+        await using (var cadence = new NpgsqlCommand(
+            "UPDATE game.room SET tick_ms=@tickms WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game",
+            connection, transaction))
+        {
+            cadence.Parameters.AddWithValue("tickms", tickMs);
+            cadence.Parameters.AddWithValue("room", roomId);
+            cadence.Parameters.AddWithValue("tenant", tenantId);
+            cadence.Parameters.AddWithValue("game", gameId);
+            await cadence.ExecuteNonQueryAsync(cancellationToken);
         }
         return JsonSerializer.Serialize(
             new RoundAdmission(roomId, 0, Preparing, ownershipEpoch, Duplicate: false));
