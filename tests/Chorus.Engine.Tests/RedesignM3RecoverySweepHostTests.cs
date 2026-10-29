@@ -216,10 +216,12 @@ public sealed class RedesignM3RecoverySweepHostTests
             Assert.Equal("Activated", Convert.ToString(await operation.ExecuteScalarAsync()));
         }
 
-        // A carries the room to its end on its own.
+        // A carries the room to its end on its own. The window is generous: in the full
+        // suite many host tests run in parallel and a recovered room re-commits its whole
+        // remaining schedule, so pacing assertions here measure convergence, not latency.
         var finished = await WaitForAsync(async () =>
             (await rounds.GetRoundAsync(new GetRoundRequest { RoomId = roomId, GameId = "game-a" })).Status
-                != "Running", TimeSpan.FromSeconds(30));
+                != "Running", TimeSpan.FromSeconds(90));
         Assert.True(finished, "The reassigned host did not finish the room.");
     }
 
