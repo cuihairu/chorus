@@ -88,7 +88,9 @@
 - [x] **FIX-READ-02：先读取最新候选快照。** 依赖：FIX-READ-01。交付：正常路径只读有限候选及候选到 head 的帧，不从最老快照起全量扫描。验收：构造长局后，返回的帧数量受快照间隔约束；明确记录查询行数/返回字节数。
   - 完成：0d0c9d2（LoadRecoveryAsync 快照查询改 ORDER BY tick_id DESC LIMIT CandidateDepth（=2，回退对——与 retention 为结算局保留的两锚点同一对），帧起点从全局最老快照改为最老已载候选+1；候选深度为参数（READ-04 按需回退将复用）；保持 READ-01 的 REPEATABLE READ 视图不变。RecoveryPlan 增 Reads（RecoveryReadStats：快照/帧/投递行数 + payload 字节），读取代价随计划自答）。
   - 验证：新测 ALongRoundReadsOnlyTheBoundedCandidatesAndTheirFrameSpan——250 tick 长局、锚点 0/100/200：载入恰 [200,100] 两候选（tick-0 不读），帧恰 101..250 共 150 张受快照间隔约束，Reads 记 2/150/1 行与字节数；RedesignRecoveryStoreTests 6/6 绿；回归 M2HostTests（含损坏最新快照回退 tick-0 全程重放用例）+FrameFault+Sweep 14/14 绿；残留干净。
-- [ ] **FIX-READ-03：按需读取重放输入。** 依赖：FIX-READ-02。交付：仅加载选定帧引用的输入及必要参与关系。验收：大量历史 delivery 不增加本次无关输入载荷；重放状态哈希与原执行相同。
+- [x] **FIX-READ-03：按需读取重放输入。** 依赖：FIX-READ-02。交付：仅加载选定帧引用的输入及必要参与关系。验收：大量历史 delivery 不增加本次无关输入载荷；重放状态哈希与原执行相同。
+  - 完成：eb3ef1c（LoadRecoveryAsync 的 delivery 读取从"全量 routing 序"改为按需：帧加载后收集已加载帧 InputEventIds 的并集，`event_id = ANY(@events)` 只取被引用行（无引用则整条查询跳过），仍同一 REPEATABLE READ 视图内、按 sequence 排序。参与关系本就独立查询不受影响；RoomRuntime 对 plan.Deliveries 的唯一消费是重放时按帧引用解析事件载荷（已亲核），故只载被引用事件安全。新测试 OnlyTheInputsTheLoadedSpanReferencesRideInThePlan：6 条 delivery——4 条被帧消费（其中 2 条位于深度 1 候选锚之下）+2 条从未被引用，深度 2 全量读恰载被引用 4 条（DeliveryRows=4），深度 1 读仅载跨度内 2 条（DeliveryRows=2），锚下已消费与未引用历史均为 0 载荷。READ-02 测试同步更新：其被消费输入位于 tick 1（加载跨度 101..250 之下），DeliveryRows 由 1 改 0——有界跨度不再为跨下输入付载荷，恰为本项效果）。
+  - 验证：RedesignRecoveryStoreTests 7/7 绿；真栈重放等价——M2HostTests.CorruptSnapshotsFallBackToTheAnchorOrSuspendVisibly 绿（锚点回退重放至 200 tick 出结果，重放哈希链与原执行一致）；接管回归 M3RecoverySweep/M3TakeoverKill/M3DoubleTakeover 5/5 绿；残留检查干净（宿主进程 0、chorus_m% 库 0）。
 - [ ] **FIX-READ-04：逐级回退损坏快照。** 依赖：FIX-READ-02、FIX-READ-03。交付：候选失败后按需请求更早快照及增量材料。验收：最新损坏可回退、全部损坏明确 RecoveryFailed；不能跳过缺帧或把未验证材料标为成功。
 - [ ] **FIX-READ-05：限制单次恢复传输大小。** 依赖：FIX-READ-01、FIX-READ-02、FIX-READ-03。交付：分页或流式恢复契约，规定字节/条数上限和可取消行为。验收：超过一页的恢复完整成功且无重复/遗漏；取消后释放资源；不依赖无限增大 gRPC 消息上限。
 - [ ] **FIX-READ-06：验证清理与恢复并发。** 依赖：FIX-READ-04、FIX-READ-05。交付：恢复读取与 Retention 并发测试。验收：固定恢复链不会中途被剪断；若材料不可用则明确重启恢复，不发布部分恢复状态（AT19/21）。
