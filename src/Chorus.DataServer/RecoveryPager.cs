@@ -4,9 +4,11 @@ namespace Chorus.DataServer;
 
 /// <summary>The opaque continuation cursor of one recovery page (FIX-READ-05): where the
 /// page stopped (stage and index into the plan's material lists) and the view it was cut
-/// from (candidate depth, epoch, head tick) — a later page refuses to continue a read
-/// whose view moved, so pages are never stitched across two heads.</summary>
-public sealed record RecoveryPageToken(int Depth, long Epoch, long Head, int Stage, int Index);
+/// from (candidate depth, epoch, head tick, total material rows) — a later page refuses to
+/// continue a read whose view moved, so pages are never stitched across two heads or across
+/// a plan that shrank (FIX-READ-06: retention released material between pages).</summary>
+public sealed record RecoveryPageToken(
+    int Depth, long Epoch, long Head, int Stage, int Index, int TotalRows);
 
 /// <summary>
 /// Slices a recovery plan into bounded pages (architecture 10.3, FIX-READ-05). The wire
@@ -38,7 +40,7 @@ public static class RecoveryPager
     public static byte[] Encode(RecoveryPageToken token) => JsonSerializer.SerializeToUtf8Bytes(new
     {
         depth = token.Depth, epoch = token.Epoch, head = token.Head,
-        stage = token.Stage, index = token.Index
+        stage = token.Stage, index = token.Index, rows = token.TotalRows
     });
 
     /// <summary>Decodes a cursor, or null when the bytes are not one of ours.</summary>
@@ -52,7 +54,8 @@ public static class RecoveryPager
                 document.GetProperty("epoch").GetInt64(),
                 document.GetProperty("head").GetInt64(),
                 document.GetProperty("stage").GetInt32(),
-                document.GetProperty("index").GetInt32());
+                document.GetProperty("index").GetInt32(),
+                document.GetProperty("rows").GetInt32());
         }
         catch (JsonException)
         {
@@ -67,8 +70,8 @@ public static class RecoveryPager
     /// <summary>
     /// One page of the plan from the cursor on: the head fields with the sliced material
     /// and the cursor the next page starts at — null when this page reached the end.
-    /// The cursor must come from this plan's view (same depth, epoch and head); the
-    /// caller enforces that against a fresh read before slicing.
+    /// The cursor must come from this plan's view (same depth, epoch, head and row count);
+    /// the caller enforces that against a fresh read before slicing.
     /// </summary>
     public static (RecoveryPlan Page, RecoveryPageToken? Next) TakePage(RecoveryPlan plan,
         RecoveryPageToken cursor)
@@ -141,7 +144,27 @@ public static class RecoveryPager
             Participants = participants, Reads = null
         };
         RecoveryPageToken? next = exhausted ? null : new RecoveryPageToken(
-            cursor.Depth, cursor.Epoch, cursor.Head, stage, index);
+            cursor.Depth, cursor.Epoch, cursor.Head, stage, index, cursor.TotalRows);
         return (page, next);
     }
+
+    /// <summary>The material rows of one plan's view, all four lists counted (FIX-READ-06).
+    /// With the READ-03 referenced-input reads, the row count is a pure function of the
+    /// view (depth, epoch, head): same triple, same material, same count.</summary>
+    public static int TotalRows(RecoveryPlan plan)
+        => plan.Snapshots.Count + plan.Frames.Count + plan.Deliveries.Count + plan.Participants.Count;
+
+    /// <summary>
+    /// True when a continuation cursor no longer describes the plan in hand for the depth
+    /// the read requested. Epoch and head alone cannot catch every move: retention releases
+    /// the frame prefix below a settled round's anchor without moving either (FIX-READ-06),
+    /// so the row count rides along. Any mismatch means the plan was cut since the cursor
+    /// was minted — the caller must refuse the page and restart the read visibly instead of
+    /// stitching a silent gap.
+    /// </summary>
+    public static bool ViewMoved(RecoveryPageToken cursor, RecoveryPlan plan, int depth)
+        => cursor.Depth != depth
+            || cursor.Epoch != plan.Epoch
+            || cursor.Head != plan.LastTick
+            || cursor.TotalRows != TotalRows(plan);
 }

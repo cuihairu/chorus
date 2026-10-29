@@ -11,7 +11,9 @@ namespace Chorus.Engine.Tests;
 /// most RowLimit rows or ByteLimit payload bytes, whichever fills first, and always at
 /// least one row so the read advances. A cursor replays its page identically (retry
 /// safety), the last page carries no token, and nothing but the token is held between
-/// requests: cancelling is simply not asking again.
+/// requests: cancelling is simply not asking again. FIX-READ-06: the cursor also carries
+/// the view's row count, so a plan that shrank between pages (retention released
+/// material) refuses to continue instead of stitching a silent gap.
 /// </summary>
 public sealed class RedesignRecoveryPagingUnitTests
 {
@@ -23,7 +25,8 @@ public sealed class RedesignRecoveryPagingUnitTests
     public void AssemblingEveryPageReproducesTheWholePlanWithoutDuplicatesOrGaps()
     {
         var plan = BigPlan();
-        var cursor = new RecoveryPageToken(2, plan.Epoch, plan.LastTick, 0, 0);
+        var cursor = new RecoveryPageToken(2, plan.Epoch, plan.LastTick, 0, 0,
+            RecoveryPager.TotalRows(plan));
 
         var snapshots = new List<RecoverySnapshot>();
         var frames = new List<RecoveryFrame>();
@@ -71,7 +74,8 @@ public sealed class RedesignRecoveryPagingUnitTests
     public void ACursorReplaysItsPageAndTheLastPageCarriesNoToken()
     {
         var plan = BigPlan();
-        var start = new RecoveryPageToken(4, plan.Epoch, plan.LastTick, 0, 0);
+        var start = new RecoveryPageToken(4, plan.Epoch, plan.LastTick, 0, 0,
+            RecoveryPager.TotalRows(plan));
         var (first, next) = RecoveryPager.TakePage(plan, start);
         Assert.NotNull(next);
         // The same cursor answers the same page — a retried request replays, never
@@ -95,11 +99,14 @@ public sealed class RedesignRecoveryPagingUnitTests
         Assert.Null(last);
         Assert.True(seen > 1);
 
-        // Tokens survive the wire round trip and refuse foreign bytes.
-        var token = new RecoveryPageToken(8, 4242, 900, 2, 17);
+        // Tokens survive the wire round trip and refuse foreign bytes, including a
+        // cursor cut before the row count rode along.
+        var token = new RecoveryPageToken(8, 4242, 900, 2, 17, 1234);
         Assert.Equal(token, RecoveryPager.Decode(RecoveryPager.Encode(token)));
         Assert.Null(RecoveryPager.Decode("not-a-token"u8));
         Assert.Null(RecoveryPager.Decode("""{"depth":2}"""u8));
+        Assert.Null(RecoveryPager.Decode(
+            """{"depth":2,"epoch":1,"head":1,"stage":0,"index":0}"""u8));
     }
 
     [Fact]
@@ -108,12 +115,33 @@ public sealed class RedesignRecoveryPagingUnitTests
         var plan = new RecoveryPlan("room-p3", "Running", 3, 0, 1,
             [], [], [], [], null);
         var (page, next) = RecoveryPager.TakePage(plan,
-            new RecoveryPageToken(2, 3, 0, 0, 0));
+            new RecoveryPageToken(2, 3, 0, 0, 0, RecoveryPager.TotalRows(plan)));
         Assert.Empty(page.Snapshots);
         Assert.Empty(page.Frames);
         Assert.Empty(page.Deliveries);
         Assert.Empty(page.Participants);
         Assert.Null(next);
+    }
+
+    [Fact]
+    public void AViewThatShrankBetweenPagesRefusesToContinue()
+    {
+        var plan = BigPlan();
+        var depth = 4;
+        var cursor = new RecoveryPageToken(depth, plan.Epoch, plan.LastTick, 0, 0,
+            RecoveryPager.TotalRows(plan));
+        Assert.False(RecoveryPager.ViewMoved(cursor, plan, depth));
+
+        // Retention released the prefix below the anchor: epoch and head are untouched,
+        // only the material shrank. The continuation must refuse, not silently skip rows.
+        var cut = plan with { Frames = plan.Frames.Skip(40).ToList() };
+        Assert.True(RecoveryPager.ViewMoved(cursor, cut, depth));
+
+        // A different head or epoch still moves the view, and a different depth is a
+        // different read entirely.
+        Assert.True(RecoveryPager.ViewMoved(cursor, plan with { LastTick = plan.LastTick + 1 }, depth));
+        Assert.True(RecoveryPager.ViewMoved(cursor, plan with { Epoch = plan.Epoch + 1 }, depth));
+        Assert.True(RecoveryPager.ViewMoved(cursor, plan, depth + 2));
     }
 
     /// <summary>A plan with every page shape: small snapshots, one huge snapshot larger

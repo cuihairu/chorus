@@ -170,13 +170,17 @@ public sealed class FrameGrpcService(
             RecoveryPageToken cursor;
             if (request.PageToken.Length == 0)
             {
-                cursor = new RecoveryPageToken(depth, plan.Epoch, plan.LastTick, 0, 0);
+                cursor = new RecoveryPageToken(depth, plan.Epoch, plan.LastTick, 0, 0,
+                    RecoveryPager.TotalRows(plan));
             }
             else
             {
                 cursor = RecoveryPager.Decode(request.PageToken.Span)
                     ?? throw new ArgumentException("The page token is not a recovery cursor.");
-                if (cursor.Depth != depth || cursor.Epoch != plan.Epoch || cursor.Head != plan.LastTick)
+                // FIX-READ-06: the row count rides in the cursor so a plan that shrank
+                // between pages (retention released material) refuses to continue —
+                // never a silent gap — and the read restarts visibly.
+                if (RecoveryPager.ViewMoved(cursor, plan, depth))
                     throw new RpcException(new Status(StatusCode.FailedPrecondition,
                         "The recovery view moved; restart the read."));
             }

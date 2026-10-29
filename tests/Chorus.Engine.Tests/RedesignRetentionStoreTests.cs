@@ -11,8 +11,9 @@ namespace Chorus.Engine.Tests;
 /// the frame prefix below the older of its last two snapshots — the recovery fallback pair —
 /// never inside the retention window without an explicit override, never with undisposed
 /// inputs, and never anything the recovery chain or the settlement evidence still needs.
-/// Capacity pressure refuses new rounds visibly with a counted reason instead of deleting
-/// quietly.
+/// A recovery read that pinned its view before a prune keeps its whole chain (FIX-READ-06),
+/// and a read after the prune answers the honest pruned reality. Capacity pressure refuses
+/// new rounds visibly with a counted reason instead of deleting quietly.
 /// </summary>
 public sealed class RedesignRetentionStoreTests
 {
@@ -163,6 +164,63 @@ public sealed class RedesignRetentionStoreTests
             frames.Parameters.AddWithValue("room", room.RoomId);
             Assert.Equal(20L, Convert.ToInt64(await frames.ExecuteScalarAsync()));
         }
+    }
+
+    [Fact]
+    public async Task APinnedRecoveryReadSurvivesAConcurrentPrune()
+    {
+        await using var arrange = await Arrange.CreateAsync();
+        var retention = new RedesignRetentionStore(arrange.Database.ConnectionString);
+        // Four anchors — 0/20/40/80 — over 120 frames: a depth-4 read spans the whole
+        // history, while the prune below releases everything under the fallback pair (40).
+        var room = await arrange.SettledRoomAsync("room-ret-pin", "ret-open-6", "ret-live-6",
+            durationTicks: 120, checkpointTick: 20, anchorTicks: [40, 80]);
+
+        // Pin the read inside its transaction, past the head row, before any material
+        // loads (FIX-READ-06): retention commits a release while the read holds its view,
+        // and the chain it is reading is never cut mid-read.
+        var entered = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        var pinned = new RedesignRecoveryStore(arrange.Database.ConnectionString,
+            afterHeadRead: () => { entered.SetResult(); release.Task.GetAwaiter().GetResult(); });
+        var loading = pinned.LoadRecoveryAsync("tenant-a", "game-a", room.RoomId, candidateDepth: 4);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var pruned = await retention.PruneRoundAsync("tenant-a", "game-a", room.RoomId,
+            "prune-pin", overrideRetentionWindow: true);
+        release.SetResult();
+        var plan = await loading.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(40L, pruned.KeepTick);
+        Assert.Equal(39L, pruned.FramesDeleted);
+        Assert.NotNull(plan);
+        // The pinned view still holds every anchor and the whole contiguous walk: the read
+        // that fixed its view first is not truncated by what committed underneath it.
+        Assert.Equal([80L, 40L, 20L, 0L], plan!.Snapshots.Select(s => s.Tick).ToArray());
+        Assert.Equal(120, plan.Frames.Count);
+        Assert.Equal(1L, plan.Frames[0].Tick);
+        Assert.Equal(120L, plan.Frames[^1].Tick);
+        for (var index = 1; index < plan.Frames.Count; index++)
+            Assert.Equal(plan.Frames[index - 1].Tick + 1, plan.Frames[index].Tick);
+
+        // The same depth-4 read afterwards answers the honest pruned reality: the fallback
+        // pair and the frames above it, fewer candidates than asked for — a deepening
+        // recoverer suspends visibly (READ-04) — never a silent gap.
+        var fresh = await arrange.Recovery.LoadRecoveryAsync("tenant-a", "game-a", room.RoomId,
+            candidateDepth: 4);
+        Assert.NotNull(fresh);
+        Assert.Equal([80L, 40L], fresh!.Snapshots.Select(s => s.Tick).ToArray());
+        Assert.Equal(80, fresh.Frames.Count);
+        Assert.Equal(41L, fresh.Frames[0].Tick);
+
+        // The prune moved neither the epoch nor the head — exactly the shrink the paging
+        // cursor's row count exists to catch: a continuation from the pinned view refuses
+        // to stitch pages across the released material.
+        Assert.Equal(plan.Epoch, fresh.Epoch);
+        Assert.Equal(plan.LastTick, fresh.LastTick);
+        var cursor = new RecoveryPageToken(4, plan.Epoch, plan.LastTick, 0, 0,
+            RecoveryPager.TotalRows(plan));
+        Assert.True(RecoveryPager.ViewMoved(cursor, fresh, 4));
+        Assert.False(RecoveryPager.ViewMoved(cursor, plan, 4));
     }
 
     [Fact]
