@@ -132,20 +132,9 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             throw new ArgumentException("The tick cadence is 1..1000 ms.");
         if (_actors.TryGetValue(request.RoomId, out var known))
         {
-            // A finished actor answers the tail; a live one is its own recovery — in both
-            // cases this host never restarts battle ticks for the room.
-            if (known.Completed)
-                return new RecoverRoomReply
-                {
-                    RoomId = request.RoomId, Recovered = true, Status = "Finishing",
-                    LastTick = 0,
-                    Note = "The round already finished on this host; the result tail needs no battle ticks."
-                };
-            return new RecoverRoomReply
-            {
-                RoomId = request.RoomId, Recovered = true, Status = "Running",
-                Note = "The room is already running on this host."
-            };
+            // FIX-ROOM-02: an entry in the dictionary is not liveness — the answer derives
+            // from the actor's own state, never from the dictionary alone.
+            return AnswerForKnownActor(request, known.Status());
         }
 
         var plan = await _frames.LoadRecoveryAsync(new LoadRecoveryRequest
@@ -290,6 +279,56 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             Note = "No snapshot replays to the head with matching frame hashes; the room is suspended."
         };
     }
+
+    /// <summary>
+    /// The recovery answer for a room whose actor this process already holds (FIX-ROOM-02).
+    /// A dictionary entry is not liveness: only an actor of the requested epoch whose loop is
+    /// actually running answers Running; a completed actor of the same epoch answers the
+    /// Finishing tail; everything else — stopped, disposed, or holding a stale epoch — refuses
+    /// with the observed state and the real committed head.
+    /// </summary>
+    internal static RecoverRoomReply AnswerForKnownActor(RecoverRoomRequest request, RoomActorStatus status)
+    {
+        if (status.Epoch != request.Epoch)
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = false, Status = DescribeRunState(status.State),
+                LastTick = status.LastCommittedTick,
+                Note = $"The local actor holds epoch {status.Epoch}, not {request.Epoch}; " +
+                       "the room head lives with a newer owner."
+            };
+        if (status.State == RoomRunState.Completed)
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = true, Status = "Finishing",
+                LastTick = status.LastCommittedTick,
+                Note = "The round already finished on this host; the result tail needs no battle ticks."
+            };
+        if (status.State == RoomRunState.Running)
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = true, Status = "Running",
+                LastTick = status.LastCommittedTick,
+                Note = "The room is already running on this host."
+            };
+        return new RecoverRoomReply
+        {
+            RoomId = request.RoomId, Recovered = false, Status = DescribeRunState(status.State),
+            LastTick = status.LastCommittedTick,
+            Note = status.StopReason is { Length: > 0 } stopReason
+                ? $"The local actor stopped: {stopReason}"
+                : "The local actor no longer ticks."
+        };
+    }
+
+    /// <summary>The recovery-facing name of an actor's run state.</summary>
+    internal static string DescribeRunState(RoomRunState state) => state switch
+    {
+        RoomRunState.Running => "Running",
+        RoomRunState.Completed => "Finishing",
+        RoomRunState.Stopped => "Stopped",
+        _ => "Disposed"
+    };
 
     /// <summary>
     /// Applies the room's committed reward manifest. Each grant is its own idempotent
