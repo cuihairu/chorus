@@ -23,8 +23,18 @@ public sealed class RoundSyncGrpcService(
         Require(context, "streamer-server", "control-server", "streamer-gateway");
         var actor = runtime.FindRoom(request.RoomId);
         if (actor is null)
-            throw new RpcException(new Status(StatusCode.NotFound,
-                "The room does not run on this host."));
+        {
+            // A released room (FIX-ROOM-05) still answers its frozen result to a subscriber
+            // on the right epoch; anything else is honestly unknown on this host.
+            var released = runtime.FindResult(request.RoomId);
+            if (released is null)
+                throw new RpcException(new Status(StatusCode.NotFound,
+                    "The room does not run on this host."));
+            await responseStream.WriteAsync(
+                RoomRuntime.LateSubscriberAnswer(request.RoomId, request.Epoch, released),
+                context.CancellationToken);
+            return;
+        }
         if (request.Epoch != actor.Epoch)
         {
             // A subscriber on a stale epoch can never validate these frames; it gets the

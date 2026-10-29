@@ -27,6 +27,10 @@ internal enum RoomRunState
 internal sealed record RoomActorStatus(RoomRunState State, long Epoch, long LastCommittedTick,
     string? StopReason);
 
+/// <summary>The frozen outcome of a finished round (FIX-ROOM-05): the head the result
+/// committed at, and the result itself — all that stays after the actor is released.</summary>
+internal sealed record FinalRoundResult(long Epoch, long Tick, long StateVersion, string ResultJson);
+
 /// <summary>
 /// One running room (architecture 7, 8.2): a single loop that wakes on the module cadence,
 /// reads the round inbox, applies one pure tick and commits it. The commit id is derived from
@@ -478,6 +482,15 @@ internal sealed class RoomActor : IAsyncDisposable
 
     /// <summary>True once the final frame committed: the room is Finishing on the data plane.</summary>
     public bool Completed => _finalCommitted;
+
+    /// <summary>The frozen result of a finished room (FIX-ROOM-05): what a bounded result
+    /// cache keeps after the actor itself is released — or null while the round runs.</summary>
+    internal FinalRoundResult? FinalResult()
+    {
+        lock (_publishGate) return _finalCommitted
+            ? new FinalRoundResult(_epoch, _lastTick, _stateVersion, _finalResultJson!)
+            : null;
+    }
 
     /// <summary>The actor's lifecycle snapshot (FIX-ROOM-01): state, epoch, committed head
     /// and — for a room that stopped without a result — the recorded reason.</summary>

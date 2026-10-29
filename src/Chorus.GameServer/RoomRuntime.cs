@@ -24,6 +24,15 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     // dictionary only through their room's gate, so interleaved callers never both
     // decide the room is unknown and start a second loop.
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _activations = new(StringComparer.Ordinal);
+    // The bounded cache of released results (FIX-ROOM-05): a released room keeps its frozen
+    // result queryable without keeping the actor; the oldest entries fall off the end.
+    private readonly object _resultGate = new();
+    private readonly Dictionary<string, FinalRoundResult> _finalResults = new(StringComparer.Ordinal);
+    private readonly Queue<string> _releaseOrder = new();
+
+    /// <summary>How many released rooms keep their result in memory; the rest fall back to
+    /// the persistent result on the data plane.</summary>
+    internal int RetainedResults { get; set; } = 256;
 
     public RoomRuntime(Grpc.Net.Client.GrpcChannel dataChannel)
         : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
@@ -149,6 +158,64 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         ((ICollection<KeyValuePair<string, RoomActor>>)_actors)
             .Remove(new KeyValuePair<string, RoomActor>(actor.RoomId, actor));
     }
+
+    /// <summary>The frozen result of a released room, or null (FIX-ROOM-05).</summary>
+    internal FinalRoundResult? FindResult(string roomId)
+    {
+        lock (_resultGate) return _finalResults.TryGetValue(roomId, out var result) ? result : null;
+    }
+
+    /// <summary>
+    /// Releases a finished room (the FIX-END-14 hook, FIX-ROOM-05): the actor leaves the
+    /// dictionary and its frozen result moves into the bounded cache, so the outcome stays
+    /// queryable after the room itself is gone. A room that has not committed its result is
+    /// never released; releasing an unknown or already-released room simply answers false.
+    /// </summary>
+    internal async Task<bool> ReleaseRoomAsync(string roomId, CancellationToken cancellationToken = default)
+    {
+        var activation = _activations.GetOrAdd(roomId, static _ => new SemaphoreSlim(1, 1));
+        await activation.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_actors.TryGetValue(roomId, out var actor)) return false;
+            var final = actor.FinalResult();
+            if (final is null) return false; // a live room is not release material
+            await actor.DisposeAsync();
+            _actors.TryRemove(new KeyValuePair<string, RoomActor>(roomId, actor));
+            lock (_resultGate)
+            {
+                if (!_finalResults.ContainsKey(roomId)) _releaseOrder.Enqueue(roomId);
+                _finalResults[roomId] = final;
+                while (_finalResults.Count > RetainedResults)
+                    _finalResults.Remove(_releaseOrder.Dequeue());
+            }
+            return true;
+        }
+        finally
+        {
+            activation.Release();
+        }
+    }
+
+    /// <summary>
+    /// The late-subscriber contract of a released room (FIX-ROOM-05): a subscriber on the
+    /// result's epoch receives the frozen result and the stream ends; a stale epoch is told
+    /// the epoch it must resubscribe at. A room with no cached result never reaches here —
+    /// the caller reports the room unknown instead.
+    /// </summary>
+    internal static SyncMessage LateSubscriberAnswer(string roomId, long requestedEpoch,
+        FinalRoundResult final) =>
+        requestedEpoch == final.Epoch
+            ? new SyncMessage { RoundResult = new RoundResultMessage
+                {
+                    RoomId = roomId, Epoch = final.Epoch, Tick = final.Tick,
+                    StateVersion = final.StateVersion, ResultJson = final.ResultJson
+                } }
+            : new SyncMessage { ResyncRequired = new ResyncRequiredMessage
+                {
+                    RoomId = roomId, CurrentEpoch = final.Epoch,
+                    Reason = $"The room moved to epoch {final.Epoch}."
+                } };
 
     /// <summary>
     /// Recovers a room this process does not know (architecture 10.3): load the recovery plan,
