@@ -222,6 +222,18 @@ COMMIT
 
 所有权事务中不能调用远程恢复 RPC。恢复在分配提交后进行，恢复状态再经 fenced 事务写回。多个 DataServer 共用这一数据库锁和唯一键，不靠进程内 Semaphore 保证全局唯一。
 
+### 6.2.1 恢复与激活的权限矩阵
+
+| 状态 | LoadRecovery（读恢复材料） | 恢复快照写（PutSnapshot） | CommitFrame | Subscribe（权威发布） | 续租（ownership lease） |
+|---|---|---|---|---|---|
+| Allocated | 允许（只读） | 拒绝（tick-0 快照只经 PrepareRound） | 拒绝 | 拒绝 | 允许（控制面为被分配持有者代续） |
+| Recovering | 允许（新 owner 读计划、快照与帧） | 仅点名的 owner + epoch 可写经校验的恢复头；旧 owner 与其他写者拒绝 | 拒绝（栅栏全拒，帧写必须 Active） | 拒绝（订阅方得到 resync 而非帧） | 允许（恢复期间控制面代续，防恢复中过期；不作为恢复进度） |
+| Active | 允许（只读） | 允许（fenced：owner + epoch + 租约） | 允许（fenced） | 允许 | 允许 |
+
+合法转换：Active → Recovering（接管事务一次完成 epoch+1 与状态切换，from-Active 校验）；Recovering → Active（fenced 确认事务，仅点名的 owner 且租约未过期生效，重复确认幂等读回）；Recovering → Suspended（恢复失败或超时的显式处置）；Recovering → Recovering（重新分配，epoch 再次 +1）。Allocated 与 Recovering 之间的任何回退都不得隐式发生。
+
+Recovering 有期限：恢复操作本身持久化期限与进度，超期由后台处置暂停或重新分配，不无限续期，也不复活已递增前的旧 epoch。恢复期间宿主不得把该房间宣布为业务就绪——Ready/Active 只能来自 fenced 确认事务的结果；恢复失败、确认响应丢失都不能被解释为就绪。恢复未完成时旧 owner 的任何写（帧、恢复头、快照）都被数据面拒绝，客户端订阅得到 resync 指路。
+
 ### 6.3 AcceptInput 与局边界
 
 接收时先去重查原回执；锁对应挂载、校验来源与路由版本并保存归属证据。客户端输入还必须锁/校验 auth.streamer_state 中的当前会话版本。挂载边界变更与新输入归属使用同一锁序。无可信 round hint 的事件按首次持久接收时的输入窗口归局；间歇/收尾窗口采用局外处置，不能承诺还原上游发生顺序。
