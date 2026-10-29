@@ -82,7 +82,9 @@
 
 代码入口：`src/Chorus.DataServer/RedesignRecoveryStore.cs`。当前风险：读取所有快照、所有 delivery 及最老快照后的帧；多查询缺少一致性视图，恢复成本随整局历史增长。
 
-- [ ] **FIX-READ-01：固定恢复读取视图。** 依赖：无。交付：在一致性读取视图内确定房间 epoch、LastTick、StateVersion 和恢复材料；分页方案须定义不可变恢复边界。验收：并发提交时返回材料只覆盖选定 head，不混入之后的帧或不匹配状态。
+- [x] **FIX-READ-01：固定恢复读取视图。** 依赖：无。交付：在一致性读取视图内确定房间 epoch、LastTick、StateVersion 和恢复材料；分页方案须定义不可变恢复边界。验收：并发提交时返回材料只覆盖选定 head，不混入之后的帧或不匹配状态。
+  - 完成：292fe1a（LoadRecoveryAsync 五条 SELECT 原先各自 READ COMMITTED、可混入并发提交；现全部收进一个 REPEATABLE READ 事务——首条 head 读取即定快照，epoch/LastTick/StateVersion 与全部材料出自同一视图，选定 head 即不可变恢复边界（后续 READ-05 分页须 ≤ 此 head，已在方法注释声明）。新增 afterHeadRead 注入缝（仿 crashAfterSnapshotInsert 先例）：head 读后、材料读前挂起）。
+  - 验证：新测 AConcurrentCommitNeverLeaksIntoTheSelectedHead——挂起期间提交 tick-3 帧+验证快照，返回计划 LastTick=2/StateVersion=3/帧恰 [1,2]/快照全部 ≤2/epoch 不动；随后无挂起读取见 head=3 证明确有提交落库；负面对照（隔离级别临时降为 ReadCommitted）同测失败（帧集合混入 tick 3）后复原。RedesignRecoveryStoreTests 5/5 绿；回归 TakeoverActivation/ActivationGate/M2Restart/Sweep/Kill 13/13 绿；残留干净。
 - [ ] **FIX-READ-02：先读取最新候选快照。** 依赖：FIX-READ-01。交付：正常路径只读有限候选及候选到 head 的帧，不从最老快照起全量扫描。验收：构造长局后，返回的帧数量受快照间隔约束；明确记录查询行数/返回字节数。
 - [ ] **FIX-READ-03：按需读取重放输入。** 依赖：FIX-READ-02。交付：仅加载选定帧引用的输入及必要参与关系。验收：大量历史 delivery 不增加本次无关输入载荷；重放状态哈希与原执行相同。
 - [ ] **FIX-READ-04：逐级回退损坏快照。** 依赖：FIX-READ-02、FIX-READ-03。交付：候选失败后按需请求更早快照及增量材料。验收：最新损坏可回退、全部损坏明确 RecoveryFailed；不能跳过缺帧或把未验证材料标为成功。
