@@ -105,7 +105,9 @@
 
 代码入口：`src/Chorus.GameServer/RoomRuntime.cs`、`src/Chorus.DataServer/RedesignSettlementStore.cs`、ControlServer。DataServer 提供存储接口；ControlServer 的结算执行者见 FIX-END-11，结束与释放协调见 FIX-END-12。
 
-- [ ] **FIX-SETTLE-01：查询待完成结算。** 依赖：无。交付：可分页定位已有不可变结果但奖励未完成的房间。验收：未提交结果的房间不入队；失败/部分完成的清单可重新发现；查询不随全历史无界返回。
+- [x] **FIX-SETTLE-01：查询待完成结算。** 依赖：无。交付：可分页定位已有不可变结果但奖励未完成的房间。验收：未提交结果的房间不入队；失败/部分完成的清单可重新发现；查询不随全历史无界返回。
+  - 完成：e6f49ed（RedesignSettlementStore.ListPendingSettlementsAsync（tenant+game 域、room_id 确定性序、空 cursor 起步/上页末 room_id 续走、limit 1..500 越界 ArgumentException、LATERAL 按 max(result_version) 清单计数 granted<total 才入选——settle 队列发现查询）；m2.proto Settlement 服务增 additive rpc ListPendingSettlements（control-server 专属角色+ResolveTenant 租户栅栏，next_cursor=页满时末 room id、末页空串，页无服务端状态）。FIX-END-11 的业务执行者将以它发现待结算清单）。
+  - 验证：新测 TheSettleQueueListsOnlyRoomsWithUnappliedGrantsPageByPage——四房对照（无结果运行房不入队/半途 crash-after-grant 房带进度重新发现 total3 granted1 pending2/全新清单房 granted0/全程结算+Finalize 房不在列）；limit=1 逐页走全队列恰每房一次无重复无遗漏；补齐清单后该房离队；越界页（0 与 501）拒绝、超尾 cursor 空页诚实作答。RedesignSettlementStoreTests 5/5 绿；proto 重生成后宿主面 RedesignM2HostTests 12/12 绿（5m32s，谷窗 5.7/7.9/10.4）；残留检查干净（宿主进程 0、chorus_m% 库 0）。
 - [ ] **FIX-SETTLE-03：多执行器并发与失败退避。** 依赖：FIX-END-11。交付：ControlServer 结算执行者的任务领取/重领及有界重试机制；单个失败清单不阻塞其他房。验收：两个业务执行者并发、执行中 kill 后，每笔账本仍只有一个效果；失败原因和下次尝试可查询。
 - [ ] **FIX-SETTLE-05：暴露终局阻塞原因。** 依赖：FIX-END-12。交付：未处置重要输入、未完成奖励或平台前置条件等阻塞原因可查询。验收：前置条件未满足时不能强行 Settled；条件解除后后台自动继续；记录停留时长。
 - [ ] **FIX-SETTLE-06：验证自动收尾后再次开局。** 依赖：FIX-SETTLE-03、FIX-SETTLE-05、FIX-END-13。交付：结算中断恢复后使用同一挂载开启下一局的宿主测试。验收：首局奖励不重复、占位无泄漏、第二局正常接收输入并结束（AT20）。
