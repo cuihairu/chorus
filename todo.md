@@ -116,7 +116,8 @@
 
 依据：`redesign-m2-implementation.md` 的开发机基准仅证明完成和持久一致性，不能证明 100 房 × 20 Hz 达标。必须保留失败样本，不以减少承诺或跳过测试方式标绿。
 
-- [ ] **FIX-PERF-01：增加 Tick 分段耗时。** 依赖：无。交付：记录 GameServer 输入队列等待、持久接收 RPC、ApplyTick、CommitFrame RPC、序列化及整轮延迟；迁移基线的 Inbox 拉取和恢复补读单独标识，不能将每 Tick 拉取定义为目标路径。验收：人为延迟某一阶段时对应分位数上涨，计数不混合不同指标；指标标签避免无界 RoomId。
+- [x] **FIX-PERF-01：增加 Tick 分段耗时。** 依赖：无。交付：记录 GameServer 输入队列等待、持久接收 RPC、ApplyTick、CommitFrame RPC、序列化及整轮延迟；迁移基线的 Inbox 拉取和恢复补读单独标识，不能将每 Tick 拉取定义为目标路径。验收：人为延迟某一阶段时对应分位数上涨，计数不混合不同指标；指标标签避免无界 RoomId。
+  - 完成：d1f08dc（RoomMetrics 新仪器集：tick.inbox_pull（迁移基线拉取）/apply/serialize/commit（含重发计数）/whole + recovery.read/replay；RoomActor 全相位接线；RoomRuntime 恢复读/放接线；测试 RedesignTickMetricsUnitTests + 共享 MeterSamples）。验证：`dotnet test --filter RedesignTickMetricsUnitTests` 3/3 绿连跑三次——延迟 CommitFrame 60ms 时每样本 commit≥55ms（整轮≥55ms）、未触碰相位中位数<20ms、四仪器计数严格相等（每 tick 每相位恰一次）、零标签（无 RoomId）、commit_retry==0；恢复读/放各恰一仪器、恢复后 tick.commit 继续增长。宿主回归 `dotnet test --filter RedesignM2HostTests` 12/12 双绿（06:55 谷值 5.91/6.90/10.91 + 07:01 谷值 6.89/7.34/9.94），残留 0 进程 0 库。附记：RoomActor.DisposeAsync 幂等化；RoomMetrics 实例化（生产 Default 单例、测试私有 meter 隔离并行套件）。
 - [ ] **FIX-PERF-02：增加存储等待诊断。** 依赖：无。交付：记录连接获取、SQL/锁等待和事务提交诊断。验收：连接池饱和与行锁阻塞两个实验可区分，报告不把全部耗时统称为数据库慢。
 - [ ] **FIX-PERF-03：重建同步起跑基准。** 依赖：FIX-PERF-01、FIX-PERF-02。交付：全部房间准备好后按共同起点运行，固定预热与采样窗口；输入发生器独立记录计划量、实发量及积压。验收：100 房存在明确共同活跃窗口，无法达到计划输入时报告失败/不足，不用实际低流量替代目标。
 - [ ] **FIX-PERF-04：建立可失败的性能门槛。** 依赖：FIX-PERF-03。交付：将目标架构 100 房/20 Hz、Tick 与提交延迟预算写入显式容量验收配置。验收：注入超预算延迟后验收返回失败；未启用容量测试明确显示 NOT RUN，不算通过；环境和持续时间写入报告。
