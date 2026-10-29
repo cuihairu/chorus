@@ -256,6 +256,11 @@ public sealed class RedesignM0HostTests
             start.Environment["CHORUS_TLS_CERT_PEM"] = certPath;
             start.Environment["CHORUS_TLS_KEY_PEM"] = keyPath;
             start.Environment["CHORUS_PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            // The machine's inotify instance budget (128) is shared with everything else this
+            // user runs; a full gate spawns dozens of hosts at once and each would otherwise
+            // take a FileSystemWatcher instance for its configuration. Polling costs nothing
+            // here — the hosts' files never change mid-test — and keeps the budget for others.
+            start.Environment["DOTNET_USE_POLLING_FILE_WATCHER"] = "true";
             foreach (var (name, value) in extraEnvironment ?? new Dictionary<string, string>())
                 start.Environment[name] = value;
             if (clientTenant is { Length: > 0 })
@@ -382,6 +387,7 @@ public sealed class RedesignM0HostTests
             agentStart.Environment["CHORUS_ROOT_CA_PEM"] = Path.Combine(bootstrapDirectory, "node", "root-ca.pem");
             agentStart.Environment["CHORUS_NODE_AUTHORITY_PFX_PASSWORD"] = nodePassword;
             agentStart.Environment["CHORUS_AGENT_STATE_DIR"] = state;
+            agentStart.Environment["DOTNET_USE_POLLING_FILE_WATCHER"] = "true";
             foreach (var (name, value) in agentEnvironment ?? new Dictionary<string, string>())
                 agentStart.Environment[name] = value;
             var process = Process.Start(agentStart) ?? throw new InvalidOperationException("NodeAgent did not start.");

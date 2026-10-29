@@ -149,9 +149,12 @@ public sealed class RedesignM3TakeoverHostTests
 
         // The victim room advances to a committed head past the tick-100 snapshot. The floor
         // needs the head beyond the anchor with margin; under full-suite load the tick pace
-        // sags well below the ideal 40/s, so the wait carries the patience, not the floor.
+        // sags well below the ideal 40/s, so the wait carries the patience, not the floor
+        // (2026-10-29: full gates sagged hard — 40s of patience reached only tick 106
+        // against a floor of 110, and a rerun 60s — so the patience carries the pacing:
+        // 120s clears the kill point even at a tenth of the ideal 40/s).
         long headTick = 0;
-        var headDeadline = DateTime.UtcNow.AddSeconds(40);
+        var headDeadline = DateTime.UtcNow.AddSeconds(120);
         while (DateTime.UtcNow < headDeadline)
         {
             await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))

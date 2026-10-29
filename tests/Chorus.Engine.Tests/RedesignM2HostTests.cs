@@ -751,8 +751,10 @@ public sealed class RedesignM2HostTests
         });
 
         // Crash the game host mid-battle, past the tick-100 checkpoint (AT19 kill point).
+        // The patience carries the pacing (2026-10-29: the full gate's shared Postgres sagged
+        // per-tick commits to a few ticks per second); the floor stays the kill-point fact.
         long killTick = 0;
-        var crashDeadline = DateTime.UtcNow.AddSeconds(20);
+        var crashDeadline = DateTime.UtcNow.AddSeconds(60);
         while (DateTime.UtcNow < crashDeadline)
         {
             await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
