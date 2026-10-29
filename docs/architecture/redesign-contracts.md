@@ -56,20 +56,23 @@ M0 持久收据执行入口接受规范化请求指纹与业务写入回调；�
 | StreamerSession / StreamerServer | Login、Resume、Logout | 可信 LaunchProof 或 resume secret | SessionVersion，实体 Ready 后方可成功 |
 | StreamerBusiness / StreamerServer | GetProfile、ExecuteCommand | SessionVersion、CommandId | 持久命令或明确非关键脏字段 |
 | Ownership / ControlServer | Locate、Activate、Renew、Release | EntityId、ProcessInstanceId、Epoch | 原子 owner/epoch；不得由客户端指定可信 owner |
-| Directory / ControlServer | GetSnapshot、Watch | since_version、role/partition | gap 时要求重新全量 |
+| Directory / ControlServer | GetSnapshot、Watch、AckRoute | since_version、role/partition、GatewayInstance、RouteVersion | 路由确认后开放投递；缺口重拉快照 |
+| RoundEnd / ControlServer | BeginEnd、AckDeliveryStopped、GetEndStatus | EndOperationId、挂载/房间代、关闭版本、Gateway incarnation | 关闭确认屏障完成后才授权平台调用，收尾完成后才释放与销毁 |
 | Match / ControlServer | Enqueue、Cancel、GetStatus | BindingId、SessionVersion、QueueKey | ticket 幂等；每挂载最多一个有效 ticket |
 | MatchStore / DataServer | Reserve、Commit、Abort | Term、ReservationId、PreparedReceipt | 参与者与 Room 同事务切换 |
 | Room / GameServer | Prepare、Recover、Drain、Subscribe | RoomId、Epoch、PackageHash | 重复 Prepare 返回同一准备结果 |
-| Input / DataServer | AcceptPlatformBatch、AcceptClientInput | SourceScope、EventId、PayloadHash | 重要输入提交后才确认 |
+| RoomEventIngress / GameServer | PushEvents、GetAcceptance | 已验证来源、BindingGeneration、RoomId、RoundGeneration、OwnerEpoch、EventId、PayloadHash | 定向投递对应 RoomActor；持久接受后才确认 |
+| InputStore / DataServer | PersistAcceptedInputs、ReadRecoveryInputs | 由业务服务确定的目标与归属证据、EventId、PayloadHash | 只保存和查询；唯一性、版本与事务校验，不解析事件目标 |
 | RoomStore / DataServer | ReadInbox、CommitFrame、PutSnapshot、LoadRecovery | epoch、前帧版本、CommitId | 消费标记与帧同事务 |
 | PlayerData / DataServer | Load、Patch、ApplyAssetOperation | PlayerId、ExpectedVersion、OperationId | 不能通过 Patch 覆盖账本资产 |
-| Settlement / DataServer | CommitResult、GetSettlement | RoomId、FinalFrameReceipt、PlanHash | 清单不可变、每笔 grant 至多生效一次 |
+| SettlementCoordinator / ControlServer | ExecuteSettlement、GetProgress | RoomId、FinalFrameReceipt、PlanHash | 驱动不可变清单与重试；通过 DataServer 幂等保存逐笔效果 |
+| SettlementStore / DataServer | ApplyGrant、GetSettlement | 固定 GrantId、OperationId、账本变更 | 每笔至多一个账本效果，不主动执行调度 |
 | RoundFinalization / DataServer | FinalizeRound | RoomId、ResultVersion、OperationId | 输入与结算收尾后原子释放参与、挂载指针、容量与 owner |
 | PlatformTask / PlatformGateway | Reconcile、GetStatus | TaskId、TaskEpoch | 记录 Desired/Observed，未知结果不盲重试 |
 | Node / ControlServer | Register、Report、WatchPlans | AgentInstanceId、sequence | 只接纳当前 incarnation |
 | Agent / NodeAgent | EnsureRunning、Drain、Stop | SlotId、PlanGeneration、CommandId | 同 slot 不并发启动两个受管实例 |
 
-以上服务名是协议边界，不代表新增可执行进程。DataServer 内部后台任务与 RPC 共用事务规则，不是绕过校验的特权通道。
+以上为修订后的目标协议边界，不代表新增可执行进程或已经实现。DataServer 提供存储操作及约束校验，业务解析、任务调度、结束协调分别属于上述业务宿主；现有接口迁移按 TODO §22.9/22.10 验收。
 
 ## 3. 主播客户端协议
 
@@ -252,14 +255,15 @@ COMMIT
 BEGIN
   读取不可变结果并识别所有待释放对象；按统一锁序加锁后重新验证
   校验结果版本、输入窗口关闭、重要输入终态、结算清单已完成或明确补偿处置
+  校验同一结束操作的 DeliveryStopped 屏障及 PlatformClose 成功/NotRequired 凭据
   对 RoomId/Generation 仍相符的挂载清除 CurrentRoomId，关闭活跃 participation
   释放本 reservation/room 的容量与匹配占位（唯一释放回执防重复扣减）
   设置 Room Settled，撤销 room ownership 并递增 epoch
-  写平台结束/结果通知 Outbox、Finalize receipt
+  写内部终结结果通知 Outbox、Finalize receipt（平台结束任务已在前置阶段完成）
 COMMIT
 ```
 
-这是一项明确授权的终局事务，数据服务只可撤销相符的终态 Room ownership，不可借此创建/迁移任意 owner。平台关闭前置条件未满足时挂载保持不具备匹配资格；对局不再 Tick，结算与平台收尾可由数据服务独立重试。
+这是一项由 ControlServer 业务协调器发起的受限终局事务。DataServer 仅按持久凭据、版本及约束执行，不承担收尾调度。完整时序见 [架构 §6.4](architecture.md)：先通知 PlatformGateway 关闭投递并取得 DeliveryStopped，才授权 PlatformGateway 调用直播平台；平台成功或有依据的 NotRequired 后才能 FinalizeRound，随后销毁运行实体。PlatformOutcomeUnknown 不满足前置条件。所有步骤绑定 EndOperationId、BindingGeneration、RoomId、RoundGeneration、CloseRouteVersion，重复和迟到命令不能影响新局。
 
 ## 7. 运行时与模块接口
 

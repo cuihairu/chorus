@@ -503,9 +503,32 @@
 
 ### 22.9 平台事件到房间的输入闭环（P0/P1）
 
-图示中的 DataServer→GameServer 箭头表示 ReadInbox 的响应数据方向，由 RoomActor 主动读取；不能据此声称已有主动事件推送。当前新版 PlatformGateway 主要接通平台任务执行，IngestBatch、RouteEvents 与房间消费的生产宿主链路仍需分别验收。
+2026-10-29 用户明确修订：正常事件主链路为 **PlatformGateway → 目标 GameServer → RoomRuntime → 对应 RoomActor**。DataServer 提供持久化、去重、帧提交和恢复服务。现有 ReadInbox 拉取实现保留为迁移基线，不能把它作为目标主动推送已完成的证据。已发布的早期架构记录按日期保留；本节和架构 §6.1 为本次修订入口。
 
-- [ ] **FIX-INPUT-01 / P0：接通平台入口的持久接收。** 依赖：无。交付：新版 PlatformGateway 将适配器验签/归一化后的事件提交 IngestBatch，提交成功才向平台确认。验收：接收事务前后分别 kill，已确认事件仍存在；同批重试不新增重复记录；存储不可用时不返回成功回执（AT07）。
-- [ ] **FIX-INPUT-02 / P0：自动驱动事件归房。** 依赖：INPUT-01。交付：持久扫描尚未处置事件并调用既有归房事务，按直播挂载与局边界固定目标 RoomId。验收：宿主重启后自动继续；迟到旧局事件不进入新局；无匹配归属和冲突分别形成可查询处置，不永久静默积压（AT05/08）。
-- [ ] **FIX-INPUT-03 / P0：验证平台事件到 RoomActor 的全链路。** 依赖：INPUT-02、FRAME-04。交付：经新版 PlatformGateway 接收模拟平台事件，由真实房间 ReadInbox 消费并提交效果的宿主测试。验收：两个并发房间只有目标房收到该输入；重复事件只产生一次效果；数据库输入/帧与客户端效果一致；测试不能手工调用 RouteEvents 补齐宿主缺失环节。
-- [ ] **FIX-INPUT-04 / P1：验证接管期间输入不丢失。** 依赖：INPUT-03、TAKE-08。交付：暂停旧 owner、持续接收输入并接管到新 GameServer 的测试。验收：新 owner 从相同 RoomId Inbox 继续消费，已消费不重复、待消费不丢失，旧 epoch 不能提交；分别记录受理、归房、应用和积压数量。
+- [ ] **FIX-INPUT-01 / P0：定义房间直接推送契约。** 依赖：无。交付：GameServer 房间事件 RPC，携带租户/游戏、RoomId、owner epoch、EventId、来源和 payload，明确 DurableAccepted、Duplicate、StaleOwner、Overloaded、OutcomeUnknown。验收：契约明确持久成功才确认重要输入，重试保持业务 ID；已有旧拉取接口不算交付。
+- [ ] **FIX-INPUT-02 / P0：接通网关房间路由。** 依赖：INPUT-01。交付：PlatformGateway 根据挂载/局边界固定 RoomId，通过目录解析 owner 地址及 epoch 并直接调用目标 GameServer。验收：两个房间分布于不同实例时，各事件只推送到所属房间；迟到事件不随当前局变化误入新局；无有效归属显式待处理/拒绝。
+- [ ] **FIX-INPUT-03 / P0：实现目标房间的持久接收。** 依赖：INPUT-01。交付：RoomRuntime 校验目标并将事件交给对应 RoomActor；接收端经 DataServer 幂等持久接收后确认并唤醒房间。验收：错租户/错房间/旧 epoch 拒绝；相同事件仅入账一次；队列满和存储失败可见；内存接收但未持久化不得返回成功。
+- [ ] **FIX-INPUT-04 / P0：接通推送输入的 Tick 消费。** 依赖：INPUT-03、FRAME-04。交付：Actor 串行处理直接推送接受的事件，原子提交消费与帧。验收：正常业务无需每 Tick 从 DataServer 拉取新输入；重复推送只产生一次效果，客户端效果、帧和消费记录一致。
+- [ ] **FIX-INPUT-05 / P0：处理推送超时和路由变化。** 依赖：INPUT-02、03。交付：原 EventId 查询/重试，StaleOwner 刷新目录后重推；规定重试退避和待处理记录。验收：接收成功响应丢失不重复生效；迁移期间重试不改变 RoomId；旧实例不能接受新权威写入。
+- [ ] **FIX-INPUT-06 / P0：验证直接推送宿主全链路。** 依赖：INPUT-02、03、04、05。交付：平台模拟器→新版 PlatformGateway→GameServer 房间事件 RPC→RoomActor→帧/客户端的真实宿主测试。验收：双房间定向投递正确，提交前后 kill 均不丢已确认输入；测试不能手工调用 RouteEvents 或轮询旧入口替代网关推送。
+- [ ] **FIX-INPUT-07 / P1：验证推送模式的恢复补齐。** 依赖：INPUT-06、TAKE-08。交付：接管时从持久未消费记录恢复，再继续接收网关直接推送。验收：旧已消费不重复、已确认待消费不丢失；恢复补齐与新推送重叠仍只应用一次，分别报告受理、去重、消费与积压数量。
+
+### 22.10 房间结束、Gateway 确认、平台通知与销毁（P0）
+
+用户明确顺序：**通知 PlatformGateway 关闭旧局投递 → 确认生效 → 才通知直播平台 → 完成释放 → 销毁 RoomActor**。目标契约见架构 §6.4。下列业务流程由 ControlServer / StreamerServer / GameServer / PlatformGateway 各自负责，DataServer 只负责数据读写与事务约束。§22.5 中 DataServer 宿主结算后台方案被本节职责修订覆盖：结算业务执行与终局调度必须迁出，保留底层幂等存储能力；旧测试只能作为存储证据。
+
+- [ ] **FIX-END-01 / P0：持久结束操作。** 依赖：无。交付：ControlServer 保存 EndOperationId、房间/挂载代、阶段、进度与错误。验收：同一请求重复创建只得到一个操作；每阶段重启能继续，迟到旧代请求不能影响新局。
+- [ ] **FIX-END-02 / P0：注册挂载路由来源。** 依赖：INPUT-01。交付：StreamerServer 在挂载提交后向 ControlServer 注册已验证的平台场次和 BindingGeneration。验收：重复上报幂等，旧代不覆盖新代，未验证的平台身份不能建立路由。
+- [ ] **FIX-END-03 / P0：确认开局路由生效。** 依赖：END-02、INPUT-02。交付：入场提交且 RoomActor 准备好后发布路由，Gateway 安装并确认版本才开放平台输入。验收：准备失败不产生可投递路由；Gateway 重连先同步快照，未确认版本不能直接投递。
+- [ ] **FIX-END-04 / P0：提交终局后发起收尾。** 依赖：END-01。交付：GameServer 可靠上报最终帧回执并停止战斗 Tick。验收：最终提交后 kill 仍能发现并推进结束操作；通知重发不重复发奖；ClosingInput 事件不改变胜负。
+- [ ] **FIX-END-05 / P0：下发关闭投递命令。** 依赖：END-03、04。交付：ControlServer 持久生成指定挂载/房间代的 CloseRouteVersion，并发往全部持有效路由授权的 Gateway。验收：离线但授权未失效的 Gateway 仍计入待确认集合；重复命令不误关闭新局。
+- [ ] **FIX-END-06 / P0：接收端阻止旧局新输入。** 依赖：END-05、INPUT-03。交付：GameServer 使用持久输入代/路由栅栏阻止关闭后的新权威输入，保留收尾写权限。验收：旧 Gateway 延迟推送被拒；已接受事件仍可查询和终态处置，不能靠撤销整个 owner 提前堵死收尾。
+- [ ] **FIX-END-07 / P0：Gateway 排空并确认。** 依赖：END-05、06。交付：Gateway 停止旧局新推送，查询在途未知结果、持久处置待投递项后回报 DeliveryStopped。验收：仅入队不返回完成确认；回执携带实例身份、关闭版本、结束操作与截止水位，崩溃恢复不丢待处理项。
+- [ ] **FIX-END-08 / P0：验证全部 Gateway 的关闭屏障。** 依赖：END-07。交付：ControlServer 校验所有有效授权持有者的确认，失联者仅在授权失效且接收端栅栏生效后退出屏障。验收：漏一实例、错版本、旧 incarnation 均不能放行；网络恢复后旧实例不可继续推送。
+- [ ] **FIX-END-09 / P0：平台结束调用增加前置闸。** 依赖：END-08。交付：平台结束任务绑定持久屏障凭据，PlatformGateway 执行前校验授权阶段。验收：人为阻塞 Gateway 确认时平台模拟器收到的结束调用为零；确认完成后才允许首次调用。
+- [ ] **FIX-END-10 / P0：按平台能力完成外部收尾。** 依赖：END-09。交付：区分局结束、玩法解绑和直播结束；复用 OperationId 核对结果，保存成功/NotRequired/OutcomeUnknown。验收：普通换局不误解绑直播；超时不能按成功推进；不可查询且不可幂等的未知结果进入 NeedsAttention。
+- [ ] **FIX-END-11 / P0：迁出数据宿主的结算业务调度。** 依赖：SETTLE-01。交付：由业务执行者发现待结算清单并请求 DataServer 执行逐笔存储事务，DataServer 不主动决定结算/收尾步骤。验收：GameServer 退出后业务执行者仍补齐奖励；双执行者不重复记账；明确替代 SETTLE-02/03 的宿主归属。
+- [ ] **FIX-END-12 / P0：FinalizeRound 校验完整前置证据。** 依赖：END-10、11。交付：ControlServer 发起释放，DataServer 事务校验 Gateway 屏障、平台收尾、输入终态与奖励完成凭据。验收：任一缺失即拒绝；事务原子释放旧局指针/参与/容量/owner；不在 Finalize 后才首次创建平台结束任务，替代 SETTLE-04 的调度归属。
+- [ ] **FIX-END-13 / P0：释放后开放下一局。** 依赖：END-12。交付：StreamerServer 在释放回执成功后更新挂载匹配资格。验收：平台失败/未知时不能排新局；成功后可正常再开；旧局迟到事件保留旧归属和去重，不能进入新局。
+- [ ] **FIX-END-14 / P0：幂等销毁旧房间实体。** 依赖：END-12、ROOM-04、05。交付：ControlServer 请求 GameServer 按 RoomId 和 epoch 销毁并回报；平台任务不依赖原 Actor 存活。验收：Finalize 前不执行正常销毁；重复销毁不抛错，不删新代 Actor；持久结果、账本和去重记录保留。
+- [ ] **FIX-END-15 / P0：验证结束全链路顺序。** 依赖：END-09、10、12、13、14。交付：真实宿主加平台模拟器记录有序证据，并分别在 Gateway 确认前、确认后、平台成功响应丢失和 Finalize 后 kill。验收：每个注入点恢复后仍满足 Gateway 确认先于平台调用、平台收尾先于释放、释放先于正常销毁；恰一份内部奖励，无新旧局串扰。

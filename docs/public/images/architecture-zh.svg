@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1170" viewBox="0 0 1200 1170" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
 <title id="title">Chorus 进程架构与房间运行时</title>
-<desc id="desc">七类进程。ControlServer 分配所有权，NodeAgent 监管本机进程。网关连接主播和直播平台，StreamerServer 管理主播。GameServer 内由 RoomRuntime 管理多个 RoomActor。DataServer 将输入、帧及结算持久化到 PostgreSQL。虚线为控制关系，实线为业务数据。重设计架构，集成持续进行中。</desc>
+<desc id="desc">七类进程。ControlServer 分配所有权，NodeAgent 监管本机进程。网关连接主播和直播平台，StreamerServer 管理主播。GameServer 内由 RoomRuntime 管理多个 RoomActor。PlatformGateway 经 RoomRuntime 直接推送事件到目标 RoomActor；GameServer 通过 DataServer 持久化和恢复。虚线为控制关系，实线为业务数据。重设计架构，集成持续进行中。</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
 <style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:29px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}.control{stroke-dasharray:7 5}.box{stroke-width:1.5}</style>
 <rect width="1200" height="1170" rx="20" fill="#f8fafc"/>
@@ -14,11 +14,13 @@
 <rect x="410" y="115" width="750" height="115" rx="12" fill="#eef2ff" stroke="#a5b4fc" class="box"/>
 <text x="430" y="149" class="name" text-anchor="start">ControlServer</text>
 <text x="430" y="177" class="body" text-anchor="start">节点目录 · 部署调度 · 匹配协调 · 所有权 / epoch / 租约</text>
-<text x="430" y="202" class="body" text-anchor="start">决定房间归属，不执行游戏 Tick</text>
+<text x="430" y="202" class="body" text-anchor="start">同步路由 · 确认停止投递 → 授权平台收尾 → 协调销毁</text>
 <path d="M410 173 H340" class="edge control"/>
 <text x="375" y="150" class="label" text-anchor="middle">计划</text>
 <text x="40" y="262" class="small" text-anchor="start">NodeAgent 监管所在机器上的各类服务进程。</text>
 <path d="M1160 173 H1180 V460 H1160" class="edge control"/>
+<path d="M600 230 V435 H445 V475" marker-start="url(#arrow)" class="edge control"/>
+<text x="40" y="450" class="small">路由版本下发 ↓ / 安装及停止投递确认 ↑</text>
 <rect x="40" y="305" width="220" height="105" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
 <text x="60" y="339" class="name" text-anchor="start">主播客户端</text>
 <text x="60" y="367" class="body" text-anchor="start">登录 · 操作指令</text>
@@ -30,7 +32,7 @@
 <rect x="650" y="305" width="510" height="105" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
 <text x="670" y="339" class="name" text-anchor="start">StreamerServer</text>
 <text x="670" y="367" class="body" text-anchor="start">StreamerActor × N · 登录 / 恢复</text>
-<text x="670" y="392" class="body" text-anchor="start">玩法挂载 · 主播个人业务</text>
+<text x="670" y="392" class="body" text-anchor="start">注册直播挂载关系 · 个人业务 · 下一局资格</text>
 <path d="M260 357 H310" marker-start="url(#arrow)" class="edge"/>
 <path d="M580 357 H650" marker-start="url(#arrow)" class="edge"/>
 <text x="285" y="339" class="label" text-anchor="middle">WSS</text>
@@ -42,8 +44,8 @@
 <rect x="310" y="475" width="270" height="130" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
 <text x="330" y="509" class="name" text-anchor="start">PlatformGateway</text>
 <text x="330" y="537" class="body" text-anchor="start">凭据验证 · 回调适配</text>
-<text x="330" y="562" class="body" text-anchor="start">事件持久接收</text>
-<text x="330" y="587" class="body" text-anchor="start">外部平台任务执行</text>
+<text x="330" y="562" class="body" text-anchor="start">房间路由 · 直接推送</text>
+<text x="330" y="587" class="body" text-anchor="start">关闭确认 → 获准通知平台</text>
 <path d="M260 527 H310" class="edge"/>
 <rect x="650" y="460" width="510" height="280" rx="12" fill="#eef8f5" stroke="#86c9b3" class="box"/>
 <text x="670" y="494" class="name" text-anchor="start">GameServer</text>
@@ -66,26 +68,24 @@
 <text x="1065" y="659" class="body" text-anchor="middle">RoomActor N</text>
 <text x="1065" y="684" class="small" text-anchor="middle">独立串行 Tick</text>
 <text x="670" y="724" class="small" text-anchor="start">每房间独立持有：状态 · epoch · 订阅者</text>
-<path d="M445 605 V810" class="edge"/>
-<text x="460" y="686" class="label" text-anchor="start">持久接收事件</text>
-<path d="M760 810 V740" class="edge"/>
-<text x="745" y="766" class="label" text-anchor="end">ReadInbox(RoomId)</text>
-<text x="745" y="790" class="small" text-anchor="end">RoomActor 按房间读取输入</text>
-<path d="M1010 740 V810" class="edge"/>
-<text x="1025" y="766" class="label">CommitFrame</text>
-<text x="1025" y="790" class="small">消费确认 + 提交帧</text>
+<path d="M580 575 H670" class="edge" style="stroke:#087f5b;stroke-width:4"/>
+<text x="330" y="638" class="body" style="font-weight:700;fill:#087f5b">直接推送事件 → 对应 RoomActor</text>
+<text x="330" y="664" class="small">RoomId + owner epoch + EventId</text>
+<path d="M905 740 V810" marker-start="url(#arrow)" class="edge"/>
+<text x="920" y="766" class="label">持久化 / 恢复</text>
+<text x="920" y="790" class="small">输入 · 帧 · 快照</text>
 <rect x="310" y="810" width="850" height="165" rx="12" fill="#edf5ff" stroke="#93b9e3" class="box"/>
 <text x="330" y="844" class="name" text-anchor="start">DataServer</text>
-<text x="330" y="872" class="body">事件去重 → 根据挂载与局边界固定归属 → 按 RoomId 保存持久 Inbox</text>
+<text x="330" y="872" class="body">仅负责数据读写、事务、去重和版本约束；业务解析与编排由业务进程负责</text>
 <text x="330" y="897" class="body" text-anchor="start">持久收件箱 · 帧日志 · 快照 · 资料 · 资产账本 · 结算 · Outbox</text>
 <text x="330" y="947" class="body" text-anchor="start">事务 + 幂等回执 + 写入端 owner / epoch 校验</text>
-<text x="330" y="922" class="small">输入链路：先持久接收，再由 RoomActor 读取、计算并提交，成功后发布。</text>
+<text x="330" y="922" class="small">事件主链路：PlatformGateway → RoomRuntime → 对应 RoomActor。</text>
 <path d="M735 975 V1018" class="edge"/>
 <rect x="310" y="1018" width="850" height="70" rx="12" fill="#edf5ff" stroke="#93b9e3" class="box"/>
 <text x="330" y="1052" class="name" text-anchor="start">PostgreSQL</text>
 <text x="1140" y="1061" class="small" text-anchor="end">共同权威存储 · 控制与业务 schema</text>
 <text x="40" y="848" class="name" text-anchor="start">每 Tick 的执行契约</text>
-<text x="40" y="879" class="small" text-anchor="start">读取输入 → 计算</text>
+<text x="40" y="879" class="small" text-anchor="start">接收房间事件 → 计算</text>
 <text x="40" y="904" class="small" text-anchor="start">提交成功 → 发布</text>
 <text x="40" y="929" class="small" text-anchor="start">GameServer 不直接写库</text>
 <text x="40" y="1123" class="small" text-anchor="start">实线：业务数据　虚线：控制关系　仅展示主链路，省略部分 RPC。</text>

@@ -96,27 +96,30 @@ erDiagram
 | 角色 | 独占职责 | 不承担的职责 | 扩展方式 |
 |---|---|---|---|
 | NodeAgent | 本机进程启停、进程树回收、资源采样、命令去重、包安装 | 不决定实体归属，不自行跨节点恢复业务 | 每台机器一个 |
-| ControlServer | 部署意图、节点目录、调度、所有权、匹配协调、Admin API | 不执行 Tick，不中转所有实时输入，不存内存独占真相 | 2+ 副本；每个协调分区有一个租约持有者 |
+| ControlServer | 部署与节点目录、匹配及房间所有权；组合挂载和房间路由，向 Gateway 同步版本并收集确认；持久协调结束、结算执行、平台收尾授权和销毁；Admin API | 不解析平台原始事件，不执行 Tick；业务事件由 Gateway 直接投递房间 | 2+ 副本；每个协调分区有一个租约持有者 |
 | StreamerGateway | 客户端 WSS 接入、限流、绑定、路由、快照扇出 | 不加载长期业务实体，不决定游戏胜负 | 按连接和发送流量扩展 |
-| PlatformGateway | 平台验证与回调适配、凭据管理、平台任务执行 | 不冒用小游戏或 SaaS 协议，不计算对战 | 接入无状态扩展；任务按租约分配 |
-| StreamerServer | 主播 Actor、登录接管、挂载流程、个人业务、匹配意图 | 不运行共同对局 Tick，不直接写数据库 | 按活跃主播和邮箱负载扩展 |
-| GameServer | RoomActor、权威 Tick、输入排序、快照与恢复 | 不持有支付权限，不直接修改全局玩家资产 | 按 Tick、输入和状态预算扩展 |
-| DataServer | 事务化业务存取、输入日志、帧提交、快照、资产与结算、Outbox | 不决定部署位置，不执行游戏逻辑 | 多个无状态实例，共用同一权威数据库 |
+| PlatformGateway | 平台验签与事件归一化；订阅并确认 ControlServer 路由，按 RoomId/epoch 直接推送；关闭投递、排空并确认；取得关闭屏障授权后通知平台并核对结果 | 不决定匹配或房间归属，不在路由缺失时猜测目标，不提前调用平台结束接口 | 接入无状态扩展；任务按租约分配 |
+| StreamerServer | 主播 Actor、登录接管、个人业务；维护并注册平台直播场次与挂载关系；提交匹配意图，终局释放后更新下一局资格 | 不运行共同对局 Tick，不直接写数据库 | 按活跃主播和邮箱负载扩展 |
+| GameServer | RoomRuntime/RoomActor；校验并接收目标房间推送、串行处理事件；权威 Tick、快照恢复；提交终局，关闭输入并按确认命令回收实体 | 不持有支付权限，不直接修改全局玩家资产 | 按 Tick、输入和状态预算扩展 |
+| DataServer | 按明确请求执行资料、输入、帧、快照、资产账本、结算记录、回执与 Outbox 的读写；事务、唯一性、权限、epoch 与版本约束 | 不解析平台事件、不选择目标房间、不协调匹配/结算/销毁、不调度平台调用 | 多个无状态实例，共用同一权威数据库 |
 
 首期不增加独立 MatchMgr、RoomMgr、StreamerMgr、RankServer 或 ConfigServer 进程。它们是现有角色中的清晰模块；只有独立容量或故障隔离证据才触发物理拆分。
+
+职责修订（2026-10-29）：以下是目标边界。当前存储类中的事件归房、DataServer 宿主后台业务和现有拉取输入实现需按 TODO §22.9/22.10 迁移；不以旧实现反向定义进程职责。
 
 ### 3.2 逻辑模块归属
 
 | 模块 | 宿主 | 拥有的数据与行为 | 主要依赖 |
 |---|---|---|---|
 | NodeRegistry / DeploymentController | ControlServer | NodeObservation、DeploymentSpec、ProcessPlan | 控制库、Agent |
-| OwnershipDirectory | ControlServer | Streamer/Room/Task 分配、epoch、租约 | 控制库 |
+| OwnershipDirectory / RoutePublisher | ControlServer | 组合挂载与房间 owner；发布路由快照/版本更新；记录 Gateway 授权和确认 | StreamerServer、控制存储、Gateway |
+| RoundEndCoordinator / SettlementExecutor | ControlServer | 结束操作、投递关闭屏障、幂等奖励执行、平台任务授权、Finalize 与 Destroy 协调 | GameServer、StreamerServer、PlatformGateway、DataServer |
 | MatchCoordinator | ControlServer | ticket、预留、入场提交和撤销 | DataServer、GameServer |
-| LoginCoordinator / StreamerActor | StreamerServer | 登录流程、主播状态、挂载流程 | 平台验证、DataServer、ControlServer |
-| PlatformAdapter / TaskReconciler | PlatformGateway | 特定平台协议、外部操作重试、状态核对 | DataServer、官方 OpenAPI |
-| RoomRuntime | GameServer | 本局权威状态、Tick、玩家局内数据 | DataServer、GameModule |
-| Profile / Inventory / Ledger / Ranking | DataServer | 版本化资料、库存、流水、排名投影 | PostgreSQL |
-| DurableInbox / FrameStore / Settlement | DataServer | 接收回执、事件归属、帧记录、快照、结算 | PostgreSQL |
+| LoginCoordinator / StreamerActor | StreamerServer | 登录、主播状态、直播场次与挂载关系注册、下一局资格 | 平台验证、DataServer、ControlServer |
+| PlatformAdapter / EventDispatcher / TaskReconciler | PlatformGateway | 平台协议；路由安装确认、直接投递、排空确认；获授权的平台任务与结果核对 | ControlServer、GameServer、DataServer、官方 OpenAPI |
+| RoomRuntime / RoomActor | GameServer | 按 RoomId 定位实体；目标事件接收、输入代校验、Tick、终局与回收 | DataServer、GameModule |
+| ProfileStore / AssetStore / LedgerStore / RankingStore | DataServer | 按调用方明确请求读写资料、库存、流水、排名投影及事务约束 | PostgreSQL |
+| InputStore / FrameStore / SettlementStore | DataServer | 按已确定目标保存输入、帧、快照、奖励进度、回执及幂等事务；业务调度在调用方 | PostgreSQL |
 | Audit / OperatorAPI | ControlServer | 管理命令及审计；读取汇总状态 | 数据服务、控制库 |
 
 ### 3.3 通信图
@@ -128,12 +131,14 @@ flowchart TB
     SG <-->|登录与个人命令| SS[StreamerServer]
     SG <-->|输入与权威快照| GS[GameServer]
     SS -->|验证启动及管理平台任务| PG
-    PG -->|持久接收事件| DS[DataServer]
+    PG -->|按 RoomId 和 epoch 直接推送事件| GS
+    GS <-->|事件持久接收 帧提交 恢复| DS[DataServer]
     SS <-->|资料与事务命令| DS
-    GS <-->|输入读取 帧提交 恢复| DS
     CS[ControlServer] <-->|事务协调| DS
     CS -->|分配与路由| SS
-    CS -->|分配与路由| GS
+    SS -->|注册直播场次与挂载代| CS
+    CS <-->|路由版本与确认 关闭屏障 平台任务授权| PG
+    CS -->|分配 接管 结束与销毁| GS
     CS <-->|启动计划 状态汇报| NA[NodeAgent 每机一个]
     NA -->|本机进程监管| Roles[本机各业务进程]
     DS --> DB[(PostgreSQL 权威库)]
@@ -207,12 +212,14 @@ StreamerActor 内存状态：Loading → Ready → RetainingOffline → Deactiva
 
 ### 6.1 接收链路
 
-1. PlatformGateway 按 AppId 选择正确适配器并验签，保留原始事件最小必要内容及哈希。
-2. 以官方房间上下文定位 BindingId/Generation；查不到时重要事件进入持久 `UnresolvedInbox`，由对账处理，不伪造 Chorus session_id。
-3. DataServer 在一个事务中写事件、去重键与接收回执。回调成功只能发生在该事务提交后，按平台规定返回响应体。
-4. 已存在事件返回原回执。批次必须整体持久化或有平台支持的逐项回执；不能部分保存却确认整批。
-5. 持久路由器按挂载和当前对局生成 `DeliveryRecord`。通知 GameServer 可用于低延迟唤醒；失败由扫描游标补发。
-6. GameServer 读取属于本局的未消费输入并排序。Tick 提交时记录消费范围和结果。
+目标链路修订（2026-10-29，用户明确要求）：平台事件由 PlatformGateway 直接推送到对应房间。现有 RoomActor/ReadInbox 拉取实现待迁移，任务见 `todo.md` §22.9；下列为目标契约，不代表实现已完成。
+
+1. PlatformGateway 按 AppId 选择适配器验签，归一化事件并保留稳定 EventId 和必要来源证据。
+2. PlatformGateway 根据直播挂载及局边界确定 RoomId，再通过所有权目录解析 GameServer 地址和 epoch；事件首次固定的局归属在重试时不变。
+3. PlatformGateway 向目标 GameServer 的房间事件入口推送事件，携带 RoomId、owner epoch、EventId 和来源证据；RoomRuntime 定位对应 RoomActor。
+4. 接收端校验来源、归属、容量及 epoch，通过 DataServer 持久接收并去重后确认。平台成功回执必须以持久接受成功为前提；仅放入内存队列不能确认重要事件。
+5. RoomActor 串行处理已接受事件，Tick 提交原子记录输入消费、帧及效果；提交成功后发布状态。DataServer 提供持久化和恢复服务。
+6. 超时保持同一 EventId 查询或重试；StaleOwner 刷新目录后重投相同房间。无有效房间、队列满或存储不可用时显式待处理/重试，不静默丢事件。重启和接管从持久未消费记录补齐，此恢复读取不替代正常直接推送主链路。
 
 首期所有影响游戏状态的输入持久接收；纯展示数据可标记 BestEffort。点赞合并必须保留总量及明确窗口，礼物按官方订单/事件幂等语义处理，不根据“看起来相同”去重。没有稳定事件 ID 的类别必须使用经验证的批次/项标识或明示较弱保证，不能承诺严格去重。
 
@@ -233,6 +240,33 @@ PlatformTask 保存 DesiredState、ObservedState、OperationId、TaskEpoch、Att
 外部调用先落 Outbox，调用后记录回执；超时进入 OutcomeUnknown。支持官方幂等键时复用 OperationId；支持查询时查询后决定重试；既不可幂等又不可查询的操作停止自动重试，进入人工处理。
 
 epoch 不能取消已发往平台的旧 HTTP 请求。适配器应按挂载串行外部操作；重分配时等待旧请求截止时间、核对平台状态，再发冲突操作。不能在不支持 fencing 的平台上声称绝对单次执行。连屏失败按玩法能力配置决定拒绝开局或仅降级视频，不能伪装为游戏数据已同步。
+
+### 6.4 开局路由与结束销毁的确认顺序（2026-10-29 修订）
+
+本节为目标契约，尚未实现的步骤按 `todo.md` §22.10 逐项验收。业务收尾由 ControlServer 的持久结束协调器推进；StreamerServer 提供挂载事实并控制下一局资格；PlatformGateway 执行路由安装/撤销和平台调用；GameServer 管理房间执行及退出；DataServer 仅执行数据读写、事务约束和版本校验，不选择事件目标、不调度收尾或解释平台业务。
+
+**路由来源和首次生效：** StreamerServer 在挂载提交后向 ControlServer 注册已验证的平台直播场次、BindingId 和 Generation。匹配入场关系提交且 GameServer 确认 RoomActor 已准备接收后，ControlServer 组合挂载与 `RoomId→OwnerInstance/Endpoint/Epoch` 发布路由。PlatformGateway 安装并确认路由版本后，才能直接向房间推送事件。Gateway 启动/重连须先同步快照再接续版本更新；缺失或未确认路由不能猜测玩家所在房间。
+
+**结束的严格先后顺序：**
+
+| 步骤 | 发起与接收 | 必须持久保存的完成证据 | 下一步门槛 |
+|---|---|---|---|
+| 1. 冻结结果 | RoomActor 提交最终帧与结果，通知 ControlServer | RoomId、RoundGeneration、FinalTick、ResultVersion、EndOperationId | 最终结果已提交；RoomActor 停止战斗 Tick |
+| 2. 收尾输入窗口 | ControlServer 通知相关 Gateway 对该局进入 ClosingInput；GameServer 只接受收尾处置，不再改变胜负 | 路由版本、输入截止规则、已接受输入的处置进度 | 已受理的重要输入都能得到应用/补偿/明确拒绝等终态，不因停 Tick 丢失 |
+| 3. 请求关闭投递 | ControlServer 持久记录 StopDelivery 命令并发送给所有相关 PlatformGateway | 精确到 BindingGeneration、RoomId、RoundGeneration 的 CloseRouteVersion 和应答者集合 | 新推送已被接收端的输入代栅栏关闭；Gateway 停止向该旧局发新事件 |
+| 4. 确认内部关闭 | PlatformGateway 安装撤销路由，处理在途请求和本地待投递项，向 ControlServer 回报 DeliveryStopped | 当前 Gateway incarnation、CloseRouteVersion、结束操作 ID、截止序号/批次及排空结果 | 所有持有有效路由授权的 Gateway 均已确认；失联者须授权到期且接收端栅栏生效，在途输入有明确归宿 |
+| 5. 授权平台通知 | ControlServer 校验第 4 步证据，持久写入可执行的平台结束任务，通知当前任务执行者 | 任务关联同一 EndOperationId、挂载代和已完成的内部关闭屏障 | 屏障未完成的任务不可被 PlatformGateway 执行；仅创建 pending 命令不等于获准外呼 |
+| 6. 执行平台结束 | PlatformGateway 以该任务调用平台结束/解绑/结果接口，按适配器要求排序 | 平台请求操作 ID、官方响应/查询结果；不需要调用的类别记录 NotRequired 和能力依据 | 明确成功或 NotRequired 才完成平台收尾；超时为 OutcomeUnknown，不能当成功 |
+| 7. 完成业务释放 | ControlServer 确认平台收尾、输入终态和结算完成后，请求 FinalizeRound；StreamerServer 更新挂载资格 | 原子释放回执：参与关系、对应房间指针、占位、容量与 ownership | 事务已提交才可开放下一局；旧结束命令不能清除新 generation |
+| 8. 销毁运行实体 | ControlServer 要求 GameServer 回收对应 epoch 的 RoomActor；Gateway 清除旧局投递缓存 | DestroyRoom 幂等回执；注册表和订阅资源已释放 | 运行实体销毁完成；保留结果、账本、去重墓碑及必要路由历史 |
+
+关闭投递与最终结果是两个边界：最终帧之后不再改变胜负，但已经持久接受的重要事件仍须收尾处置。输入关闭使用独立的输入代/路由版本，不能通过提前撤销整个 room ownership 阻断合法收尾写入。
+
+**Gateway 确认的含义：** 已安装指定关闭版本、不再发起旧局的新推送、在途请求的未知结果已查询或转为可恢复待办、本地待投递项已有持久归宿。仅收到 RPC、消息已入内存队列或心跳健康都不构成 DeliveryStopped。网关实例集合来自有效路由授权记录，而不是“当前在线列表”；不能跳过一个离线但仍有投递资格的实例。授权过期/撤销与 GameServer 接收端栅栏共同防止旧 Gateway 恢复后继续投递。
+
+**失败处理：** ControlServer 在任意步骤重启，读取持久结束操作并继续原步骤，保持同一业务 ID。旧版本或旧实例的确认不能解除新版本屏障。平台调用结果未知时由 PlatformGateway 查询；无查询/幂等能力则进入 NeedsAttention，不盲发重复请求。平台失败不回滚已提交胜负或已发奖励；挂载仍保持禁止新局。人工处置必须有理由和审计回执，不能静默将失败记为成功。平台主动结束/解绑回调也进入同一协调流程，不能另走一条绕过内部投递关闭的销毁路径。
+
+同玩法换局只执行该平台要求的局级通知，不擅自解绑整场直播。玩法退出或直播结束才执行相应挂载级关闭；适配器必须区分这两类操作。平台在结束调用后仍可能重试旧事件，Gateway 保留旧归属及去重记录，按终态策略处置，不能改投新局或重新创建旧房。
 
 ## 7. 匹配、房间创建与跨节点入场
 
@@ -319,15 +353,15 @@ GameModule 是受信任的服务端逻辑包。输入为已规范化命令和 Ti
 
 ### 9.3 结算
 
-RoomActor 最后一帧在事务中写 `RoundResult + SettlementIntent` 并进入 Finishing。DataServer 结算器以 `RoomId + SettlementVersion` 幂等处理。
+RoomActor 最后一帧在事务中写 `RoundResult + SettlementIntent` 并进入 Finishing。业务结算执行者按 `RoomId + SettlementVersion` 请求 DataServer 幂等保存奖励及账本效果，执行者归属在整改任务中统一迁出 DataServer 宿主。
 
 小局可同事务结算全部奖励；大批观众采用固定、不可变奖励清单，每个 RewardGrant 独立幂等。只在全部完成或有明确终止处置后把 Settlement 标记 Complete。客户端可以看到 ResultCommitted 和 SettlementPending 的区别。
 
 结算中崩溃只重试未完成 grant，不能再次给全体发奖。排行榜消费已提交账本，平台榜上报经 Outbox；平台上报失败不会把内部胜负或资产回滚。
 
-`FinalizeRound` 由 DataServer 的持久终局协调器执行，不依赖原 GameServer 还活着。它验证结果已提交、ClosingInput 已关闭、旧局全部重要输入已有终态处置、奖励清单完整完成（或明确终止并形成补偿任务），在同一事务中设置 Room Settled、Participation 非活跃、清除仍指向本 RoomId/Generation 的 Binding.CurrentRoomId、释放匹配占位和房间容量、递增并撤销 Room ownership，同时写平台结束任务与结果通知。此终结事务是控制库授予数据服务的受限操作，与普通所有权操作遵循相同锁序；不能撤销已属于其他房间的占位。
+`FinalizeRound` 由 ControlServer 的持久结束协调器在 §6.4 内部投递关闭屏障、平台收尾、输入终态及结算条件完成后发起。DataServer 按明确请求，在事务中校验持久屏障凭据、结果版本和对象 generation，原子设置 Settled、关闭 participation、清除仍指向旧房间的挂载指针、释放容量及 ownership，并返回回执；不由 DataServer 主动解释或推进业务步骤。平台结束任务在 FinalizeRound **之前**获准执行，FinalizeRound 不再生成首次平台结束命令。
 
-FinalizeRound 之后在线且挂载仍健康的主播可进入下一局；离线主播保留结果查询后卸载。若平台关闭是下一局前置条件，挂载保持 AwaitingPlatformClose，待外部确认才可再次匹配。Room 在完成外部收尾或形成明确人工待办后变 Closed；结果、流水和未完成补偿不会随运行实体删除。
+原子释放成功后，StreamerServer 才开放下一局资格，GameServer 再回收旧 RoomActor。平台失败/未知时保持 AwaitingPlatformClose；进程故障不影响 ControlServer 从持久结束操作重试。结果、流水、去重和未完成补偿记录不随 Actor 销毁删除。
 
 ### 9.4 存储容量与归档
 

@@ -26,7 +26,7 @@ features:
 
 七类进程角色；一个 GameServer 管理多个房间，每个 RoomActor 串行推进自己的 Tick。图示为重设计架构，网关集成及生产验收仍在推进。
 
-平台事件先持久接收，并依据直播挂载与局边界归入对应 RoomId 的 Inbox；GameServer 内的 RoomActor 每 Tick 读取自己的输入，提交帧后确认消费。
+PlatformGateway 根据直播挂载、对局归属及所有权目录，将事件直接推送到目标 GameServer，由 RoomRuntime 投递给对应 RoomActor。GameServer 通过 DataServer 完成持久化与恢复。此为用户确认的目标链路，现有拉取实现的迁移见 TODO §22.9。
 
 ![Chorus 七类进程架构，以及 GameServer 内的 RoomRuntime 和多个 RoomActor](/images/architecture-zh.svg)
 
