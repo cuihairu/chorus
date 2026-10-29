@@ -55,7 +55,8 @@
 
 - [x] **FIX-TAKE-01：定义恢复与激活的权限矩阵。** 依赖：无。交付：在 `redesign-contracts.md` 明确 Allocated/Recovering/Active 的允许操作、超时和合法转换。验收：矩阵分别列出 LoadRecovery、恢复快照、CommitFrame、Subscribe、续租权限；恢复失败不得被解释为业务 Ready。
   - 完成：fde0726（contracts §6.2.1 新增矩阵与转换/超时段落）。验证：逐格对照实现语义——RedesignRoomStore（接管仅 from-Active、同事务 epoch+1 与 status='Recovering'；Confirm 仅点名 owner+租约未过期且幂等回读；Recovering 期间 LockRoomOwnershipAsync 全拒，含新 owner 的 PutSnapshot——矩阵将 Recovering 恢复快照写标注为仅点名 owner/epoch 的目标契约，由 FIX-TAKE-02 实现，现行全拒在 todo 未勾项如实保留）；LoadRecovery 只读；续租由控制面代续（redesign-m3-implementation.md 15s/5s）。恢复失败不解释为 Ready 已写入矩阵下方约束段。
-- [ ] **FIX-TAKE-02：提供受限的恢复快照写入。** 依赖：FIX-TAKE-01。交付：Recovering 状态仅允许指定 owner/epoch 提交校验后的恢复快照。验收：新 owner 可保存恢复头；旧 owner、错误 epoch 和普通帧写仍被拒，不能借该入口绕过帧栅栏。
+- [x] **FIX-TAKE-02：提供受限的恢复快照写入。** 依赖：FIX-TAKE-01。交付：Recovering 状态仅允许指定 owner/epoch 提交校验后的恢复快照。验收：新 owner 可保存恢复头；旧 owner、错误 epoch 和普通帧写仍被拒，不能借该入口绕过帧栅栏。
+  - 完成：308437b（m2 FrameStore 增 PutRecoverySnapshot；RedesignRecoveryStore.PutRecoverySnapshotAsync——fence 参数化为要求 ownership='Recovering' 且点名 owner+epoch+租约，room 仍须 Running 且 tick=头部，快照行与 PutSnapshot 同表 verified=true；写入不改变 Recovering 状态；FrameGrpcService 仅 game-server 角色放行）。验证：`--filter RedesignRecoveryStoreTests` 4/4 绿——Recovering 下新 owner 在头部钉住校验快照（幂等重放 Duplicate），旧 owner/错误 epoch/非头 tick 全拒，帧写与普通 PutSnapshot 对新 owner 也仍被拒，ownership 保持 Recovering；Active 下该入口拒、Confirm 后入口关闭而原操作回执仍可重放、帧栅栏经 Confirm 重开新 owner 可提交。定向回归 5/5 绿（M3 接管 store/host + RoomStore）。
 - [ ] **FIX-TAKE-03：恢复成功后原子激活。** 依赖：FIX-TAKE-02、FIX-ROOM-03。交付：去掉恢复 RPC 前的 Active 确认，按恢复凭据执行 fenced 激活。验收：恢复失败不出现 Ready/Active 假成功；重复确认返回同一激活结果；恢复期间旧 owner 仍不可写。
 - [ ] **FIX-TAKE-04：持久记录恢复操作。** 依赖：FIX-TAKE-01。交付：保存 OperationId、目标 owner/epoch、阶段、期限、进度及最后错误。验收：控制面重启可查询并继续原操作，不凭 RPC 超时认定未执行，不使用新 ID 重复转移 epoch。
 - [ ] **FIX-TAKE-05：回收超时恢复任务。** 依赖：FIX-TAKE-03、FIX-TAKE-04。交付：后台检查过期 Recovering 操作并执行契约规定的暂停或重新分配。验收：目标进程活着但恢复未完成时任务仍能超时；不会无限续期，也不会把旧 epoch 重新启用。
