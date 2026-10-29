@@ -1,5 +1,7 @@
 # TODO
 
+当前架构审查的可独立验收任务见 [§22：架构审查整改](#22-架构审查整改原子任务2026-10-29)，每项附依赖与验收条件；§21 保留实施历史。
+
 ## 0. 仓库基础
 
 - [x] 建立 solution 与包结构（11 csproj + 测试工程，`d32e1bc`）
@@ -391,3 +393,119 @@
 - [x] M4-2 WSS 登录/恢复/登出 + SessionReplaced 双腿 + m1 tenant_id 增量（`ecdc9a5`）：**会话三上行/两下行接入 EdgeWs 分发循环**——loginWithPlatformLaunch（网关先 TenantApplicationMap 本地解析 app，未映射不出进程；secret<32B=违规；RPC 成功 MarkSession 落事实+下发 loginReady 全字段）、resume（网关不携 tenant——resume 无 appId 只有会话知道租户，StreamerSessionGrpcService 对 @cluster 调用方经新 GetSessionTenant 服务器侧解析；auth.rotation 重试窗幂等重放同 grant）、logout（无会话 no_session 不关连接；coordinator ValidateAccess→新 RevokeSession（幂等 Applied=false 二次；撤销同时清 streamer_state.current_session_id——无后继撤销不得仍报 Current，版本计数保留不回退）→actor 关连接；网关撤销落库后才 NormalClosure；无下行 ack）。**SessionReplaced 双腿**：主动=Login/Resume grant 事务撤销旧行前回读 previous_{session,gateway,connection,generation}（复用既有 FOR UPDATE 锁零新竞态）→coordinator 过滤"请求者自己的连接"（原地 resume 不自踢）→SessionReplacedNotifier（路由快照查 streamer-gateway 端点→NotifySessionReplaced 3s/2s best-effort）→旧网关经连接串行 lane 推 sessionReplaced 再关 1008；被动=RPC 状态→错误码映射（PermissionDenied→session_revoked、FailedPrecondition→session_replaced），未注册路由拓扑退化为被动腿。**串行下行 lane**：EdgeConnection SemaphoreSlim+AttachTransport(send,close) 委托——分发回帧与替换通知不可能在 socket 交错。**m1 增量**：7 请求 tenant_id additive（Login/Resume/AttachConnection/ConnectionClosed/ValidateAccess/StartGameplay/GameplayStatus）+RequireAsync 放行 streamer-gateway+TenantFor 栅栏沿 M3；新 Logout RPC、StreamerIdentity.RevokeSession/GetSessionTenant、SessionGrantReply.previous_*、LoginReadyReply.resume_registered；上行 DTO 补 type 判别（上行序列化必须含 type 否则信封检查拒）。测试 +16（1264→1280）：store 3（previous 回读/duplicate 不 displacement、Revoke 幂等+点名 displaced、撤销即刻可见）、host 9（四宿主+网关全链；node 由 node-agent RegisterNode 预置——无 node 行自报被 StaleAgent 拒、路由空则主动腿无端点；二次 login 挤掉首连接 1008、logout 后 secret 失效、resume rotation+duplicate 不再 displacement+旧连接仍应答 ping、no_session 分级、未映射 app 边缘本地拒、坏凭据后连接可用、AT32 泄密扫描（AllHostOutput 新聚合）、已花 secret 不再开 rotation）、单元 4（JSON 逐字段/RequiresSession 分级/RPC 映射/错误码钉死）。门禁 1280/1280 负载谷定局（外部负载下 M3-7 outbox 零延迟读两翻车，按 37538e9 先例改收敛等待 `74ab15c`）。残留 0。下一项：M4-3 StartGameplay/JoinQueue/CancelQueue 上行 + GameplayStatus/MatchStatus 下行 + EdgeRoutingMonitor（WatchRouting）。
 - [x] M4-3 StartGameplay/JoinQueue/CancelQueue 上行 + GameplayStatus/MatchStatus 下行 + EdgeRoutingMonitor（`87f6ae3`）：**挂载/排队上行三连 + 状态下行两连**（contracts §3.1/§3.2），身份注入不变式——tenant/binding/session 全来自认证后连接事实，上行身份字段一律忽略。startGameplay→m1（MarkGameplay 落 bindingId/gameId/rulesVersion；未映射 game→session_revoked 连接保持；duplicate 报 reason）；joinQueue→MatchQueue EnqueueTicket，**分区=网关可命名的四事实** `tenant/game/rulesVersion|"-"/queueType`（EdgeQueueKeys——options 不放宽窗口、缺 rules 显式 `-` 段）；cancelQueue 按 binding 寻址（ticketId/version 是诊断）→matchStatus{Cancelled}；未挂载先排队双拒 invalid_message。票态客户端词汇 `Committed→Matched`（EdgeMatchStates）。**EdgeRoutingMonitor**：WatchRouting 常驻循环（RoutingMonitorHost BackgroundService）→版本变化全量拉快照→ApplySnapshotAsync 记 room、每订阅者**变化才回调**（首 apply 报当前房间含 ""；回调离锁）；RoomFor 备 M4-4；**版本语义踩坑**——路由版本是 FNV-1a 内容散列非单调（首版 `<=` 门负散列下监视静默失明，配对测试当场抓获；改 `==` 跳 `!=` 拉："不同"才是变化信号）；**Matched 推送收敛窗**——房间 start 即路由可见、ticket 到 CommitMatch 才 Committed（隔 prepare 往返），OnRoomRoutedAsync claim 后收敛读（Reserved/Preparing 每 150ms 再读 15s 上界；Committed 即推 matchStatus{Matched,reservationId,roomId}；Queued/Cancelled/Expired/无票静默退出待新房间再触发）；TryClaimRoomNotice 每房间一次。**队列错误映射** FromQueueRpcStatus（FailedPrecondition/InvalidArgument→invalid_message——队列态拒绝不借 session_replaced；PermissionDenied→session_revoked）。EdgeJson 补 WhenWritingNull（可选字段缺省即缺席）。MatchQueueGrpcService Enqueue/Cancel/GetTicket 放行 streamer-gateway（List/Expire/ListPartitions 仍 coordinator-only）。测试 +10（1280→1290）：host 6（startGameplay 挂载+连接可用；**双边缘客户端自动配对**——withMatchmaker 起 coordinator+GameServer（M3-5 拓扑），双 Queued 回、双 **Matched 推送**同 room/reservation/ticket；cancelQueue 撤票连接可用；先排队后挂载双拒；未映射 game 拒；重复 joinQueue 重放同票）+ 单元 4（JSON 逐字段含 rulesVersion 缺席钉死/分区合成/票态+队列映射/监视每变化一次）。门禁 1290/1290 负载谷定局（轮内配对测试先抓出 watch 版本门与推送收敛窗两个跨平面时序缺陷，修后全量一次过）。残留 0。下一项：M4-4 RoundSync 扇出 + RoomJoined/Snapshot/Delta/RoundResult/ResyncRequired/RoomSuspended + Ack 基线 + requestSnapshot + EdgeOutbox 接线。
 - [x] M4-4 RoundSync 扇出 + RoomJoined/Snapshot/Delta/RoundResult/ResyncRequired/RoomSuspended + Ack 基线 + requestSnapshot + EdgeOutbox 接线（`c2c3101`）：**下行六连 + 上行两连**（contracts §3.2/§3.1；AT06/AT15 客户端面单机闭合）。`EdgeRoomFanout`——每房间一条 RoundSync 订阅共享全部座位；**generation 计数**防被取代读者终结替代者（cancel-never-dispose CTS）；ResultDelivered→流静默收房（正常终局不误报 resync）；StreamFailures<3 同 epoch 断流重试；流尽无果 ResolveOrEndAsync 重解析（routing+round store 合成）——Suspended→`roomSuspended{reason,recoveryAttempt=epoch}`、epoch 移动→更新事实+重置 JoinedSent+按 (0,0) 重订阅、其余→`resyncRequired`+移房（gRPC 取消面为 RpcException，泛 catch 先看 IsCancellationRequested）。**结构性排序**：roomJoined 不能坐有序队列（outbox 先排快照槽后有序队列，pending snapshot 会超车）——per-room dispatch gate 内先 await 直发 roomJoined 再入队帧，顺序由构造保证。座位基线=连接 AppliedRoomId 匹配则 (tick,version) 否则 (0,0)；head 座位骑 delta、晚到座位强制全房重基线（下次快照非猜缝）。ack 上行→MarkApplied 静默落连接事实（无回帧）；resume 重进房 TryRejoinRoomAsync（routing 房间→route.TenantId→GameplayStatus 恢复 binding→按 BindingId 匹配 participation）；requestSnapshot 重基线 (0,0)、未知房拒。`EdgeRoundClient`（round store 只读 + SubscribeStream 迭代器）+ `EdgeGameChannelPool`（per-endpoint 引用计数，StreamClosed 平衡释放——含 subscribe 抛出路径）。角色放行：RoundSyncGrpcService/GetRound +streamer-gateway。**本轮主缺陷（GetRound 租户坑）**：game.room 键 (tenant,game,room) 而 GetRoundRequest 无 tenant 字段——网关 @cluster 证书回退自身租户→found=False→join 窗静默 15s 零帧（探针测试抓出：路由行健康、round 查询落空）；修=m2 additive `tenant_id=3` + `TenantFor(caller,requested)` 沿 M3 栅栏，网关传 routing 行 TenantId（既有空字段调用行为不变）。测试 +9（1290→1299）：单元 4（脚本化流驱动状态机——链序 roomJoined→snapshot→delta→roundResult/晚座位重基线全房重听/epoch 移动重订阅重宣告/Suspended vs 房间消失两腿）+ host 5（四宿主+网关+coordinator+GameServer 自报 game-1 全链：完整链到 result（delta baseVersion 链式）；断线 resume 重进房拿新快照；requestSnapshot 重基线+未知房间拒；650 ack 洪水静默且链不断（ping-pong 后续可用）；FailAfterTick 挂起房→roomSuspended recoveryAttempt==epoch）。门禁 1299/1299 负载谷定局（三线同低起跑 l=6.42/8.60/10.95）。残留 0（进程/`chorus_m%` 库）。下一项：M4-5 GameCommand→AcceptClientInput→CommandReceipt + LeaveRound/WithdrawParticipation（§3 全闭合）。
+
+## 22. 架构审查整改：原子任务（2026-10-29）
+
+来源：本轮架构与 GameServer 房间管理审查。基线：`23e147f`，并核对当日工作区；本节只登记计划，不表示已实现或已通过测试。适用于重设计的 GameServer / ControlServer / DataServer，不把旧 EngineHost 的同名能力折算为完成。
+
+当前差异：新版 StreamerGateway 的登录、挂载、排队、RoundSync 扇出及 ACK/resync 已由 M4-1～M4-4 落地，不重复开工；工作区中的 M4-5 GameCommand / LeaveRound 继续由 §21 跟踪。下列帧重试、Actor 回收、恢复激活、结算后台及容量问题在本次复核中仍存在。
+
+执行纪律：
+
+- 每个复选框对应一个可独立评审、可独立判定通过的交付件；不把整组、整个阶段设为一个复选框。
+- 每项完成后在该条末尾追加：`证据：提交 hash；测试名称/验证命令；结果；报告路径（如适用）`。只有文档描述、测试文件存在或全量通过计数，不能代替该项验收。
+- 验收测试必须实际执行；环境变量导致测试直接 return、缺少数据库或故障节点时，保持未勾选并注明 NOT RUN 和缺少的条件。
+- 实现项包含其定向行为验证；独立故障注入、性能和外部环境任务另行勾选。代码完成但专门故障验收未完成时，不宣称整条恢复链闭合。
+- `P0` 为正确性/恢复闭环优先，`P1` 为容量与运行治理，`P2` 为扩展与发布证据。优先级不是对所有故障严重性的替代；依赖编号决定执行先后。
+- 无依赖项可独立开始；涉及契约的实现必须等对应契约项完成。环境验收与 §21 / AT 编号共用证据，不重复执行相同场景。
+
+### 22.1 帧提交结果未知：冻结请求再重试（P0）
+
+代码入口：`src/Chorus.GameServer/RoomActor.cs`、`src/Chorus.DataServer/FrameGrpcService.cs`、`RedesignFrameStore.cs`。当前风险：提交成功但响应丢失后重新读取 Inbox，以原 CommitId 提交不同内容，引发幂等冲突并停房。
+
+- [ ] **FIX-FRAME-01：保存待确认帧。** 依赖：无。交付：Actor 保存原输入、完整 CommitFrame 请求、候选状态和待发布内容。验收：同一提交未确认时不再次读取 Inbox 或执行 ApplyTick；连续两次发送的规范化业务请求完全相同。
+- [ ] **FIX-FRAME-02：确认成功后只推进一次。** 依赖：FRAME-01。交付：Committed/Duplicate 回执均完成同一待确认帧，再清除 pending。验收：响应重放不重复推进 StateVersion、不重复发布命令回执或结果，发布状态与已提交 StateHash 一致。
+- [ ] **FIX-FRAME-03：区分暂时故障与确定拒绝。** 依赖：FRAME-01。交付：未知结果按原请求有界退避，StaleOwner/请求冲突停止推进并记录原因。验收：Unavailable 后仍重试原请求；旧 epoch 被拒后不再发新帧；取消能结束重试循环。
+- [ ] **FIX-FRAME-04：注入“提交成功、响应丢失”。** 依赖：FRAME-01、02、03。交付：真实 RoomActor→DataServer 故障测试，在 DB commit 后丢弃响应。验收：房间继续到终局，DB 每 tick 一帧、每输入一次消费、每效果一份；客户端链连续且最终状态与 DB 一致（AT14/27）。
+- [ ] **FIX-FRAME-05：注入“提交未完成、新输入到达”。** 依赖：FRAME-01、02、03。交付：提交前断连/回滚期间追加另一输入的测试。验收：旧 pending 帧原样重试，新输入只进入之后的帧，不能被混进原 CommitId。
+
+### 22.2 本地房间生命周期与回收（P0）
+
+代码入口：`src/Chorus.GameServer/RoomRuntime.cs`、`RoomActor.cs`。当前风险：字典中存在 Actor 被当作正在运行；停止 Actor 和终局 Actor 长期驻留。
+
+- [ ] **FIX-ROOM-01：显式记录 Actor 执行状态。** 依赖：无。交付：区分 Running、Stopped/Suspended、Completed、Disposed，暴露实际 epoch、最后提交 Tick 和停止原因。验收：正常终局、模块失败、fencing 拒绝分别得到正确状态；未提交终局不能被标为 Completed。
+- [ ] **FIX-ROOM-02：校验恢复入口的已有 Actor。** 依赖：ROOM-01。交付：RecoverRoom 对已有对象检查 epoch 和循环状态。验收：仅同 epoch 且实际运行中的 Actor 返回 Running；停止对象不返回恢复成功；返回的 LastTick 为真实头部。
+- [ ] **FIX-ROOM-03：串行化同房间的创建与恢复。** 依赖：ROOM-02。交付：每 RoomId 的激活协调，覆盖 Prepare 与 Recover 交错。验收：并发请求只启动一个有效 Tick 循环；冲突请求可见拒绝；失败后释放激活门，后续合法重试可执行。
+- [ ] **FIX-ROOM-04：移除退出的 Actor。** 依赖：ROOM-01、03。交付：循环退出后按对象身份条件移除注册项并释放资源。验收：旧 Actor 延迟退出不删除同 RoomId 的新 Actor；订阅流能结束；重复释放不抛异常。
+- [ ] **FIX-ROOM-05：有界保留终局查询能力。** 依赖：ROOM-04。交付：独立有期限/数量上限的结果缓存，或持久结果查询回退。验收：Actor 回收后仍能查询最终结果；超过保留上限不会保留完整 Actor；晚到订阅行为有明确契约。
+- [ ] **FIX-ROOM-06：验证同进程二次接管。** 依赖：ROOM-02、03、04。交付：A→B→A 房间迁移测试。验收：A 使用新 epoch 从持久头恢复，旧对象不阻止激活、不恢复旧状态，始终只有一个可提交者。
+- [ ] **FIX-ROOM-07：验证长时间房间周转。** 依赖：ROOM-04、05。交付：连续创建/结束/回收房间的 soak 报告，记录轮数、活跃 Actor、缓存项、订阅数和内存趋势。验收：静置回收后 Actor/订阅计数回落，缓存不超上限；无随历史房数线性增长的存活 Actor。
+
+### 22.3 接管状态、就绪与活性（P0）
+
+代码入口：`src/Chorus.ControlServer/TakeoverGrpcService.cs`、`RedesignControlStore.cs`、`src/Chorus.DataServer/RedesignRoomStore.cs`。当前风险：恢复 RPC 前已 Confirm 为 Active；目标进程存活即可续租，不能说明房间恢复成功。
+
+- [ ] **FIX-TAKE-01：定义恢复与激活的权限矩阵。** 依赖：无。交付：在 `redesign-contracts.md` 明确 Allocated/Recovering/Active 的允许操作、超时和合法转换。验收：矩阵分别列出 LoadRecovery、恢复快照、CommitFrame、Subscribe、续租权限；恢复失败不得被解释为业务 Ready。
+- [ ] **FIX-TAKE-02：提供受限的恢复快照写入。** 依赖：TAKE-01。交付：Recovering 状态仅允许指定 owner/epoch 提交校验后的恢复快照。验收：新 owner 可保存恢复头；旧 owner、错误 epoch 和普通帧写仍被拒，不能借该入口绕过帧栅栏。
+- [ ] **FIX-TAKE-03：恢复成功后原子激活。** 依赖：TAKE-02、ROOM-03。交付：去掉恢复 RPC 前的 Active 确认，按恢复凭据执行 fenced 激活。验收：恢复失败不出现 Ready/Active 假成功；重复确认返回同一激活结果；恢复期间旧 owner 仍不可写。
+- [ ] **FIX-TAKE-04：持久记录恢复操作。** 依赖：TAKE-01。交付：保存 OperationId、目标 owner/epoch、阶段、期限、进度及最后错误。验收：控制面重启可查询并继续原操作，不凭 RPC 超时认定未执行，不使用新 ID 重复转移 epoch。
+- [ ] **FIX-TAKE-05：回收超时恢复任务。** 依赖：TAKE-03、04。交付：后台检查过期 Recovering 操作并执行契约规定的暂停或重新分配。验收：目标进程活着但恢复未完成时任务仍能超时；不会无限续期，也不会把旧 epoch 重新启用。
+- [ ] **FIX-TAKE-06：建立房间进度信号。** 依赖：ROOM-01。交付：报告最后提交时间、Tick、恢复阶段和停止原因，和 ProcessReady 分开展示。验收：宿主继续心跳但某房 Actor 停止时，该房被识别为停滞，其他房仍显示正常。
+- [ ] **FIX-TAKE-07：按房间进度触发恢复治理。** 依赖：TAKE-05、06。交付：定义并实现停滞阈值、暂停/重试策略，保留进程租约与业务活性的区别。验收：单房停止不会被进程心跳永久掩盖；短暂慢帧不会导致反复迁移；旧写仍由数据面 fencing 拒绝。
+- [ ] **FIX-TAKE-08：验证接管各阶段中断。** 依赖：TAKE-03、04、05。交付：分别在转移后、恢复中、恢复完成未确认、确认响应丢失时 kill 的故障测试。验收：每个注入点均可按持久操作收敛；没有假 Ready、重复激活或永久 Recovering（AT25/28 单机部分）。
+
+### 22.4 恢复读取的一致性与规模（P1）
+
+代码入口：`src/Chorus.DataServer/RedesignRecoveryStore.cs`。当前风险：读取所有快照、所有 delivery 及最老快照后的帧；多查询缺少一致性视图，恢复成本随整局历史增长。
+
+- [ ] **FIX-READ-01：固定恢复读取视图。** 依赖：无。交付：在一致性读取视图内确定房间 epoch、LastTick、StateVersion 和恢复材料；分页方案须定义不可变恢复边界。验收：并发提交时返回材料只覆盖选定 head，不混入之后的帧或不匹配状态。
+- [ ] **FIX-READ-02：先读取最新候选快照。** 依赖：READ-01。交付：正常路径只读有限候选及候选到 head 的帧，不从最老快照起全量扫描。验收：构造长局后，返回的帧数量受快照间隔约束；明确记录查询行数/返回字节数。
+- [ ] **FIX-READ-03：按需读取重放输入。** 依赖：READ-02。交付：仅加载选定帧引用的输入及必要参与关系。验收：大量历史 delivery 不增加本次无关输入载荷；重放状态哈希与原执行相同。
+- [ ] **FIX-READ-04：逐级回退损坏快照。** 依赖：READ-02、03。交付：候选失败后按需请求更早快照及增量材料。验收：最新损坏可回退、全部损坏明确 RecoveryFailed；不能跳过缺帧或把未验证材料标为成功。
+- [ ] **FIX-READ-05：限制单次恢复传输大小。** 依赖：READ-01、02、03。交付：分页或流式恢复契约，规定字节/条数上限和可取消行为。验收：超过一页的恢复完整成功且无重复/遗漏；取消后释放资源；不依赖无限增大 gRPC 消息上限。
+- [ ] **FIX-READ-06：验证清理与恢复并发。** 依赖：READ-04、05。交付：恢复读取与 Retention 并发测试。验收：固定恢复链不会中途被剪断；若材料不可用则明确重启恢复，不发布部分恢复状态（AT19/21）。
+
+### 22.5 结算与终局释放自动闭环（P0）
+
+代码入口：`src/Chorus.GameServer/RoomRuntime.cs`、`src/Chorus.DataServer/RedesignSettlementStore.cs`、DataServer 宿主。当前风险：GameServer 尝试一次 CommitResult 后吞掉 RPC 异常；尚无持续驱动奖励补齐与 FinalizeRound 的宿主后台任务。
+
+- [ ] **FIX-SETTLE-01：查询待完成结算。** 依赖：无。交付：可分页定位已有不可变结果但奖励未完成的房间。验收：未提交结果的房间不入队；失败/部分完成的清单可重新发现；查询不随全历史无界返回。
+- [ ] **FIX-SETTLE-02：增加结算后台执行器。** 依赖：SETTLE-01。交付：DataServer 宿主定期处理待完成清单，复用逐笔幂等账本入口。验收：GameServer 在最终帧提交后立即退出，奖励仍能自动全部完成，不要求客户端或人工再次调用。
+- [ ] **FIX-SETTLE-03：多执行器并发与失败退避。** 依赖：SETTLE-02。交付：任务领取/重领及有界重试机制；单个失败清单不阻塞其他房。验收：双 DataServer 并发、执行中 kill 后，每笔账本仍只有一个效果；失败原因和下次尝试可查询。
+- [ ] **FIX-SETTLE-04：自动驱动 FinalizeRound。** 依赖：SETTLE-02。交付：奖励完成后检查收尾条件并调用既有原子释放事务。验收：无需示例程序调用即可从 Finishing 到 Settled；挂载指针、参与关系、容量和 owner 按同一事务释放。
+- [ ] **FIX-SETTLE-05：暴露终局阻塞原因。** 依赖：SETTLE-04。交付：未处置重要输入、未完成奖励或平台前置条件等阻塞原因可查询。验收：前置条件未满足时不能强行 Settled；条件解除后后台自动继续；记录停留时长。
+- [ ] **FIX-SETTLE-06：验证自动收尾后再次开局。** 依赖：SETTLE-03、04、05。交付：结算中断恢复后使用同一挂载开启下一局的宿主测试。验收：首局奖励不重复、占位无泄漏、第二局正常接收输入并结束（AT20）。
+
+### 22.6 实时性、容量与负载治理（P1）
+
+依据：`redesign-m2-implementation.md` 的开发机基准仅证明完成和持久一致性，不能证明 100 房 × 20 Hz 达标。必须保留失败样本，不以减少承诺或跳过测试方式标绿。
+
+- [ ] **FIX-PERF-01：增加 Tick 分段耗时。** 依赖：无。交付：记录 Inbox RPC、ApplyTick、CommitFrame RPC、序列化及整轮延迟。验收：人为延迟某一阶段时对应分位数上涨，计数不混合不同指标；指标标签避免无界 RoomId。
+- [ ] **FIX-PERF-02：增加存储等待诊断。** 依赖：无。交付：记录连接获取、SQL/锁等待和事务提交诊断。验收：连接池饱和与行锁阻塞两个实验可区分，报告不把全部耗时统称为数据库慢。
+- [ ] **FIX-PERF-03：重建同步起跑基准。** 依赖：PERF-01、02。交付：全部房间准备好后按共同起点运行，固定预热与采样窗口；输入发生器独立记录计划量、实发量及积压。验收：100 房存在明确共同活跃窗口，无法达到计划输入时报告失败/不足，不用实际低流量替代目标。
+- [ ] **FIX-PERF-04：建立可失败的性能门槛。** 依赖：PERF-03。交付：将目标架构 100 房/20 Hz、Tick 与提交延迟预算写入显式容量验收配置。验收：注入超预算延迟后验收返回失败；未启用容量测试明确显示 NOT RUN，不算通过；环境和持续时间写入报告。
+- [ ] **FIX-PERF-05：定位并优化一个已测瓶颈。** 依赖：PERF-01、02、03。交付：基于测量只处理首要瓶颈，记录候选原因、改动和同环境 A/B。验收：报告提交延迟、吞吐和资源变化；帧/输入/奖励一致性不回退。后续不同瓶颈必须新建独立任务，不在本条无限追加。
+- [ ] **FIX-PERF-06：实现持续超预算策略。** 依赖：PERF-01。交付：明确补跑上限、连续超预算窗口和降级/暂停行为。验收：持续慢提交可观测地进入策略，不能长期以 Running 静默无限减速；策略不发布未提交帧、不丢重要输入。
+- [ ] **FIX-PERF-07：实现单 GameServer 准入预算。** 依赖：ROOM-01、PERF-01。交付：按活跃房间和测得的负载预算拒绝新分配，配置非法值显式失败。验收：饱和实例拒绝新房但继续已有房；并发 Prepare 不突破上限；失败创建释放容量。
+- [ ] **FIX-PERF-08：执行 100 房同时恢复基准。** 依赖：READ-05、TAKE-08、PERF-03。交付：测量检测、排队、读取、重放、激活的分布和峰值内存。验收：与事先写明的恢复 SLO 比较；容量不足时明确排队/拒绝，无假成功或 OOM；独立节点失电证据仍由 ENV-01 验收。
+
+### 22.7 调度与模块边界（P1/P2）
+
+- [ ] **FIX-SCHED-01 / P1：接通动态 GameServer 目录。** 依赖：无。交付：ClusterDirectory 使用有效进程报告维护实例和端点，替代仅静态配置。验收：新增/重启实例不需重启 ControlServer 即可发现；旧实例地址失效后不继续用于新分配。
+- [ ] **FIX-SCHED-02 / P1：按就绪与容量选择目标。** 依赖：SCHED-01、PERF-07。交付：调度过滤过期、NotReady、Draining 和容量不足实例。验收：这些实例均不接新房；已有房不会仅因停止准入而被强制终止。
+- [ ] **FIX-MODULE-01 / P2：定义持久模块恢复身份。** 依赖：无。交付：统一 PackageHash、ModuleVersion、ConfigHash、状态 schema、Tick 间隔和恢复模式的权威来源。验收：恢复请求不得任意改变原局 Tick/config；契约写明缺包或不兼容的错误。
+- [ ] **FIX-MODULE-02 / P2：按持久身份加载玩法。** 依赖：MODULE-01。交付：Prepare/Recover 通过模块注册/加载入口替代硬编码 ExampleGameModule。验收：两种测试模块可分别开局；缺失指定包明确拒绝，不回退到默认示例模块。
+- [ ] **FIX-MODULE-03 / P2：遵守 FullCheckpoint 恢复模式。** 依赖：MODULE-02。交付：每帧是否携带完整 checkpoint 由恢复模式决定，不能对 FullCheckpoint 仅周期保存。验收：非确定性测试模块每个已提交 tick 均有同事务 checkpoint；中断恢复不依赖确定性重放。
+- [ ] **FIX-MODULE-04 / P2：验证升级后恢复旧局。** 依赖：MODULE-02。交付：保留旧包恢复窗口并提供升级场景测试。验收：新局使用新版本，旧局仍按原包/config 恢复；删除旧包时明确拒绝且不产生错误帧（AT17 单节点部分）。
+
+### 22.8 权威语义与外部验收（P1/P2）
+
+- [ ] **FIX-AUTH-01 / P1：明确 Streamer 所有权语义。** 依赖：无。交付：对齐架构、协议和管理接口说明，区分路由 ownership 与 session 轮换写栅栏。验收：明确 TransferStreamer 与 Resume 各自何时改变路由/撤销旧权限，不声称仅转移 ownership 即撤销会话。
+- [ ] **FIX-AUTH-02 / P1：防止迟到声明污染 Streamer 路由。** 依赖：AUTH-01。交付：声明路由归属时校验其对应的当前 session/version，或采用同等有版本投影规则。验收：新会话在 B 生效后，A 的迟到 Claim 不把路由改回 A；合法的新登录仍可接管。
+- [ ] **FIX-ENV-01 / P2：独立机器分区接管验收。** 依赖：TAKE-08、FRAME-04、ROOM-06。环境：至少两个独立故障域及可控网络。验收：旧 owner 仍能访问 Data/客户端、但无法访问 Control 时，新 owner 接管后旧 epoch 新写被拒；记录检测至恢复分布（AT24/25/28）。缺环境保持 NOT RUN，SIGSTOP 不替代此项。
+- [ ] **FIX-ENV-02 / P2：数据库主备故障验收。** 依赖：无；环境：独立同步备库及可隔离旧主的操作能力。验收：主库故障、同步备库失联、旧主恢复分别验证已确认事务保留与无双写；记录实际 RPO/RTO（AT26），复用 §19 的基础设施准备证据。
+- [ ] **FIX-ENV-03 / P2：Linux/Windows 双向重放验收。** 依赖：MODULE-02；环境：两个真实运行环境。验收：同一模块版本快照/日志双向重放哈希一致；不通过的模块明确限制恢复域或使用 FullCheckpoint，不能标为跨 OS 确定性通过（AT16）。
+- [ ] **FIX-ENV-04 / P2：Windows 进程树实机验收。** 依赖：无；环境：Windows 目标节点。验收：Agent 崩溃重启后回收子孙进程，不误杀 PID 复用进程；输出安装/启动/回收证据（AT29、§21 M0 剩余出口）。
+- [ ] **FIX-ENV-05 / P2：抖音生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。验收：独立报告覆盖登录验证、签名反例、回调回执、稳定去重键及未知外部调用结果策略；全部通过后才解除该适配器 NotProductionReady（AT02/07/09）。
+- [ ] **FIX-ENV-06 / P2：快手生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。验收：独立报告覆盖登录验证、签名反例、回调回执、稳定去重键及未知外部调用结果策略；全部通过后才解除该适配器 NotProductionReady（AT02/07/09）。
+
+建议起点：先做 FRAME-01 和 ROOM-01；TAKE-01、SETTLE-01、READ-01 可独立准备。禁止用本节任务数量或单元测试总数替代 AT 出口判定。后续发现新问题追加新编号，不把新工作藏进已勾选项。
+
+### 22.9 平台事件到房间的输入闭环（P0/P1）
+
+图示中的 DataServer→GameServer 箭头表示 ReadInbox 的响应数据方向，由 RoomActor 主动读取；不能据此声称已有主动事件推送。当前新版 PlatformGateway 主要接通平台任务执行，IngestBatch、RouteEvents 与房间消费的生产宿主链路仍需分别验收。
+
+- [ ] **FIX-INPUT-01 / P0：接通平台入口的持久接收。** 依赖：无。交付：新版 PlatformGateway 将适配器验签/归一化后的事件提交 IngestBatch，提交成功才向平台确认。验收：接收事务前后分别 kill，已确认事件仍存在；同批重试不新增重复记录；存储不可用时不返回成功回执（AT07）。
+- [ ] **FIX-INPUT-02 / P0：自动驱动事件归房。** 依赖：INPUT-01。交付：持久扫描尚未处置事件并调用既有归房事务，按直播挂载与局边界固定目标 RoomId。验收：宿主重启后自动继续；迟到旧局事件不进入新局；无匹配归属和冲突分别形成可查询处置，不永久静默积压（AT05/08）。
+- [ ] **FIX-INPUT-03 / P0：验证平台事件到 RoomActor 的全链路。** 依赖：INPUT-02、FRAME-04。交付：经新版 PlatformGateway 接收模拟平台事件，由真实房间 ReadInbox 消费并提交效果的宿主测试。验收：两个并发房间只有目标房收到该输入；重复事件只产生一次效果；数据库输入/帧与客户端效果一致；测试不能手工调用 RouteEvents 补齐宿主缺失环节。
+- [ ] **FIX-INPUT-04 / P1：验证接管期间输入不丢失。** 依赖：INPUT-03、TAKE-08。交付：暂停旧 owner、持续接收输入并接管到新 GameServer 的测试。验收：新 owner 从相同 RoomId Inbox 继续消费，已消费不重复、待消费不丢失，旧 epoch 不能提交；分别记录受理、归房、应用和积压数量。

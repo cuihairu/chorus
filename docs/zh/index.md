@@ -26,6 +26,8 @@ features:
 
 七类进程角色；一个 GameServer 管理多个房间，每个 RoomActor 串行推进自己的 Tick。图示为重设计架构，网关集成及生产验收仍在推进。
 
+平台事件先持久接收，并依据直播挂载与局边界归入对应 RoomId 的 Inbox；GameServer 内的 RoomActor 每 Tick 读取自己的输入，提交帧后确认消费。
+
 ![Chorus 七类进程架构，以及 GameServer 内的 RoomRuntime 和多个 RoomActor](/images/architecture-zh.svg)
 
 [打开完整 SVG](/images/architecture-zh.svg) · [架构设计与实现边界](/architecture/architecture)

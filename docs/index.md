@@ -26,6 +26,8 @@ features:
 
 Seven process roles. Each GameServer manages multiple rooms, with a serial tick loop per RoomActor. This diagram shows the target redesign; gateway integration and production validation are ongoing.
 
+Platform events are durably accepted and assigned to a room inbox using gameplay bindings and round boundaries. Each RoomActor reads its own inputs on each tick and acknowledges consumption in the frame commit.
+
 ![Seven Chorus process roles, with RoomRuntime and multiple RoomActors inside GameServer](/images/architecture-en.svg)
 
 [Open full SVG](/images/architecture-en.svg) · [Architecture design and implementation scope (Chinese)](/architecture/architecture)

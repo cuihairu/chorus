@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1110" viewBox="0 0 1200 1110" role="img" aria-labelledby="title desc" xml:lang="en">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1170" viewBox="0 0 1200 1170" role="img" aria-labelledby="title desc" xml:lang="en">
 <title id="title">Chorus architecture and room runtime</title>
 <desc id="desc">Seven process roles. ControlServer assigns ownership; NodeAgent supervises local processes. Gateways connect clients and platforms. StreamerServer manages streamers. GameServer contains a RoomRuntime and multiple RoomActors. DataServer persists inputs, frames and settlement in PostgreSQL. Dashed arrows denote control; solid arrows denote business data. Target redesign; integration is ongoing.</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
 <style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:29px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}.control{stroke-dasharray:7 5}.box{stroke-width:1.5}</style>
-<rect width="1200" height="1110" rx="20" fill="#f8fafc"/>
+<rect width="1200" height="1170" rx="20" fill="#f8fafc"/>
 
 <text x="40" y="48" class="title" text-anchor="start">Chorus · Process architecture</text>
 <text x="40" y="78" class="body" text-anchor="start">7 process roles · Multiple rooms per GameServer · Target redesign, integration ongoing</text>
@@ -67,21 +67,27 @@
 <text x="1065" y="684" class="small" text-anchor="middle">Serial tick loop</text>
 <text x="670" y="724" class="small" text-anchor="start">Per room: state · epoch · subscribers</text>
 <path d="M445 605 V810" class="edge"/>
-<text x="460" y="686" class="label" text-anchor="start">Inputs / task records</text>
-<path d="M905 740 V810" class="edge"/>
-<text x="920" y="781" class="label" text-anchor="start">Inbox / frame commits</text>
-<rect x="310" y="810" width="850" height="105" rx="12" fill="#edf5ff" stroke="#93b9e3" class="box"/>
+<text x="460" y="686" class="label" text-anchor="start">Accept events</text>
+<path d="M760 810 V740" class="edge"/>
+<text x="745" y="766" class="label" text-anchor="end">ReadInbox(RoomId)</text>
+<text x="745" y="790" class="small" text-anchor="end">RoomActor pulls its inputs</text>
+<path d="M1010 740 V810" class="edge"/>
+<text x="1025" y="766" class="label">CommitFrame</text>
+<text x="1025" y="790" class="small">Consume + commit</text>
+<rect x="310" y="810" width="850" height="165" rx="12" fill="#edf5ff" stroke="#93b9e3" class="box"/>
 <text x="330" y="844" class="name" text-anchor="start">DataServer</text>
-<text x="330" y="872" class="body" text-anchor="start">Durable inbox · Frame log · Snapshots · Profiles · Asset ledger · Settlement · Outbox</text>
-<text x="330" y="897" class="body" text-anchor="start">Transactions + idempotency + owner / epoch fencing at the write boundary</text>
-<path d="M735 915 V958" class="edge"/>
-<rect x="310" y="958" width="850" height="70" rx="12" fill="#edf5ff" stroke="#93b9e3" class="box"/>
-<text x="330" y="992" class="name" text-anchor="start">PostgreSQL</text>
-<text x="1140" y="1001" class="small" text-anchor="end">Shared authority · Control + business schemas</text>
+<text x="330" y="872" class="body">Deduplicate → Resolve binding / round → Durable inbox per RoomId</text>
+<text x="330" y="897" class="body" text-anchor="start">Durable inbox · Frame log · Snapshots · Profiles · Asset ledger · Settlement · Outbox</text>
+<text x="330" y="947" class="body" text-anchor="start">Transactions + idempotency + owner / epoch fencing at the write boundary</text>
+<text x="330" y="922" class="small">Input path: persist first; RoomActor reads, computes and commits before publishing.</text>
+<path d="M735 975 V1018" class="edge"/>
+<rect x="310" y="1018" width="850" height="70" rx="12" fill="#edf5ff" stroke="#93b9e3" class="box"/>
+<text x="330" y="1052" class="name" text-anchor="start">PostgreSQL</text>
+<text x="1140" y="1061" class="small" text-anchor="end">Shared authority · Control + business schemas</text>
 <text x="40" y="848" class="name" text-anchor="start">Per-tick contract</text>
 <text x="40" y="879" class="small" text-anchor="start">Read inputs → Compute</text>
 <text x="40" y="904" class="small" text-anchor="start">Commit → Publish</text>
 <text x="40" y="929" class="small" text-anchor="start">GameServer has no DB writer</text>
-<text x="40" y="1063" class="small" text-anchor="start">Solid: business data   ·   Dashed: control   ·   Key paths shown; not every RPC is drawn.</text>
-<text x="40" y="1088" class="small" text-anchor="start">ControlServer also accesses PostgreSQL; StreamerServer also uses DataServer.</text>
+<text x="40" y="1123" class="small" text-anchor="start">Solid: business data   ·   Dashed: control   ·   Key paths shown; not every RPC is drawn.</text>
+<text x="40" y="1148" class="small" text-anchor="start">ControlServer also accesses PostgreSQL; StreamerServer also uses DataServer.</text>
 </svg>
