@@ -60,6 +60,7 @@ internal sealed class RoomActor : IAsyncDisposable
     private readonly IRoomLifecycle _runtime;
     private readonly FrameStore.FrameStoreClient _frames;
     private readonly ExampleGameModule _module;
+    private readonly RoomMetrics _metrics;
     private readonly string _gameId;
     private readonly string _roomId;
     private readonly string _ownerInstanceId;
@@ -87,6 +88,7 @@ internal sealed class RoomActor : IAsyncDisposable
     private readonly int _hangAfterTick;
     private readonly int _hangMs;
     private volatile bool _stopped;
+    private volatile bool _disposed;
     private volatile bool _finalCommitted;
     // Set under the publish gate when the loop exits: Subscribe must never register
     // against an actor whose publishing loop is gone.
@@ -95,11 +97,13 @@ internal sealed class RoomActor : IAsyncDisposable
     public RoomActor(IRoomLifecycle runtime, FrameStore.FrameStoreClient frames, ExampleGameModule module,
         string gameId, string roomId, string ownerInstanceId, long epoch, string configHash,
         ExampleGameState initialState, IReadOnlyDictionary<string, string> participantByBinding,
-        long lastTick = 0, long stateVersion = 1, int hangAfterTick = 0, int hangMs = 0)
+        long lastTick = 0, long stateVersion = 1, int hangAfterTick = 0, int hangMs = 0,
+        RoomMetrics? metrics = null)
     {
         _runtime = runtime;
         _frames = frames;
         _module = module;
+        _metrics = metrics ?? RoomMetrics.Default;
         _gameId = gameId;
         _roomId = roomId;
         _ownerInstanceId = ownerInstanceId;
@@ -180,6 +184,21 @@ internal sealed class RoomActor : IAsyncDisposable
 
     private async Task TickOnceAsync(CancellationToken cancellationToken)
     {
+        // FIX-PERF-01: the whole-tick clock wraps every phase and every early return
+        // alike — a tick that ends on a transient read still pays its time to the record.
+        var wholeStart = _metrics.Start();
+        try
+        {
+            await TickOnceInnerAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _metrics.Record(_metrics.Whole, wholeStart);
+        }
+    }
+
+    private async Task TickOnceInnerAsync(CancellationToken cancellationToken)
+    {
         // FIX-FRAME-01: a frame is built once and held until the store returns a verdict.
         // While it is unconfirmed the loop neither re-reads the inbox nor re-applies the
         // tick: a rebuild could consume different inputs and change the content under the
@@ -189,9 +208,11 @@ internal sealed class RoomActor : IAsyncDisposable
             ReadInboxReply inbox;
             try
             {
+                var inboxStart = _metrics.Start();
                 inbox = await _frames.ReadInboxAsync(
                     new ReadInboxRequest { RoomId = _roomId, GameId = _gameId, MaxEvents = MaxInputsPerTick },
                     deadline: Deadline(), cancellationToken: cancellationToken);
+                _metrics.Record(_metrics.InboxPull, inboxStart);
             }
             catch (RpcException)
             {
@@ -219,7 +240,9 @@ internal sealed class RoomActor : IAsyncDisposable
             TickOutcome outcome;
             try
             {
+                var applyStart = _metrics.Start();
                 outcome = _module.ApplyTick(_state, tick, inputs);
+                _metrics.Record(_metrics.Apply, applyStart);
             }
             catch (Exception error) when (error is not OperationCanceledException)
             {
@@ -248,6 +271,7 @@ internal sealed class RoomActor : IAsyncDisposable
         var pendingFrame = _pending;
         FrameReceiptReply receipt;
         var retry = 0;
+        var commitStart = _metrics.Start();
         while (true)
         {
             try
@@ -286,8 +310,10 @@ internal sealed class RoomActor : IAsyncDisposable
                 // maybe-committed frame would abandon a room that is still live.
                 await Task.Delay(CommitRetryBackoff(retry++), cancellationToken)
                     .ConfigureAwait(false);
+                _metrics.CommitRetries.Add(1);
             }
         }
+        _metrics.Record(_metrics.Commit, commitStart);
         _pending = null;
         // Publish under the gate also advances the actor head there, so subscribers only
         // ever observe a coherent committed triple (8.3). A committed and a duplicate
@@ -321,7 +347,9 @@ internal sealed class RoomActor : IAsyncDisposable
         {
             // FullCheckpoint on the module's cadence: the candidate state joins the frame
             // transaction (architecture 8.2) — a failed checkpoint rolls the tick back.
+            var serializeStart = _metrics.Start();
             var payload = _module.Serialize(outcome.State);
+            _metrics.Record(_metrics.Serialize, serializeStart);
             commit.SnapshotPayload = ByteString.CopyFrom(payload);
             commit.SnapshotHash = ByteString.CopyFrom(SHA256.HashData(payload));
             commit.SnapshotSchemaVersion = outcome.State.SchemaVersion;
@@ -431,7 +459,9 @@ internal sealed class RoomActor : IAsyncDisposable
 
     private SyncMessage SnapshotOf(long tick, long stateVersion, ExampleGameState state)
     {
+        var serializeStart = _metrics.Start();
         var payload = _module.Serialize(state);
+        _metrics.Record(_metrics.Serialize, serializeStart);
         return new SyncMessage { Snapshot = new SnapshotMessage
         {
             RoomId = _roomId, Epoch = _epoch, Tick = tick, StateVersion = stateVersion,
@@ -525,6 +555,10 @@ internal sealed class RoomActor : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Idempotent: the second dispose (an explicit call after `await using`, or a
+        // racing teardown) must not throw on the already-disposed token source.
+        if (_disposed) return;
+        _disposed = true;
         _stopped = true;
         lock (_publishGate)
         {

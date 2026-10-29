@@ -19,6 +19,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     private readonly RoundStore.RoundStoreClient _rounds;
     private readonly FrameStore.FrameStoreClient _frames;
     private readonly Settlement.SettlementClient _settlement;
+    private readonly RoomMetrics _metrics;
     private readonly ConcurrentDictionary<string, RoomActor> _actors = new(StringComparer.Ordinal);
     // Per-room activation gates (FIX-ROOM-03): prepare and recovery reach the actor
     // dictionary only through their room's gate, so interleaved callers never both
@@ -40,12 +41,14 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
 
     /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
     internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
-        Settlement.SettlementClient settlement, Grpc.Net.Client.GrpcChannel? dataChannel = null)
+        Settlement.SettlementClient settlement, Grpc.Net.Client.GrpcChannel? dataChannel = null,
+        RoomMetrics? metrics = null)
     {
         _rounds = rounds;
         _frames = frames;
         _settlement = settlement;
         _dataChannel = dataChannel;
+        _metrics = metrics ?? RoomMetrics.Default;
     }
 
     /// <summary>
@@ -119,7 +122,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
 
             var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
                 request.OwnerInstanceId, request.Epoch, configHash, initial, bindings,
-                hangAfterTick: request.HangAfterTick, hangMs: request.HangMs);
+                hangAfterTick: request.HangAfterTick, hangMs: request.HangMs, metrics: _metrics);
             actor.LoopEnded = Retire;
             if (!_actors.TryAdd(request.RoomId, actor))
             {
@@ -365,6 +368,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             foreach (var candidate in plan.Snapshots.Where(candidate => candidate.Tick < refutedAbove))
             {
                 if (candidate.Tick > plan.LastTick) continue;
+                var replayStart = _metrics.Start();
                 ExampleGameState state;
                 try { state = module.Restore(candidate.Payload.ToByteArray(), candidate.SchemaVersion); }
                 catch (Exception) { continue; } // unreadable snapshot: try the previous one
@@ -394,6 +398,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     state = outcome.State;
                     replayed++;
                 }
+                _metrics.Record(_metrics.RecoveryReplay, replayStart);
                 if (!consistent || state.Tick != plan.LastTick) continue;
 
                 // The snapshot replays to the head with matching hashes: persist a fresh
@@ -432,7 +437,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant();
                 var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
                     request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
-                    plan.LastTick, plan.StateVersion);
+                    plan.LastTick, plan.StateVersion, metrics: _metrics);
                 actor.LoopEnded = Retire;
                 if (!_actors.TryAdd(request.RoomId, actor))
                 {
@@ -506,6 +511,21 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// server state.
     /// </summary>
     private async Task<LoadRecoveryReply> LoadWholePlanAsync(string roomId, string gameId,
+        int depth, CancellationToken cancellationToken)
+    {
+        // FIX-PERF-01: one recovery window's load, pages and all, is a phase of its own.
+        var readStart = _metrics.Start();
+        try
+        {
+            return await LoadWholePlanInnerAsync(roomId, gameId, depth, cancellationToken);
+        }
+        finally
+        {
+            _metrics.Record(_metrics.RecoveryRead, readStart);
+        }
+    }
+
+    private async Task<LoadRecoveryReply> LoadWholePlanInnerAsync(string roomId, string gameId,
         int depth, CancellationToken cancellationToken)
     {
         LoadRecoveryReply whole = new();
