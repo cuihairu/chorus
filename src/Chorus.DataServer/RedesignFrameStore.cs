@@ -52,12 +52,14 @@ public sealed record RoundInbox(long Watermark, IReadOnlyList<InboxItem> Items);
 /// insert, before the commit. An exception there plays the owner dying between persisting the
 /// tick and acknowledging it; the rollback leaves the inputs unconsumed.
 /// </param>
-public sealed class RedesignFrameStore(string connectionString, Action? crashAfterFrameInsert = null)
+public sealed class RedesignFrameStore(string connectionString, Action? crashAfterFrameInsert = null,
+    DataMetrics? metrics = null)
 {
     public const string Consumed = "Consumed";
     public const string Finishing = "Finishing";
 
-    private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
+    private readonly DataMetrics _metrics = metrics ?? DataMetrics.Default;
+    private readonly PostgresOperationReceiptStore _receipts = new(connectionString, metrics);
 
     /// <summary>
     /// Commits tick <c>last_tick + 1</c> under the ownership fence. The caller states the tick
@@ -327,7 +329,20 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
         if (maxEvents is <= 0 or > 500)
             throw new ArgumentException("The inbox window is 1..500 events.", nameof(maxEvents));
         await using var connection = new NpgsqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
+        var openStart = _metrics.Start();
+        try { await connection.OpenAsync(cancellationToken); }
+        finally { _metrics.Record(_metrics.ConnOpen, openStart); }
+        var readStart = _metrics.Start();
+        try
+        {
+            return await ReadInboxQueriesAsync(connection, roomId, maxEvents, cancellationToken);
+        }
+        finally { _metrics.Record(_metrics.ReadExec, readStart); }
+    }
+
+    private static async Task<RoundInbox> ReadInboxQueriesAsync(NpgsqlConnection connection,
+        string roomId, int maxEvents, CancellationToken cancellationToken)
+    {
         var scope = "room:" + roomId;
         long watermark;
         await using (var cursor = new NpgsqlCommand(
