@@ -40,6 +40,7 @@ public sealed class EdgeConnection
         _login = new EdgeRateCounter(options.LoginPerMinute, window, now);
         _control = new EdgeRateCounter(options.ControlPerMinute, window, now);
         _ack = new EdgeRateCounter(options.AckPerMinute, window, now);
+        Outbox = new EdgeOutbox(options.OutboxCapacity);
     }
 
     public string ConnectionId { get; }
@@ -68,6 +69,19 @@ public sealed class EdgeConnection
 
     private string? _lastNotifiedRoomId;
 
+    /// <summary>The per-connection downlink queue: snapshots re-baseline, deltas chain, the
+    /// round result is sticky. The room fan-out is its only producer.</summary>
+    public EdgeOutbox Outbox { get; }
+    private CancellationTokenSource? _outboxPumpCancellation;
+    private Task? _outboxPump;
+
+    /// <summary>The applied baseline the client last acknowledged on one room — the fact a
+    /// re-subscription continues the chain from. Seeded from a resume's declared position
+    /// until an ack names the tick.</summary>
+    public string? AppliedRoomId { get; private set; }
+    public long AppliedTick { get; private set; }
+    public long AppliedStateVersion { get; private set; }
+
     public void MarkHelloAccepted() => HelloAccepted = true;
 
     public void MarkSession(string tenantId, string sessionId, string streamerId, string accessCredential)
@@ -92,6 +106,56 @@ public sealed class EdgeConnection
         if (string.Equals(_lastNotifiedRoomId, roomId, StringComparison.Ordinal)) return false;
         _lastNotifiedRoomId = roomId;
         return true;
+    }
+
+    /// <summary>A resume cannot name its tenant (the session resolves it server-side), so the
+    /// gateway learns it from the routed room and records it — every later uplink that must
+    /// name a tenant names it again. Only a missing tenant is filled, never replaced.</summary>
+    public void MarkTenant(string tenantId)
+    {
+        if (TenantId is not { Length: > 0 }) TenantId = tenantId;
+    }
+
+    /// <summary>Records an ack's applied position — the re-baseline fact for the next
+    /// subscription of that room on this connection.</summary>
+    public void MarkApplied(string roomId, long tick, long stateVersion)
+    {
+        AppliedRoomId = roomId;
+        AppliedTick = tick;
+        AppliedStateVersion = stateVersion;
+    }
+
+    /// <summary>Seeds the baseline a resume declared (contracts 3.1 Resume): the version
+    /// without its tick, so a re-subscription snapshots rather than guessing a chain.</summary>
+    public void SeedAppliedFromResume(string roomId, long stateVersion)
+    {
+        AppliedRoomId = roomId;
+        AppliedTick = 0;
+        AppliedStateVersion = stateVersion;
+    }
+
+    /// <summary>Starts the outbox pump once the transport exists. Every queued frame drains
+    /// through the same serialized lane the direct sends use, so the socket still sees one
+    /// outstanding send at a time.</summary>
+    public void StartOutboxPump()
+    {
+        if (_outboxPump is not null) return;
+        _outboxPumpCancellation = new CancellationTokenSource();
+        var cancellation = _outboxPumpCancellation.Token;
+        _outboxPump = Task.Run(() => Outbox.RunAsync(
+            async (frame, token) => await SendAsync(frame, token), cancellation));
+    }
+
+    /// <summary>Stops the pump and waits for it — the producer detaches first, then the pump
+    /// drains, then the queue dies; the stream is cancelled only after the pump is gone.</summary>
+    public async Task StopOutboxPumpAsync()
+    {
+        if (_outboxPump is null) return;
+        _outboxPumpCancellation!.Cancel();
+        try { await _outboxPump; }
+        catch (OperationCanceledException) { }
+        _outboxPump = null;
+        Outbox.Dispose();
     }
 
     /// <summary>Binds the socket's send/close operations behind the serialized lane; called

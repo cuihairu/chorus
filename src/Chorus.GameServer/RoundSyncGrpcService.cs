@@ -20,7 +20,7 @@ public sealed class RoundSyncGrpcService(
         if (string.IsNullOrWhiteSpace(request.RoomId) || string.IsNullOrWhiteSpace(request.GameId))
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 "The room id and game id are required."));
-        Require(context, "streamer-server", "control-server");
+        Require(context, "streamer-server", "control-server", "streamer-gateway");
         var actor = runtime.FindRoom(request.RoomId);
         if (actor is null)
             throw new RpcException(new Status(StatusCode.NotFound,

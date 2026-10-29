@@ -153,3 +153,100 @@ public sealed record EdgeMatchStatus
     public string? ReservationId { get; init; }
     public string? RoomId { get; init; }
 }
+
+/// <summary>Ack (contracts 3.1): the client's applied position on one room's chain. The edge
+/// records it as the connection's re-baseline fact; it is never answered.</summary>
+public sealed record EdgeAck
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.Ack;
+    public required string RoomId { get; init; }
+    public long RoomEpoch { get; init; }
+    public long LastAppliedTickId { get; init; }
+    public long StateVersion { get; init; }
+}
+
+/// <summary>RequestSnapshot (contracts 3.1): the client asks to be re-baselined. The edge
+/// re-subscribes the room at zero so the authoritative head snapshot supersedes the chain.</summary>
+public sealed record EdgeRequestSnapshot
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.RequestSnapshot;
+    public required string RoomId { get; init; }
+    public long RoomEpoch { get; init; }
+    public string? Reason { get; init; }
+}
+
+/// <summary>RoomJoined (contracts 3.2): the room facts a connection needs before any frame —
+/// which side it plays, and the module identity the frames will carry.</summary>
+public sealed record EdgeRoomJoined
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.RoomJoined;
+    public required string RoomId { get; init; }
+    public long RoomEpoch { get; init; }
+    public required string Participation { get; init; }
+    public required string ModuleVersion { get; init; }
+    public required string ConfigHash { get; init; }
+}
+
+/// <summary>Snapshot (contracts 3.2): the full authoritative state at one tick. The payload is
+/// the module's serialized state, carried as base64 like every byte field on the wire.</summary>
+public sealed record EdgeSnapshot
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.Snapshot;
+    public required string RoomId { get; init; }
+    public long RoomEpoch { get; init; }
+    public long TickId { get; init; }
+    public long StateVersion { get; init; }
+    public int SchemaVersion { get; init; }
+    public required byte[] Payload { get; init; }
+}
+
+/// <summary>Delta (contracts 3.2): one committed frame. The payload is the frame's effects as
+/// a JSON array — the module's own delta vocabulary, not an edge invention.</summary>
+public sealed record EdgeDelta
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.Delta;
+    public required string RoomId { get; init; }
+    public long RoomEpoch { get; init; }
+    public long TickId { get; init; }
+    public long BaseVersion { get; init; }
+    public long StateVersion { get; init; }
+    public required System.Text.Json.JsonElement Payload { get; init; }
+}
+
+/// <summary>RoundResult (contracts 3.2): the frozen result. The result id is composed from the
+/// immutable coordinate triple (room, epoch, tick) — the settlement version itself lives
+/// behind the CommitResult boundary the sync stream does not carry.</summary>
+public sealed record EdgeRoundResult
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.RoundResult;
+    public required string ResultId { get; init; }
+    public required string SettlementState { get; init; }
+    public required System.Text.Json.JsonElement Result { get; init; }
+}
+
+/// <summary>RoomSuspended (contracts 3.2): the room parked itself visibly instead of dying.
+/// The recovery attempt is the room's epoch — every recovery lands on a bumped one.</summary>
+public sealed record EdgeRoomSuspended
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.RoomSuspended;
+    public string? Reason { get; init; }
+    public long RecoveryAttempt { get; init; }
+}
+
+/// <summary>ResyncRequired (contracts 3.2): the chain the client holds cannot continue; only a
+/// fresh snapshot of the current room can put it back on one.</summary>
+public sealed record EdgeResyncRequired
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.ResyncRequired;
+    public required string RoomId { get; init; }
+    public long RoomEpoch { get; init; }
+    public string? Reason { get; init; }
+}

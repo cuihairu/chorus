@@ -78,4 +78,18 @@ public sealed class EdgeSessionClient(Func<GrpcChannel> channelFactory, string g
             OperationId = operationId
         }, cancellationToken: cancellation);
     }
+
+    /// <summary>The mount facts of the acting session (m1 GameplayStatus) — how a resume
+    /// restores the binding a fresh connection does not carry. An empty binding id in the
+    /// reply is the store's word that there is no mount.</summary>
+    public async Task<GameplayStatusReply> GameplayStatusAsync(string tenantId, string accessCredential,
+        CancellationToken cancellation)
+    {
+        var client = new StreamerSession.StreamerSessionClient(_channel.Value);
+        return await client.GameplayStatusAsync(new GameplayStatusRequest
+        {
+            TenantId = tenantId,
+            AccessCredential = accessCredential
+        }, cancellationToken: cancellation);
+    }
 }

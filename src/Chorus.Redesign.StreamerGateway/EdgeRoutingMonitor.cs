@@ -28,6 +28,11 @@ public sealed class EdgeRoutingMonitor(Func<GrpcChannel> controlChannelFactory)
     private readonly object _gate = new();
     private readonly List<Subscription> _subscriptions = [];
     private readonly Dictionary<string, string> _roomByStreamer = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, RoomFacts> _roomsById = new(StringComparer.Ordinal);
+
+    /// <summary>The routing facts a room's fan-out needs: the tenant that owns it, where the
+    /// owning game host serves, at which epoch, in which status.</summary>
+    public sealed record RoomFacts(string TenantId, string GameId, string Endpoint, long Epoch, string Status);
 
     /// <summary>Subscribes one connection to its streamer's room changes. The callback leaves
     /// the lock before running, so a slow push never blocks the watch loop.</summary>
@@ -49,6 +54,12 @@ public sealed class EdgeRoutingMonitor(Func<GrpcChannel> controlChannelFactory)
             return _roomByStreamer.TryGetValue(streamerId, out var room) && room.Length > 0 ? room : null;
     }
 
+    /// <summary>The routing facts of one room, or null when routing does not know it.</summary>
+    public RoomFacts? RoomRouteFor(string roomId)
+    {
+        lock (_gate) return _roomsById.TryGetValue(roomId, out var facts) ? facts : null;
+    }
+
     /// <summary>Applies one snapshot: records the streamer rows and fires a callback for every
     /// subscribed streamer whose room changed. Public so the diff logic is testable without a
     /// control plane.</summary>
@@ -57,6 +68,9 @@ public sealed class EdgeRoutingMonitor(Func<GrpcChannel> controlChannelFactory)
         List<(Subscription Subscription, string Room)>? changed = null;
         lock (_gate)
         {
+            foreach (var room in snapshot.Rooms)
+                _roomsById[room.RoomId] = new RoomFacts(room.TenantId, room.GameId,
+                    room.Endpoint ?? "", room.Epoch, room.Status);
             foreach (var streamer in snapshot.Streamers)
                 _roomByStreamer[streamer.StreamerId] = streamer.RoomId ?? "";
             foreach (var subscription in _subscriptions)

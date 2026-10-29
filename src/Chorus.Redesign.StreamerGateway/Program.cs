@@ -78,8 +78,45 @@ if (controlEndpoint is { Length: > 0 })
         () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate,
             root, nodeAuthority, clusterId, "control-server"));
 }
+// The round store names the facts a room's fan-out needs (epoch, status, participation);
+// the room's owning game host serves the sync stream itself, reached through a per-endpoint
+// channel pool that releases a host when its last room stream ends.
+var roundClient = new EdgeRoundClient(
+    () => ProcessGrpcClientFactory.Create(new Uri(dataEndpoint), serverCertificate,
+        root, nodeAuthority, clusterId, "data-server"));
+var gameChannels = new EdgeGameChannelPool(
+    endpoint => ProcessGrpcClientFactory.Create(new Uri(endpoint), serverCertificate,
+        root, nodeAuthority, clusterId, "game-server"));
+EdgeRoomFanout? fanout = null;
+if (routingMonitor is not null)
+{
+    fanout = new EdgeRoomFanout((request, cancellation) =>
+    {
+        var channel = gameChannels.Acquire(request.Endpoint);
+        return EdgeRoundClient.SubscribeStream(channel, new SubscribeRequest
+        {
+            RoomId = request.RoomId,
+            GameId = request.GameId,
+            Epoch = request.Epoch,
+            LastAppliedTick = request.LastAppliedTick,
+            LastAppliedStateVersion = request.LastAppliedStateVersion
+        }, cancellation);
+    })
+    {
+        ResolveRoom = async (roomId, cancellation) =>
+        {
+            var route = routingMonitor.RoomRouteFor(roomId);
+            if (route is null) return null;
+            var round = await roundClient.GetRoundAsync(route.TenantId, roomId, route.GameId, cancellation);
+            return round is null
+                ? null
+                : new EdgeRoomFanout.ResolvedRoom(route.GameId, route.Endpoint, round.Epoch, round.Status);
+        },
+        StreamClosed = gameChannels.Release
+    };
+}
 var edgeWs = new EdgeWs(edgeOptions, registry, tenantApplications, sessionClient,
-    identity.ProcessInstanceId, queueClient, routingMonitor);
+    identity.ProcessInstanceId, queueClient, routingMonitor, roundClient, fanout);
 
 // Instance self-registration (architecture 4.4): the gateway reports its internal gRPC
 // endpoint — routing consumers are cluster processes, never public clients. The same control

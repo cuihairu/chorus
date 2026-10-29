@@ -47,7 +47,8 @@ message RoundAdmissionReply {
   bool duplicate = 5;
 }
 
-message GetRoundRequest { string room_id = 1; string game_id = 2; }
+// A cluster-scoped caller names the tenant; empty means the caller's own.
+message GetRoundRequest { string room_id = 1; string game_id = 2; string tenant_id = 3; }
 
 message RoundParticipantStateProto {
   string participant_id = 1;

@@ -22,7 +22,8 @@ namespace Chorus.Redesign.StreamerGateway;
 public sealed class EdgeWs(
     EdgeOptions options, EdgeSessionRegistry registry, TenantApplicationMap tenantApplications,
     EdgeSessionClient sessionClient, string gatewayInstanceId,
-    EdgeQueueClient? queueClient = null, EdgeRoutingMonitor? routingMonitor = null)
+    EdgeQueueClient? queueClient = null, EdgeRoutingMonitor? routingMonitor = null,
+    EdgeRoundClient? roundClient = null, EdgeRoomFanout? fanout = null)
 {
     private const int ReceiveChunkBytes = 8 * 1024;
 
@@ -45,10 +46,13 @@ public sealed class EdgeWs(
             return;
         }
         // From here on every downlink — dispatch reply or replacement notice — flows through
-        // the connection's serialized lane, so the socket never sees concurrent sends.
+        // the connection's serialized lane, so the socket never sees concurrent sends. The
+        // outbox pump drains through the same lane, so room frames queue behind every direct
+        // send instead of interleaving with them.
         connection.AttachTransport(
             (frame, cancellation) => SendFrameAsync(socket, frame, cancellation),
             (status, reason) => CloseAsync(socket, status, reason));
+        connection.StartOutboxPump();
         try
         {
             // The hello has its own deadline: an accepted socket that stays silent is closed
@@ -99,7 +103,11 @@ public sealed class EdgeWs(
         finally
         {
             // A closing connection stops hearing about rooms before it leaves the registry.
+            // The fan-out detaches first — the outbox's producer — then the pump drains and
+            // dies, so no frame is queued onto a pump that is already gone.
             routingMonitor?.Unsubscribe(connection.ConnectionId);
+            fanout?.Leave(connection.ConnectionId);
+            await connection.StopOutboxPumpAsync();
             registry.Close(connection);
         }
     }
@@ -183,8 +191,32 @@ public sealed class EdgeWs(
                 case EdgeTypes.CancelQueue:
                     await HandleCancelQueueAsync(connection, root, cancellation);
                     break;
-                case EdgeTypes.GameCommand or EdgeTypes.Ack or EdgeTypes.RequestSnapshot
-                    or EdgeTypes.LeaveRound:
+                case EdgeTypes.Ack:
+                {
+                    // The applied position is the connection's re-baseline fact (contracts
+                    // 3.1): recorded on the room this connection plays in, never answered —
+                    // an acknowledgement has no downlink of its own.
+                    var ack = root.Deserialize<EdgeAck>(EdgeJson.Options) ?? throw new JsonException();
+                    connection.MarkApplied(ack.RoomId, ack.LastAppliedTickId, ack.StateVersion);
+                    break;
+                }
+                case EdgeTypes.RequestSnapshot:
+                {
+                    var request = root.Deserialize<EdgeRequestSnapshot>(EdgeJson.Options)
+                        ?? throw new JsonException();
+                    // Only a room this connection sits in can be re-baselined; anything else
+                    // addresses a room the server never put it in.
+                    if (fanout is null || !fanout.RequestSnapshot(connection.ConnectionId, request.RoomId))
+                    {
+                        await connection.SendJsonAsync(new EdgeError
+                        {
+                            Code = EdgeErrorCodes.InvalidMessage,
+                            Message = "That room is not active on this connection."
+                        }, cancellation);
+                    }
+                    break;
+                }
+                case EdgeTypes.GameCommand or EdgeTypes.LeaveRound:
                     // In the protocol, wired in a later round of this milestone — an honest
                     // refusal, not a silent drop.
                     await connection.SendJsonAsync(new EdgeError
@@ -268,6 +300,13 @@ public sealed class EdgeWs(
                 AccessExpiresAt = ready.AccessExpiresAtUnixMs,
                 ResumeRegistered = ready.ResumeRegistered
             }, cancellation);
+            // A resume mid-round re-enters its room on the server's word (contracts 3.1: the
+            // participation record decides, the client's lastSeenRoomId is diagnostics). The
+            // declared applied version seeds the re-baseline the snapshot continues from — a
+            // resume carries no tick, so the answer is always a snapshot.
+            connection.SeedAppliedFromResume(resume.LastSeenRoomId ?? "",
+                resume.LastAppliedStateVersion ?? 0);
+            await TryRejoinRoomAsync(connection, ready.StreamerId);
         }
         catch (RpcException error)
         {
@@ -440,11 +479,95 @@ public sealed class EdgeWs(
                     ReservationId = ticket.ReservationId is { Length: > 0 } id ? id : null,
                     RoomId = room
                 }, CancellationToken.None);
+                await JoinRoomFanoutAsync(connection, room);
                 return;
             }
             // The round pipeline is still driving this reservation: start → prepare → commit
             // spans several plane round-trips after the room already routes.
             await Task.Delay(150, CancellationToken.None);
+        }
+    }
+
+    /// <summary>A resume re-enters the room the routed record names — the server's
+    /// participation record decides, never the client's diagnostics. A fresh connection
+    /// carries no mount facts, so the binding status restores them first; the routed room
+    /// supplies the tenant the resume itself cannot name.</summary>
+    private async Task TryRejoinRoomAsync(EdgeConnection connection, string streamerId)
+    {
+        if (fanout is null || roundClient is null || routingMonitor is null) return;
+        var room = routingMonitor.RoomFor(streamerId);
+        if (room is null) return;
+        if (!connection.HasGameplay && connection.AccessCredential is { Length: > 0 })
+        {
+            var route = routingMonitor.RoomRouteFor(room);
+            if (route is not { TenantId: { Length: > 0 } }) return;
+            try
+            {
+                var status = await sessionClient.GameplayStatusAsync(route.TenantId,
+                    connection.AccessCredential!, CancellationToken.None);
+                if (status.BindingId is not { Length: > 0 }) return;
+                // The mount facts of the round the resume lands in — including the tenant
+                // every later uplink on this connection names again.
+                connection.MarkTenant(route.TenantId);
+                connection.MarkGameplay(status.BindingId, status.GameId, null);
+            }
+            catch (RpcException)
+            {
+                // No mount on record for this session: there is nothing to re-enter.
+                return;
+            }
+        }
+        await JoinRoomFanoutAsync(connection, room);
+    }
+
+    /// <summary>Seats the connection in its match's room: the routing snapshot names the
+    /// owning host, the round store names the epoch and the side this binding plays, and the
+    /// fan-out owns the stream from there. Best-effort within a convergence window — the
+    /// facts can lag the commit by a routing beat; past the window the client still learns
+    /// the room from its matchStatus and recovers by reconnecting.</summary>
+    private async Task JoinRoomFanoutAsync(EdgeConnection connection, string roomId)
+    {
+        if (fanout is null || roundClient is null) return;
+        for (var deadline = Environment.TickCount64 + 15_000;
+             Environment.TickCount64 < deadline;)
+        {
+            var route = routingMonitor?.RoomRouteFor(roomId);
+            if (route is null || route.Endpoint.Length == 0)
+            {
+                // The owning host has not reported its endpoint yet — the next beat carries it.
+                await Task.Delay(200, CancellationToken.None);
+                continue;
+            }
+            RoundStatusReply? round;
+            try
+            {
+                round = await roundClient.GetRoundAsync(route.TenantId, roomId, route.GameId,
+                    CancellationToken.None);
+            }
+            catch (RpcException)
+            {
+                await Task.Delay(200, CancellationToken.None);
+                continue;
+            }
+            if (round is null)
+            {
+                await Task.Delay(200, CancellationToken.None);
+                continue;
+            }
+            var participation = round.Participants.FirstOrDefault(
+                participant => participant.BindingId == connection.BindingId);
+            if (participation is null) return;
+            try
+            {
+                fanout.Join(roomId, route.GameId, route.Endpoint, round.Epoch,
+                    participation.Role, connection);
+            }
+            catch
+            {
+                // The subscription could not open; the room's stream is not the connection's
+                // to hear. The client's requestSnapshot after a reconnect re-seats it.
+            }
+            return;
         }
     }
 

@@ -206,11 +206,11 @@ public sealed class RoundGrpcService(
 
     public override async Task<RoundStatusReply> GetRound(GetRoundRequest request, ServerCallContext context)
     {
-        var caller = Require(context, "control-server", "game-server", "streamer-server", "platform-gateway");
+        var caller = Require(context, "control-server", "game-server", "streamer-server", "platform-gateway", "streamer-gateway");
         try
         {
-            var status = await roomStore.GetRoundAsync(caller.TenantId, request.GameId, request.RoomId,
-                context.CancellationToken);
+            var status = await roomStore.GetRoundAsync(TenantFor(caller, request.TenantId), request.GameId,
+                request.RoomId, context.CancellationToken);
             if (status is null) return new RoundStatusReply { Found = false };
             return new RoundStatusReply
             {
