@@ -1150,6 +1150,181 @@ public sealed class RedesignM2HostTests
     }
 
     [Fact]
+    public async Task ADeeplyCorruptWindowFallsBackBeyondTheDefaultPair()
+    {
+        // FIX-READ-04, the host leg: both anchors of the normal candidate window are
+        // corrupt on disk, and an older anchor still exists below them. The recovery must
+        // deepen the read on demand, replay the whole battle from the tick-0 anchor with
+        // per-frame verification, and finish the round — never park while an untried
+        // anchor remains.
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        var gameEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            gameEnvironment, clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-run-l", "live-m2-11-a");
+        var (guest, guestBinding) = await MountAsync(environment, simulator, "open-m2-run-m", "live-m2-11-b");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
+        var gameHost = new GameHost.GameHostClient(hostChannel);
+
+        // A 300-tick round anchors at 0, 100 and 200; the kill lands mid-battle past the
+        // last anchor so all three exist at the crash.
+        using var claim = await RenewableClaim.ClaimAsync(control, new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-11",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        var owner = claim.Owner;
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-11", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-11",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
+            }
+        })).Status);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-11", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-11", DurationTicks = 300, RandomSeed = 999, TickMs = 10,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        long head = 0;
+        var crashDeadline = DateTime.UtcNow.AddSeconds(40);
+        while (DateTime.UtcNow < crashDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                (_, head) = await FrameStatsAsync(connection, "room-m2-11");
+            }
+            if (head >= 240) break;
+            await Task.Delay(100);
+        }
+        Assert.InRange(head, 240, 299);
+        environment.Kill("Chorus.GameServer");
+        // The head at actual process death is the recovery ground truth. A frame commit
+        // already in flight to the DataServer can land after the kill signal, so the head
+        // is polled to stability before it becomes the truth.
+        var headSettled = false;
+        var headDeadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < headDeadline && !headSettled)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                (_, var next) = await FrameStatsAsync(connection, "room-m2-11");
+                headSettled = next == head;
+                head = next;
+            }
+            if (!headSettled) await Task.Delay(150);
+        }
+        Assert.InRange(head, 240, 299);
+
+        // Both anchors of the normal window are corrupt — one lost its bytes, one lost its
+        // hash commitment — while the tick-0 anchor below them stays honest.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var anchors = new NpgsqlCommand(
+                "SELECT count(*) FROM game.snapshot WHERE room_id='room-m2-11'", connection))
+                Assert.Equal(3L, Convert.ToInt64(await anchors.ExecuteScalarAsync()));
+            await using (var corruptPayload = new NpgsqlCommand("""
+                UPDATE game.snapshot SET payload=convert_to('corrupted','UTF8')
+                WHERE room_id='room-m2-11' AND tick_id=200
+                """, connection))
+                await corruptPayload.ExecuteNonQueryAsync();
+            await using (var corruptHash = new NpgsqlCommand("""
+                UPDATE game.snapshot SET payload_hash=decode('0000000000000000000000000000000000000000000000000000000000000000','hex')
+                WHERE room_id='room-m2-11' AND tick_id=100
+                """, connection))
+                await corruptHash.ExecuteNonQueryAsync();
+        }
+
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            gameEnvironment, clientTenant: "tenant-a");
+        var fallback = await gameHost.RecoverRoomAsync(new RecoverRoomRequest
+        {
+            RoomId = "room-m2-11", GameId = "game-a", OwnerInstanceId = "game-1",
+            Epoch = owner.Epoch, TickMs = 10
+        });
+        Assert.True(fallback.Recovered);
+        Assert.Equal("Running", fallback.Status);
+        // Only the deepened read can see the tick-0 anchor: the default window's two
+        // candidates are both corrupt, so this answer is the on-demand fallback's.
+        Assert.Equal(0L, fallback.SnapshotTick);
+        Assert.Equal(head, fallback.LastTick);
+        Assert.Equal((int)head, fallback.ReplayedFrames);
+
+        var finishDeadline = DateTime.UtcNow.AddSeconds(40);
+        string roomStatus = "";
+        while (DateTime.UtcNow < finishDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                roomStatus = await RoomStatusAsync(connection, "room-m2-11");
+            }
+            if (roomStatus == "Finishing") break;
+            await Task.Delay(200);
+        }
+        Assert.Equal("Finishing", roomStatus);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            var (frames, maxTick) = await FrameStatsAsync(connection, "room-m2-11");
+            Assert.Equal(300L, frames);
+            Assert.Equal(300L, maxTick);
+            string resultJson;
+            await using (var result = new NpgsqlCommand(
+                "SELECT result::text FROM game.result WHERE room_id='room-m2-11'", connection))
+                resultJson = (string)(await result.ExecuteScalarAsync())!;
+            using var document = System.Text.Json.JsonDocument.Parse(resultJson);
+            Assert.False(string.IsNullOrEmpty(document.RootElement.GetProperty("winner").GetString()));
+            // The recovery never marks unverified material as success: the head it replayed
+            // to is pinned as a fresh store-verified snapshot.
+            await using (var pinned = new NpgsqlCommand(
+                "SELECT count(*) FROM game.snapshot WHERE room_id='room-m2-11' AND tick_id=@head AND verified",
+                connection))
+            {
+                pinned.Parameters.AddWithValue("head", head);
+                Assert.Equal(1L, Convert.ToInt64(await pinned.ExecuteScalarAsync()));
+            }
+        }
+    }
+
+    [Fact]
     public async Task SettledRoundFinalizesFreesMountsAndOpensTheNextRound()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();

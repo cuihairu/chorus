@@ -282,6 +282,10 @@ message SnapshotReceiptReply {
 message LoadRecoveryRequest {
   string room_id = 1;
   string game_id = 2;
+  // How many newest snapshot candidates this read may load (FIX-READ-04). Zero asks for
+  // the store's normal fallback pair; a recoverer whose whole window failed re-reads with
+  // a deeper window on demand instead of declaring the history dead while anchors remain.
+  int32 candidate_depth = 3;
 }
 
 message RecoverySnapshotProto {

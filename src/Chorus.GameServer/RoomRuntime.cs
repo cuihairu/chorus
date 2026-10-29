@@ -240,14 +240,25 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     Reason = $"The room moved to epoch {final.Epoch}."
                 } };
 
+    /// <summary>The first candidate window a recovery reads (FIX-READ-04): the fallback
+    /// pair, mirroring the store's normal bounded load — the pair retention keeps.</summary>
+    private const int RecoveryFirstWindow = 2;
+
+    /// <summary>The deepest candidate window a recovery reads on demand (FIX-READ-04): a
+    /// safety bound so pathological history cannot deepen the read forever; past it the
+    /// fallback ends and the room parks.</summary>
+    private const int RecoveryDeepestWindow = 512;
+
     /// <summary>
     /// Recovers a room this process does not know (architecture 10.3): load the recovery plan,
     /// walk the newest usable snapshot forward through the committed frames — verifying every
     /// frame's state hash on the way — and resume ticking from the head. A corrupt or
-    /// inconsistent newest snapshot falls back to the previous one; when no snapshot replays
-    /// to the head the room is suspended visibly. A Finishing room recovers its tail without
-    /// restarting battle ticks. Replay is read-only: frames and effects were committed once
-    /// and are never re-triggered.
+    /// inconsistent newest snapshot falls back to the previous one — and when a whole
+    /// candidate window fails, the read deepens on demand instead of parking while older
+    /// anchors remain (FIX-READ-04); when no snapshot replays to the head the room is
+    /// suspended visibly. A Finishing room recovers its tail without restarting battle
+    /// ticks. Replay is read-only: frames and effects were committed once and are never
+    /// re-triggered.
     /// </summary>
     public async Task<RecoverRoomReply> RecoverRoomAsync(RecoverRoomRequest request,
         CancellationToken cancellationToken = default)
@@ -282,148 +293,175 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// pin the verified head through the constrained recovery entry, activate by the fenced
     /// confirm and only then resume ticking (FIX-TAKE-03). The caller holds the room's
     /// activation gate throughout.</summary>
+    /// <summary>Recovery of a room no local actor holds: load the plan, replay to the head,
+    /// pin the verified head through the constrained recovery entry, activate by the fenced
+    /// confirm and only then resume ticking (FIX-TAKE-03). The caller holds the room's
+    /// activation gate throughout.</summary>
     private async Task<RecoverRoomReply> RecoverUnknownRoomAsync(RecoverRoomRequest request,
         CancellationToken cancellationToken)
     {
-        var plan = await _frames.LoadRecoveryAsync(new LoadRecoveryRequest
-        {
-            RoomId = request.RoomId, GameId = request.GameId
-        }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
-        if (!plan.Found)
-            return new RecoverRoomReply
-            {
-                RoomId = request.RoomId, Recovered = false,
-                Note = "The room does not exist on this tenant."
-            };
-        if (plan.Epoch != request.Epoch)
-            return new RecoverRoomReply
-            {
-                RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                Note = $"The room head epoch is {plan.Epoch}, not {request.Epoch}."
-            };
-        // Finishing rooms recover their result and settlement tail only; battle ticks are
-        // never restarted for a round that already froze its result. FIX-TAKE-03: the
-        // closing tail activates under the same fenced confirm before any settlement
-        // effect — a recoverer that no longer holds the room neither claims the tail nor
-        // settles it. The settle call is idempotent per grant (9.3).
-        if (plan.Status == "Finishing")
-        {
-            var activation = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
-            if (activation is not null) return activation;
-            await SettleRoomAsync(request.GameId, request.RoomId, cancellationToken);
-            return new RecoverRoomReply
-            {
-                RoomId = request.RoomId, Recovered = true, Status = plan.Status,
-                LastTick = plan.LastTick,
-                Note = "The round is finishing: the result tail recovers without battle ticks."
-            };
-        }
-        if (plan.Status != "Running")
-            return new RecoverRoomReply
-            {
-                RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                Note = $"A room in status {plan.Status} is not recoverable here."
-            };
-
+        // Candidates load window-first, and a window that fails refutes only itself
+        // (FIX-READ-04): older anchors may still replay, so each failed window deepens the
+        // read on demand — doubling, so deep history costs logarithmic reads — instead of
+        // suspending while untried anchors remain. A reply carrying fewer candidates than
+        // the window asked for has already shown the whole history; there, or at the safety
+        // cap, the fallback ends and the room parks.
         var manifest = new RedesignGameModuleManifest("example-factions", "1.0.0",
             request.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
             RedesignGameModuleManifest.DeterministicReplay);
         var module = new ExampleGameModule(manifest);
-        var participantByBinding = plan.Participants
-            .Where(participant => participant.BindingId.Length > 0 && participant.State != "Closed")
-            .GroupBy(participant => participant.BindingId, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.First().ParticipantId, StringComparer.Ordinal);
-        var deliveryByEvent = plan.Deliveries
-            .Where(delivery => delivery.EventId.Length > 0)
-            .GroupBy(delivery => delivery.EventId, StringComparer.Ordinal)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-
-        foreach (var candidate in plan.Snapshots) // newest first
+        var depth = RecoveryFirstWindow;
+        var refutedAbove = long.MaxValue; // candidates at or above this tick already failed
+        LoadRecoveryReply plan;
+        while (true)
         {
-            if (candidate.Tick > plan.LastTick) continue;
-            ExampleGameState state;
-            try { state = module.Restore(candidate.Payload.ToByteArray(), candidate.SchemaVersion); }
-            catch (Exception) { continue; } // unreadable snapshot: try the previous one
-            if (!module.ComputeStateHash(state).AsSpan().SequenceEqual(candidate.PayloadHash.Span))
-                continue; // corrupt payload: hash mismatch is evidence, not a guess
-
-            var consistent = true;
-            var replayed = 0;
-            foreach (var frame in plan.Frames.Where(frame => frame.Tick > candidate.Tick)
-                .OrderBy(frame => frame.Tick))
+            plan = await _frames.LoadRecoveryAsync(new LoadRecoveryRequest
             {
-                if (frame.Tick != state.Tick + 1) { consistent = false; break; }
-                var inputs = new List<NormalizedInput>();
-                foreach (var eventId in frame.InputEventIds)
-                    if (deliveryByEvent.TryGetValue(eventId, out var delivery)
-                        && delivery.BindingId is { Length: > 0 } binding
-                        && participantByBinding.TryGetValue(binding, out var participant))
-                        inputs.Add(new NormalizedInput(participant, delivery.PayloadJson));
-                TickOutcome outcome;
-                try { outcome = module.ApplyTick(state, frame.Tick, inputs); }
-                catch (Exception) { consistent = false; break; }
-                if (!module.ComputeStateHash(outcome.State).AsSpan().SequenceEqual(frame.StateHash.Span))
+                RoomId = request.RoomId, GameId = request.GameId, CandidateDepth = depth
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            if (!plan.Found)
+                return new RecoverRoomReply
                 {
-                    consistent = false; break;
-                }
-                state = outcome.State;
-                replayed++;
-            }
-            if (!consistent || state.Tick != plan.LastTick) continue;
-
-            // The snapshot replays to the head with matching hashes: persist a fresh
-            // store-verified snapshot at the head so the next recovery starts here.
-            // FIX-TAKE-02/03: while the ownership is Recovering the pin travels the
-            // constrained recovery entry — exactly the takeover-named owner at this epoch
-            // passes — and once that entry closed (the activation already happened, say a
-            // retry after a lost reply) the normal snapshot entry carries the same payload.
-            byte[] headPayload;
-            try
-            {
-                headPayload = module.Serialize(state);
-                await PinHeadAsync(request, plan.LastTick, headPayload, state.SchemaVersion,
-                    cancellationToken);
-            }
-            catch (RpcException error)
-            {
+                    RoomId = request.RoomId, Recovered = false,
+                    Note = "The room does not exist on this tenant."
+                };
+            if (plan.Epoch != request.Epoch)
                 return new RecoverRoomReply
                 {
                     RoomId = request.RoomId, Recovered = false, Status = plan.Status,
+                    Note = $"The room head epoch is {plan.Epoch}, not {request.Epoch}."
+                };
+            // Finishing rooms recover their result and settlement tail only; battle ticks are
+            // never restarted for a round that already froze its result. FIX-TAKE-03: the
+            // closing tail activates under the same fenced confirm before any settlement
+            // effect — a recoverer that no longer holds the room neither claims the tail nor
+            // settles it. The settle call is idempotent per grant (9.3).
+            if (plan.Status == "Finishing")
+            {
+                var activation = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
+                if (activation is not null) return activation;
+                await SettleRoomAsync(request.GameId, request.RoomId, cancellationToken);
+                return new RecoverRoomReply
+                {
+                    RoomId = request.RoomId, Recovered = true, Status = plan.Status,
                     LastTick = plan.LastTick,
-                    Note = $"The head snapshot was rejected: {error.Status.Detail}"
+                    Note = "The round is finishing: the result tail recovers without battle ticks."
                 };
             }
-            // FIX-TAKE-03: the pinned head is the activation credential — the fenced
-            // confirm flips the ownership Active for exactly this owner and epoch before
-            // the loop starts, so a recovery that cannot activate neither ticks nor
-            // reports success.
-            var activated = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
-            if (activated is not null) return activated;
-            var configHash = plan.Frames.Count > 0
-                ? plan.Frames.Max(frame => frame.Tick) == plan.LastTick
-                    ? plan.Frames.First(frame => frame.Tick == plan.LastTick).ConfigHash
-                    : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant()
-                : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant();
-            var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
-                request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
-                plan.LastTick, plan.StateVersion);
-            actor.LoopEnded = Retire;
-            if (!_actors.TryAdd(request.RoomId, actor))
+            if (plan.Status != "Running")
+                return new RecoverRoomReply
+                {
+                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
+                    Note = $"A room in status {plan.Status} is not recoverable here."
+                };
+            var participantByBinding = plan.Participants
+                .Where(participant => participant.BindingId.Length > 0 && participant.State != "Closed")
+                .GroupBy(participant => participant.BindingId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First().ParticipantId, StringComparer.Ordinal);
+            var deliveryByEvent = plan.Deliveries
+                .Where(delivery => delivery.EventId.Length > 0)
+                .GroupBy(delivery => delivery.EventId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+
+            // Newest first, and only candidates this window newly surfaced: everything at
+            // or above the previous window's oldest was already refuted there.
+            foreach (var candidate in plan.Snapshots.Where(candidate => candidate.Tick < refutedAbove))
             {
-                await actor.DisposeAsync();
+                if (candidate.Tick > plan.LastTick) continue;
+                ExampleGameState state;
+                try { state = module.Restore(candidate.Payload.ToByteArray(), candidate.SchemaVersion); }
+                catch (Exception) { continue; } // unreadable snapshot: try the previous one
+                if (!module.ComputeStateHash(state).AsSpan().SequenceEqual(candidate.PayloadHash.Span))
+                    continue; // corrupt payload: hash mismatch is evidence, not a guess
+
+                var consistent = true;
+                var replayed = 0;
+                foreach (var frame in plan.Frames.Where(frame => frame.Tick > candidate.Tick)
+                    .OrderBy(frame => frame.Tick))
+                {
+                    if (frame.Tick != state.Tick + 1) { consistent = false; break; }
+                    var inputs = new List<NormalizedInput>();
+                    foreach (var eventId in frame.InputEventIds)
+                        if (deliveryByEvent.TryGetValue(eventId, out var delivery)
+                            && delivery.BindingId is { Length: > 0 } binding
+                            && participantByBinding.TryGetValue(binding, out var participant))
+                            inputs.Add(new NormalizedInput(participant, delivery.PayloadJson));
+                    TickOutcome outcome;
+                    try { outcome = module.ApplyTick(state, frame.Tick, inputs); }
+                    catch (Exception) { consistent = false; break; }
+                    if (!module.ComputeStateHash(outcome.State).AsSpan().SequenceEqual(frame.StateHash.Span))
+                    {
+                        consistent = false;
+                        break;
+                    }
+                    state = outcome.State;
+                    replayed++;
+                }
+                if (!consistent || state.Tick != plan.LastTick) continue;
+
+                // The snapshot replays to the head with matching hashes: persist a fresh
+                // store-verified snapshot at the head so the next recovery starts here.
+                // FIX-TAKE-02/03: while the ownership is Recovering the pin travels the
+                // constrained recovery entry — exactly the takeover-named owner at this
+                // epoch passes — and once that entry closed (the activation already
+                // happened, say a retry after a lost reply) the normal snapshot entry
+                // carries the same payload.
+                byte[] headPayload;
+                try
+                {
+                    headPayload = module.Serialize(state);
+                    await PinHeadAsync(request, plan.LastTick, headPayload, state.SchemaVersion,
+                        cancellationToken);
+                }
+                catch (RpcException error)
+                {
+                    return new RecoverRoomReply
+                    {
+                        RoomId = request.RoomId, Recovered = false, Status = plan.Status,
+                        LastTick = plan.LastTick,
+                        Note = $"The head snapshot was rejected: {error.Status.Detail}"
+                    };
+                }
+                // FIX-TAKE-03: the pinned head is the activation credential — the fenced
+                // confirm flips the ownership Active for exactly this owner and epoch
+                // before the loop starts, so a recovery that cannot activate neither
+                // ticks nor reports success.
+                var activated = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
+                if (activated is not null) return activated;
+                var configHash = plan.Frames.Count > 0
+                    ? plan.Frames.Max(frame => frame.Tick) == plan.LastTick
+                        ? plan.Frames.First(frame => frame.Tick == plan.LastTick).ConfigHash
+                        : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant()
+                    : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant();
+                var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
+                    request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
+                    plan.LastTick, plan.StateVersion);
+                actor.LoopEnded = Retire;
+                if (!_actors.TryAdd(request.RoomId, actor))
+                {
+                    await actor.DisposeAsync();
+                    return new RecoverRoomReply
+                    {
+                        RoomId = request.RoomId, Recovered = true, Status = "Running",
+                        Note = "The room is already running on this host."
+                    };
+                }
+                actor.Start();
                 return new RecoverRoomReply
                 {
                     RoomId = request.RoomId, Recovered = true, Status = "Running",
-                    Note = "The room is already running on this host."
+                    LastTick = plan.LastTick, SnapshotTick = candidate.Tick,
+                    ReplayedFrames = replayed,
+                    Note = $"Replayed {replayed} frames from the tick-{candidate.Tick} snapshot."
                 };
             }
-            actor.Start();
-            return new RecoverRoomReply
-            {
-                RoomId = request.RoomId, Recovered = true, Status = "Running",
-                LastTick = plan.LastTick, SnapshotTick = candidate.Tick, ReplayedFrames = replayed,
-                Note = $"Replayed {replayed} frames from the tick-{candidate.Tick} snapshot."
-            };
+
+            // This window is refuted down to its oldest loaded candidate.
+            refutedAbove = plan.Snapshots.Count > 0
+                ? plan.Snapshots.Min(candidate => candidate.Tick) : 0;
+            if (plan.Snapshots.Count < depth || depth >= RecoveryDeepestWindow)
+                break;
+            depth *= 2;
         }
 
         // No snapshot survived replay: park the room visibly (architecture 10.3.6). Under a
