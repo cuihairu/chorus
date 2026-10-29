@@ -36,7 +36,8 @@
 
 代码入口：`src/Chorus.GameServer/RoomRuntime.cs`、`RoomActor.cs`。当前风险：字典中存在 Actor 被当作正在运行；停止 Actor 和终局 Actor 长期驻留。
 
-- [ ] **FIX-ROOM-01：显式记录 Actor 执行状态。** 依赖：无。交付：区分 Running、Stopped/Suspended、Completed、Disposed，暴露实际 epoch、最后提交 Tick 和停止原因。验收：正常终局、模块失败、fencing 拒绝分别得到正确状态；未提交终局不能被标为 Completed。
+- [x] **FIX-ROOM-01：显式记录 Actor 执行状态。** 依赖：无。交付：区分 Running、Stopped/Suspended、Completed、Disposed，暴露实际 epoch、最后提交 Tick 和停止原因。验收：正常终局、模块失败、fencing 拒绝分别得到正确状态；未提交终局不能被标为 Completed。
+  - 完成：75ebce9（RoomActor 新增 RoomRunState/RoomActorStatus/Status()；三条停止路径在 _publishGate 下记录原因；终局帧置 Completed 且 Dispose 保持 Completed，活房 Dispose 置 Disposed）。验证：`--filter RedesignFrameCommitUnitTests` 8/8 绿——正常终局 Completed/epoch 1/LastCommittedTick 3/无停止原因且 Dispose 后保持；模块连败 Stopped（原因含 module failed 3 consecutive ticks）、fencing 拒绝 Stopped（原因含 frame commit rejected at tick 1）、两者 LastCommittedTick 0 未标 Completed；活房 Dispose 为 Disposed。全量门禁 13:54 负载谷（5.49/7.68/10.69）1320/1320 绿，工作树含本改动。
 - [ ] **FIX-ROOM-02：校验恢复入口的已有 Actor。** 依赖：FIX-ROOM-01。交付：RecoverRoom 对已有对象检查 epoch 和循环状态。验收：仅同 epoch 且实际运行中的 Actor 返回 Running；停止对象不返回恢复成功；返回的 LastTick 为真实头部。
 - [ ] **FIX-ROOM-03：串行化同房间的创建与恢复。** 依赖：FIX-ROOM-02。交付：每 RoomId 的激活协调，覆盖 Prepare 与 Recover 交错。验收：并发请求只启动一个有效 Tick 循环；冲突请求可见拒绝；失败后释放激活门，后续合法重试可执行。
 - [ ] **FIX-ROOM-04：移除退出的 Actor。** 依赖：FIX-ROOM-01、FIX-ROOM-03。交付：对失效/被替代 Actor 按对象身份清理循环与订阅资源；正常终局保留待收尾实体，直到 FIX-END-14 获得释放后的销毁授权。验收：停止 Tick 不等于提前销毁正常终局房间；旧 Actor 延迟退出不删除新 Actor；重复释放不抛异常。
