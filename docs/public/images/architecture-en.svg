@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1170" viewBox="0 0 1200 1170" role="img" aria-labelledby="title desc" xml:lang="en">
 <title id="title">Chorus architecture and room runtime</title>
-<desc id="desc">Seven process roles. ControlServer assigns ownership; NodeAgent supervises local processes. Gateways connect clients and platforms. StreamerServer manages streamers. GameServer contains a RoomRuntime and multiple RoomActors. PlatformGateway pushes events directly to the target RoomActor via RoomRuntime. GameServer uses DataServer for persistence and recovery. Dashed arrows denote control; solid arrows denote business data. Target redesign; integration is ongoing.</desc>
+<desc id="desc">Seven process roles. ControlServer assigns ownership; NodeAgent supervises local processes. StreamerGateway connects clients; PlatformGateway connects live platforms. StreamerGateway connects directly to GameServer for battle input and committed frames. StreamerServer manages streamers. GameServer contains a RoomRuntime and multiple RoomActors. PlatformGateway pushes events directly to the target RoomActor via RoomRuntime. GameServer uses DataServer for persistence and recovery. Dashed arrows denote control; solid arrows denote business data. Target redesign; integration is ongoing.</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
 <style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:29px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}.control{stroke-dasharray:7 5}.box{stroke-width:1.5}</style>
 <rect width="1200" height="1170" rx="20" fill="#f8fafc"/>
@@ -17,8 +17,10 @@
 <text x="430" y="202" class="body" text-anchor="start">Publish routes · Confirm delivery stopped → Authorize platform close → Destroy room</text>
 <path d="M410 173 H340" class="edge control"/>
 <text x="375" y="150" class="label" text-anchor="middle">Plans</text>
-<text x="40" y="262" class="small" text-anchor="start">NodeAgent supervises all service processes on its machine.</text>
+<text x="40" y="262" class="small" text-anchor="start">NodeAgent: local process supervision.</text>
 <path d="M1160 173 H1180 V460 H1160" class="edge control"/>
+<path d="M445 230 V305" class="edge control"/>
+<text x="460" y="281" class="label">Room routes / epoch</text>
 <path d="M600 230 V435 H445 V475" marker-start="url(#arrow)" class="edge control"/>
 <text x="40" y="450" class="small">Route versions ↓ / Installed &amp; stopped ACKs ↑</text>
 <rect x="40" y="305" width="220" height="105" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
@@ -36,7 +38,8 @@
 <path d="M260 357 H310" marker-start="url(#arrow)" class="edge"/>
 <path d="M580 357 H650" marker-start="url(#arrow)" class="edge"/>
 <text x="285" y="339" class="label" text-anchor="middle">WSS</text>
-<text x="615" y="339" class="label" text-anchor="middle">RPC</text>
+<text x="615" y="339" class="label" text-anchor="middle">gRPC</text>
+<text x="670" y="298" class="small">Login / personal requests only</text>
 <rect x="40" y="475" width="220" height="105" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
 <text x="60" y="509" class="name" text-anchor="start">Live platforms</text>
 <text x="60" y="537" class="body" text-anchor="start">Launch credentials</text>
@@ -53,8 +56,8 @@
 <rect x="670" y="538" width="470" height="70" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
 <text x="690" y="572" class="name" text-anchor="start">RoomRuntime</text>
 <text x="1120" y="581" class="small" text-anchor="end">RoomId → RoomActor</text>
-<path d="M905 410 V460" marker-start="url(#arrow)" class="edge"/>
-<text x="920" y="438" class="label" text-anchor="start">Subscribe / sync</text>
+<path d="M550 410 V425 H790 V460" marker-start="url(#arrow)" class="edge" style="stroke:#2563eb;stroke-width:3"/>
+<text x="805" y="439" class="label" style="fill:#2563eb">Battle inputs / committed frames</text>
 <path d="M740 608 V632" class="edge"/>
 <rect x="670" y="632" width="150" height="70" rx="9" fill="#fff" stroke="#86c9b3"/>
 <text x="745" y="659" class="body" text-anchor="middle">RoomActor A</text>

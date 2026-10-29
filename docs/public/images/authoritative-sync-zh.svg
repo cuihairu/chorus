@@ -52,5 +52,5 @@
 <text x="55" y="1419" class="body" text-anchor="start">礼物／点赞事实来自已验证平台事件，不接受客户端自报积分。</text>
 <text x="55" y="1456" class="body" text-anchor="start">ACK 只是同步线索，不能据此发奖；状态哈希不能证明客户端诚实。</text>
 <text x="55" y="1493" class="body" text-anchor="start">慢客户端不阻塞另一端；出站队列溢出后用已提交快照重建基线。</text>
-<text x="35" y="1555" class="small" text-anchor="start">时序图省略 Gateway 中转跳数；目标策略细节及当前实现差距见配套文档。</text>
+<text x="35" y="1555" class="small" text-anchor="start">时序图省略 StreamerGateway 中转跳数；目标策略细节及当前实现差距见配套文档。</text>
 </svg>

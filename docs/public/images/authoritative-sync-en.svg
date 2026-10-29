@@ -52,5 +52,5 @@
 <text x="55" y="1419" class="body" text-anchor="start">Gift / like facts come from verified platform events, never client-reported scores.</text>
 <text x="55" y="1456" class="body" text-anchor="start">ACK is a synchronization hint, not reward evidence; hashes are not proof of an honest client.</text>
 <text x="55" y="1493" class="body" text-anchor="start">A slow client cannot block the other; queue overflow resets to a committed snapshot.</text>
-<text x="35" y="1555" class="small" text-anchor="start">Gateway relay hops are omitted in the sequence. Target policy details and implementation gaps are documented separately.</text>
+<text x="35" y="1555" class="small" text-anchor="start">StreamerGateway relay hops are omitted in the sequence. Target policy details and implementation gaps are documented separately.</text>
 </svg>

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1170" viewBox="0 0 1200 1170" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
 <title id="title">Chorus 进程架构与房间运行时</title>
-<desc id="desc">七类进程。ControlServer 分配所有权，NodeAgent 监管本机进程。网关连接主播和直播平台，StreamerServer 管理主播。GameServer 内由 RoomRuntime 管理多个 RoomActor。PlatformGateway 经 RoomRuntime 直接推送事件到目标 RoomActor；GameServer 通过 DataServer 持久化和恢复。虚线为控制关系，实线为业务数据。重设计架构，集成持续进行中。</desc>
+<desc id="desc">七类进程。ControlServer 分配所有权，NodeAgent 监管本机进程。StreamerGateway 接入主播客户端，PlatformGateway 接入直播平台。StreamerGateway 直接连接 GameServer 传递战斗输入和已提交帧；StreamerServer 管理主播。GameServer 内由 RoomRuntime 管理多个 RoomActor。PlatformGateway 经 RoomRuntime 直接推送事件到目标 RoomActor；GameServer 通过 DataServer 持久化和恢复。虚线为控制关系，实线为业务数据。重设计架构，集成持续进行中。</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
 <style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:29px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}.control{stroke-dasharray:7 5}.box{stroke-width:1.5}</style>
 <rect width="1200" height="1170" rx="20" fill="#f8fafc"/>
@@ -17,8 +17,10 @@
 <text x="430" y="202" class="body" text-anchor="start">同步路由 · 确认停止投递 → 授权平台收尾 → 协调销毁</text>
 <path d="M410 173 H340" class="edge control"/>
 <text x="375" y="150" class="label" text-anchor="middle">计划</text>
-<text x="40" y="262" class="small" text-anchor="start">NodeAgent 监管所在机器上的各类服务进程。</text>
+<text x="40" y="262" class="small" text-anchor="start">NodeAgent：监管本机服务进程。</text>
 <path d="M1160 173 H1180 V460 H1160" class="edge control"/>
+<path d="M445 230 V305" class="edge control"/>
+<text x="460" y="281" class="label">房间路由 / epoch</text>
 <path d="M600 230 V435 H445 V475" marker-start="url(#arrow)" class="edge control"/>
 <text x="40" y="450" class="small">路由版本下发 ↓ / 安装及停止投递确认 ↑</text>
 <rect x="40" y="305" width="220" height="105" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
@@ -36,7 +38,8 @@
 <path d="M260 357 H310" marker-start="url(#arrow)" class="edge"/>
 <path d="M580 357 H650" marker-start="url(#arrow)" class="edge"/>
 <text x="285" y="339" class="label" text-anchor="middle">WSS</text>
-<text x="615" y="339" class="label" text-anchor="middle">RPC</text>
+<text x="615" y="339" class="label" text-anchor="middle">gRPC</text>
+<text x="670" y="298" class="small">登录 / 个人业务请求</text>
 <rect x="40" y="475" width="220" height="105" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
 <text x="60" y="509" class="name" text-anchor="start">直播平台</text>
 <text x="60" y="537" class="body" text-anchor="start">启动凭据</text>
@@ -53,8 +56,8 @@
 <rect x="670" y="538" width="470" height="70" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
 <text x="690" y="572" class="name" text-anchor="start">RoomRuntime</text>
 <text x="1120" y="581" class="small" text-anchor="end">RoomId → RoomActor</text>
-<path d="M905 410 V460" marker-start="url(#arrow)" class="edge"/>
-<text x="920" y="438" class="label" text-anchor="start">订阅 / 同步</text>
+<path d="M550 410 V425 H790 V460" marker-start="url(#arrow)" class="edge" style="stroke:#2563eb;stroke-width:3"/>
+<text x="805" y="439" class="label" style="fill:#2563eb">战斗输入上行 / 已提交帧下行</text>
 <path d="M740 608 V632" class="edge"/>
 <rect x="670" y="632" width="150" height="70" rx="9" fill="#fff" stroke="#86c9b3"/>
 <text x="745" y="659" class="body" text-anchor="middle">RoomActor A</text>

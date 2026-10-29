@@ -16,7 +16,7 @@ Clients converge to the same state at the same committed version. Network delays
 
 ## Reconnect and catch-up
 
-A disconnect preserves participation. Resume authenticates and rotates the current session, resolves the original room from server facts and attaches a new connection generation. An old gateway close notice cannot disconnect the replacement.
+A disconnect preserves participation. Resume authenticates and rotates the current session, resolves the original room from server facts and attaches a new connection generation. An old StreamerGateway close notice cannot disconnect the replacement.
 
 Default catch-up uses a coherent committed head snapshot, then contiguous deltas after that head. Subscription and head capture must share a publication boundary or resumable commit cursor. Overflow during snapshot installation restarts baselining. Epoch changes require a new route and full snapshot; version numbers across epochs are not one delta chain. A completed room returns the frozen result and settlement progress. History replay is optional future optimization, not a promise of unlimited incremental recovery. Historical effects and rewards are not executed again on clients.
 

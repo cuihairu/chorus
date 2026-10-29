@@ -60,7 +60,7 @@ Platform-specific callbacks and close operations obey the adapter capability con
 
 Open full SVG：[SVG](/images/lifecycle-platform-en.svg)
 
-The room-end barrier is mandatory: freeze the result → close delivery and confirm all authorized gateways → authorize the platform call → resolve its outcome and complete settlement → finalize and destroy. A failed or unknown platform outcome blocks the next round. Normal round completion must not implicitly unbind the entire live session.
+The room-end barrier is mandatory: freeze the result → close delivery and confirm all authorized PlatformGateway instances → authorize the platform call → resolve its outcome and complete settlement → finalize and destroy. A failed or unknown platform outcome blocks the next round. Normal round completion must not implicitly unbind the entire live session.
 
 See [architecture and shutdown contract (Chinese)](/architecture/architecture).
 
