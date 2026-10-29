@@ -5,6 +5,12 @@ using Microsoft.Extensions.Logging;
 
 namespace Chorus.Redesign.Rpc;
 
+/// <summary>One room's progress as its host sees it (FIX-TAKE-06): the actor's lifecycle
+/// state and head (FIX-ROOM-01), reported separately from the process readiness — a host
+/// whose heartbeats stay healthy may still hold rooms whose actors stopped.</summary>
+public sealed record RoomProgressReport(string RoomId, long Epoch, string State, long LastTick,
+    long? LastCommittedUnixMs, string? StopReason);
+
 /// <summary>
 /// The instance self-report loop (architecture 4.4): a host that is not supervised by a node
 /// agent — today the game and streamer hosts — tells the control plane where it serves, so
@@ -12,12 +18,13 @@ namespace Chorus.Redesign.Rpc;
 /// speaks with the host's own certificate: the process is its own agent, and the control plane
 /// checks the certificate against the claimed instance. A rejected or failed report is retried
 /// on the next tick — the node row may not exist yet; reporting only converges, never crashes
-/// the host.
+/// the host. Each report may carry the host's per-room progress (FIX-TAKE-06).
 /// </summary>
 public sealed class ProcessSelfReporter(
     X509Certificate2 clientCertificate, X509Certificate2 root, X509Certificate2 nodeAuthority,
     ProcessIdentity identity, string controlEndpoint, string endpoint, string slotId,
-    int intervalMs, ILogger<ProcessSelfReporter>? logger = null) : BackgroundService
+    int intervalMs, ILogger<ProcessSelfReporter>? logger = null,
+    Func<IReadOnlyList<RoomProgressReport>>? roomProgress = null) : BackgroundService
 {
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(5);
 
@@ -32,13 +39,13 @@ public sealed class ProcessSelfReporter(
         {
             try
             {
-                var reply = await control.ReportProcessAsync(new ReportProcessRequest
+                var request = new ReportProcessRequest
                 {
                     NodeId = identity.NodeId,
                     AgentInstanceId = identity.ProcessInstanceId,
                     SlotId = slotId,
                     ProcessInstanceId = identity.ProcessInstanceId,
-                    ReportSequence = sequence++,
+                    ReportSequence = sequence,
                     Lifecycle = "Running",
                     Readiness = "Ready",
                     Health = "Healthy",
@@ -47,7 +54,19 @@ public sealed class ProcessSelfReporter(
                     StartedUnixMs = startedAtUnixMs,
                     Role = identity.Role,
                     Endpoint = endpoint
-                }, deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: stoppingToken);
+                };
+                if (roomProgress is not null)
+                    foreach (var progress in roomProgress())
+                        request.RoomProgress.Add(new RoomProgressProto
+                        {
+                            RoomId = progress.RoomId, Epoch = progress.Epoch, State = progress.State,
+                            LastTick = progress.LastTick,
+                            LastCommittedUnixMs = progress.LastCommittedUnixMs ?? 0,
+                            StopReason = progress.StopReason ?? ""
+                        });
+                var reply = await control.ReportProcessAsync(request,
+                    deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: stoppingToken);
+                sequence++;
                 if (!reply.Accepted)
                     logger?.LogInformation("Self report was not accepted ({Readiness}); retrying.",
                         reply.Readiness);

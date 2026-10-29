@@ -56,8 +56,14 @@ if (controlEndpoint is { Length: > 0 })
         ?? $"https://localhost:{port}";
     var slotId = Environment.GetEnvironmentVariable("CHORUS_SLOT_ID") ?? $"{identity.NodeId}/{identity.Role}";
     var reportIntervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_REPORT_INTERVAL_MS") ?? "2000");
+    var runtime = builder.Services.Single(service =>
+        service.ServiceType == typeof(RoomRuntime)).ImplementationInstance as RoomRuntime
+        ?? throw new InvalidOperationException("The room runtime was not registered.");
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
-        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
+        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId,
+        reportIntervalMs, roomProgress: () => runtime.RoomStatuses().Select(entry => new RoomProgressReport(
+            entry.RoomId, entry.Status.Epoch, entry.Status.State.ToString(), entry.Status.LastCommittedTick,
+            entry.Status.LastCommittedAt?.ToUnixTimeMilliseconds(), entry.Status.StopReason)).ToList()));
 }
 builder.Services.AddGrpc();
 

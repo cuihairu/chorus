@@ -23,9 +23,10 @@ internal enum RoomRunState
 }
 
 /// <summary>An inspectable snapshot of one room actor: its state, the epoch it runs at,
-/// the last tick it committed, and why it stopped (FIX-ROOM-01).</summary>
+/// the last tick it committed, when the host saw that commit, and why it stopped
+/// (FIX-ROOM-01, FIX-TAKE-06).</summary>
 internal sealed record RoomActorStatus(RoomRunState State, long Epoch, long LastCommittedTick,
-    string? StopReason);
+    string? StopReason, DateTimeOffset? LastCommittedAt = null);
 
 /// <summary>The frozen outcome of a finished round (FIX-ROOM-05): the head the result
 /// committed at, and the result itself — all that stays after the actor is released.</summary>
@@ -79,6 +80,7 @@ internal sealed class RoomActor : IAsyncDisposable
     private PendingFrame? _pending;
     private RoomRunState _runState = RoomRunState.Running;
     private string? _stopReason;
+    private DateTimeOffset? _lastCommittedAt;
     private volatile bool _stopped;
     private volatile bool _finalCommitted;
     // Set under the publish gate when the loop exits: Subscribe must never register
@@ -352,6 +354,9 @@ internal sealed class RoomActor : IAsyncDisposable
             _state = outcome.State;
             _lastTick = receipt.Tick;
             _stateVersion = receipt.StateVersion;
+            // The wall-clock evidence the progress report carries (FIX-TAKE-06): the host
+            // saw this commit land; the control plane keeps its own database-time tracking.
+            _lastCommittedAt = DateTimeOffset.UtcNow;
             if (_subscribers.Count == 0 && !outcome.Final) return;
             var delta = new SyncMessage { Delta = new DeltaMessage
             {
@@ -496,7 +501,8 @@ internal sealed class RoomActor : IAsyncDisposable
     /// and — for a room that stopped without a result — the recorded reason.</summary>
     public RoomActorStatus Status()
     {
-        lock (_publishGate) return new RoomActorStatus(_runState, _epoch, _lastTick, _stopReason);
+        lock (_publishGate) return new RoomActorStatus(_runState, _epoch, _lastTick, _stopReason,
+            _lastCommittedAt);
     }
 
     private static DateTime Deadline() => DateTime.UtcNow.AddSeconds(10);

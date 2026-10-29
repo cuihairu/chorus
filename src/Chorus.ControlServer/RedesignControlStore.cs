@@ -277,6 +277,108 @@ public sealed class RedesignControlStore(string connectionString)
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
     }
 
+    /// <summary>One room's reported progress (FIX-TAKE-06).</summary>
+    public sealed record RoomProgressEntry(string RoomId, long Epoch, string State, long LastTick,
+        long? LastCommittedUnixMs, string? StopReason);
+
+    /// <summary>One stalled room as the stall query names it (FIX-TAKE-06).</summary>
+    public sealed record StalledRoom(string ProcessInstanceId, string RoomId, long Epoch,
+        string State, long LastTick, string? StopReason);
+
+    /// <summary>
+    /// Records one report's per-room progress (FIX-TAKE-06), in one transaction with the
+    /// pruning of rooms the process stopped naming. progress_at is database time and only
+    /// moves when the reported head (state or tick) moves — a frozen tick across reports
+    /// is the stall signal, never fresh evidence. An out-of-order report (a stale sequence)
+    /// never regresses a row.
+    /// </summary>
+    public async Task RecordRoomProgressAsync(string processInstanceId, long reportSequence,
+        IReadOnlyList<RoomProgressEntry> progress, CancellationToken cancellationToken = default)
+    {
+        if (reportSequence < 0) throw new ArgumentOutOfRangeException(nameof(reportSequence));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        foreach (var entry in progress)
+        {
+            await using var upsert = new NpgsqlCommand("""
+                INSERT INTO control.room_progress(process_instance_id,room_id,epoch,state,
+                    last_tick,last_committed_at,stop_reason,report_sequence)
+                VALUES (@process,@room,@epoch,@state,@tick,
+                    CASE WHEN @ms>0 THEN to_timestamp(@ms::double precision/1000.0) END,
+                    @reason,@seq)
+                ON CONFLICT (process_instance_id, room_id) DO UPDATE SET
+                    epoch=excluded.epoch, state=excluded.state, last_tick=excluded.last_tick,
+                    last_committed_at=excluded.last_committed_at, stop_reason=excluded.stop_reason,
+                    report_sequence=excluded.report_sequence, reported_at=clock_timestamp(),
+                    progress_at=CASE WHEN excluded.state=control.room_progress.state
+                            AND excluded.last_tick=control.room_progress.last_tick
+                        THEN control.room_progress.progress_at ELSE clock_timestamp() END
+                WHERE excluded.report_sequence >= control.room_progress.report_sequence
+                """, connection, transaction);
+            upsert.Parameters.AddWithValue("process", processInstanceId);
+            upsert.Parameters.AddWithValue("room", entry.RoomId);
+            upsert.Parameters.AddWithValue("epoch", entry.Epoch);
+            upsert.Parameters.AddWithValue("state", entry.State);
+            upsert.Parameters.AddWithValue("tick", entry.LastTick);
+            upsert.Parameters.AddWithValue("ms", entry.LastCommittedUnixMs ?? 0L);
+            upsert.Parameters.AddWithValue("reason",
+                (object?)entry.StopReason ?? DBNull.Value);
+            upsert.Parameters.AddWithValue("seq", reportSequence);
+            await upsert.ExecuteNonQueryAsync(cancellationToken);
+        }
+        // A room the process no longer names has no reporter; keeping its row would let a
+        // dead report masquerade as live evidence.
+        await using var prune = new NpgsqlCommand(
+            "DELETE FROM control.room_progress WHERE process_instance_id=@process AND NOT (room_id = ANY(@rooms))",
+            connection, transaction);
+        prune.Parameters.AddWithValue("process", processInstanceId);
+        prune.Parameters.AddWithValue("rooms",
+            progress.Select(entry => entry.RoomId).ToArray());
+        await prune.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The rooms whose gameplay stopped while their host's heartbeat stayed fresh (FIX-TAKE-06,
+    /// the identification half; the governance policy is FIX-TAKE-07). A silently frozen
+    /// Running actor (database-time progress older than the threshold) and an explicitly
+    /// Stopped actor both appear; a business-paused room — its actor parked by the store's
+    /// suspension rejection — is not faulty merely because its tick froze, so that exact
+    /// park reason is excluded. A completed round is normal, never stalled.
+    /// </summary>
+    public async Task<List<StalledRoom>> ListStalledRoomsAsync(int stallSeconds, int freshSeconds,
+        CancellationToken cancellationToken = default)
+    {
+        if (stallSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(stallSeconds));
+        if (freshSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(freshSeconds));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT r.process_instance_id, r.room_id, r.epoch, r.state, r.last_tick, r.stop_reason
+            FROM control.room_progress r
+            JOIN control.process p ON p.process_instance_id = r.process_instance_id
+            LEFT JOIN game.room g ON g.room_id = r.room_id
+            WHERE p.observed_at > clock_timestamp() - @fresh * interval '1 second'
+              AND ( (r.state = 'Running'
+                        AND r.progress_at < clock_timestamp() - @stall * interval '1 second')
+                 OR r.state = 'Stopped' )
+              AND NOT ( r.state = 'Stopped'
+                    AND r.stop_reason LIKE '%A room in status Suspended does not accept frame commits%'
+                    AND coalesce(g.status, '') = 'Suspended' )
+            ORDER BY r.progress_at
+            """, connection);
+        command.Parameters.AddWithValue("stall", stallSeconds);
+        command.Parameters.AddWithValue("fresh", freshSeconds);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var stalled = new List<StalledRoom>();
+        while (await reader.ReadAsync(cancellationToken))
+            stalled.Add(new StalledRoom(reader.GetString(0), reader.GetString(1), reader.GetInt64(2),
+                reader.GetString(3), reader.GetInt64(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
+        return stalled;
+    }
+
     /// <summary>
     /// Extends the lease of every Active ownership whose owner still reports live (architecture
     /// 4.2: the registrar renews on the owner's behalf while the owner is observable). An owner

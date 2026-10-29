@@ -27,6 +27,7 @@
     <EmbeddedResource Include="Redesign/0016_deployment_plan.sql" />
     <EmbeddedResource Include="Redesign/0017_admin_gate.sql" />
     <EmbeddedResource Include="Redesign/0018_recovery_operation.sql" />
+    <EmbeddedResource Include="Redesign/0019_room_progress.sql" />
   </ItemGroup>
 
 </Project>

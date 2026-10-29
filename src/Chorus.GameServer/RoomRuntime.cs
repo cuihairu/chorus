@@ -144,19 +144,40 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     internal RoomActor? FindRoom(string roomId) =>
         _actors.TryGetValue(roomId, out var actor) ? actor : null;
 
+    private readonly ConcurrentDictionary<string, RoomActorStatus> _retiredStatuses =
+        new(StringComparer.Ordinal);
+
     /// <summary>
     /// Drops an actor whose loop ended without a committed result (FIX-ROOM-04): a stopped
     /// or disposed actor leaves the dictionary so the room id stops masquerading as running.
     /// The removal is identity-checked, so a delayed retirement never removes a newer actor
     /// that has since taken the room; a completed room keeps its actor for the result tail
-    /// until release (FIX-END-14). Repeated retirement is a no-op.
+    /// until release (FIX-END-14). Repeated retirement is a no-op. The final status stays
+    /// behind so the progress report keeps identifying the stopped room (FIX-TAKE-06).
     /// </summary>
     internal void Retire(RoomActor actor)
     {
         var status = actor.Status();
         if (status.State is RoomRunState.Running or RoomRunState.Completed) return;
+        _retiredStatuses[actor.RoomId] = status;
         ((ICollection<KeyValuePair<string, RoomActor>>)_actors)
             .Remove(new KeyValuePair<string, RoomActor>(actor.RoomId, actor));
+    }
+
+    /// <summary>
+    /// Every room's progress this host can report (FIX-TAKE-06): the live actors plus the
+    /// final status a retired or released actor left behind — a stopped room stays
+    /// identified for as long as this process runs, even after its object is gone.
+    /// </summary>
+    internal IReadOnlyList<(string RoomId, RoomActorStatus Status)> RoomStatuses()
+    {
+        var statuses = new List<(string RoomId, RoomActorStatus Status)>(_actors.Count);
+        foreach (var (roomId, actor) in _actors)
+            statuses.Add((roomId, actor.Status()));
+        foreach (var (roomId, status) in _retiredStatuses)
+            if (!_actors.ContainsKey(roomId))
+                statuses.Add((roomId, status));
+        return statuses;
     }
 
     /// <summary>The frozen result of a released room, or null (FIX-ROOM-05).</summary>
@@ -181,6 +202,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             var final = actor.FinalResult();
             if (final is null) return false; // a live room is not release material
             await actor.DisposeAsync();
+            _retiredStatuses[roomId] = actor.Status();
             _actors.TryRemove(new KeyValuePair<string, RoomActor>(roomId, actor));
             lock (_resultGate)
             {

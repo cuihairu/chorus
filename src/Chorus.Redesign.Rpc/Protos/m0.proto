@@ -64,6 +64,22 @@ message ReportProcessRequest {
   string role = 12;
   // The endpoint the process serves on; empty when the reporter cannot know it.
   string endpoint = 13;
+  // Per-room progress (FIX-TAKE-06), reported separately from the process readiness: a
+  // host whose heartbeats stay healthy may still hold rooms whose actors stopped.
+  repeated RoomProgressProto room_progress = 14;
+}
+
+message RoomProgressProto {
+  string room_id = 1;
+  int64 epoch = 2;
+  // The actor's lifecycle state (FIX-ROOM-01): Running, Completed, Stopped or Disposed.
+  string state = 3;
+  int64 last_tick = 4;
+  // When the host's clock saw the last commit; informational — the control plane keeps
+  // its own database-time progress tracking.
+  int64 last_committed_unix_ms = 5;
+  // Why a Stopped actor ended; empty otherwise.
+  string stop_reason = 6;
 }
 message ProcessReply { bool accepted = 1; string readiness = 2; string entity_recovery = 3; }
 message OwnershipRequest {

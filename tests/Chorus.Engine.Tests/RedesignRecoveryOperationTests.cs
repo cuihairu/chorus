@@ -226,8 +226,8 @@ public sealed class RedesignRecoveryOperationTests
             Assert.True(reader.GetBoolean(7));
         }
         // The replacement has its own fresh deadline, so the sweep list is empty again.
-        Assert.Empty((await control.ListExpiredOpenRoomRecoveriesAsync())
-            .Where(operation => operation.RoomId == "room-1"));
+        Assert.DoesNotContain(await control.ListExpiredOpenRoomRecoveriesAsync(),
+            operation => operation.RoomId == "room-1");
         Assert.Equal(2, await control.CountRoomRecoveryOperationsAsync("tenant-a", "game-a", "room-1"));
     }
 

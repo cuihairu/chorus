@@ -62,6 +62,34 @@ public sealed class RedesignActorRetirementUnitTests
         Assert.Same(replacement, runtime.FindRoom("room-fail"));
     }
 
+    [Fact]
+    public async Task RoomStatusesCarryLiveProgressAndRetainedStoppedStatus()
+    {
+        var rounds = new ScriptedRoundStore();
+        var frames = new ScriptedFrameStore();
+        await using var runtime = new RoomRuntime(rounds, frames, new ScriptedSettlement());
+
+        // A live actor reports its advancing head with the wall clock of its last commit.
+        Assert.False((await runtime.PrepareRoomAsync(Prepare("room-live"))).Duplicate);
+        Assert.True(await WaitForAsync(() => Task.FromResult(frames.CommitCount >= 2)),
+            "The live actor never committed a frame.");
+        var live = runtime.RoomStatuses().Single(entry => entry.RoomId == "room-live");
+        Assert.Equal(RoomRunState.Running, live.Status.State);
+        Assert.True(live.Status.LastCommittedTick >= 2);
+        Assert.NotNull(live.Status.LastCommittedAt);
+
+        // A stopped actor has left the dictionary, but its final status stays behind so the
+        // progress report keeps naming the room instead of silently dropping it.
+        Assert.False((await runtime.PrepareRoomAsync(Prepare("room-fail", failAfterTick: 1))).Duplicate);
+        Assert.True(await WaitForAsync(() => Task.FromResult(runtime.FindRoom("room-fail") is null)),
+            "The stopped actor never left the dictionary.");
+        var stopped = runtime.RoomStatuses().Single(entry => entry.RoomId == "room-fail");
+        Assert.Equal(RoomRunState.Stopped, stopped.Status.State);
+        Assert.NotNull(stopped.Status.StopReason);
+        Assert.Contains(runtime.RoomStatuses(),
+            entry => entry.RoomId == "room-live" && entry.Status.State == RoomRunState.Running);
+    }
+
     private static PrepareRoomRequest Prepare(string roomId, long durationTicks = 200,
         int failAfterTick = 0) => new()
     {

@@ -65,6 +65,16 @@ public sealed class ControlGrpcService(
             request.EntityRecovery, DateTimeOffset.FromUnixTimeMilliseconds(request.StartedUnixMs).UtcDateTime,
             request.Endpoint is { Length: > 0 } endpoint ? endpoint : null, selfReport,
             context.CancellationToken);
+        // Per-room progress rides the same report (FIX-TAKE-06), stored separately from the
+        // process readiness row; only an accepted report moves it, so a stale replay never
+        // regresses a room's evidence.
+        if (status.Accepted && request.RoomProgress.Count > 0)
+            await store.RecordRoomProgressAsync(request.ProcessInstanceId, request.ReportSequence,
+                request.RoomProgress.Select(entry => new RedesignControlStore.RoomProgressEntry(
+                    entry.RoomId, entry.Epoch, entry.State, entry.LastTick,
+                    entry.LastCommittedUnixMs > 0 ? entry.LastCommittedUnixMs : null,
+                    entry.StopReason is { Length: > 0 } reason ? reason : null)).ToList(),
+                context.CancellationToken);
         return new ProcessReply { Accepted = status.Accepted, Readiness = status.Readiness,
             EntityRecovery = status.EntityRecovery };
     }
