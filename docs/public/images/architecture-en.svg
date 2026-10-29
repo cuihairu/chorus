@@ -1,12 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1170" viewBox="0 0 1240 1170" role="img" aria-labelledby="title desc" xml:lang="en">
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1265" viewBox="0 0 1240 1265" role="img" aria-labelledby="title desc" xml:lang="en">
 <title id="title">Chorus architecture and room runtime</title>
-<desc id="desc">Seven process roles. ControlServer assigns ownership; NodeAgent supervises local processes. StreamerGateway connects clients; PlatformGateway connects live platforms. StreamerGateway connects directly to GameServer for battle input and committed frames. StreamerServer manages streamers and exchanges live bindings, match intent and participation updates with ControlServer. GameServer registers and reports status to ControlServer, which commands room lifecycle. GameServer contains a RoomRuntime and multiple RoomActors. PlatformGateway pushes events directly to the target RoomActor via RoomRuntime. GameServer uses DataServer for persistence and recovery. Dashed arrows denote control; solid arrows denote business data. Target redesign; integration is ongoing.</desc>
+<desc id="desc">Seven process roles. The GM console/CLI is a management client whose target entry is ControlServer Admin. ControlServer assigns ownership; NodeAgent supervises local processes. StreamerGateway connects clients; PlatformGateway connects live platforms. StreamerGateway connects directly to GameServer for battle input and committed frames. StreamerServer manages streamers and exchanges live bindings, match intent and participation updates with ControlServer. GameServer registers and reports status to ControlServer, which commands room lifecycle. GameServer contains a RoomRuntime and multiple RoomActors. PlatformGateway pushes events directly to the target RoomActor via RoomRuntime. GameServer uses DataServer for persistence and recovery. Dashed arrows denote control; solid arrows denote business data. Target redesign; integration is ongoing.</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
 <style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:29px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}.control{stroke-dasharray:7 5}.box{stroke-width:1.5}</style>
-<rect width="1240" height="1170" rx="20" fill="#f8fafc"/>
+<rect width="1240" height="1265" rx="20" fill="#f8fafc"/>
 
 <text x="40" y="48" class="title" text-anchor="start">Chorus · Process architecture</text>
 <text x="40" y="78" class="body" text-anchor="start">7 process roles · Multiple rooms per GameServer · Target redesign, integration ongoing</text>
+<rect x="40" y="112" width="300" height="60" rx="12" fill="#fff7ed" stroke="#fdba74" class="box"/>
+<text x="60" y="138" class="name">GM console / CLI</text>
+<text x="60" y="160" class="small">Management client · Target contract</text>
+<path d="M340 142 H785 V210" class="edge" style="stroke:#c2410c"/>
+<text x="805" y="155" class="label" style="fill:#c2410c">Admin entry · Authorization / audit</text>
+<g transform="translate(0 95)">
 <rect x="40" y="115" width="300" height="115" rx="12" fill="#eef2ff" stroke="#a5b4fc" class="box"/>
 <text x="60" y="149" class="name" text-anchor="start">NodeAgent</text>
 <text x="60" y="177" class="body" text-anchor="start">One per machine</text>
@@ -99,4 +105,5 @@
 <text x="40" y="929" class="small" text-anchor="start">GameServer has no DB writer</text>
 <text x="40" y="1123" class="small" text-anchor="start">Solid: business data   ·   Dashed: control   ·   Key paths shown; not every RPC is drawn.</text>
 <text x="40" y="1148" class="small" text-anchor="start">ControlServer also accesses PostgreSQL.</text>
+</g>
 </svg>

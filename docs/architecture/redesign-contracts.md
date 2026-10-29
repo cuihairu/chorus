@@ -69,6 +69,7 @@ M0 持久收据执行入口接受规范化请求指纹与业务写入回调；�
 | SettlementStore / DataServer | ApplyGrant、GetSettlement | 固定 GrantId、OperationId、账本变更 | 每笔至多一个账本效果，不主动执行调度 |
 | RoundFinalization / DataServer | FinalizeRound | RoomId、ResultVersion、OperationId | 输入与结算收尾后原子释放参与、挂载指针、容量与 owner |
 | PlatformTask / PlatformGateway | Reconcile、GetStatus | TaskId、TaskEpoch | 记录 Desired/Observed，未知结果不盲重试 |
+| GmAdmin / ControlServer（待实现） | SubmitCommand、GetOperation（目标接口名） | 认证上下文、Scope、Target、ExpectedVersion/Epoch、OperationId、Reason、Fingerprint | GM 唯一入口；操作员身份不可由请求体自报；按当前目录分发并查询实际生效阶段；内部接收端继续授权 |
 | RoomEpochAdmin / ControlServer（待实现） | GetRoomEpoch、BumpRoomEpoch | tenant/game/room、ExpectedEpoch、TargetEpoch?、OperationId、Reason | 按房间 CAS、仅递增、owner 不变；room 与 ownership 同事务更新；提交与路由同步分别可查询 |
 | Node / ControlServer | Register、Report、WatchPlans | AgentInstanceId、sequence | 只接纳当前 incarnation |
 | Agent / NodeAgent | EnsureRunning、Drain、Stop | SlotId、PlanGeneration、CommandId | 同 slot 不并发启动两个受管实例 |

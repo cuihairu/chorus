@@ -134,7 +134,8 @@ flowchart TB
     PG -->|按 RoomId 和 epoch 直接推送事件| GS
     GS <-->|事件持久接收 帧提交 恢复| DS[DataServer]
     SS <-->|资料与事务命令| DS
-    CS[ControlServer] <-->|事务协调| DS
+    GM[GM 管理工具或 CLI 非新增服务进程] -->|独立管理通道 操作员认证与授权| CS[ControlServer]
+    CS <-->|事务协调| DS
     CS -->|参与结果与生命周期变化| SS
     CS -->|房间 owner endpoint 与 epoch 路由| SG
     SS -->|注册直播场次 挂载代与匹配意图| CS
@@ -184,6 +185,8 @@ ControlServer 提供版本化全量快照 + 增量 Watch，消费者断流或版
 ### 4.5 独立房间 epoch 的 GM 测试操作（目标契约）
 
 每个房间拥有独立的 ownership epoch；不与进程启动代、连接代、挂载代、RoundGeneration 或其他房间共享。迁移仍正常推进 epoch；另外提供保持当前 owner 不变的 `BumpRoomEpoch`，用于单独测试 fencing、路由刷新与恢复。现有 Admin 服务尚无该指令，实施见 TODO §22.11。
+
+GM 工具把以下命令发往 **ControlServer 的管理接口**，不向 GameServer 或 DataServer 直发。该管理入口与主播 WSS、平台 callback 分离；统一入口与分发契约见 §12.1。
 
 建议 GM 命令形态（尚非可执行 CLI）：
 
@@ -450,6 +453,24 @@ Streamer 恢复同样先递增 epoch，再加载资料与持久未完成流程�
 平台 AppSecret 只进入 PlatformGateway 的受限秘密配置；access token 不写日志；启动 token、resume token 和原始敏感事件字段按最小保留处理。数据库角色隔离，管理者不能通过普通业务 API 任意加币。
 
 内置 Admin API + 最小管理页面，展示节点、进程、主播、挂载、匹配、对局、平台任务和数据待办。提供排空、版本发布、重试恢复、解除隔离、暂停匹配、查询操作结果等命令；全部有 RequestId、操作者、理由、影响范围和审计。
+
+### 12.1 GM 统一入口与执行归属（目标契约）
+
+**接收进程固定为 ControlServer。** GM 控制台或 CLI 是管理客户端，不新增 GMServer 进程，也不通过 StreamerGateway 的普通主播命令入口。ControlServer 暴露独立受控 Admin 接口，认证操作员、校验角色与 tenant/game/目标权限、记录 OperationId/理由/请求指纹，再解析当前目标并分发。操作员身份来自管理认证上下文，不能信任请求体自报的 Operator。内部进程证书只证明进程身份，不能代替人的 GM 权限。
+
+| GM 命令类别 | 首次发送到 | 业务执行归属 | 数据及生效边界 |
+|---|---|---|---|
+| 查询/推进房间 epoch、恢复房间 | ControlServer | ControlServer 的所有权/恢复协调器 | 请求 DataServer 执行 §4.5 受限事务；提交后协调两个接入进程的路由变化；恢复需显式操作 |
+| 房间内玩法测试命令 | ControlServer | 当前 owner GameServer 的目标 RoomActor | 校验 RoomId/epoch、模块允许的命令和参数；投递为有序权威输入，在已提交 Tick 生效，不从 RPC 线程直接改状态 |
+| 主播资料修正、允许的资产调整 | ControlServer | 当前 StreamerServer 的主播业务处理者 | 校验业务规则后调用 DataServer 的版本/幂等事务接口；不直接编辑资产表 |
+| 匹配闸门、结束操作、结算重试、榜单维护 | ControlServer | 对应 ControlServer 业务协调器 | 沿用正常状态机、不可变来源与关闭屏障，不通过 GM 跳过平台确认或重发奖励 |
+| 进程排空、启停、部署 | ControlServer | 控制面形成计划，由对应 NodeAgent 执行本机操作 | 按计划代/命令 ID 守卫并回报结果；不提供任意 shell/SQL 执行入口 |
+
+目标路由来自 ControlServer 的当前目录和参与关系，不允许管理客户端随意指定 endpoint。StaleOwner 时按同 OperationId 查询或重定位，不产生第二次效果；不具备处理者的命令明确拒绝，不隐式创建主播实体或已销毁房间。需要离线修正的能力另定义版本化业务契约。
+
+接收确认、数据提交、RoomActor 生效、路由同步完成是不同阶段。Admin 返回操作 ID 和可查询阶段/结果，不能把“已接收”显示成“已生效”；超时结果未知时查询或精确重试原操作。业务接收端仍验证管理委托权限与目标版本，不能仅凭来自 ControlServer 就接受任意状态修改。读操作不改变状态，变更须保留操作员及前后证据。
+
+**现状：** `src/Chorus.ControlServer/Program.cs` 已映射 `AdminGrpcService`，提供诊断及部分恢复/排空等内部 gRPC 管理调用；当前调用者限制为 `control-server` 进程角色，`Operator` 仍是请求字段，不能视为已实现操作员登录授权。上表的统一操作员入口、业务命令分发和 `BumpRoomEpoch` 尚需实现，分别见 TODO 的 FIX-GM-06/07 和 FIX-GM-01～05；也不能沿用现有“失败后换请求 ID”的实现来代替未知结果按原操作查询的目标契约。
 
 核心关联字段：TraceId、OperationId、StreamerId、BindingId/Generation、RoomId/Epoch、ProcessInstanceId。日志可包含这些 ID，指标标签不使用每个玩家/房间 ID 以免基数爆炸。
 

@@ -150,13 +150,16 @@
 
 ### 22.11 独立房间 epoch 的 GM 测试能力（P1）
 
-用户要求：按房间单独调整 epoch，方便测试。目标契约见架构 §4.5。保持 fencing 启用，只允许权威 epoch 单调推进；任意过期值通过测试请求注入。当前尚无可执行 GM 指令。
+用户要求：按房间单独调整 epoch，方便测试。GM 统一发送到 ControlServer 的独立 Admin 接口，再按架构 §12.1 分发；管理工具不是新的服务进程。目标契约见架构 §4.5。保持 fencing 启用，只允许权威 epoch 单调推进；任意过期值通过测试请求注入。当前尚无可执行 GM 指令。
 
 - [ ] **FIX-GM-01 / P1：定义房间 epoch 管理契约。** 依赖：无。交付：GetRoomEpoch / BumpRoomEpoch 及 GM 调用入口，含 tenant/game/room、ExpectedEpoch、可选 TargetEpoch、OperationId、操作者与理由。验收：未指定目标默认加一；指定目标必须更大；非法、溢出和越权请求拒绝；文档明确不是进程级 epoch。
 - [ ] **FIX-GM-02 / P1：实现房间 epoch 原子推进。** 依赖：FIX-GM-01。交付：受限存储事务同时校验并更新 control.ownership 和 game.room 的 epoch，保持 owner 不变，进入 Recovering；回执与审计同事务保存。验收：并发 expected 相同只有一个逻辑操作成功；同 OperationId 重试返回原值；同 ID 不同内容冲突；回滚不出现两处 epoch 不一致。
-- [ ] **FIX-GM-03 / P1：接通 GM 服务与路由变更。** 依赖：FIX-GM-02、FIX-END-03。交付：ControlServer 认证与审计入口，提交后可靠发布旧路由暂停/版本变化，分开暴露存储提交和 PlatformGateway 确认状态。验收：漏通知可重放；PlatformGateway 未确认不能显示路由同步成功；不触发平台结束调用，不隐式结束房间。
+- [ ] **FIX-GM-03 / P1：接通 GM 服务与路由变更。** 依赖：FIX-GM-02、FIX-END-03、FIX-GM-06。交付：ControlServer 认证与审计入口，提交后可靠发布旧路由暂停/版本变化，分开暴露存储提交和 PlatformGateway 确认状态。验收：漏通知可重放；PlatformGateway 未确认不能显示路由同步成功；不触发平台结束调用，不隐式结束房间。
 - [ ] **FIX-GM-04 / P1：验证指定房间的旧 epoch 被拒。** 依赖：FIX-GM-03。交付：双房同 GameServer，单独 bump A 的宿主测试。验收：A 的旧 Actor 帧写、旧 epoch 输入和快照写被拒；A 的已提交历史仍可读；B 的 epoch、Tick 和路由不受影响；无需改 owner 或重启进程。
 - [ ] **FIX-GM-05 / P1：验证 bump 后显式恢复。** 依赖：FIX-GM-04、FIX-ROOM-02、FIX-TAKE-03。交付：旧 Actor 退出后由 GM 请求同 owner 按新 epoch 恢复，并经路由确认重新激活。验收：实际从持久头恢复，无同房双循环；重复 bump/恢复不重复增加 epoch 或启动 Actor；响应丢失可按原操作查询。
+
+- [ ] **FIX-GM-06 / P0：实现 ControlServer 操作员管理入口。** 依赖：无。交付：ControlServer 独立 Admin 管理接口及最小 GM 客户端调用示例，认证操作员并按角色和 tenant/game/目标范围授权，操作审计关联 OperationId/指纹/理由。验收：普通主播身份、伪造 Operator 和越权作用域均拒绝；内部进程证书不能冒充任意操作员；同 ID 不同内容冲突，提交后响应丢失能查询原结果。现有内部 Admin gRPC 与请求体 Operator 不作为操作员认证已完成的证据。
+- [ ] **FIX-GM-07 / P0：接通 GM 定向分发与生效查询。** 依赖：FIX-GM-06、FIX-LINK-08、FIX-FRAME-02。交付：按架构 §12.1 的明确命令目录，把允许的房间命令定向当前 GameServer/RoomActor，主播命令交 StreamerServer，进程命令经控制计划交 NodeAgent；保存阶段及回执。验收：双房/双实例定向正确；旧 epoch/旧处理者不能生效；RoomActor 命令在已提交 Tick 生效且重试不重复；未实现命令明确拒绝；接口分别显示接受/提交/生效，不把普通 GM 操作改成直接 SQL 或绕过正常结束屏障。
 
 ### 22.12 多主播帧同步、离线策略与防作弊（P0/P1）
 
