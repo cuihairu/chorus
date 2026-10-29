@@ -12,6 +12,11 @@ public sealed record FinalizedRound(string RoomId, string Status, long Epoch, bo
 
 public sealed record LeaderboardEntry(string PlayerId, long Score);
 
+/// <summary>One room of the settle queue (FIX-SETTLE-01): the committed result's version
+/// and how much of its manifest is still unapplied.</summary>
+public sealed record PendingSettlement(
+    string RoomId, long ResultVersion, int GrantsTotal, int GrantsGranted, int GrantsPending);
+
 /// <summary>
 /// Settlement and round finalization (architecture 9.3). The final frame commits the
 /// immutable reward manifest — every grant row carries its own asset and amount — and
@@ -32,6 +37,10 @@ public sealed class RedesignSettlementStore(string connectionString, Action<int>
 {
     public const string Granted = "Granted";
     public const string Settled = "Settled";
+
+    /// <summary>The most pending rooms one discovery page answers (FIX-SETTLE-01): the
+    /// queue walks in bounded pages, never one unbounded answer over the whole history.</summary>
+    public const int DiscoveryPageLimit = 500;
 
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
 
@@ -324,6 +333,56 @@ public sealed class RedesignSettlementStore(string connectionString, Action<int>
                 entries.Add(new LeaderboardEntry(reader.GetString(0), reader.GetInt64(1)));
         }
         return entries;
+    }
+
+    /// <summary>
+    /// The settle queue discovery read (FIX-SETTLE-01): rooms whose committed result still
+    /// has unapplied grants, one bounded page in deterministic room order. Rooms without a
+    /// committed result never appear, and a partially applied manifest stays listed until
+    /// every grant of its version is Granted — a settler that died mid-queue is simply
+    /// rediscovered, never double-counted. The cursor is the last room id the page carried
+    /// (empty starts the walk), so no page scans or returns the whole history.
+    /// </summary>
+    public async Task<IReadOnlyList<PendingSettlement>> ListPendingSettlementsAsync(string tenantId,
+        string gameId, string? cursorRoomId, int limit, CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId));
+        if (limit is < 1 or > DiscoveryPageLimit)
+            throw new ArgumentOutOfRangeException(nameof(limit),
+                $"The discovery page limit must be within 1..{DiscoveryPageLimit}: {limit}");
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        var rooms = new List<PendingSettlement>();
+        await using (var queue = new NpgsqlCommand("""
+            SELECT r.room_id,latest.version,g.granted,g.total
+            FROM game.room r
+            JOIN LATERAL (
+                SELECT max(result_version) AS version FROM game.result WHERE room_id=r.room_id
+            ) latest ON latest.version IS NOT NULL
+            JOIN LATERAL (
+                SELECT count(*) FILTER (WHERE status='Granted') AS granted, count(*) AS total
+                FROM settlement.grant WHERE room_id=r.room_id AND result_version=latest.version
+            ) g ON g.granted < g.total
+            WHERE r.tenant_id=@tenant AND r.game_id=@game AND r.room_id > @cursor
+            ORDER BY r.room_id
+            LIMIT @limit
+            """, connection))
+        {
+            queue.Parameters.AddWithValue("tenant", tenantId);
+            queue.Parameters.AddWithValue("game", gameId);
+            // An empty cursor starts the walk: every room id sorts past the empty string.
+            queue.Parameters.AddWithValue("cursor", cursorRoomId ?? "");
+            queue.Parameters.AddWithValue("limit", limit);
+            await using var reader = await queue.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var granted = Convert.ToInt32(reader.GetInt64(2));
+                var total = Convert.ToInt32(reader.GetInt64(3));
+                rooms.Add(new PendingSettlement(reader.GetString(0), reader.GetInt64(1),
+                    total, granted, total - granted));
+            }
+        }
+        return rooms;
     }
 
     private async Task<(long? ResultVersion, List<PendingGrant> Pending)> ReadManifestAsync(

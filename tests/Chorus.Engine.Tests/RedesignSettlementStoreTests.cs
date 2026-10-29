@@ -12,8 +12,10 @@ namespace Chorus.Engine.Tests;
 /// Idempotent settlement and round finalization (architecture 9.3): every grant of the
 /// immutable manifest lands exactly one ledger line, a settler crash on the Nth reward only
 /// ever retries the incomplete grants, and FinalizeRound atomically settles the room, frees
-/// the mounts and withdraws the ownership so the next round can open. Profile writes cannot
-/// override ledger-backed assets (architecture 9.2, AT18).
+/// the mounts and withdraws the ownership so the next round can open. The settle queue
+/// (FIX-SETTLE-01) lists exactly the rooms whose committed result still has unapplied
+/// grants, one bounded page in room order. Profile writes cannot override ledger-backed
+/// assets (architecture 9.2, AT18).
 /// </summary>
 public sealed class RedesignSettlementStoreTests
 {
@@ -85,6 +87,68 @@ public sealed class RedesignSettlementStoreTests
             board.Select(entry => (entry.PlayerId, entry.Score)).ToArray());
         await Assert.ThrowsAsync<SettlementRejectedException>(() =>
             store.CommitResultAsync("tenant-a", "game-a", "room-none", "settle-none"));
+    }
+
+    [Fact]
+    public async Task TheSettleQueueListsOnlyRoomsWithUnappliedGrantsPageByPage()
+    {
+        await using var arrange = await Arrange.CreateAsync();
+        var store = new RedesignSettlementStore(arrange.Database.ConnectionString);
+
+        // Four rooms: one still running without a result, one whose settler died after the
+        // first grant, one with a fresh untouched manifest, one settled all the way
+        // through. The queue names exactly the middle two (FIX-SETTLE-01).
+        await arrange.AdmittedAsync("room-live", "settle-open-9", "settle-live-9");
+        await arrange.FinalFrameAsync("room-pending-1", "settle-open-7", "settle-live-7");
+        var crashing = new RedesignSettlementStore(arrange.Database.ConnectionString,
+            ordinal => { if (ordinal == 2) throw new InvalidOperationException("settler crash"); });
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            crashing.CommitResultAsync("tenant-a", "game-a", "room-pending-1", "settle-op-1"));
+        await arrange.FinalFrameAsync("room-pending-2", "settle-open-8", "settle-live-8");
+        await arrange.FinalFrameAsync("room-done", "settle-open-6", "settle-live-6");
+        await store.CommitResultAsync("tenant-a", "game-a", "room-done", "settle-op-done");
+        await store.FinalizeRoundAsync("tenant-a", "game-a", "room-done", "fin-done");
+
+        var queue = await store.ListPendingSettlementsAsync("tenant-a", "game-a", null,
+            RedesignSettlementStore.DiscoveryPageLimit);
+        Assert.Equal(["room-pending-1", "room-pending-2"],
+            queue.Select(room => room.RoomId).ToArray());
+        // A settler that died mid-queue is rediscovered with its progress visible.
+        Assert.Equal(1L, queue[0].ResultVersion);
+        Assert.Equal(3, queue[0].GrantsTotal);
+        Assert.Equal(1, queue[0].GrantsGranted);
+        Assert.Equal(2, queue[0].GrantsPending);
+        Assert.Equal(0, queue[1].GrantsGranted);
+        Assert.Equal(3, queue[1].GrantsPending);
+
+        // One room per page: the walk resumes strictly past the cursor, every room
+        // exactly once, and a bounded page never answers the whole history.
+        var seen = new List<string>();
+        string? cursor = null;
+        while (true)
+        {
+            var page = await store.ListPendingSettlementsAsync("tenant-a", "game-a", cursor, 1);
+            if (page.Count == 0) break;
+            seen.AddRange(page.Select(room => room.RoomId));
+            cursor = page[^1].RoomId;
+        }
+        Assert.Equal(["room-pending-1", "room-pending-2"], seen);
+
+        // Completing a manifest takes its room off the queue: discovery drives completion,
+        // and a cursor past the last room answers an honest empty page.
+        await store.CommitResultAsync("tenant-a", "game-a", "room-pending-2", "settle-op-2");
+        var after = await store.ListPendingSettlementsAsync("tenant-a", "game-a", null,
+            RedesignSettlementStore.DiscoveryPageLimit);
+        Assert.Equal(["room-pending-1"], after.Select(room => room.RoomId).ToArray());
+        Assert.Empty(await store.ListPendingSettlementsAsync("tenant-a", "game-a",
+            "room-zz", 1));
+
+        // Page sizes outside the clamp refuse visibly instead of answering unbounded.
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            store.ListPendingSettlementsAsync("tenant-a", "game-a", null, 0));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            store.ListPendingSettlementsAsync("tenant-a", "game-a", null,
+                RedesignSettlementStore.DiscoveryPageLimit + 1));
     }
 
     [Fact]

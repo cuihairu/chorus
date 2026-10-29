@@ -372,6 +372,10 @@ service Settlement {
   rpc CommitResult(CommitResultRequest) returns (CommitResultReply);
   rpc FinalizeRound(FinalizeRoundRequest) returns (FinalizeRoundReply);
   rpc ReadLeaderboard(ReadLeaderboardRequest) returns (LeaderboardReply);
+  // The settle queue (FIX-SETTLE-01): rooms whose committed result still has unapplied
+  // grants, one bounded page in room order. Rooms without a committed result never
+  // appear; a partially applied manifest stays listed until every grant is Granted.
+  rpc ListPendingSettlements(ListPendingSettlementsRequest) returns (ListPendingSettlementsReply);
 }
 
 // Authoritative frame commits and round inbox reads (architecture 8.2, 6.1.6). Only the
@@ -569,6 +573,31 @@ message ReadLeaderboardRequest {
 message LeaderboardReply {
   string board_id = 1;
   repeated LeaderboardEntryProto entries = 2;
+}
+
+message ListPendingSettlementsRequest {
+  string game_id = 1;
+  // Page size; the store clamps it into 1..500 and refuses anything outside.
+  int32 limit = 2;
+  // Empty starts from the beginning; otherwise the previous reply's next_cursor, so the
+  // walk resumes past the last room it carried. No page holds server state.
+  string cursor = 3;
+  string tenant_id = 4;
+}
+
+message ListPendingSettlementsReply {
+  repeated PendingSettlementProto settlements = 1;
+  // Present when the page filled to its limit — more rooms may follow; empty on the
+  // last page. Send it back verbatim as the next request's cursor.
+  string next_cursor = 2;
+}
+
+message PendingSettlementProto {
+  string room_id = 1;
+  int64 result_version = 2;
+  int32 grants_total = 3;
+  int32 grants_granted = 4;
+  int32 grants_pending = 5;
 }
 
 message SubscribeRequest {

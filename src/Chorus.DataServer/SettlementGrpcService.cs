@@ -103,6 +103,37 @@ public sealed class SettlementGrpcService(
         }
     }
 
+    public override async Task<ListPendingSettlementsReply> ListPendingSettlements(
+        ListPendingSettlementsRequest request, ServerCallContext context)
+    {
+        // The settle queue belongs to the control plane's executor (FIX-SETTLE-01);
+        // the data host only answers where the unapplied grants are.
+        var caller = Require(context, "control-server");
+        try
+        {
+            var rooms = await settlementStore.ListPendingSettlementsAsync(
+                ResolveTenant(caller, request.TenantId), request.GameId,
+                request.Cursor.Length > 0 ? request.Cursor : null,
+                request.Limit, context.CancellationToken);
+            var reply = new ListPendingSettlementsReply();
+            reply.Settlements.Add(rooms.Select(room => new PendingSettlementProto
+            {
+                RoomId = room.RoomId, ResultVersion = room.ResultVersion,
+                GrantsTotal = room.GrantsTotal, GrantsGranted = room.GrantsGranted,
+                GrantsPending = room.GrantsPending
+            }));
+            // A page that filled to its limit may have more behind it; the cursor is the
+            // last room it carried, so the next page resumes strictly past it.
+            if (rooms.Count >= request.Limit && rooms.Count > 0)
+                reply.NextCursor = rooms[^1].RoomId;
+            return reply;
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
     private ProcessIdentity Require(ServerCallContext context, params string[] roles)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;
