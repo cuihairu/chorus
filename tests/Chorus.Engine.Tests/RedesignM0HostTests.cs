@@ -511,14 +511,34 @@ public sealed class RedesignM0HostTests
 
         private sealed record JournalEntry(string SlotId, string ProcessInstanceId, int Pid, DateTime StartedAtUtc);
 
-        /// <summary>An unused loopback port for extra host instances beyond the four defaults.</summary>
+        /// <summary>An unused loopback port for extra host instances beyond the four defaults.
+        /// Allocated from a dedicated range below the OS ephemeral range (32768+): the port is
+        /// probed here but bound by the child host seconds later, and an ephemeral-range port
+        /// can be claimed in between by any outbound connection on the machine — the source of
+        /// "address already in use" flakes. The bind probe still skips ports another process
+        /// or a concurrent test already holds.</summary>
+        private static int _nextProbePort = Environment.TickCount & 0x7FFFFFFF;
+
         public static int FreePort()
         {
-            var listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            listener.Stop();
-            return port;
+            while (true)
+            {
+                var port = 21000 + (int)((uint)Interlocked.Increment(ref _nextProbePort) % 8000);
+                var listener = new TcpListener(IPAddress.Loopback, port);
+                try
+                {
+                    listener.Start();
+                    return port;
+                }
+                catch (SocketException)
+                {
+                    // Taken: try the next port in the range.
+                }
+                finally
+                {
+                    listener.Stop();
+                }
+            }
         }
 
         [DllImport("libc", SetLastError = true)]
