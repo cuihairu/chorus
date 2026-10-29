@@ -30,6 +30,10 @@ PlatformGateway 根据直播挂载、对局归属及所有权目录，将事件�
 
 StreamerGateway 直接连接 GameServer：上行战斗输入，下行已提交帧与快照。StreamerServer 处理登录和个人业务，不中转战斗帧；ControlServer 向 StreamerGateway 提供房间 owner endpoint 与 epoch 路由。图示为目标关系，现有实现差异见配套文档。
 
+StreamerServer 向 ControlServer 注册直播挂载、提交匹配意图；ControlServer 向 StreamerServer 同步参与结果与生命周期变化。GameServer 向 ControlServer 注册进程地址并上报状态，由 ControlServer 分配和管理房间。
+
+StreamerServer 通过 DataServer 读写主播资料和执行资产事务：StreamerServer 决定业务规则，DataServer 执行明确的数据操作并保证事务与幂等约束。
+
 ![Chorus 七类进程架构，以及 GameServer 内的 RoomRuntime 和多个 RoomActor](/images/architecture-zh.svg)
 
 [打开完整 SVG](/images/architecture-zh.svg) · [架构设计与实现边界](/architecture/architecture)

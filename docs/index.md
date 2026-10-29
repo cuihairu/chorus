@@ -30,6 +30,10 @@ PlatformGateway resolves the room and its owner, then pushes events directly to 
 
 StreamerGateway connects directly to GameServer: battle inputs go upstream and committed frames/snapshots go downstream. StreamerServer handles login and personal business requests; it does not relay battle frames. ControlServer supplies StreamerGateway with room owner endpoints and epochs. These are target connections; current implementation differences remain documented.
 
+StreamerServer registers live bindings and submits match intent to ControlServer; ControlServer coordinates participation and lifecycle updates back to StreamerServer. GameServer registers its process endpoint and reports status to ControlServer, which assigns and manages rooms.
+
+StreamerServer uses DataServer for profile reads/writes and asset transactions. StreamerServer owns business decisions; DataServer performs the requested storage operations and enforces transaction/idempotency constraints.
+
 ![Seven Chorus process roles, with RoomRuntime and multiple RoomActors inside GameServer](/images/architecture-en.svg)
 
 [Open full SVG](/images/architecture-en.svg) · [Architecture design and implementation scope (Chinese)](/architecture/architecture)

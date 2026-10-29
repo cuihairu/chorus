@@ -576,3 +576,19 @@
 - [ ] **FIX-RANK-07 / P1：实现周期与迟到归属。** 依赖：RANK-01、03。交付：AllTime 和显式配置的日/周/赛季周期及边界时区，保留旧榜。验收：边界前后与迟到结算进入声明周期；重试不随当前时间改榜；换期不清除旧记录。
 - [ ] **FIX-RANK-08 / P1：实现 GM 修正与投影重建。** 依赖：RANK-03、07。交付：指定榜/周期/作用域的有版本审计修正与按来源重建。验收：重复命令不重复修正；重建与原来源一致且不重发资产奖励；保留来源证据。
 - [ ] **FIX-RANK-09 / P1：交付玩法与客户端接入示例。** 依赖：RANK-03、04、05、07。交付：默认 provider 下开局计分、终局更新、查榜和个人名次的可运行示例。验收：重复结算不重复加分、换期旧榜可查；示例直接调用框架能力，不自写另一套榜单存储。
+
+### 22.14 进程注册与主播业务协作闭环（P0/P1）
+
+本节对应首页中英文架构图补齐的关系。图展示目标契约，不代表接口已经全部接通；每项独立交付、独立验收后才勾选。已有任务继续复用：动态 GameServer 调度目录见 SCHED-01，就绪/容量过滤见 SCHED-02，直播挂载注册见 END-02，PlatformGateway 开局路由确认见 END-03，结束释放与下一局资格见 END-12/13。这里不重复创建这些实现任务。
+
+- [ ] **FIX-LINK-01 / P0：让进程自报告反映真实就绪状态。** 依赖：无。交付：GameServer 的 ReportProcess 根据依赖检查、实体恢复和排空状态生成 Readiness/Admission/EntityRecovery，不再启动后固定上报 Ready/Open/Steady。验收：依赖不可用、恢复未完成及排空三种状态分别得到对应报告；现存房间与新房准入状态可区分；注册成功不等于已获房间 ownership。
+- [ ] **FIX-LINK-02 / P0：验收 GameServer 注册报告的身份和时效。** 依赖：无。交付：真实 GameServer→ControlServer 宿主用例，覆盖实例证书、endpoint、报告序号和有效期。验收：冒用角色/实例被拒；迟到旧序号不能覆盖新状态；停止上报后按配置超时失效；重启新实例不能继承旧实例写权限。已有校验代码可复用，以独立证据验收，不重复开发。
+- [ ] **FIX-LINK-03 / P0：接通 StreamerServer 到 ControlServer 的匹配意图入口。** 依赖：END-02。交付：StreamerActor 以当前 session、BindingId/Generation、匹配分区和 OperationId 请求 ControlServer；ControlServer 校验业务前提后调用明确的 DataServer 事务接口。验收：重复操作只创建一个 ticket；旧挂载代、无资格及已有有效参与关系的请求被拒；StreamerServer 不自行挑选 GameServer，DataServer 不负责选择候选或编排匹配。
+- [ ] **FIX-LINK-04 / P0：可靠同步参与关系提交事件。** 依赖：LINK-03、END-16。交付：ControlServer 为已提交参与关系生成可恢复通知，按主播投递给当前 StreamerServer，携带房间、参与版本、挂载代与操作标识。验收：提交前不能宣告入场；重复与乱序通知不回退当前参与状态；通知响应丢失不再创建房间；参与提交通知与战斗激活通知可区分。
+- [ ] **FIX-LINK-05 / P0：恢复 StreamerServer 丢失的参与状态。** 依赖：LINK-04。交付：StreamerServer 重启或主播接管后，从权威参与快照恢复，再按版本衔接后续通知。验收：快照读取与事件订阅间发生的变化不丢；旧房间结束通知不能清空新局；恢复已有局不重新排队。终局后下一局资格仍遵循 END-13 的释放回执。
+- [ ] **FIX-LINK-06 / P1：验收 StreamerServer 经 DataServer 读写资料。** 依赖：无。交付：使用正式资料接口完成主播实体加载和带版本保存的宿主用例。验收：无数据库凭据也能运行；跨租户及越权主体访问被拒；并发旧版本保存不能覆盖新资料；资料未加载成功不返回实体就绪。业务校验在 StreamerServer，DataServer 保留存储权限与版本约束。
+- [ ] **FIX-LINK-07 / P0：验收 StreamerServer 发起幂等资产事务。** 依赖：无。交付：StreamerServer 按业务规则生成稳定 OperationId，请求 DataServer 执行账本事务，并能查询未知结果。验收：响应丢失重试只产生一次资产变更；同 ID 不同内容冲突；非法扣减原子拒绝；DataServer 不根据资产变化自行决定匹配、平台通知或奖励规则。复用既有账本，不新建第二套资产存储。
+- [ ] **FIX-LINK-08 / P0：绑定 StreamerGateway 的参与关系与房间路由。** 依赖：LINK-04、SCHED-01。交付：ControlServer 发布的参与信息与房间 owner endpoint/epoch 组成有版本投影，StreamerGateway 安装后才能定位战斗目标。验收：两主播分属不同房间和不同 GameServer 时不会串房；缺失、过期及跨挂载代路由不猜测目标；迁移更新 endpoint/epoch 时保留原 RoomId。登录到某个 StreamerServer 不能当作房间定位依据。
+- [ ] **FIX-LINK-09 / P0：客户端战斗输入直接到达 GameServer。** 依赖：LINK-08、INPUT-01、03。交付：StreamerGateway 根据已验证参与关系直送目标 GameServer，复用命令幂等与持久接收机制，替代当前 EdgeInputClient 将战斗命令直接送入 DataServer 的入口。验收：命令不经 StreamerServer 中转；接收回执与已提交帧中的生效证据分离；错误 epoch 刷新路由后按原 CommandId 重试；跨房伪造和重复发送不能产生额外效果。退出参与属于业务控制请求，不能随战斗输入一并盲目迁移。
+- [ ] **FIX-LINK-10 / P0：验收帧流直连与订阅资源回收。** 依赖：LINK-08、SYNC-01。交付：GameServer→StreamerGateway→客户端的真实宿主链路，明确 gRPC Subscribe 为一次建立后的持续服务端流，登录/个人业务另走 StreamerServer 请求接口。验收：同一 StreamerGateway 的同房客户端复用上游订阅；最后一个客户端离开时回收订阅资源；跨 epoch 重新建立基线；慢端不会阻塞房间 Tick；StreamerServer 停止时已有合法会话的帧通道不依赖其逐帧转发，仍执行会话有效期与撤销策略。
+- [ ] **FIX-LINK-11 / P1：实测帧通道的容量与延迟预算。** 依赖：LINK-10、PERF-01。交付：按声明的 Tick 频率、帧大小、房间数及订阅数，记录提交到客户端应用的 p50/p95/p99、队列深度、带宽、CPU 和内存；明确 HTTP/2 并发流、连接池、超时及流控配置。验收：事先声明并逐项核对容量/延迟预算；注入一个慢接收端及批量重连，报告对其他房间的影响；超过预算保持未通过，不凭“使用 gRPC Streaming”宣告达标。是否更换传输协议由同条件测量结果决定。

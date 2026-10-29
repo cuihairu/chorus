@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1170" viewBox="0 0 1200 1170" role="img" aria-labelledby="title desc" xml:lang="en">
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1170" viewBox="0 0 1240 1170" role="img" aria-labelledby="title desc" xml:lang="en">
 <title id="title">Chorus architecture and room runtime</title>
-<desc id="desc">Seven process roles. ControlServer assigns ownership; NodeAgent supervises local processes. StreamerGateway connects clients; PlatformGateway connects live platforms. StreamerGateway connects directly to GameServer for battle input and committed frames. StreamerServer manages streamers. GameServer contains a RoomRuntime and multiple RoomActors. PlatformGateway pushes events directly to the target RoomActor via RoomRuntime. GameServer uses DataServer for persistence and recovery. Dashed arrows denote control; solid arrows denote business data. Target redesign; integration is ongoing.</desc>
+<desc id="desc">Seven process roles. ControlServer assigns ownership; NodeAgent supervises local processes. StreamerGateway connects clients; PlatformGateway connects live platforms. StreamerGateway connects directly to GameServer for battle input and committed frames. StreamerServer manages streamers and exchanges live bindings, match intent and participation updates with ControlServer. GameServer registers and reports status to ControlServer, which commands room lifecycle. GameServer contains a RoomRuntime and multiple RoomActors. PlatformGateway pushes events directly to the target RoomActor via RoomRuntime. GameServer uses DataServer for persistence and recovery. Dashed arrows denote control; solid arrows denote business data. Target redesign; integration is ongoing.</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
 <style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:29px;font-weight:700}.name{font-size:22px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}.control{stroke-dasharray:7 5}.box{stroke-width:1.5}</style>
-<rect width="1200" height="1170" rx="20" fill="#f8fafc"/>
+<rect width="1240" height="1170" rx="20" fill="#f8fafc"/>
 
 <text x="40" y="48" class="title" text-anchor="start">Chorus · Process architecture</text>
 <text x="40" y="78" class="body" text-anchor="start">7 process roles · Multiple rooms per GameServer · Target redesign, integration ongoing</text>
@@ -18,7 +18,11 @@
 <path d="M410 173 H340" class="edge control"/>
 <text x="375" y="150" class="label" text-anchor="middle">Plans</text>
 <text x="40" y="262" class="small" text-anchor="start">NodeAgent: local process supervision.</text>
-<path d="M1160 173 H1180 V460 H1160" class="edge control"/>
+<path d="M1160 173 H1180 V460 H1160" marker-start="url(#arrow)" class="edge control"/>
+<path d="M760 305 V230" class="edge control"/>
+<path d="M800 230 V305" class="edge control"/>
+<text x="815" y="253" class="label">↑ Live bindings / match intent</text>
+<text x="815" y="276" class="label">↓ Participation / lifecycle updates</text>
 <path d="M445 230 V305" class="edge control"/>
 <text x="460" y="281" class="label">Room routes / epoch</text>
 <path d="M600 230 V435 H445 V475" marker-start="url(#arrow)" class="edge control"/>
@@ -39,7 +43,6 @@
 <path d="M580 357 H650" marker-start="url(#arrow)" class="edge"/>
 <text x="285" y="339" class="label" text-anchor="middle">WSS</text>
 <text x="615" y="339" class="label" text-anchor="middle">gRPC</text>
-<text x="670" y="298" class="small">Login / personal requests only</text>
 <rect x="40" y="475" width="220" height="105" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
 <text x="60" y="509" class="name" text-anchor="start">Live platforms</text>
 <text x="60" y="537" class="body" text-anchor="start">Launch credentials</text>
@@ -52,6 +55,7 @@
 <path d="M260 527 H310" class="edge"/>
 <rect x="650" y="460" width="510" height="280" rx="12" fill="#eef8f5" stroke="#86c9b3" class="box"/>
 <text x="670" y="494" class="name" text-anchor="start">GameServer</text>
+<text x="825" y="490" class="label" style="font-size:14px">↑ Register / status · ↓ Room lifecycle</text>
 <text x="670" y="519" class="body" text-anchor="start">One process · Shared thread pool</text>
 <rect x="670" y="538" width="470" height="70" rx="12" fill="#ffffff" stroke="#cbd5e1" class="box"/>
 <text x="690" y="572" class="name" text-anchor="start">RoomRuntime</text>
@@ -74,6 +78,8 @@
 <path d="M580 575 H670" class="edge" style="stroke:#087f5b;stroke-width:4"/>
 <text x="330" y="638" class="body" style="font-weight:700;fill:#087f5b">Direct push → target RoomActor</text>
 <text x="330" y="664" class="small">RoomId + owner epoch + EventId</text>
+<path d="M1160 390 H1170 V870 H1160" marker-start="url(#arrow)" class="edge" style="stroke:#7c3aed"/>
+<text transform="translate(1210 675) rotate(-90)" text-anchor="middle" class="small" style="fill:#7c3aed">Profile reads / writes · Asset transactions</text>
 <path d="M905 740 V810" marker-start="url(#arrow)" class="edge"/>
 <text x="920" y="766" class="label">Persistence / recovery</text>
 <text x="920" y="790" class="small">Inputs · Frames · Snapshots</text>
@@ -92,5 +98,5 @@
 <text x="40" y="904" class="small" text-anchor="start">Commit → Publish</text>
 <text x="40" y="929" class="small" text-anchor="start">GameServer has no DB writer</text>
 <text x="40" y="1123" class="small" text-anchor="start">Solid: business data   ·   Dashed: control   ·   Key paths shown; not every RPC is drawn.</text>
-<text x="40" y="1148" class="small" text-anchor="start">ControlServer also accesses PostgreSQL; StreamerServer also uses DataServer.</text>
+<text x="40" y="1148" class="small" text-anchor="start">ControlServer also accesses PostgreSQL.</text>
 </svg>

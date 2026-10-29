@@ -135,10 +135,11 @@ flowchart TB
     GS <-->|事件持久接收 帧提交 恢复| DS[DataServer]
     SS <-->|资料与事务命令| DS
     CS[ControlServer] <-->|事务协调| DS
-    CS -->|分配与路由| SS
+    CS -->|参与结果与生命周期变化| SS
     CS -->|房间 owner endpoint 与 epoch 路由| SG
-    SS -->|注册直播场次与挂载代| CS
+    SS -->|注册直播场次 挂载代与匹配意图| CS
     CS <-->|路由版本与确认 关闭屏障 平台任务授权| PG
+    GS -->|进程注册 endpoint 与状态上报| CS
     CS -->|分配 接管 结束与销毁| GS
     CS <-->|启动计划 状态汇报| NA[NodeAgent 每机一个]
     NA -->|本机进程监管| Roles[本机各业务进程]
