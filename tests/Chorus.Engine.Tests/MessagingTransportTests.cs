@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using Chorus.Messaging;
@@ -23,13 +24,31 @@ public sealed class MessagingTransportTests
             CreatedTimeMs: DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Body: JsonSerializer.SerializeToElement(new { x = 1 }, ProtocolJson.SerializerOptions));
 
-    private static IpcEndpoint Endpoint(string pipe = "chorus-test-factory", int tcpPort = 45001)
+    // Probed ports, not fixed ones: a fixed port inside the Linux ephemeral
+    // range (32768-60999) can be taken as a source port by any concurrent
+    // localhost connection, and the listener bind then fails with "address
+    // already in use" on a busy runner.
+    private static IpcEndpoint Endpoint(string pipe = "chorus-test-factory")
         => new(
             UnixSocketPath: "/tmp/chorus-test.sock",
             NamedPipeName: pipe,
             TcpHost: "127.0.0.1",
-            TcpPort: tcpPort,
-            HttpUrl: "http://127.0.0.1:45002/");
+            TcpPort: GetFreeTcpPort(),
+            HttpUrl: $"http://127.0.0.1:{GetFreeTcpPort()}/");
+
+    private static int GetFreeTcpPort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            return ((IPEndPoint)listener.LocalEndpoint).Port;
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
 
     private static async Task<Envelope> ReceiveOneAsync(IMessageBus bus, TimeSpan timeout)
     {
@@ -118,7 +137,7 @@ public sealed class MessagingTransportTests
     [Fact]
     public async Task Factory_CreateServer_StartsTcpHttpAndNamedPipe()
     {
-        var endpoint = Endpoint(pipe: "chorus-test-factory-server", tcpPort: 45101);
+        var endpoint = Endpoint(pipe: "chorus-test-factory-server");
 
         var tcp = IpcMessageBusFactory.CreateServer(IpcTransport.Tcp, endpoint);
         Assert.IsType<TcpMessageBus>(tcp);
