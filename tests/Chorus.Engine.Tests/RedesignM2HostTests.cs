@@ -1046,13 +1046,26 @@ public sealed class RedesignM2HostTests
         Assert.InRange(longKill, 160, 199);
         Assert.InRange(shortKill, 30, 59);
         environment.Kill("Chorus.GameServer");
-        // The heads at actual process death are the recovery ground truth.
-        long longHead, shortHead;
-        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        // The heads at actual process death are the recovery ground truth. A frame commit
+        // that was already in flight to the DataServer can land after the kill signal —
+        // the owner is dead but the store transaction finishes on its own — so the heads
+        // are polled to stability before they are frozen as the truth (a single fast read
+        // races that last landing frame on a quick host).
+        long longHead = -1, shortHead = -1;
+        var settled = false;
+        var settleDeadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < settleDeadline && !settled)
         {
-            await connection.OpenAsync();
-            (_, longHead) = await FrameStatsAsync(connection, "room-m2-8");
-            (_, shortHead) = await FrameStatsAsync(connection, "room-m2-9");
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                (_, var nextLong) = await FrameStatsAsync(connection, "room-m2-8");
+                (_, var nextShort) = await FrameStatsAsync(connection, "room-m2-9");
+                settled = longHead >= 0 && nextLong == longHead && nextShort == shortHead;
+                longHead = nextLong;
+                shortHead = nextShort;
+            }
+            if (!settled) await Task.Delay(150);
         }
         Assert.InRange(longHead, longKill, 199);
         Assert.InRange(shortHead, shortKill, 59);
