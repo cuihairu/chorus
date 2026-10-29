@@ -156,6 +156,83 @@ public sealed class RedesignFrameCommitUnitTests
         subscriber.Dispose();
     }
 
+    [Fact]
+    public async Task ARoomThatRunsToItsFinalTickReportsCompleted()
+    {
+        var store = new ScriptedFrameStore();
+        var lifecycle = new ScriptedLifecycle();
+        var actor = NewRoom(store, lifecycle, durationTicks: 3);
+        actor.Start();
+        Assert.True(await WaitForAsync(() => Task.FromResult(actor.Completed)),
+            "The room never committed its final frame.");
+        var status = actor.Status();
+        Assert.Equal(RoomRunState.Completed, status.State);
+        Assert.Equal(1, status.Epoch);
+        Assert.Equal(3, status.LastCommittedTick);
+        Assert.Null(status.StopReason);
+        await actor.DisposeAsync();
+        // Teardown after the result keeps the completed state.
+        Assert.Equal(RoomRunState.Completed, actor.Status().State);
+    }
+
+    [Fact]
+    public async Task ModuleFailuresStopTheRoomWithARecordedReason()
+    {
+        var store = new ScriptedFrameStore();
+        var lifecycle = new ScriptedLifecycle();
+        // The module's deterministic fault seam (AT13): every tick from the first throws.
+        var actor = NewRoom(store, lifecycle, durationTicks: 50, failAfterTick: 1);
+        actor.Start();
+        Assert.True(await WaitForAsync(() => Task.FromResult(lifecycle.SuspendCount == 1)),
+            "The actor never parked the failing room.");
+        var status = actor.Status();
+        Assert.Equal(RoomRunState.Stopped, status.State);
+        Assert.Contains("module failed 3 consecutive ticks", status.StopReason);
+        Assert.Equal(0, status.LastCommittedTick);
+        Assert.False(actor.Completed);
+        Assert.Equal(0, store.CommitCount);
+        await actor.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task AFencedRoomStopsWithTheRejectionReason()
+    {
+        var store = new ScriptedFrameStore();
+        var lifecycle = new ScriptedLifecycle();
+        var rejection = RpcError(StatusCode.FailedPrecondition,
+            "The room ownership fence rejected the caller.");
+        store.DefaultCommit = _ => Task.FromException<FrameReceiptReply>(rejection);
+        var actor = NewRoom(store, lifecycle);
+        actor.Start();
+        Assert.True(await WaitForAsync(() => Task.FromResult(lifecycle.SuspendCount == 1)),
+            "The actor never parked the rejected room.");
+        var status = actor.Status();
+        Assert.Equal(RoomRunState.Stopped, status.State);
+        Assert.Contains("frame commit rejected at tick 1", status.StopReason);
+        Assert.Equal(0, status.LastCommittedTick);
+        Assert.False(actor.Completed);
+        await actor.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task DisposingALiveRoomMarksItDisposedNotCompleted()
+    {
+        var store = new ScriptedFrameStore();
+        var lifecycle = new ScriptedLifecycle();
+        var actor = NewRoom(store, lifecycle, durationTicks: 200);
+        actor.Start();
+        Assert.True(await WaitForAsync(() => Task.FromResult(store.CommitCount >= 2)),
+            "The room never committed a frame.");
+        var beforeDispose = store.CommitCount;
+        await actor.DisposeAsync();
+        var status = actor.Status();
+        Assert.Equal(RoomRunState.Disposed, status.State);
+        Assert.True(status.LastCommittedTick >= 2);
+        Assert.False(actor.Completed);
+        Assert.Null(status.StopReason);
+        Assert.True(beforeDispose >= 2);
+    }
+
     private static RpcException RpcError(StatusCode status, string detail) =>
         new(new Status(status, detail));
 
@@ -167,7 +244,7 @@ public sealed class RedesignFrameCommitUnitTests
     };
 
     private static RoomActor NewRoom(ScriptedFrameStore store, ScriptedLifecycle lifecycle,
-        long durationTicks = 200)
+        long durationTicks = 200, int failAfterTick = 0)
     {
         var module = new ExampleGameModule(new RedesignGameModuleManifest(
             "frame-commit-tests", "1.0.0-test", 25, 100,
@@ -176,7 +253,8 @@ public sealed class RedesignFrameCommitUnitTests
         {
             new("host-fc", GameStartConfig.RedFaction), new("guest-fc", GameStartConfig.BlueFaction)
         };
-        var initial = module.CreateInitialState(new GameStartConfig(durationTicks, 777, participants));
+        var initial = module.CreateInitialState(
+            new GameStartConfig(durationTicks, 777, participants, failAfterTick));
         var bindings = new Dictionary<string, string> { ["binding-host-fc"] = "host-fc" };
         return new RoomActor(lifecycle, store, module, "game-fc", "room-fc", "game-a", 1, "cfg-fc",
             initial, bindings);

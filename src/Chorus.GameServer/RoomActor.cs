@@ -7,6 +7,26 @@ using Grpc.Core;
 
 namespace Chorus.GameServer;
 
+/// <summary>The actor's lifecycle state (FIX-ROOM-01): what the loop is doing now. A
+/// stopped actor carries its reason; nothing outside may infer liveness from timers.</summary>
+internal enum RoomRunState
+{
+    /// <summary>The loop is awake and committing frames.</summary>
+    Running,
+    /// <summary>The final frame committed and the manifest settled.</summary>
+    Completed,
+    /// <summary>The loop ended without a committed result: module failure, fence
+    /// rejection or an actor fault. The reason says which.</summary>
+    Stopped,
+    /// <summary>The host disposed the actor while it was still live.</summary>
+    Disposed
+}
+
+/// <summary>An inspectable snapshot of one room actor: its state, the epoch it runs at,
+/// the last tick it committed, and why it stopped (FIX-ROOM-01).</summary>
+internal sealed record RoomActorStatus(RoomRunState State, long Epoch, long LastCommittedTick,
+    string? StopReason);
+
 /// <summary>
 /// One running room (architecture 7, 8.2): a single loop that wakes on the module cadence,
 /// reads the round inbox, applies one pure tick and commits it. The commit id is derived from
@@ -53,6 +73,8 @@ internal sealed class RoomActor : IAsyncDisposable
     private string? _finalResultJson;
     private int _consecutiveModuleFailures;
     private PendingFrame? _pending;
+    private RoomRunState _runState = RoomRunState.Running;
+    private string? _stopReason;
     private volatile bool _stopped;
     private volatile bool _finalCommitted;
     // Set under the publish gate when the loop exits: Subscribe must never register
@@ -99,6 +121,11 @@ internal sealed class RoomActor : IAsyncDisposable
             // The loop must never die silently (architecture 10.3, fail-visible): park the
             // room and leave the evidence behind. The finally resolves every subscriber.
             _stopped = true;
+            lock (_publishGate)
+            {
+                _runState = RoomRunState.Stopped;
+                _stopReason = $"the actor loop failed: {error.Message}";
+            }
             Console.Error.WriteLine($"room {_roomId} actor faulted: {error}");
             try
             {
@@ -175,6 +202,12 @@ internal sealed class RoomActor : IAsyncDisposable
                 if (++_consecutiveModuleFailures >= MaxConsecutiveModuleFailures)
                 {
                     _stopped = true;
+                    lock (_publishGate)
+                    {
+                        _runState = RoomRunState.Stopped;
+                        _stopReason =
+                            $"module failed {_consecutiveModuleFailures} consecutive ticks: {error.Message}";
+                    }
                     await _runtime.SuspendRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch,
                         $"module failed {_consecutiveModuleFailures} consecutive ticks: {error.Message}",
                         cancellationToken).ConfigureAwait(false);
@@ -205,6 +238,12 @@ internal sealed class RoomActor : IAsyncDisposable
                 // suspension itself may be fenced out too (an expired owner lease), so the
                 // evidence line must not depend on it landing.
                 _stopped = true;
+                lock (_publishGate)
+                {
+                    _runState = RoomRunState.Stopped;
+                    _stopReason =
+                        $"frame commit rejected at tick {pendingFrame.Tick}: {error.Status.Detail}";
+                }
                 Console.Error.WriteLine(
                     $"room {_roomId} stopping: frame commit rejected at tick {pendingFrame.Tick}: {error.Status.Detail}");
                 await _runtime.SuspendRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch,
@@ -331,6 +370,7 @@ internal sealed class RoomActor : IAsyncDisposable
                 // Set inside the gate: a subscriber attaching after the result still gets
                 // the finished-room answer instead of registering against a dead loop.
                 _finalCommitted = true;
+                _runState = RoomRunState.Completed;
                 result = new SyncMessage { RoundResult = new RoundResultMessage
                 {
                     RoomId = _roomId, Epoch = _epoch, Tick = receipt.Tick,
@@ -427,11 +467,24 @@ internal sealed class RoomActor : IAsyncDisposable
     /// <summary>True once the final frame committed: the room is Finishing on the data plane.</summary>
     public bool Completed => _finalCommitted;
 
+    /// <summary>The actor's lifecycle snapshot (FIX-ROOM-01): state, epoch, committed head
+    /// and — for a room that stopped without a result — the recorded reason.</summary>
+    public RoomActorStatus Status()
+    {
+        lock (_publishGate) return new RoomActorStatus(_runState, _epoch, _lastTick, _stopReason);
+    }
+
     private static DateTime Deadline() => DateTime.UtcNow.AddSeconds(10);
 
     public async ValueTask DisposeAsync()
     {
         _stopped = true;
+        lock (_publishGate)
+        {
+            // A finished room keeps its Completed state through teardown; a live room the
+            // host is shutting down records that it was disposed, not that it stopped.
+            if (_runState == RoomRunState.Running) _runState = RoomRunState.Disposed;
+        }
         _cancellation.Cancel();
         try { await _run.ConfigureAwait(false); }
         catch (OperationCanceledException) { }
