@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="2774" viewBox="0 0 1840 2774" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">05 · Anti-cheat: where illegal input stops</title>
+<desc id="desc">Separate labeled cases on one downward axis · Rejected input cannot become a committed gameplay effect</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.head{font-size:17px;font-weight:700}.body{font-size:17px}.msg{font-size:16px;paint-order:stroke;stroke:#fff;stroke-width:6px;stroke-linejoin:round}.small{font-size:15px;fill:#52647b}.phase{font-size:18px;font-weight:700}.time{font-size:13px;fill:#52647b}.life{stroke:#b8c4d5;stroke-dasharray:6 6;stroke-width:1.5}.wire{fill:none;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1840" height="2774" fill="#fff"/>
+<text x="34" y="46" class="title">05 · Anti-cheat: where illegal input stops</text>
+<text x="34" y="80" class="small">Separate labeled cases on one downward axis · Rejected input cannot become a committed gameplay effect</text>
+<path d="M34 188 V2682" class="wire" style="stroke:#94a3b8"/>
+<rect x="69" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="200" y="143" class="head" text-anchor="middle">Untrusted client</text>
+<path d="M200 179 V2682" class="life"/>
+<rect x="419" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="550" y="143" class="head" text-anchor="middle">StreamerGateway</text>
+<path d="M550 179 V2682" class="life"/>
+<rect x="769" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="900" y="143" class="head" text-anchor="middle">GameServer</text>
+<text x="900" y="166" class="head" text-anchor="middle">RoomActor</text>
+<path d="M900 179 V2682" class="life"/>
+<rect x="1119" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1250" y="143" class="head" text-anchor="middle">DataServer</text>
+<path d="M1250 179 V2682" class="life"/>
+<rect x="1569" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1700" y="143" class="head" text-anchor="middle">PlatformGateway</text>
+<path d="M1700 179 V2682" class="life"/>
+<rect x="74" y="220" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="249" class="phase" text-anchor="start">Case A · A client cannot create gift facts or final scores</text>
+<circle cx="34" cy="351" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="356" class="time" text-anchor="middle">t01</text>
+<path d="M200 356 H550" class="wire" style="stroke:#be123c"/>
+<text x="375.0" y="313" class="msg" text-anchor="middle" style="fill:#be123c">Claimed score / fake gift</text>
+<circle cx="34" cy="441.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="446.0" class="time" text-anchor="middle">t02</text>
+<rect x="419" y="404" width="262" height="76" rx="9" fill="#fff1f2" stroke="#fda4af"/>
+<text x="550" y="431" class="small" text-anchor="middle">Not an allowed client intent</text>
+<text x="550" y="455" class="small" text-anchor="middle">Reject; do not forward as gift</text>
+<circle cx="34" cy="567" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="572" class="time" text-anchor="middle">t03</text>
+<path d="M550 572 H200" class="wire" style="stroke:#be123c"/>
+<text x="375.0" y="529" class="msg" text-anchor="middle" style="fill:#be123c">Rejected · no state mutation</text>
+<rect x="74" y="620" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="649" class="phase" text-anchor="start">Case B · Syntactically valid intent still needs game-rule checks</text>
+<circle cx="34" cy="751" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="756" class="time" text-anchor="middle">t04</text>
+<path d="M200 756 H550" class="wire" style="stroke:#475569"/>
+<text x="375.0" y="713" class="msg" text-anchor="middle" style="fill:#475569">Action C2</text>
+<circle cx="34" cy="859" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="864" class="time" text-anchor="middle">t05</text>
+<path d="M550 864 H900" class="wire" style="stroke:#475569"/>
+<text x="725.0" y="821" class="msg" text-anchor="middle" style="fill:#475569">Verified identity + action C2</text>
+<circle cx="34" cy="949.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="954.0" class="time" text-anchor="middle">t06</text>
+<rect x="769" y="912" width="262" height="76" rx="9" fill="#fff1f2" stroke="#fda4af"/>
+<text x="900" y="939" class="small" text-anchor="middle">Wrong room/session/epoch,</text>
+<text x="900" y="963" class="small" text-anchor="middle">or cooldown/resource/rate fails</text>
+<circle cx="34" cy="1075" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1080" class="time" text-anchor="middle">t07</text>
+<path d="M900 1080 H550" class="wire" style="stroke:#be123c"/>
+<text x="725.0" y="1037" class="msg" text-anchor="middle" style="fill:#be123c">Rejected C2 · no effect</text>
+<circle cx="34" cy="1183" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1188" class="time" text-anchor="middle">t08</text>
+<path d="M550 1188 H200" class="wire" style="stroke:#be123c"/>
+<text x="375.0" y="1145" class="msg" text-anchor="middle" style="fill:#be123c">Command rejected</text>
+<rect x="74" y="1236" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="1265" class="phase" text-anchor="start">Case C · Ownership changes after receive: storage fencing still stops old commits</text>
+<circle cx="34" cy="1367" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1372" class="time" text-anchor="middle">t09</text>
+<path d="M900 1372 H1250" class="wire" style="stroke:#475569"/>
+<text x="1075.0" y="1329" class="msg" text-anchor="middle" style="fill:#475569">Old owner commit: epoch 7</text>
+<text x="1075.0" y="1352" class="msg" text-anchor="middle" style="fill:#475569">Current authority is epoch 8</text>
+<circle cx="34" cy="1475" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1480" class="time" text-anchor="middle">t10</text>
+<path d="M1250 1480 H900" class="wire" style="stroke:#be123c"/>
+<text x="1075.0" y="1437" class="msg" text-anchor="middle" style="fill:#be123c">StaleOwner / StaleEpoch</text>
+<circle cx="34" cy="1565.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1570.0" class="time" text-anchor="middle">t11</text>
+<rect x="769" y="1528" width="262" height="76" rx="9" fill="#fff1f2" stroke="#fda4af"/>
+<text x="900" y="1555" class="small" text-anchor="middle">Stop old actor progression</text>
+<text x="900" y="1579" class="small" text-anchor="middle">Never publish candidate state</text>
+<rect x="74" y="1636" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="1665" class="phase" text-anchor="start">Case D · Only verified platform events use the gift ingress</text>
+<circle cx="34" cy="1749.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1754.0" class="time" text-anchor="middle">t12</text>
+<rect x="1569" y="1712" width="262" height="76" rx="9" fill="#eef8f5" stroke="#86c9b3"/>
+<text x="1700" y="1739" class="small" text-anchor="middle">Verify platform signature / app</text>
+<text x="1700" y="1763" class="small" text-anchor="middle">Resolve live binding and route</text>
+<circle cx="34" cy="1875" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1880" class="time" text-anchor="middle">t13</text>
+<path d="M1700 1880 H900" class="wire" style="stroke:#087f5b"/>
+<text x="1300.0" y="1837" class="msg" text-anchor="middle" style="fill:#087f5b">Verified event E1 / fixed room</text>
+<circle cx="34" cy="1983" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1988" class="time" text-anchor="middle">t14</text>
+<path d="M900 1988 H1250" class="wire" style="stroke:#475569"/>
+<text x="1075.0" y="1945" class="msg" text-anchor="middle" style="fill:#475569">Persist E1 with fingerprint</text>
+<circle cx="34" cy="2091" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2096" class="time" text-anchor="middle">t15</text>
+<path d="M1250 2096 H900" class="wire" style="stroke:#087f5b"/>
+<text x="1075.0" y="2053" class="msg" text-anchor="middle" style="fill:#087f5b">Durable receipt for E1</text>
+<circle cx="34" cy="2199" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2204" class="time" text-anchor="middle">t16</text>
+<path d="M1700 2204 H900" class="wire" style="stroke:#475569"/>
+<text x="1300.0" y="2161" class="msg" text-anchor="middle" style="fill:#475569">Retry same E1</text>
+<circle cx="34" cy="2307" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2312" class="time" text-anchor="middle">t17</text>
+<path d="M900 2312 H1250" class="wire" style="stroke:#475569"/>
+<text x="1075.0" y="2269" class="msg" text-anchor="middle" style="fill:#475569">Same E1 + same fingerprint</text>
+<circle cx="34" cy="2415" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2420" class="time" text-anchor="middle">t18</text>
+<path d="M1250 2420 H900" class="wire" style="stroke:#087f5b"/>
+<text x="1075.0" y="2377" class="msg" text-anchor="middle" style="fill:#087f5b">Duplicate · original receipt</text>
+<circle cx="34" cy="2505.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2510.0" class="time" text-anchor="middle">t19</text>
+<rect x="769" y="2468" width="262" height="76" rx="9" fill="#eef8f5" stroke="#86c9b3"/>
+<text x="900" y="2495" class="small" text-anchor="middle">Enqueue/apply E1 at most once</text>
+<text x="900" y="2519" class="small" text-anchor="middle">Commit via normal flow 01</text>
+<rect x="74" y="2576" width="1736" height="74" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+<text x="96" y="2603" class="body" text-anchor="start">An accepted input fenced by migration remains recoverable by the new owner; rejection of an old write must not erase it.</text>
+<text x="96" y="2628" class="body" text-anchor="start">ACKs/client hashes are progress hints, never reward evidence. Authority does not eliminate automation or collusion.</text>
+<text x="34" y="2739" class="small">Time flows downward. t01… are ordering markers, not milliseconds. Target contract; implemented gaps remain in TODO.</text>
+</svg>

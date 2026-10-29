@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="2882" viewBox="0 0 1840 2882" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">02 · Reconnect: authenticate → snapshot → contiguous deltas</title>
+<desc id="desc">Successful same-epoch recovery trace · A last applied tick 100 / v101 · B stays online</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.head{font-size:17px;font-weight:700}.body{font-size:17px}.msg{font-size:16px;paint-order:stroke;stroke:#fff;stroke-width:6px;stroke-linejoin:round}.small{font-size:15px;fill:#52647b}.phase{font-size:18px;font-weight:700}.time{font-size:13px;fill:#52647b}.life{stroke:#b8c4d5;stroke-dasharray:6 6;stroke-width:1.5}.wire{fill:none;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1840" height="2882" fill="#fff"/>
+<text x="34" y="46" class="title">02 · Reconnect: authenticate → snapshot → contiguous deltas</text>
+<text x="34" y="80" class="small">Successful same-epoch recovery trace · A last applied tick 100 / v101 · B stays online</text>
+<path d="M34 188 V2790" class="wire" style="stroke:#94a3b8"/>
+<rect x="69" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="200" y="143" class="head" text-anchor="middle">Streamer A</text>
+<text x="200" y="166" class="head" text-anchor="middle">Client</text>
+<path d="M200 179 V2790" class="life"/>
+<rect x="369" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="500" y="143" class="head" text-anchor="middle">StreamerGateway</text>
+<path d="M500 179 V2790" class="life"/>
+<rect x="669" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="800" y="143" class="head" text-anchor="middle">StreamerServer</text>
+<path d="M800 179 V2790" class="life"/>
+<rect x="969" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1100" y="143" class="head" text-anchor="middle">GameServer</text>
+<text x="1100" y="166" class="head" text-anchor="middle">RoomActor</text>
+<path d="M1100 179 V2790" class="life"/>
+<rect x="1269" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1400" y="143" class="head" text-anchor="middle">DataServer</text>
+<path d="M1400 179 V2790" class="life"/>
+<rect x="1569" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1700" y="143" class="head" text-anchor="middle">Streamer B</text>
+<text x="1700" y="166" class="head" text-anchor="middle">Client</text>
+<path d="M1700 179 V2790" class="life"/>
+<rect x="74" y="220" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="249" class="phase" text-anchor="start">A. A disconnects; the room and B continue</text>
+<circle cx="34" cy="333.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="338.0" class="time" text-anchor="middle">t01</text>
+<rect x="69" y="296" width="262" height="76" rx="9" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="200" y="323" class="small" text-anchor="middle">Connection lost after t100</text>
+<text x="200" y="347" class="small" text-anchor="middle">Participation is retained</text>
+<circle cx="34" cy="459" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="464" class="time" text-anchor="middle">t02</text>
+<path d="M1100 464 H500" class="wire" style="stroke:#2563eb"/>
+<text x="800.0" y="421" class="msg" text-anchor="middle" style="fill:#2563eb">Committed ticks 101 … 130</text>
+<text x="800.0" y="444" class="msg" text-anchor="middle" style="fill:#2563eb">The room does not wait for A</text>
+<circle cx="34" cy="567" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="572" class="time" text-anchor="middle">t03</text>
+<path d="M500 572 H1700" class="wire" style="stroke:#2563eb"/>
+<text x="1100.0" y="529" class="msg" text-anchor="middle" style="fill:#2563eb">Apply through tick 130 / v131</text>
+<rect x="74" y="620" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="649" class="phase" text-anchor="start">B. Restore identity and the original participation</text>
+<circle cx="34" cy="751" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="756" class="time" text-anchor="middle">t04</text>
+<path d="M200 756 H500" class="wire" style="stroke:#475569"/>
+<text x="350.0" y="713" class="msg" text-anchor="middle" style="fill:#475569">Resume credentials + operation ID</text>
+<text x="350.0" y="736" class="msg" text-anchor="middle" style="fill:#475569">Last-applied progress is a hint</text>
+<circle cx="34" cy="859" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="864" class="time" text-anchor="middle">t05</text>
+<path d="M500 864 H800" class="wire" style="stroke:#475569"/>
+<text x="650.0" y="821" class="msg" text-anchor="middle" style="fill:#475569">Resume authenticated session</text>
+<circle cx="34" cy="967" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="972" class="time" text-anchor="middle">t06</text>
+<path d="M800 972 H1400" class="wire" style="stroke:#475569"/>
+<text x="1100.0" y="929" class="msg" text-anchor="middle" style="fill:#475569">Rotate session; fence old one</text>
+<circle cx="34" cy="1075" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1080" class="time" text-anchor="middle">t07</text>
+<path d="M1400 1080 H800" class="wire" style="stroke:#475569"/>
+<text x="1100.0" y="1037" class="msg" text-anchor="middle" style="fill:#475569">Current session / generation</text>
+<circle cx="34" cy="1183" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1188" class="time" text-anchor="middle">t08</text>
+<path d="M800 1188 H1400" class="wire" style="stroke:#475569"/>
+<text x="1100.0" y="1145" class="msg" text-anchor="middle" style="fill:#475569">Read current participation</text>
+<circle cx="34" cy="1291" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1296" class="time" text-anchor="middle">t09</text>
+<path d="M1400 1296 H800" class="wire" style="stroke:#475569"/>
+<text x="1100.0" y="1253" class="msg" text-anchor="middle" style="fill:#475569">Original Room R + binding gen</text>
+<circle cx="34" cy="1399" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1404" class="time" text-anchor="middle">t10</text>
+<path d="M800 1404 H500" class="wire" style="stroke:#475569"/>
+<text x="650.0" y="1361" class="msg" text-anchor="middle" style="fill:#475569">Session ready + original Room R</text>
+<circle cx="34" cy="1489.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1494.0" class="time" text-anchor="middle">t11</text>
+<rect x="369" y="1452" width="262" height="76" rx="9" fill="#edf5ff" stroke="#93b9e3"/>
+<text x="500" y="1479" class="small" text-anchor="middle">Use ControlServer route cache</text>
+<text x="500" y="1503" class="small" text-anchor="middle">Resolve R → owner / epoch 7</text>
+<rect x="74" y="1560" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="1589" class="phase" text-anchor="start">C. Capture a coherent baseline with no subscription gap</text>
+<circle cx="34" cy="1691" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1696" class="time" text-anchor="middle">t12</text>
+<path d="M500 1696 H1100" class="wire" style="stroke:#475569"/>
+<text x="800.0" y="1653" class="msg" text-anchor="middle" style="fill:#475569">Subscribe to Room R / epoch 7</text>
+<text x="800.0" y="1676" class="msg" text-anchor="middle" style="fill:#475569">Resume is not a new match</text>
+<circle cx="34" cy="1781.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1786.0" class="time" text-anchor="middle">t13</text>
+<rect x="969" y="1744" width="262" height="76" rx="9" fill="#eef8f5" stroke="#86c9b3"/>
+<text x="1100" y="1771" class="small" text-anchor="middle">Capture head t130 / v131</text>
+<text x="1100" y="1795" class="small" text-anchor="middle">Register all updates after head</text>
+<circle cx="34" cy="1907" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1912" class="time" text-anchor="middle">t14</text>
+<path d="M1100 1912 H500" class="wire" style="stroke:#2563eb"/>
+<text x="800.0" y="1869" class="msg" text-anchor="middle" style="fill:#2563eb">Snapshot: e7 / t130 / v131</text>
+<circle cx="34" cy="2015" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2020" class="time" text-anchor="middle">t15</text>
+<path d="M500 2020 H200" class="wire" style="stroke:#2563eb"/>
+<text x="350.0" y="1977" class="msg" text-anchor="middle" style="fill:#2563eb">Snapshot: e7 / t130 / v131</text>
+<circle cx="34" cy="2105.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2110.0" class="time" text-anchor="middle">t16</text>
+<rect x="69" y="2068" width="262" height="76" rx="9" fill="#edf5ff" stroke="#93b9e3"/>
+<text x="200" y="2095" class="small" text-anchor="middle">Install baseline v131</text>
+<text x="200" y="2119" class="small" text-anchor="middle">Do not replay rewards</text>
+<rect x="74" y="2176" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="2205" class="phase" text-anchor="start">D. Apply only the next contiguous version</text>
+<circle cx="34" cy="2307" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2312" class="time" text-anchor="middle">t17</text>
+<path d="M1100 2312 H500" class="wire" style="stroke:#2563eb"/>
+<text x="800.0" y="2269" class="msg" text-anchor="middle" style="fill:#2563eb">Delta: e7 / t131</text>
+<text x="800.0" y="2292" class="msg" text-anchor="middle" style="fill:#2563eb">base v131 → v132</text>
+<circle cx="34" cy="2415" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2420" class="time" text-anchor="middle">t18</text>
+<path d="M500 2420 H200" class="wire" style="stroke:#2563eb"/>
+<text x="350.0" y="2377" class="msg" text-anchor="middle" style="fill:#2563eb">Delta: e7 / t131</text>
+<text x="350.0" y="2400" class="msg" text-anchor="middle" style="fill:#2563eb">base v131 → v132</text>
+<circle cx="34" cy="2523" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2528" class="time" text-anchor="middle">t19</text>
+<path d="M500 2528 H1700" class="wire" style="stroke:#2563eb"/>
+<text x="1100.0" y="2485" class="msg" text-anchor="middle" style="fill:#2563eb">Same Delta: e7 / t131 / base v131 → v132</text>
+<circle cx="34" cy="2613.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2618.0" class="time" text-anchor="middle">t20</text>
+<rect x="69" y="2576" width="262" height="76" rx="9" fill="#edf5ff" stroke="#93b9e3"/>
+<text x="200" y="2603" class="small" text-anchor="middle">Caught up: tick 131 / v132</text>
+<rect x="1569" y="2576" width="262" height="76" rx="9" fill="#edf5ff" stroke="#93b9e3"/>
+<text x="1700" y="2603" class="small" text-anchor="middle">Same committed version</text>
+<text x="1700" y="2627" class="small" text-anchor="middle">tick 131 / v132</text>
+<rect x="74" y="2684" width="1736" height="74" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+<text x="96" y="2711" class="body" text-anchor="start">Baseline overflow / missing base ⇒ request a newer full snapshot. Epoch change ⇒ refresh route and rebaseline.</text>
+<text x="96" y="2736" class="body" text-anchor="start">Already finished ⇒ return frozen result and settlement progress; never restart the battle.</text>
+<text x="34" y="2847" class="small">Time flows downward. t01… are ordering markers, not milliseconds. Target contract; implemented gaps remain in TODO.</text>
+</svg>

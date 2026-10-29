@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1880" viewBox="0 0 1280 1880" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1915" viewBox="0 0 1280 1915" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
 <title id="title">Chorus · 纵向进程架构</title>
 <desc id="desc">七类进程。ControlServer 为中央协调进程，StreamerServer 和 GameServer 并排置于 DataServer 上方。GM 通过 ControlServer Admin 入口。StreamerGateway 直连 GameServer 传递战斗输入和已提交帧。PlatformGateway 使用 ControlServer 路由向目标房间直推已验证事件。虚线为控制，实线为业务数据。图示为目标契约，不代表已全部实现。</desc>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
 <style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:30px;font-weight:700}.name{font-size:23px;font-weight:700}.body{font-size:17px;fill:#435570}.small{font-size:15px;fill:#52647b}.label{font-size:15px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke-linejoin:round}.control{stroke-dasharray:7 5}</style>
-<rect width="1280" height="1880" rx="20" fill="#f8fafc"/>
+<rect width="1280" height="1915" rx="20" fill="#f8fafc"/>
 <text x="40" y="48" class="title" text-anchor="start">Chorus · 进程架构</text>
 <text x="40" y="80" class="body" text-anchor="start">七类进程 · 中央控制 · 每个 GameServer 多房间 · 目标契约，持续实现中</text>
 <path d="M190 230 V340" fill="none" stroke="#f8fafc" stroke-width="9"/>
@@ -67,10 +67,18 @@
 <text x="480" y="719" class="body" text-anchor="start">路由 · 确认与关闭屏障</text>
 <text x="480" y="746" class="body" text-anchor="start">恢复 · 结算协调 · Admin</text>
 </g>
+<g id="node-agent-scope" data-node="node-agent-scope"><rect x="900" y="510" width="320" height="190" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+<text x="918" y="539" class="body">本机监管范围 · 目标契约</text>
+<text x="918" y="570" class="small">ControlServer · DataServer</text>
+<text x="918" y="595" class="small">StreamerServer · GameServer</text>
+<text x="918" y="620" class="small">StreamerGateway · PlatformGateway</text>
+<text x="918" y="650" class="small">仅监管本机已部署角色，不要求同机齐全</text>
+<text x="918" y="676" class="small">进程重启 ≠ 房间业务恢复</text></g>
+<path id="agent-supervision" data-from="node-agent" data-to="node-agent-scope" d="M1080 730 V700" class="edge control" style="stroke:#c2410c;stroke-width:2" marker-end="url(#arrow)"/>
 <g id="node-agent" data-node="node-agent"><rect x="940" y="730" width="260" height="130" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
 <text x="960" y="764" class="name" text-anchor="start">NodeAgent</text>
-<text x="960" y="795" class="body" text-anchor="start">每台机器一个</text>
-<text x="960" y="822" class="body" text-anchor="start">本机进程启停与监管</text>
+<text x="960" y="795" class="body" text-anchor="start">每机一个 · 计划幂等</text>
+<text x="960" y="822" class="body" text-anchor="start">启停 / 重启 / 进程树回收</text>
 </g>
 <g id="streamer-server" data-node="streamer-server"><rect x="40" y="1030" width="520" height="320" rx="14" fill="#fff" stroke="#cbd5e1" stroke-width="1.5"/>
 <text x="60" y="1064" class="name" text-anchor="start">StreamerServer</text>
@@ -122,8 +130,8 @@
 <text x="660" y="315" class="label" text-anchor="start" style="fill:#c2410c">Admin 统一入口 · 授权 / 审计</text>
 <text x="391" y="542" class="label" text-anchor="start">路由</text>
 <text x="391" y="565" class="label" text-anchor="start">epoch</text>
-<text x="872" y="535" class="label" text-anchor="start">路由与版本 ↓</text>
-<text x="872" y="558" class="label" text-anchor="start">安装 / 停止投递确认 ↑</text>
+<text x="835" y="515" class="label" text-anchor="start">路由 ↓</text>
+<text x="835" y="538" class="label" text-anchor="start">确认 ↑</text>
 <text x="880" y="742" class="label" text-anchor="middle">计划 →</text>
 <text x="880" y="789" class="label" text-anchor="middle">← 状态</text>
 <text x="165" y="700" class="label" text-anchor="start">登录 / 个人业务</text>
@@ -132,13 +140,13 @@
 <text x="315" y="1016" class="label" text-anchor="start">↓ 参与结果 / 生命周期</text>
 <text x="925" y="995" class="label" text-anchor="end">↑ 进程注册 / 状态上报</text>
 <text x="925" y="1016" class="label" text-anchor="end">↓ 分配 / 接管 / 结束 / 销毁</text>
-<text x="1000" y="600" class="label" text-anchor="start" style="fill:#087f5b">已验证事件直推目标房间</text>
-<text x="1000" y="624" class="small" text-anchor="start">RoomId + epoch + EventId</text>
+<text transform="translate(1246 1010) rotate(-90)" class="small" style="fill:#087f5b">已验证平台事件 → 目标房间</text>
 <text x="315" y="1408" class="label" text-anchor="start" style="fill:#7c3aed">资料读写 / 资产事务</text>
 <text x="995" y="1408" class="label" text-anchor="start" style="fill:#7c3aed">帧提交 / 恢复</text>
 <text x="655" y="1458" class="label" text-anchor="start">控制事务协调</text>
 <text x="655" y="1695" class="label" text-anchor="start" style="fill:#7c3aed">业务 schema 读写</text>
-<text x="40" y="1700" class="label" text-anchor="start">控制 schema 读写</text>
+<text x="40" y="1700" class="label" text-anchor="start">节点 / 所有权 / 租约记录读写</text>
 <text x="40" y="1840" class="small" text-anchor="start">虚线：控制关系 · 实线：业务数据 · 无圆点的交叉不表示连通</text>
 <text x="40" y="1865" class="small" text-anchor="start">计算 → 提交成功 → 发布 · NodeAgent 监管本机各角色 · 图示主要进程关系</text>
+<text x="40" y="1890" class="small">建表 / 改表：部署时由 SchemaTool 执行；ControlServer / DataServer 启动只校验，不自动建表。</text>
 </svg>

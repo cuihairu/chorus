@@ -2,7 +2,9 @@
 
 Target contract, 2026-10-29. Synchronization means a single authoritative room commits logical frames and distributes state. See the separate [current threading model](./gameserver-threading-current.md) for implementation facts.
 
-![Authoritative synchronization and reconnect](/images/authoritative-sync-en.svg)
+The diagrams below are separate traces. Sequence diagrams run **top to bottom**; `t01…` labels show causal order, not milliseconds. The offline-policy figure is a mutually exclusive branch flow. Each diagram names its participants and starting state. Read full-size SVGs to inspect messages.
+
+![Normal synchronization: commit before fan-out](/images/authoritative-sync-en.svg)
 
 [Open full SVG](/images/authoritative-sync-en.svg)
 
@@ -16,11 +18,19 @@ Clients converge to the same state at the same committed version. Network delays
 
 ## Reconnect and catch-up
 
+![Reconnect sequence](/images/sync-reconnect-en.svg)
+
+[Open full SVG](/images/sync-reconnect-en.svg)
+
 A disconnect preserves participation. Resume authenticates and rotates the current session, resolves the original room from server facts and attaches a new connection generation. An old StreamerGateway close notice cannot disconnect the replacement.
 
 Default catch-up uses a coherent committed head snapshot, then contiguous deltas after that head. Subscription and head capture must share a publication boundary or resumable commit cursor. Overflow during snapshot installation restarts baselining. Epoch changes require a new route and full snapshot; version numbers across epochs are not one delta chain. A completed room returns the frozen result and settlement progress. History replay is optional future optimization, not a promise of unlimited incremental recovery. Historical effects and rewards are not executed again on clients.
 
 ## All controlling streamers offline
+
+![Mutually exclusive offline-policy branches](/images/sync-offline-policy-en.svg)
+
+[Open full SVG](/images/sync-offline-policy-en.svg)
 
 The server derives presence from current control sessions, connection generations, heartbeat deadlines and a grace period. A spectator disconnect or zero viewers does not mean all controlling streamers are offline. Unexpected disconnect, live end, explicit exit and server failure are separate causes.
 
@@ -32,7 +42,19 @@ Pin AllOfflinePolicy, OfflineGraceDuration, MaxPauseDuration, ResumeRequiredRead
 
 During pause, platform events require an explicit bounded durable-buffer, out-of-round disposition or rejection policy. Never silently lose accepted gifts. Resume preserves accepted ordering and per-tick budgets. Resume requires the configured number of authenticated participants to complete baseline preparation, followed by a committed resume boundary. Readiness has a deadline and is bound to session/epoch. Max pause duration prevents indefinite stalling. Restart restores Paused rather than accidentally starting ticks. Business pause is distinct from fault suspension or a GM epoch bump.
 
+## Durable pause and successful resume
+
+![Pause / buffer / baseline ready / resume](/images/sync-pause-resume-en.svg)
+
+[Open full SVG](/images/sync-pause-resume-en.svg)
+
+This trace pins `ResumeRequiredReadyCount=2` and bounded durable input buffering. Pause/resume control boundaries have their own durable operation receipts; the example freezes gameplay tick/state version at t200/v201 until gameplay resumes at t201/v202. Session authentication follows flow 02. The pause-timeout ending is a separate branch in flow 03, not an operation after successful resume.
+
 ## Anti-cheat boundary
+
+![Rejection paths and persistence fencing](/images/sync-anticheat-en.svg)
+
+[Open full SVG](/images/sync-anticheat-en.svg)
 
 The server validates session, tenant/game, participation, connection generation, owner/epoch, action rules, resources, cooldowns, sequence and rate. Clients submit intent, never authoritative rewards or scores. Gift/like facts come from verified platform events. Command/Event IDs and fingerprints prevent replay and reject changed content under one ID. Client clocks, ACKs and hashes do not grant rewards or prove honesty. Only authorized state is disclosed.
 

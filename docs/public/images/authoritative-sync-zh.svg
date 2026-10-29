@@ -1,56 +1,91 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="1590" viewBox="0 0 1240 1590" role="img" aria-labelledby="title desc">
-<title id="title">多主播权威帧同步与断线追赶</title>
-<desc id="desc">同房间只有一个权威，提交后广播；重连用头部快照追赶；全员离线策略由玩法配置；命令由服务端验证。目标契约。</desc>
-<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs>
-<style>text{font-family:Arial,"Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.name{font-size:21px;font-weight:700}.body{font-size:17px}.small{font-size:15px;fill:#52647b}.edge{fill:none;stroke:#64748b;stroke-width:2;marker-end:url(#arrow)}</style>
-<rect width="1240" height="1590" rx="20" fill="#f8fafc"/>
-<text x="35" y="45" class="title" text-anchor="start">多主播帧同步 · 同一房间只有一个权威</text>
-<text x="35" y="78" class="body" text-anchor="start">目标契约 · 客户端提交操作意图，以服务端已提交状态为准</text>
-<rect x="15" y="110" width="310" height="65" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
-<text x="170" y="149" class="name" text-anchor="middle">主播 A 客户端</text>
-<path d="M170 175 V960" fill="none" stroke="#b5c2d3" stroke-dasharray="6 5"/>
-<rect x="465" y="110" width="310" height="65" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
-<text x="620" y="149" class="name" text-anchor="middle">权威 RoomActor＋持久化</text>
-<path d="M620 175 V960" fill="none" stroke="#b5c2d3" stroke-dasharray="6 5"/>
-<rect x="915" y="110" width="310" height="65" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
-<text x="1070" y="149" class="name" text-anchor="middle">主播 B 客户端</text>
-<path d="M1070 175 V960" fill="none" stroke="#b5c2d3" stroke-dasharray="6 5"/>
-<path d="M170 230 L620 230" class="edge"/>
-<text x="395.0" y="218" class="small" text-anchor="middle">操作 ID＋会话＋房间／epoch</text>
-<rect x="395" y="265" width="450" height="80" rx="10" fill="#eef8f5" stroke="#86c9b3"/>
-<text x="620" y="295" class="name" text-anchor="middle">鉴权 → 排序 → 计算 Tick</text>
-<text x="620" y="325" class="body" text-anchor="middle">原子提交状态、输入消费与效果</text>
-<path d="M620 395 L170 395" class="edge"/>
-<text x="395.0" y="383" class="small" text-anchor="middle">Delta: epoch=7, tick=100, base=100, version=101</text>
-<path d="M620 435 L1070 435" class="edge"/>
-<text x="845.0" y="423" class="small" text-anchor="middle">Delta: epoch=7, tick=100, base=100, version=101</text>
-<text x="170" y="483" class="body" text-anchor="middle">A 在 tick 100 断线</text>
-<path d="M620 540 L1070 540" class="edge"/>
-<text x="845.0" y="528" class="small" text-anchor="middle">B 继续接收：已提交 tick 101 … 130</text>
-<path d="M170 625 L620 625" class="edge"/>
-<text x="395.0" y="613" class="small" text-anchor="middle">恢复会话；已应用 tick=100／version=101</text>
-<text x="620" y="677" class="body" text-anchor="middle">验证会话与参与关系；取得 tick 130 的一致头部</text>
-<path d="M620 740 L170 740" class="edge"/>
-<text x="395.0" y="728" class="small" text-anchor="middle">Snapshot: epoch=7, tick=130, version=131</text>
-<text x="170" y="782" class="small" text-anchor="middle">替换基线，不重发历史奖励</text>
-<path d="M620 850 L170 850" class="edge"/>
-<text x="395.0" y="838" class="small" text-anchor="middle">Delta: tick=131, base=131, version=132</text>
-<path d="M620 895 L1070 895" class="edge"/>
-<text x="845.0" y="883" class="small" text-anchor="middle">Delta: tick=131, base=131, version=132</text>
-<text x="620" y="950" class="body" text-anchor="middle">双方收敛到同一已提交版本，画面显示时间可有网络延迟差异。</text>
-<rect x="35" y="990" width="1170" height="255" rx="12" fill="#edf5ff" stroke="#93b9e3"/>
-<text x="55" y="1025" class="name" text-anchor="start">全部控制主播离线：按玩法配置持久执行策略</text>
-<text x="55" y="1065" class="body" text-anchor="start">ContinueToEnd：继续至终局，保留结果，不替离线主播自动排下一局。</text>
-<text x="55" y="1102" class="body" text-anchor="start">PauseAtBoundary：宽限期后提交暂停边界，冻结逻辑计时，不能只停内存 Timer。</text>
-<text x="55" y="1139" class="body" text-anchor="start">FinishByRule：调用玩法定义的终局／中止／补偿规则，不伪造正常胜负。</text>
-<text x="55" y="1176" class="body" text-anchor="start">暂停期间输入：明确有界暂存、局外处置或拒绝规则，不静默丢礼物。</text>
-<text x="55" y="1213" class="body" text-anchor="start">恢复：达到配置的在线人数且基线就绪 → 提交恢复边界 → 继续 Tick。</text>
-<rect x="35" y="1270" width="1170" height="245" rx="12" fill="#fff6e8" stroke="#ddbc88"/>
-<text x="55" y="1305" class="name" text-anchor="start">一致性与防作弊校验</text>
-<text x="55" y="1345" class="body" text-anchor="start">仅应用 epoch 和 baseVersion 匹配的增量；不匹配则请求快照。</text>
-<text x="55" y="1382" class="body" text-anchor="start">服务端校验控制会话、参与关系、动作规则、序号及频率。</text>
-<text x="55" y="1419" class="body" text-anchor="start">礼物／点赞事实来自已验证平台事件，不接受客户端自报积分。</text>
-<text x="55" y="1456" class="body" text-anchor="start">ACK 只是同步线索，不能据此发奖；状态哈希不能证明客户端诚实。</text>
-<text x="55" y="1493" class="body" text-anchor="start">慢客户端不阻塞另一端；出站队列溢出后用已提交快照重建基线。</text>
-<text x="35" y="1555" class="small" text-anchor="start">时序图省略 StreamerGateway 中转跳数；目标策略细节及当前实现差距见配套文档。</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="1726" viewBox="0 0 1840 1726" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
+<title id="title">01 · 正常同步：提交成功后，才向双方广播</title>
+<desc id="desc">单次时序 · Room R · epoch 7 · 初始 tick 99 / 状态版本 100 · B 的操作也走与 A 相同的上行路径</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.head{font-size:17px;font-weight:700}.body{font-size:17px}.msg{font-size:16px;paint-order:stroke;stroke:#fff;stroke-width:6px;stroke-linejoin:round}.small{font-size:15px;fill:#52647b}.phase{font-size:18px;font-weight:700}.time{font-size:13px;fill:#52647b}.life{stroke:#b8c4d5;stroke-dasharray:6 6;stroke-width:1.5}.wire{fill:none;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1840" height="1726" fill="#fff"/>
+<text x="34" y="46" class="title">01 · 正常同步：提交成功后，才向双方广播</text>
+<text x="34" y="80" class="small">单次时序 · Room R · epoch 7 · 初始 tick 99 / 状态版本 100 · B 的操作也走与 A 相同的上行路径</text>
+<path d="M34 188 V1634" class="wire" style="stroke:#94a3b8"/>
+<rect x="69" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="200" y="143" class="head" text-anchor="middle">主播 A</text>
+<text x="200" y="166" class="head" text-anchor="middle">客户端</text>
+<path d="M200 179 V1634" class="life"/>
+<rect x="419" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="550" y="143" class="head" text-anchor="middle">StreamerGateway</text>
+<path d="M550 179 V1634" class="life"/>
+<rect x="769" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="900" y="143" class="head" text-anchor="middle">GameServer</text>
+<text x="900" y="166" class="head" text-anchor="middle">RoomActor</text>
+<path d="M900 179 V1634" class="life"/>
+<rect x="1119" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1250" y="143" class="head" text-anchor="middle">DataServer</text>
+<path d="M1250 179 V1634" class="life"/>
+<rect x="1569" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1700" y="143" class="head" text-anchor="middle">主播 B</text>
+<text x="1700" y="166" class="head" text-anchor="middle">客户端</text>
+<path d="M1700 179 V1634" class="life"/>
+<rect x="74" y="220" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="249" class="phase" text-anchor="start">A. 操作意图进入所属房间</text>
+<circle cx="34" cy="351" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="356" class="time" text-anchor="middle">t01</text>
+<path d="M200 356 H550" class="wire" style="stroke:#475569"/>
+<text x="375.0" y="313" class="msg" text-anchor="middle" style="fill:#475569">操作意图 C1 · epoch 7</text>
+<text x="375.0" y="336" class="msg" text-anchor="middle" style="fill:#475569">不接受客户端自报分数</text>
+<circle cx="34" cy="459" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="464" class="time" text-anchor="middle">t02</text>
+<path d="M550 464 H900" class="wire" style="stroke:#475569"/>
+<text x="725.0" y="421" class="msg" text-anchor="middle" style="fill:#475569">已认证身份 + C1</text>
+<text x="725.0" y="444" class="msg" text-anchor="middle" style="fill:#475569">Room R / 当前 owner 路由</text>
+<circle cx="34" cy="549.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="554.0" class="time" text-anchor="middle">t03</text>
+<rect x="769" y="512" width="262" height="76" rx="9" fill="#eef8f5" stroke="#86c9b3"/>
+<text x="900" y="539" class="small" text-anchor="middle">校验会话 / 参与关系</text>
+<text x="900" y="563" class="small" text-anchor="middle">epoch / 序号 / 动作规则</text>
+<circle cx="34" cy="657.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="662.0" class="time" text-anchor="middle">t04</text>
+<rect x="769" y="620" width="262" height="76" rx="9" fill="#eef8f5" stroke="#86c9b3"/>
+<text x="900" y="647" class="small" text-anchor="middle">固定输入顺序，计算 tick 100</text>
+<text x="900" y="671" class="small" text-anchor="middle">候选版本 101 尚不能发布</text>
+<rect x="74" y="728" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="757" class="phase" text-anchor="start">B. 持久提交是发布前置屏障</text>
+<circle cx="34" cy="859" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="864" class="time" text-anchor="middle">t05</text>
+<path d="M900 864 H1250" class="wire" style="stroke:#475569"/>
+<text x="1075.0" y="821" class="msg" text-anchor="middle" style="fill:#475569">CommitFrame: tick 100</text>
+<text x="1075.0" y="844" class="msg" text-anchor="middle" style="fill:#475569">状态 + 输入消费 + 效果</text>
+<circle cx="34" cy="967" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="972" class="time" text-anchor="middle">t06</text>
+<path d="M1250 972 H900" class="wire" style="stroke:#087f5b"/>
+<text x="1075.0" y="929" class="msg" text-anchor="middle" style="fill:#087f5b">提交成功 / 同一 CommitId</text>
+<text x="1075.0" y="952" class="msg" text-anchor="middle" style="fill:#087f5b">epoch 7 · tick 100 · v101</text>
+<rect x="74" y="1020" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="1049" class="phase" text-anchor="start">C. 双端独立扇出；慢端不阻塞房间</text>
+<circle cx="34" cy="1151" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1156" class="time" text-anchor="middle">t07</text>
+<path d="M900 1156 H550" class="wire" style="stroke:#2563eb"/>
+<text x="725.0" y="1113" class="msg" text-anchor="middle" style="fill:#2563eb">Delta: e7 / t100</text>
+<text x="725.0" y="1136" class="msg" text-anchor="middle" style="fill:#2563eb">base v100 → v101</text>
+<circle cx="34" cy="1259" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1264" class="time" text-anchor="middle">t08</text>
+<path d="M550 1264 H200" class="wire" style="stroke:#2563eb"/>
+<text x="375.0" y="1221" class="msg" text-anchor="middle" style="fill:#2563eb">Delta: e7 / t100</text>
+<text x="375.0" y="1244" class="msg" text-anchor="middle" style="fill:#2563eb">base v100 → v101</text>
+<circle cx="34" cy="1367" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1372" class="time" text-anchor="middle">t09</text>
+<path d="M550 1372 H1700" class="wire" style="stroke:#2563eb"/>
+<text x="1125.0" y="1329" class="msg" text-anchor="middle" style="fill:#2563eb">同一增量: e7 / t100 / base v100 → v101</text>
+<text x="1125.0" y="1352" class="msg" text-anchor="middle" style="fill:#2563eb">扇出先后与网络到达时间可不同</text>
+<circle cx="34" cy="1457.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1462.0" class="time" text-anchor="middle">t10</text>
+<rect x="69" y="1420" width="262" height="76" rx="9" fill="#edf5ff" stroke="#93b9e3"/>
+<text x="200" y="1447" class="small" text-anchor="middle">仅在已有 v100 基线上应用</text>
+<text x="200" y="1471" class="small" text-anchor="middle">推进到状态 v101</text>
+<rect x="1569" y="1420" width="262" height="76" rx="9" fill="#edf5ff" stroke="#93b9e3"/>
+<text x="1700" y="1447" class="small" text-anchor="middle">仅在已有 v100 基线上应用</text>
+<text x="1700" y="1471" class="small" text-anchor="middle">推进到状态 v101</text>
+<rect x="74" y="1528" width="1736" height="74" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+<text x="96" y="1555" class="body" text-anchor="start">相同已提交版本 ⇒ 相同权威状态；不承诺双方屏幕在同一毫秒显示。</text>
+<text x="96" y="1580" class="body" text-anchor="start">帧提交失败或结果未知：不发布候选帧；先查询或精确重试同一操作。</text>
+<text x="34" y="1691" class="small">时间向下。t01… 表示先后顺序，不是毫秒刻度。目标契约；待实现与未验收部分见 TODO。</text>
 </svg>

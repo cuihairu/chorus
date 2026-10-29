@@ -150,7 +150,7 @@ flowchart TB
 
 节点间统一采用 TLS 上的 gRPC / Protobuf；主播使用 WSS，平台使用其官方协议。首期同机也走 TCP loopback，不把 UDS、NamedPipe 或共享内存作为正确性依赖；优化必须有独立收益证明。
 
-DataServer 与 ControlServer 使用同一 PostgreSQL 集群的不同 schema 和数据库角色。ControlServer 可写控制目录；DataServer 写业务状态并读取、锁定相关 ownership 行以校验 epoch。跨域临界事务通过受限事务函数完成，不开放任意 SQL。两者共用一个有版本的存储契约库，GameServer、StreamerServer、网关不持有数据库写凭据。
+DataServer 与 ControlServer 使用同一 PostgreSQL 集群的不同 schema 和数据库角色。ControlServer 可写控制目录；DataServer 写业务状态并读取、锁定相关 ownership 行以校验 epoch。跨域临界事务通过受限事务函数完成，不开放任意 SQL。两者共用一个有版本的存储契约库，GameServer、StreamerServer、网关不持有数据库写凭据。这里的控制目录写入是节点、所有权、租约等记录的 DML，不是 schema/table 的创建或修改。DDL 由部署阶段的 `Chorus.SchemaTool` 使用专用迁移身份执行；ControlServer 和 DataServer 启动只调用 `RedesignSchemaMigrator.VerifyAsync` 校验兼容性，不能以运行账号自动建表或改表。图中的数据库连线表示运行时记录读写，不表示控制数据库表结构生成。
 
 ## 4. 统一状态、所有权与控制面
 
@@ -410,6 +410,12 @@ RoomActor 最后一帧在事务中写 `RoundResult + SettlementIntent` 并进入
 bootstrap manifest 不在控制面失联期间随意替换；离线升级需运维签名操作。本地只维护 bootstrap slots 和已经持久接收的计划，不擅自扩容或恢复其他节点实体。
 
 ### 10.2 进程闭环
+
+NodeAgent 管理的是**本机操作系统进程**。ControlServer 决定在哪台机器部署哪个角色、期望状态和版本；NodeAgent 校验计划及本机包后执行启动/停止、记录命令日志、核对 PID/启动时间、监督异常退出并回报实际状态。它的监管对象是本机部署的 ControlServer、DataServer、StreamerServer、GameServer、StreamerGateway、PlatformGateway 实例，不要求六类同时部署在一台机器上。NodeAgent 自身由 systemd / Windows Service 启动和拉起；PostgreSQL 由数据库运维体系管理。
+
+服务进程自行注册 endpoint、报告业务 readiness，与 NodeAgent 报告“哪个 OS 进程还活着”是两种事实。NodeAgent 不决定房间 owner/epoch、不运行 Tick、不转发客户端/平台事件；重启 GameServer 后仍须由 ControlServer 授权恢复，不能把进程存活当作房间已恢复。
+
+**当前差距：** `BootstrapManifest` 仅允许 ControlServer/DataServer/GameServer，`ApplyPlanLocally` 只处理 manifest 中已有 slot，未知 slot 被忽略；Draining 目前与 Stopped 一样立即进入停进程流程。不能据此宣称六角色动态部署或业务排空已经完成；普通角色准入、业务排空、退避隔离需分别验收。图中监管范围为目标契约。
 
 ControlServer 持有 DeploymentSpec（角色、版本、配置、数量、OS、资源、亲和性、健康和重启策略）。计划携带 PlanGeneration、SlotId、CommandId 和到期时间。
 

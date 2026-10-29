@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="1320" viewBox="0 0 1640 1320" role="img" aria-labelledby="title desc">
+<title id="title">03 · 全员离线：先判定，再三选一</title><desc id="desc">沿箭头向下读。三种策略互斥，由原局配置固定，不按上下顺序全部执行。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#64748b"/></marker></defs><style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.head{font-size:17px;font-weight:700}.body{font-size:17px}.msg{font-size:16px;paint-order:stroke;stroke:#fff;stroke-width:6px;stroke-linejoin:round}.small{font-size:15px;fill:#52647b}.phase{font-size:18px;font-weight:700}.time{font-size:13px;fill:#52647b}.life{stroke:#b8c4d5;stroke-dasharray:6 6;stroke-width:1.5}.wire{fill:none;stroke-width:2;marker-end:url(#arrow)}</style><rect width="1640" height="1320" fill="#fff"/>
+<text x="35" y="48" class="title" text-anchor="start">03 · 全员离线：判定 → 宽限期 → 按配置三选一</text>
+<text x="35" y="82" class="small" text-anchor="start">这是分支流程图。ContinueToEnd、PauseAtBoundary、FinishByRule 是互斥选项，不是三个连续阶段。</text>
+<rect x="540" y="140" width="560" height="120" rx="12" fill="#eef8f5" stroke="#b8c4d5"/>
+<text x="560" y="174" class="head" text-anchor="start">01 · 当前有效控制主播 A、B 均离线</text>
+<text x="560" y="209" class="body" text-anchor="start">按服务端会话代、连接事实和心跳超时判断</text>
+<text x="560" y="238" class="body" text-anchor="start">观众离开、旧代关闭或仅一端断线不满足此条件</text>
+<path d="M820 260 V330" class="wire" style="stroke:#64748b"/>
+<rect x="540" y="330" width="560" height="105" rx="12" fill="#eef8f5" stroke="#b8c4d5"/>
+<text x="560" y="364" class="head" text-anchor="start">02 · 宽限期结束：仍全员离线？</text>
+<text x="560" y="399" class="body" text-anchor="start">不能因瞬时断线立即暂停</text>
+<path d="M540 382 H420" class="wire" style="stroke:#64748b"/>
+<text x="450" y="370" class="small" text-anchor="start">否</text>
+<rect x="80" y="330" width="340" height="125" rx="12" fill="#edf5ff" stroke="#b8c4d5"/>
+<text x="100" y="364" class="head" text-anchor="start">返回正常流程</text>
+<text x="100" y="399" class="body" text-anchor="start">不触发全员离线策略</text>
+<text x="100" y="428" class="body" text-anchor="start">重连按图 02 执行</text>
+<path d="M820 435 V505" class="wire" style="stroke:#64748b"/>
+<text x="838" y="476" class="small" text-anchor="start">是</text>
+<rect x="540" y="505" width="560" height="105" rx="12" fill="#eef2ff" stroke="#b8c4d5"/>
+<text x="560" y="539" class="head" text-anchor="start">03 · 读取原局固定的策略 / ConfigHash</text>
+<text x="560" y="574" class="body" text-anchor="start">不使用热更新配置悄悄替换原局规则</text>
+<path d="M820 610 V680 H295 V750" class="wire" style="stroke:#64748b"/>
+<path d="M820 680 V750" class="wire" style="stroke:#64748b"/>
+<path d="M820 680 H1345 V750" class="wire" style="stroke:#64748b"/>
+<text x="820" y="715" class="phase" text-anchor="middle">三选一，仅执行一个分支</text>
+<rect x="80" y="750" width="430" height="300" rx="12" fill="#eef8f5" stroke="#b8c4d5"/>
+<text x="100" y="784" class="head" text-anchor="start">A · ContinueToEnd</text>
+<text x="100" y="819" class="body" text-anchor="start">1. 继续 tick n+1、n+2……</text>
+<text x="100" y="848" class="body" text-anchor="start">2. 接受合法输入并持久提交帧</text>
+<text x="100" y="877" class="body" text-anchor="start">3. 按玩法提交最终结果</text>
+<text x="100" y="906" class="body" text-anchor="start">4. 重连可查询冻结结果</text>
+<text x="100" y="935" class="body" text-anchor="start">不替离线主播自动排下一局</text>
+<rect x="605" y="750" width="430" height="300" rx="12" fill="#edf5ff" stroke="#b8c4d5"/>
+<text x="625" y="784" class="head" text-anchor="start">B · PauseAtBoundary</text>
+<text x="625" y="819" class="body" text-anchor="start">1. 先提交 Paused 边界</text>
+<text x="625" y="848" class="body" text-anchor="start">2. 冻结逻辑 Tick 与玩法计时</text>
+<text x="625" y="877" class="body" text-anchor="start">3. 按声明策略处置暂停输入</text>
+<text x="625" y="906" class="body" text-anchor="start">4. 就绪人数达标 → 提交恢复（图 04）</text>
+<text x="625" y="935" class="body" text-anchor="start">超时 → 玩法终结 / 补偿</text>
+<rect x="1130" y="750" width="430" height="300" rx="12" fill="#fff7ed" stroke="#b8c4d5"/>
+<text x="1150" y="784" class="head" text-anchor="start">C · FinishByRule</text>
+<text x="1150" y="819" class="body" text-anchor="start">1. 计算结束 / 中止 / 补偿结果</text>
+<text x="1150" y="848" class="body" text-anchor="start">2. 持久提交不可变结果</text>
+<text x="1150" y="877" class="body" text-anchor="start">3. 发起正常收尾操作</text>
+<text x="1150" y="906" class="body" text-anchor="start">不能立即删除房间</text>
+<text x="1150" y="935" class="body" text-anchor="start">不能伪造正常胜负</text>
+<path d="M295 1050 V1150 H820 V1180" class="wire" style="stroke:#64748b"/>
+<path d="M1345 1050 V1150 H820" class="wire" style="stroke:#64748b"/>
+<path d="M820 1050 V1180" class="wire" style="stroke:#64748b"/>
+<text x="840" y="1100" class="small" text-anchor="start">B 仅在超时产生终局时进入下方流程</text>
+<rect x="400" y="1180" width="840" height="100" rx="12" fill="#fff7ed" stroke="#b8c4d5"/>
+<text x="420" y="1214" class="head" text-anchor="start">04 · 进入终局时：仍必须走关闭屏障</text>
+<text x="420" y="1249" class="body" text-anchor="start">停止投递确认 → 平台结果确定 → 结算 / 释放 → 销毁房间</text>
+</svg>

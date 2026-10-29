@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="2990" viewBox="0 0 1840 2990" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">04 · Pause and resume: persist boundaries, then continue ticks</title>
+<desc id="desc">Success trace only · PauseAtBoundary · grace expired · epoch 7 · head tick 200 / v201 · required ready count = 2</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:28px;font-weight:700}.head{font-size:17px;font-weight:700}.body{font-size:17px}.msg{font-size:16px;paint-order:stroke;stroke:#fff;stroke-width:6px;stroke-linejoin:round}.small{font-size:15px;fill:#52647b}.phase{font-size:18px;font-weight:700}.time{font-size:13px;fill:#52647b}.life{stroke:#b8c4d5;stroke-dasharray:6 6;stroke-width:1.5}.wire{fill:none;stroke-width:2;marker-end:url(#arrow)}</style>
+<rect width="1840" height="2990" fill="#fff"/>
+<text x="34" y="46" class="title">04 · Pause and resume: persist boundaries, then continue ticks</text>
+<text x="34" y="80" class="small">Success trace only · PauseAtBoundary · grace expired · epoch 7 · head tick 200 / v201 · required ready count = 2</text>
+<path d="M34 188 V2898" class="wire" style="stroke:#94a3b8"/>
+<rect x="69" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="200" y="143" class="head" text-anchor="middle">Controlling A / B</text>
+<text x="200" y="166" class="head" text-anchor="middle">Clients</text>
+<path d="M200 179 V2898" class="life"/>
+<rect x="419" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="550" y="143" class="head" text-anchor="middle">StreamerGateway</text>
+<path d="M550 179 V2898" class="life"/>
+<rect x="769" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="900" y="143" class="head" text-anchor="middle">GameServer</text>
+<text x="900" y="166" class="head" text-anchor="middle">RoomActor</text>
+<path d="M900 179 V2898" class="life"/>
+<rect x="1119" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1250" y="143" class="head" text-anchor="middle">DataServer</text>
+<path d="M1250 179 V2898" class="life"/>
+<rect x="1569" y="115" width="262" height="64" rx="10" fill="#eef2ff" stroke="#a5b4fc"/>
+<text x="1700" y="143" class="head" text-anchor="middle">PlatformGateway</text>
+<path d="M1700 179 V2898" class="life"/>
+<rect x="74" y="220" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="249" class="phase" text-anchor="start">A. Persist pause before freezing logical progression</text>
+<circle cx="34" cy="351" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="356" class="time" text-anchor="middle">t01</text>
+<path d="M900 356 H1250" class="wire" style="stroke:#475569"/>
+<text x="1075.0" y="313" class="msg" text-anchor="middle" style="fill:#475569">Commit pause boundary P1</text>
+<text x="1075.0" y="336" class="msg" text-anchor="middle" style="fill:#475569">head: t200 / v201</text>
+<circle cx="34" cy="459" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="464" class="time" text-anchor="middle">t02</text>
+<path d="M1250 464 H900" class="wire" style="stroke:#087f5b"/>
+<text x="1075.0" y="421" class="msg" text-anchor="middle" style="fill:#087f5b">P1 committed: Paused</text>
+<circle cx="34" cy="549.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="554.0" class="time" text-anchor="middle">t03</text>
+<rect x="769" y="512" width="262" height="76" rx="9" fill="#eef8f5" stroke="#86c9b3"/>
+<text x="900" y="539" class="small" text-anchor="middle">Logical tick stays at 200</text>
+<text x="900" y="563" class="small" text-anchor="middle">Leases / wall-clock tasks run</text>
+<rect x="74" y="620" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="649" class="phase" text-anchor="start">B. This game pins bounded durable buffering while paused</text>
+<circle cx="34" cy="751" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="756" class="time" text-anchor="middle">t04</text>
+<path d="M1700 756 H900" class="wire" style="stroke:#087f5b"/>
+<text x="1300.0" y="713" class="msg" text-anchor="middle" style="fill:#087f5b">Verified gift E500 / same round</text>
+<circle cx="34" cy="859" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="864" class="time" text-anchor="middle">t05</text>
+<path d="M900 864 H1250" class="wire" style="stroke:#475569"/>
+<text x="1075.0" y="821" class="msg" text-anchor="middle" style="fill:#475569">Persist accepted E500</text>
+<text x="1075.0" y="844" class="msg" text-anchor="middle" style="fill:#475569">No gameplay effect yet</text>
+<circle cx="34" cy="967" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="972" class="time" text-anchor="middle">t06</text>
+<path d="M1250 972 H900" class="wire" style="stroke:#087f5b"/>
+<text x="1075.0" y="929" class="msg" text-anchor="middle" style="fill:#087f5b">Durably buffered / receipt</text>
+<circle cx="34" cy="1075" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1080" class="time" text-anchor="middle">t07</text>
+<path d="M900 1080 H1700" class="wire" style="stroke:#087f5b"/>
+<text x="1300.0" y="1037" class="msg" text-anchor="middle" style="fill:#087f5b">Accepted ≠ applied</text>
+<rect x="74" y="1128" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="1157" class="phase" text-anchor="start">C. Authenticate via flow 02; both clients install the paused baseline</text>
+<circle cx="34" cy="1259" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1264" class="time" text-anchor="middle">t08</text>
+<path d="M900 1264 H550" class="wire" style="stroke:#2563eb"/>
+<text x="725.0" y="1221" class="msg" text-anchor="middle" style="fill:#2563eb">Snapshot: Paused / e7</text>
+<text x="725.0" y="1244" class="msg" text-anchor="middle" style="fill:#2563eb">head: t200 / v201</text>
+<circle cx="34" cy="1367" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1372" class="time" text-anchor="middle">t09</text>
+<path d="M550 1372 H200" class="wire" style="stroke:#2563eb"/>
+<text x="375.0" y="1329" class="msg" text-anchor="middle" style="fill:#2563eb">Install same paused baseline</text>
+<text x="375.0" y="1352" class="msg" text-anchor="middle" style="fill:#2563eb">head: t200 / v201</text>
+<circle cx="34" cy="1475" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1480" class="time" text-anchor="middle">t10</text>
+<path d="M200 1480 H550" class="wire" style="stroke:#475569"/>
+<text x="375.0" y="1437" class="msg" text-anchor="middle" style="fill:#475569">A ready: current generation</text>
+<circle cx="34" cy="1583" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1588" class="time" text-anchor="middle">t11</text>
+<path d="M550 1588 H900" class="wire" style="stroke:#475569"/>
+<text x="725.0" y="1545" class="msg" text-anchor="middle" style="fill:#475569">A ready for this epoch / base</text>
+<circle cx="34" cy="1673.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1678.0" class="time" text-anchor="middle">t12</text>
+<rect x="769" y="1636" width="262" height="76" rx="9" fill="#edf5ff" stroke="#93b9e3"/>
+<text x="900" y="1663" class="small" text-anchor="middle">Ready = 1 / 2</text>
+<text x="900" y="1687" class="small" text-anchor="middle">Remain Paused</text>
+<circle cx="34" cy="1799" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1804" class="time" text-anchor="middle">t13</text>
+<path d="M200 1804 H550" class="wire" style="stroke:#475569"/>
+<text x="375.0" y="1761" class="msg" text-anchor="middle" style="fill:#475569">B ready: current generation</text>
+<circle cx="34" cy="1907" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="1912" class="time" text-anchor="middle">t14</text>
+<path d="M550 1912 H900" class="wire" style="stroke:#475569"/>
+<text x="725.0" y="1869" class="msg" text-anchor="middle" style="fill:#475569">B ready for same epoch / base</text>
+<rect x="74" y="1960" width="1736" height="44" rx="8" fill="#e8eef8"/>
+<text x="94" y="1989" class="phase" text-anchor="start">D. Ready count reached; persist resume before tick 201</text>
+<circle cx="34" cy="2091" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2096" class="time" text-anchor="middle">t15</text>
+<path d="M900 2096 H1250" class="wire" style="stroke:#475569"/>
+<text x="1075.0" y="2053" class="msg" text-anchor="middle" style="fill:#475569">Commit resume boundary R1</text>
+<text x="1075.0" y="2076" class="msg" text-anchor="middle" style="fill:#475569">Expected paused boundary P1</text>
+<circle cx="34" cy="2199" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2204" class="time" text-anchor="middle">t16</text>
+<path d="M1250 2204 H900" class="wire" style="stroke:#087f5b"/>
+<text x="1075.0" y="2161" class="msg" text-anchor="middle" style="fill:#087f5b">R1 committed: Running</text>
+<circle cx="34" cy="2289.0" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2294.0" class="time" text-anchor="middle">t17</text>
+<rect x="769" y="2252" width="262" height="76" rx="9" fill="#eef8f5" stroke="#86c9b3"/>
+<text x="900" y="2279" class="small" text-anchor="middle">Compute tick 201</text>
+<text x="900" y="2303" class="small" text-anchor="middle">Consume buffered input by budget</text>
+<circle cx="34" cy="2415" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2420" class="time" text-anchor="middle">t18</text>
+<path d="M900 2420 H1250" class="wire" style="stroke:#475569"/>
+<text x="1075.0" y="2377" class="msg" text-anchor="middle" style="fill:#475569">CommitFrame: t201 / v202</text>
+<text x="1075.0" y="2400" class="msg" text-anchor="middle" style="fill:#475569">State + input use + effects</text>
+<circle cx="34" cy="2523" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2528" class="time" text-anchor="middle">t19</text>
+<path d="M1250 2528 H900" class="wire" style="stroke:#087f5b"/>
+<text x="1075.0" y="2485" class="msg" text-anchor="middle" style="fill:#087f5b">Committed t201 / v202</text>
+<circle cx="34" cy="2631" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2636" class="time" text-anchor="middle">t20</text>
+<path d="M900 2636 H550" class="wire" style="stroke:#2563eb"/>
+<text x="725.0" y="2593" class="msg" text-anchor="middle" style="fill:#2563eb">Delta: e7 / t201</text>
+<text x="725.0" y="2616" class="msg" text-anchor="middle" style="fill:#2563eb">base v201 → v202</text>
+<circle cx="34" cy="2739" r="18" fill="#fff" stroke="#cbd5e1"/>
+<text x="34" y="2744" class="time" text-anchor="middle">t21</text>
+<path d="M550 2744 H200" class="wire" style="stroke:#2563eb"/>
+<text x="375.0" y="2701" class="msg" text-anchor="middle" style="fill:#2563eb">Both apply the committed delta</text>
+<text x="375.0" y="2724" class="msg" text-anchor="middle" style="fill:#2563eb">base v201 → v202</text>
+<rect x="74" y="2792" width="1736" height="74" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+<text x="96" y="2819" class="body" text-anchor="start">Timeout is a different branch, not a step after resume: MaxPauseDuration → game end/compensation → normal close barrier.</text>
+<text x="96" y="2844" class="body" text-anchor="start">Restart must restore Paused and policy state. Old readiness notices cannot count toward the new session/epoch.</text>
+<text x="34" y="2955" class="small">Time flows downward. t01… are ordering markers, not milliseconds. Target contract; implemented gaps remain in TODO.</text>
+</svg>
