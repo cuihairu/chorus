@@ -71,6 +71,24 @@ M4 目标（redesign-contracts §3 + architecture §3.3 + operations §1.3）：
 
 门禁：Release 全量 **1290/1290**（真负载谷定局：1min<7、5min<9.5、15min<11 三线同低才起跑）。过程如实：配对测试先在轮内抓出两个产品缺陷（watch 版本 `<=` 门负散列失明；Matched 推送缺收敛窗）——均为"单测绿、全链才现形"的跨平面时序问题；修后 M4 过滤 32/32、M3 邻居 17/17，全量三轮：1289/1290（M2 kill-tick 20s 窗在负载 30 风暴下差 2 tick，单测隔离即绿）、1288/1290（M3-7 executor 平台调用等待窗 + FreePort 端口竞态致 DataServer 绑定失败，双双隔离绿——纯外部负载环境态，零 M4-3 代码交集），第三轮谷内定局 1290/1290。残留 0（进程/`chorus_m%` 库）。
 
+## M4-4 已落地：RoundSync 扇出 + 对局下行链 + Ack/requestSnapshot + EdgeOutbox 接线（c2c3101）
+
+**下行六连（contracts §3.2）+ 上行两连（§3.1）**，AT06/AT15 客户端面单机闭合。网关仍零房间状态：每帧都是 actor 已提交记录的原样转译；角色放行 `RoundSyncGrpcService`/`RoundGrpcService.GetRound` +`streamer-gateway`（SubscribeRequest 不加租户——room_id 全局唯一、GameServer 无租户存储）。
+
+- **`EdgeRoomFanout`（扇出本体）**：每房间**一条** RoundSync 订阅，共享房内全部座位。`Generation` 计数每次（重）订阅递增——被取代的读者只终结自己的代，不能拆掉替代者（CTS cancel-never-dispose：旧读者仍持旧 token）。`ResultDelivered` 标记后流尽→**静默收房**（actor 提交结果后 complete 是正常终局，不误报 resync）；`StreamFailures<3` 同 epoch 断流重试预算（每帧交付清零）；流尽无果 →`ResolveOrEndAsync` 重解析（routing watch × round store 合成，5s 上界）：**Suspended→`roomSuspended{reason,recoveryAttempt=epoch}`**（恢复落点即恢复尝试代）、epoch 移动→更新事实+全座位重置 JoinedSent+按 (0,0) 重订阅（新快照重宣告新 epoch）、其余（房间消失/解析失败）→`resyncRequired{roomId,roomEpoch,reason}`+移房——冻结死链是唯一不可接受结局。gRPC 把流取消面为 `RpcException(Cancelled)`：泛 catch 先查 `IsCancellationRequested` 再定性断流。
+- **roomJoined 的结构性排序（决定性设计）**：`EdgeOutbox` 泵**先排快照槽后排有序队列**，而 roomJoined 绝不能坐有序队列——pending 快照会超车它，客户端就会先见帧后见房。解法=per-room `SemaphoreSlim` dispatch gate 内**先 await 直发 roomJoined（串行下行 lane），完成后才入队本帧**：顺序由构造保证，不靠时序祈祷。晚到座位（基线≠流头）强制全房按其基线重订阅——所有人拿下一次快照，无人猜缝。
+- **座位基线**：`Join` 用连接已 ack 的事实（`AppliedRoomId` 匹配才取 `(tick,version)`，否则 `(0,0)`）；已处流头的座位纯骑 delta。`requestSnapshot` 上行→按 `(0,0)` 重订阅，outbox 快照槽 re-baseline 全链；未知房/无座位→`invalid_message`（连接保持）。`ack` 上行→`MarkApplied` 落连接事实，**静默无回帧**（回包洪水由 600/分静默丢弃计数制，M4-1 已备）。
+- **resume 重进房 `TryRejoinRoomAsync`**：`RoomFor(streamerId)`→`RoomRouteFor(roomId)` 取 **TenantId**（routing 行携带，m3.proto RoomRouteProto）→`GameplayStatus` 恢复 binding →按 `BindingId` 匹配 `GetRound` participation→`Join`。`JoinRoomFanoutAsync` 收敛窗 15s（200ms 步进）：路由端点未到/GetRound RpcException/round 未落——皆重试；participation 不含本 binding→静默退出（该房间不属于此 mount）。
+- **`EdgeRoundClient` + `EdgeGameChannelPool`**：round store 只读客户端（Lazy channel）+ `SubscribeStream` 迭代器（call 随枚举释放）；对 game host 按 endpoint 引用计数共享 channel，`StreamClosed` 钩子与订阅获取**逐条平衡**（含 subscribe 调用即抛路径的补释放）——最后一个房流结束即释放该 host，不等进程退出。
+- **GetRound 租户坑（本轮主缺陷，探针测试定位）**：`game.room` 键 `(tenant_id,game_id,room_id)`，而 `GetRoundRequest` 原无租户字段——服务端回退**调用方证书租户**，网关是 `@cluster` 作用域 →`found=False` →`JoinRoomFanoutAsync` 窗内静默空转，客户端 Matched 后零帧。症状与定位：路由行健康（Active、owner=game-1、端点正确）、实例自报齐、唯 round 查询落空——临时探针测试 dump 三层证据后指向唯一缺口。修=m2 additive `tenant_id=3` + `TenantFor(caller,requested)` 沿 M3 栅栏（`@cluster` 必须具名；既有空字段调用行为不变），网关两侧（join 窗/ResolveRoom）都传 routing 行的 `TenantId`。
+- **`EdgeMessages` 增量**：下行 `roomJoined{roomId,roomEpoch,participation,moduleVersion,configHash}`/`snapshot{…,schemaVersion,payload(base64)}`/`delta{…,baseVersion,payload=effects JSON 数组}`/`roundResult{resultId=room:epoch:tick,settlementState="Committed",result}`/`resyncRequired`/`roomSuspended`；上行 `ack{roomId,lastAppliedTickId,stateVersion}`/`requestSnapshot{roomId}`。delta payload 是帧 effects 的模块词汇转译（kind+解析后的 payload），非边缘发明。
+
+**测试（+9：单元 4 + host 5，Release 1290→1299）**：
+
+- 单元 `RedesignM4FanoutUnitTests`（脚本化流直接驱动状态机，无控制面）：座位链序 roomJoined→snapshot→delta→roundResult 全字段（base64/.effects 数组/resultId/settlementState；终局后无 resync、RequestSnapshot 无房可基线、整链一条订阅）；晚座位 (0,0) 重基线全房（Requests[1] 基线归零、先到座位拿第四帧新快照）；流尽于新 epoch→重订阅+重宣告（Requests[1].Epoch=5、roomJoined/snapshot 皆 5）；Suspended→`roomSuspended{recoveryAttempt}` vs 房间消失→`resyncRequired` 两腿。
+- host `RedesignM4HostRoundTests`（四宿主+网关+coordinator+GameServer **自报 game-1**（CHORUS_GAME_ENDPOINTS 静态目录行=instanceId=endpoint，宿主以同名 instanceId 自报——路由房行才有可 join 的端点））：两客户端配对后**完整链到 result**（roomJoined.participation 各得其所、delta baseVersion 逐一链式、resultId 前缀+Committed+ranking）；断线客户端 resume（LastSeenRoomId+applied 基线）→重进房拿**新快照**（tick> 断线基线）；requestSnapshot 重基线链不破 + 未知房间拒 invalid_message 连接保持；**650 ack 洪水全静默**且链不破（洪水后 ping-pong 仍应答——链断检测靠事件不变量非计数）；FailAfterTick=2 三振挂起房→客户端收 `roomSuspended`，`recoveryAttempt==owner.Epoch`（ClaimOwnership→StartRound→PrepareRoom 手工拓扑）。
+- 门禁：Release 全量 **1299/1299**（负载谷定局：1min<7、5min<9.5、15min<11 三线同低起跑，谷值 l=6.42/8.60/10.95）。过程如实：host 五连最初全灭于同一症状（Matched 后零帧）——单元 4/4 绿说明状态机对，全链才现形的是**跨平面租户键**（网关证书作用域 × 存储键维度），临时探针测试 dump 路由/实例/round 三层后十分钟定位；修后 M4 过滤 41/41、全量谷内一次过。残留 0（宿主进程/`chorus_m%` 库）。
+
 ## M4 后续顺序
 
-M4-3 挂载/排队上行 + EdgeRoutingMonitor——**已落地** → M4-4 RoundSync 扇出 + Ack/requestSnapshot + EdgeOutbox 接线（AT06/15）→ M4-5 GameCommand/CommandReceipt + LeaveRound（§3 全闭合）→ M4-6 网关崩溃/排空/换网关（§3.3 末段 + AT30 网关腿）→ M4-7 CHORUS_RUN_M4_EDGE 基准 + 台账收口。
+M4-4 RoundSync 扇出 + Ack/requestSnapshot + EdgeOutbox 接线（AT06/15）——**已落地** → M4-5 GameCommand/CommandReceipt + LeaveRound（§3 全闭合）→ M4-6 网关崩溃/排空/换网关（§3.3 末段 + AT30 网关腿）→ M4-7 CHORUS_RUN_M4_EDGE 基准 + 台账收口。
