@@ -15,18 +15,28 @@ namespace Chorus.GameServer;
 /// </summary>
 public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
 {
-    private readonly Grpc.Net.Client.GrpcChannel _dataChannel;
+    private readonly Grpc.Net.Client.GrpcChannel? _dataChannel;
     private readonly RoundStore.RoundStoreClient _rounds;
     private readonly FrameStore.FrameStoreClient _frames;
     private readonly Settlement.SettlementClient _settlement;
     private readonly ConcurrentDictionary<string, RoomActor> _actors = new(StringComparer.Ordinal);
+    // Per-room activation gates (FIX-ROOM-03): prepare and recovery reach the actor
+    // dictionary only through their room's gate, so interleaved callers never both
+    // decide the room is unknown and start a second loop.
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _activations = new(StringComparer.Ordinal);
 
     public RoomRuntime(Grpc.Net.Client.GrpcChannel dataChannel)
+        : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
+            new Settlement.SettlementClient(dataChannel), dataChannel) { }
+
+    /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
+    internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
+        Settlement.SettlementClient settlement, Grpc.Net.Client.GrpcChannel? dataChannel = null)
     {
+        _rounds = rounds;
+        _frames = frames;
+        _settlement = settlement;
         _dataChannel = dataChannel;
-        _rounds = new RoundStore.RoundStoreClient(dataChannel);
-        _frames = new FrameStore.FrameStoreClient(dataChannel);
-        _settlement = new Settlement.SettlementClient(dataChannel);
     }
 
     /// <summary>
@@ -56,56 +66,68 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 throw new ArgumentException("Participant bindings must be distinct.");
             bindings[participant.BindingId] = participant.ParticipantId;
         }
-        if (_actors.ContainsKey(request.RoomId))
+        // FIX-ROOM-03: the check-activate-add sequence runs under the room's activation
+        // gate, so a concurrent prepare or recovery for the same room waits and then sees
+        // this call's outcome instead of racing past an empty dictionary.
+        var activation = _activations.GetOrAdd(request.RoomId, static _ => new SemaphoreSlim(1, 1));
+        await activation.WaitAsync(cancellationToken);
+        try
+        {
+            if (_actors.ContainsKey(request.RoomId))
+                return new PrepareRoomReply
+                {
+                    RoomId = request.RoomId, Duplicate = true, Status = "Prepared", StateVersion = 1
+                };
+
+            var manifest = new RedesignGameModuleManifest("example-factions", "1.0.0",
+                request.TickMs > 0 ? request.TickMs : RedesignGameModuleManifest.Default.TickMs,
+                RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+                RedesignGameModuleManifest.DeterministicReplay);
+            var module = new ExampleGameModule(manifest);
+            var initial = module.CreateInitialState(new GameStartConfig(request.DurationTicks,
+                request.RandomSeed,
+                request.Participants.Select(participant =>
+                    new GameParticipant(participant.ParticipantId, participant.Faction)).ToList(),
+                request.FailAfterTick));
+            var payload = module.Serialize(initial);
+            var hash = SHA256.HashData(payload);
+            var configHash = Convert.ToHexString(hash).ToLowerInvariant();
+
+            // Data-plane receipts under deterministic operation ids: a retry after a lost reply
+            // replays the stored receipts instead of re-deriving anything.
+            await _rounds.PrepareRoundAsync(new PrepareRoundRequest
+            {
+                RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                GameId = request.GameId, SnapshotPayload = ByteString.CopyFrom(payload),
+                SnapshotHash = ByteString.CopyFrom(hash), SnapshotSchemaVersion = initial.SchemaVersion,
+                OperationId = request.OperationId + "/prepare"
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            await _rounds.ActivateRoundAsync(new ActivateRoundRequest
+            {
+                RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                GameId = request.GameId, OperationId = request.OperationId + "/activate"
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+
+            var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
+                request.OwnerInstanceId, request.Epoch, configHash, initial, bindings);
+            if (!_actors.TryAdd(request.RoomId, actor))
+            {
+                await actor.DisposeAsync();
+                return new PrepareRoomReply
+                {
+                    RoomId = request.RoomId, Duplicate = true, Status = "Prepared", StateVersion = 1
+                };
+            }
+            actor.Start();
             return new PrepareRoomReply
             {
-                RoomId = request.RoomId, Duplicate = true, Status = "Prepared", StateVersion = 1
-            };
-
-        var manifest = new RedesignGameModuleManifest("example-factions", "1.0.0",
-            request.TickMs > 0 ? request.TickMs : RedesignGameModuleManifest.Default.TickMs,
-            RedesignGameModuleManifest.Default.SnapshotEveryTicks,
-            RedesignGameModuleManifest.DeterministicReplay);
-        var module = new ExampleGameModule(manifest);
-        var initial = module.CreateInitialState(new GameStartConfig(request.DurationTicks,
-            request.RandomSeed,
-            request.Participants.Select(participant =>
-                new GameParticipant(participant.ParticipantId, participant.Faction)).ToList(),
-            request.FailAfterTick));
-        var payload = module.Serialize(initial);
-        var hash = SHA256.HashData(payload);
-        var configHash = Convert.ToHexString(hash).ToLowerInvariant();
-
-        // Data-plane receipts under deterministic operation ids: a retry after a lost reply
-        // replays the stored receipts instead of re-deriving anything.
-        await _rounds.PrepareRoundAsync(new PrepareRoundRequest
-        {
-            RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
-            GameId = request.GameId, SnapshotPayload = ByteString.CopyFrom(payload),
-            SnapshotHash = ByteString.CopyFrom(hash), SnapshotSchemaVersion = initial.SchemaVersion,
-            OperationId = request.OperationId + "/prepare"
-        }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
-        await _rounds.ActivateRoundAsync(new ActivateRoundRequest
-        {
-            RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
-            GameId = request.GameId, OperationId = request.OperationId + "/activate"
-        }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
-
-        var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
-            request.OwnerInstanceId, request.Epoch, configHash, initial, bindings);
-        if (!_actors.TryAdd(request.RoomId, actor))
-        {
-            await actor.DisposeAsync();
-            return new PrepareRoomReply
-            {
-                RoomId = request.RoomId, Duplicate = true, Status = "Prepared", StateVersion = 1
+                RoomId = request.RoomId, Duplicate = false, Status = "Running", StateVersion = 1
             };
         }
-        actor.Start();
-        return new PrepareRoomReply
+        finally
         {
-            RoomId = request.RoomId, Duplicate = false, Status = "Running", StateVersion = 1
-        };
+            activation.Release();
+        }
     }
 
     /// <summary>The actor of a room this host runs, or null — subscribers attach to it.</summary>
@@ -130,13 +152,31 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         if (request.Epoch <= 0) throw new ArgumentException("The room epoch must be positive.");
         if (request.TickMs is < 1 or > 1000)
             throw new ArgumentException("The tick cadence is 1..1000 ms.");
-        if (_actors.TryGetValue(request.RoomId, out var known))
+        // FIX-ROOM-03: recovery shares the room's activation gate with prepare — a prepare
+        // in flight must be visible here before recovery decides the room is unknown.
+        var activation = _activations.GetOrAdd(request.RoomId, static _ => new SemaphoreSlim(1, 1));
+        await activation.WaitAsync(cancellationToken);
+        try
         {
-            // FIX-ROOM-02: an entry in the dictionary is not liveness — the answer derives
-            // from the actor's own state, never from the dictionary alone.
-            return AnswerForKnownActor(request, known.Status());
+            if (_actors.TryGetValue(request.RoomId, out var known))
+            {
+                // FIX-ROOM-02: an entry in the dictionary is not liveness — the answer derives
+                // from the actor's own state, never from the dictionary alone.
+                return AnswerForKnownActor(request, known.Status());
+            }
+            return await RecoverUnknownRoomAsync(request, cancellationToken);
         }
+        finally
+        {
+            activation.Release();
+        }
+    }
 
+    /// <summary>Recovery of a room no local actor holds: load the plan, replay to the head
+    /// and resume ticking. The caller holds the room's activation gate throughout.</summary>
+    private async Task<RecoverRoomReply> RecoverUnknownRoomAsync(RecoverRoomRequest request,
+        CancellationToken cancellationToken)
+    {
         var plan = await _frames.LoadRecoveryAsync(new LoadRecoveryRequest
         {
             RoomId = request.RoomId, GameId = request.GameId
@@ -377,7 +417,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     {
         foreach (var actor in _actors.Values) await actor.DisposeAsync();
         _actors.Clear();
-        _dataChannel.Dispose();
+        _dataChannel?.Dispose();
     }
 
     private static void Require(string? value, string name)
