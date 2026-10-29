@@ -255,8 +255,10 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         }
     }
 
-    /// <summary>Recovery of a room no local actor holds: load the plan, replay to the head
-    /// and resume ticking. The caller holds the room's activation gate throughout.</summary>
+    /// <summary>Recovery of a room no local actor holds: load the plan, replay to the head,
+    /// pin the verified head through the constrained recovery entry, activate by the fenced
+    /// confirm and only then resume ticking (FIX-TAKE-03). The caller holds the room's
+    /// activation gate throughout.</summary>
     private async Task<RecoverRoomReply> RecoverUnknownRoomAsync(RecoverRoomRequest request,
         CancellationToken cancellationToken)
     {
@@ -277,10 +279,14 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 Note = $"The room head epoch is {plan.Epoch}, not {request.Epoch}."
             };
         // Finishing rooms recover their result and settlement tail only; battle ticks are
-        // never restarted for a round that already froze its result. The settle call is
-        // idempotent per grant: it applies whatever the manifest still owes (9.3).
+        // never restarted for a round that already froze its result. FIX-TAKE-03: the
+        // closing tail activates under the same fenced confirm before any settlement
+        // effect — a recoverer that no longer holds the room neither claims the tail nor
+        // settles it. The settle call is idempotent per grant (9.3).
         if (plan.Status == "Finishing")
         {
+            var activation = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
+            if (activation is not null) return activation;
             await SettleRoomAsync(request.GameId, request.RoomId, cancellationToken);
             return new RecoverRoomReply
             {
@@ -344,19 +350,16 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
 
             // The snapshot replays to the head with matching hashes: persist a fresh
             // store-verified snapshot at the head so the next recovery starts here.
+            // FIX-TAKE-02/03: while the ownership is Recovering the pin travels the
+            // constrained recovery entry — exactly the takeover-named owner at this epoch
+            // passes — and once that entry closed (the activation already happened, say a
+            // retry after a lost reply) the normal snapshot entry carries the same payload.
             byte[] headPayload;
             try
             {
                 headPayload = module.Serialize(state);
-                await _frames.PutSnapshotAsync(new PutSnapshotRequest
-                {
-                    RoomId = request.RoomId, GameId = request.GameId,
-                    OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
-                    Tick = plan.LastTick, SnapshotPayload = ByteString.CopyFrom(headPayload),
-                    SnapshotHash = ByteString.CopyFrom(SHA256.HashData(headPayload)),
-                    SnapshotSchemaVersion = state.SchemaVersion,
-                    OperationId = $"{request.OwnerInstanceId}/snapshot/{request.RoomId}/{plan.LastTick}"
-                }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+                await PinHeadAsync(request, plan.LastTick, headPayload, state.SchemaVersion,
+                    cancellationToken);
             }
             catch (RpcException error)
             {
@@ -367,6 +370,12 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     Note = $"The head snapshot was rejected: {error.Status.Detail}"
                 };
             }
+            // FIX-TAKE-03: the pinned head is the activation credential — the fenced
+            // confirm flips the ownership Active for exactly this owner and epoch before
+            // the loop starts, so a recovery that cannot activate neither ticks nor
+            // reports success.
+            var activated = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
+            if (activated is not null) return activated;
             var configHash = plan.Frames.Count > 0
                 ? plan.Frames.Max(frame => frame.Tick) == plan.LastTick
                     ? plan.Frames.First(frame => frame.Tick == plan.LastTick).ConfigHash
@@ -394,14 +403,107 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             };
         }
 
-        // No snapshot survived replay: park the room visibly (architecture 10.3.6).
-        await SuspendRoomAsync(request.GameId, request.RoomId, request.OwnerInstanceId, request.Epoch,
-            "recovery failed: no consistent snapshot replays to the head", cancellationToken);
-        return new RecoverRoomReply
+        // No snapshot survived replay: park the room visibly (architecture 10.3.6). Under a
+        // Recovering ownership the fence refuses the suspension too — the reply then says
+        // so instead of claiming a suspension that never landed (FIX-TAKE-03).
+        var suspended = false;
+        try
         {
-            RoomId = request.RoomId, Recovered = false, Status = "Suspended",
-            Note = "No snapshot replays to the head with matching frame hashes; the room is suspended."
-        };
+            await _rounds.SuspendRoundAsync(new SuspendRoundRequest
+            {
+                RoomId = request.RoomId, GameId = request.GameId,
+                OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                Reason = "recovery failed: no consistent snapshot replays to the head",
+                OperationId = $"{request.OwnerInstanceId}/suspend/{request.RoomId}"
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            suspended = true;
+        }
+        catch (RpcException)
+        {
+            // Best-effort from inside a failing recovery; the room stays inspectable on
+            // the data plane either way.
+        }
+        return suspended
+            ? new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = false, Status = "Suspended",
+                Note = "No snapshot replays to the head with matching frame hashes; the room is suspended."
+            }
+            : new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = false, Status = plan.Status,
+                LastTick = plan.LastTick,
+                Note = "No snapshot replays to the head with matching frame hashes; " +
+                       "the suspension was refused and the ownership stays Recovering."
+            };
+    }
+
+    /// <summary>
+    /// Pins the store-verified head snapshot (FIX-TAKE-02/03): a takeover recovery writes
+    /// through the constrained recovery entry while the ownership is Recovering; once the
+    /// ownership is Active again — the activation already happened, or this is a plain
+    /// restart recovery — the normal snapshot entry carries the same payload. Both entries
+    /// derive their operation id from the owner, room and tick, so a retry replays the
+    /// stored receipt on either side of the activation boundary.
+    /// </summary>
+    private async Task PinHeadAsync(RecoverRoomRequest request, long tick, byte[] payload,
+        int schemaVersion, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _frames.PutRecoverySnapshotAsync(new PutRecoverySnapshotRequest
+            {
+                RoomId = request.RoomId, GameId = request.GameId,
+                OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch, Tick = tick,
+                SnapshotPayload = ByteString.CopyFrom(payload),
+                SnapshotHash = ByteString.CopyFrom(SHA256.HashData(payload)),
+                SnapshotSchemaVersion = schemaVersion,
+                OperationId = $"{request.OwnerInstanceId}/recovery-snapshot/{request.RoomId}/{tick}"
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+        }
+        catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition &&
+            error.Status.Detail == "The recovery snapshot fence rejected the caller.")
+        {
+            await _frames.PutSnapshotAsync(new PutSnapshotRequest
+            {
+                RoomId = request.RoomId, GameId = request.GameId,
+                OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch, Tick = tick,
+                SnapshotPayload = ByteString.CopyFrom(payload),
+                SnapshotHash = ByteString.CopyFrom(SHA256.HashData(payload)),
+                SnapshotSchemaVersion = schemaVersion,
+                OperationId = $"{request.OwnerInstanceId}/snapshot/{request.RoomId}/{tick}"
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The fenced activation of a completed recovery (FIX-TAKE-03): the recoverer confirms
+    /// the ownership for exactly its instance — idempotent once the room is Active — before
+    /// any settlement call or tick loop starts. A refusal returns the failure reply; the
+    /// room is then neither activated, settled nor ticking, and no caller can mistake the
+    /// ownership for a ready room.
+    /// </summary>
+    private async Task<RecoverRoomReply?> ActivateRecoveredRoomAsync(RecoverRoomRequest request,
+        LoadRecoveryReply plan, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _rounds.ConfirmRoomOwnershipAsync(new ConfirmRoomOwnershipRequest
+            {
+                GameId = request.GameId, RoomId = request.RoomId,
+                OwnerInstance = request.OwnerInstanceId
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            return null;
+        }
+        catch (RpcException error)
+        {
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = false, Status = plan.Status,
+                LastTick = plan.LastTick,
+                Note = $"The activation was refused: {error.Status.Detail}"
+            };
+        }
     }
 
     /// <summary>

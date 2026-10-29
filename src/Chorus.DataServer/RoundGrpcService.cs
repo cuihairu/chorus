@@ -184,7 +184,9 @@ public sealed class RoundGrpcService(
     public override async Task<RoomTakeoverReply> ConfirmRoomOwnership(
         ConfirmRoomOwnershipRequest request, ServerCallContext context)
     {
-        var caller = Require(context, "control-server");
+        // The new holder confirms once its recovery pinned the verified head (FIX-TAKE-03);
+        // the control plane completes takeovers with the same call.
+        var caller = Require(context, "control-server", "game-server");
         try
         {
             var takeover = await roomStore.ConfirmRoomOwnershipAsync(

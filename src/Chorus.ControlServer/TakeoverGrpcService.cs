@@ -7,13 +7,15 @@ namespace Chorus.ControlServer;
 /// The entity takeover boundary (architecture 10.3): the control plane moves a live entity's
 /// authority to a new instance once the current holder went silent. Rooms: TransferOwnership
 /// bumps both epochs in one transaction and parks the room Recovering, so the old owner's
-/// frame and snapshot writes are fenced from that instant; TakeoverRoom completes it — confirm
-/// flips the ownership Active under the new holder, then the new instance recovers from the
-/// head at the bumped epoch and resumes ticking. Streamer entities: the handover is a single
-/// control-plane transaction, and the completion is client-driven — the streamer resumes
-/// through the new instance, whose own claim confirms the row (same holder, live lease keeps
-/// the epoch) while session rotation fences everything the displaced instance might still say.
-/// Other kinds refuse visibly until their recovery path lands.
+/// frame and snapshot writes are fenced from that instant; TakeoverRoom completes it — the
+/// target recovers under the Recovering fence, pins the verified head through the constrained
+/// recovery entry and executes the fenced activation itself (FIX-TAKE-03), so a failed
+/// recovery leaves the ownership Recovering instead of a ready room nothing runs. Streamer
+/// entities: the handover is a single control-plane transaction, and the completion is
+/// client-driven — the streamer resumes through the new instance, whose own claim confirms
+/// the row (same holder, live lease keeps the epoch) while session rotation fences everything
+/// the displaced instance might still say. Other kinds refuse visibly until their recovery
+/// path lands.
 /// </summary>
 public sealed class TakeoverGrpcService(
     ClusterDirectory directory, RedesignControlStore controlStore,
@@ -87,22 +89,35 @@ public sealed class TakeoverGrpcService(
         var channel = directory.GameHostChannel(request.ToInstanceId)
             ?? throw new RpcException(new Status(StatusCode.NotFound,
                 $"The takeover target '{request.ToInstanceId}' is not a known game host."));
-        // Confirm first: the fence rejects the new owner too while Recovering, so the recovery
-        // that follows must run under an Active ownership at the bumped epoch.
-        var confirm = await _rounds.ConfirmRoomOwnershipAsync(new ConfirmRoomOwnershipRequest
-        {
-            TenantId = request.TenantId, GameId = request.GameId, RoomId = request.RoomId,
-            OwnerInstance = request.ToInstanceId
-        }, deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: context.CancellationToken);
+        // FIX-TAKE-03: no Active confirm before the recovery. The target recovers under the
+        // room's Recovering fence — it pins the verified head through the constrained
+        // recovery entry and then executes the fenced activation itself — so a recovery
+        // that fails leaves the ownership Recovering instead of an Active room nothing runs.
+        var ownership = await controlStore.GetOwnershipAsync(
+            request.TenantId, request.GameId, "room", request.RoomId, context.CancellationToken)
+            ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The room has no ownership row to recover."));
+        if (ownership.OwnerInstanceId != request.ToInstanceId)
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                $"The room is held by '{ownership.OwnerInstanceId}', not '{request.ToInstanceId}'."));
         var recovered = await new GameHost.GameHostClient(channel).RecoverRoomAsync(
             new RecoverRoomRequest
             {
                 RoomId = request.RoomId, GameId = request.GameId,
-                OwnerInstanceId = request.ToInstanceId, Epoch = confirm.Epoch, TickMs = request.TickMs
+                OwnerInstanceId = request.ToInstanceId, Epoch = ownership.Epoch, TickMs = request.TickMs
             }, deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: context.CancellationToken);
+        // The data plane, not the recoverer's word, decides what the reply may claim: a
+        // reported success must be an Active ownership under the takeover target.
+        var after = await controlStore.GetOwnershipAsync(
+            request.TenantId, request.GameId, "room", request.RoomId, context.CancellationToken)
+            ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The room's ownership vanished during recovery."));
+        if (recovered.Recovered && after.Status != "Active")
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                $"The recovery reported success but the ownership is {after.Status}."));
         return new TakeoverRoomReply
         {
-            OwnerInstanceId = request.ToInstanceId, Epoch = confirm.Epoch,
+            OwnerInstanceId = after.OwnerInstanceId, Epoch = after.Epoch,
             Recovered = recovered.Recovered, Status = recovered.Status, LastTick = recovered.LastTick
         };
     }

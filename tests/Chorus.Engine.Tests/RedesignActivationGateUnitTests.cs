@@ -96,9 +96,12 @@ public sealed class RedesignActivationGateUnitTests
             runtime.RecoverRoomAsync(Recover(epoch: 1)));
         Assert.All(both, reply => Assert.True(reply.Recovered));
         Assert.Contains(both, reply => reply.Note.Contains("already running"));
-        // One replay, one head snapshot: the second caller adopted the recovered actor.
+        // One replay, one recovery-entry pin, one activation: the second caller adopted
+        // the recovered actor (FIX-TAKE-03).
         Assert.Equal(1, frames.LoadRecoveryCalls);
-        Assert.Equal(1, frames.PutSnapshotCalls);
+        Assert.Equal(1, frames.PutRecoverySnapshotCalls);
+        Assert.Equal(0, frames.PutSnapshotCalls);
+        Assert.Equal(1, rounds.ConfirmCalls);
         Assert.True(await WaitForAsync(() => Task.FromResult(frames.CommitCount >= 1)),
             "The recovered room never resumed ticking.");
     }
@@ -164,11 +167,13 @@ public sealed class RedesignActivationGateUnitTests
         private readonly object _gate = new();
         private int _prepareCalls;
         private int _activateCalls;
+        private int _confirmCalls;
 
         public Func<PrepareRoundRequest, Task<RoundAdmissionReply>>? Prepare { get; set; }
 
         public int PrepareCalls { get { lock (_gate) return _prepareCalls; } }
         public int ActivateCalls { get { lock (_gate) return _activateCalls; } }
+        public int ConfirmCalls { get { lock (_gate) return _confirmCalls; } }
 
         public override AsyncUnaryCall<RoundAdmissionReply> PrepareRoundAsync(PrepareRoundRequest request,
             Metadata? headers = null, DateTime? deadline = null,
@@ -194,6 +199,20 @@ public sealed class RedesignActivationGateUnitTests
                 Task.FromResult(new Metadata()), () => Status.DefaultSuccess,
                 () => new Metadata(), () => { });
         }
+
+        public override AsyncUnaryCall<RoomTakeoverReply> ConfirmRoomOwnershipAsync(
+            ConfirmRoomOwnershipRequest request, Metadata? headers = null, DateTime? deadline = null,
+            CancellationToken cancellationToken = default)
+        {
+            lock (_gate) _confirmCalls++;
+            return new AsyncUnaryCall<RoomTakeoverReply>(
+                Task.FromResult(new RoomTakeoverReply
+                {
+                    OwnerInstanceId = request.OwnerInstance, Status = "Active"
+                }),
+                Task.FromResult(new Metadata()), () => Status.DefaultSuccess,
+                () => new Metadata(), () => { });
+        }
     }
 
     /// <summary>The frame store: plain successes unless a hook scripts otherwise.</summary>
@@ -202,12 +221,14 @@ public sealed class RedesignActivationGateUnitTests
         private readonly object _gate = new();
         private int _commits;
         private int _loadRecoveryCalls;
+        private int _putRecoverySnapshotCalls;
         private int _putSnapshotCalls;
 
         public Func<LoadRecoveryRequest, Task<LoadRecoveryReply>>? LoadRecoveryPlan { get; set; }
 
         public int CommitCount { get { lock (_gate) return _commits; } }
         public int LoadRecoveryCalls { get { lock (_gate) return _loadRecoveryCalls; } }
+        public int PutRecoverySnapshotCalls { get { lock (_gate) return _putRecoverySnapshotCalls; } }
         public int PutSnapshotCalls { get { lock (_gate) return _putSnapshotCalls; } }
 
         public override AsyncUnaryCall<ReadInboxReply> ReadInboxAsync(ReadInboxRequest request,
@@ -238,6 +259,16 @@ public sealed class RedesignActivationGateUnitTests
             lock (_gate) _loadRecoveryCalls++;
             var answer = LoadRecoveryPlan ?? (_ => Task.FromResult(new LoadRecoveryReply()));
             return new AsyncUnaryCall<LoadRecoveryReply>(answer(request),
+                Task.FromResult(new Metadata()), () => Status.DefaultSuccess,
+                () => new Metadata(), () => { });
+        }
+
+        public override AsyncUnaryCall<SnapshotReceiptReply> PutRecoverySnapshotAsync(
+            PutRecoverySnapshotRequest request, Metadata? headers = null, DateTime? deadline = null,
+            CancellationToken cancellationToken = default)
+        {
+            lock (_gate) _putRecoverySnapshotCalls++;
+            return new AsyncUnaryCall<SnapshotReceiptReply>(Task.FromResult(new SnapshotReceiptReply()),
                 Task.FromResult(new Metadata()), () => Status.DefaultSuccess,
                 () => new Metadata(), () => { });
         }

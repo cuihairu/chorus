@@ -313,7 +313,8 @@ service RoundStore {
   rpc ActivateRound(ActivateRoundRequest) returns (RoundAdmissionReply);
   rpc SuspendRound(SuspendRoundRequest) returns (RoundAdmissionReply);
   // Authority handover: transfer parks the room Recovering under the new holder at a bumped
-  // epoch, confirm flips it back to Active once the new holder is ready to recover.
+  // epoch; confirm flips it back to Active — the holder calls it once its recovery pinned
+  // the verified head (contracts 6.2.1), so activation never precedes a real recovery.
   rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (RoomTakeoverReply);
   rpc ConfirmRoomOwnership(ConfirmRoomOwnershipRequest) returns (RoomTakeoverReply);
 }

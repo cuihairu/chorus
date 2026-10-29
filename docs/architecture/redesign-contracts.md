@@ -230,7 +230,7 @@ COMMIT
 | Recovering | 允许（新 owner 读计划、快照与帧） | 仅点名的 owner + epoch 可写经校验的恢复头；旧 owner 与其他写者拒绝 | 拒绝（栅栏全拒，帧写必须 Active） | 拒绝（订阅方得到 resync 而非帧） | 允许（恢复期间控制面代续，防恢复中过期；不作为恢复进度） |
 | Active | 允许（只读） | 允许（fenced：owner + epoch + 租约） | 允许（fenced） | 允许 | 允许 |
 
-合法转换：Active → Recovering（接管事务一次完成 epoch+1 与状态切换，from-Active 校验）；Recovering → Active（fenced 确认事务，仅点名的 owner 且租约未过期生效，重复确认幂等读回）；Recovering → Suspended（恢复失败或超时的显式处置）；Recovering → Recovering（重新分配，epoch 再次 +1）。Allocated 与 Recovering 之间的任何回退都不得隐式发生。
+合法转换：Active → Recovering（接管事务一次完成 epoch+1 与状态切换，from-Active 校验）；Recovering → Active（fenced 确认事务，仅点名的 owner 且租约未过期生效，重复确认幂等读回）；Recovering → Suspended（恢复失败或超时的显式处置）；Recovering → Recovering（重新分配，epoch 再次 +1）。Allocated 与 Recovering 之间的任何回退都不得隐式发生。恢复执行顺序（FIX-TAKE-03）：恢复方在 Recovering 期间重放并经受限入口固定校验后的恢复头，随后以接管点名凭据执行 fenced 确认激活，激活成功才启动首个 tick 或结算收尾；控制面不再在恢复 RPC 之前确认 Active——恢复失败时所有权停留在 Recovering，不产生 Ready/Active 假成功。
 
 Recovering 有期限：恢复操作本身持久化期限与进度，超期由后台处置暂停或重新分配，不无限续期，也不复活已递增前的旧 epoch。恢复期间宿主不得把该房间宣布为业务就绪——Ready/Active 只能来自 fenced 确认事务的结果；恢复失败、确认响应丢失都不能被解释为就绪。恢复未完成时旧 owner 的任何写（帧、恢复头、快照）都被数据面拒绝，客户端订阅得到 resync 指路。
 

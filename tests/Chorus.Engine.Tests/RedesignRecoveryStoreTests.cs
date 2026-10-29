@@ -229,6 +229,13 @@ public sealed class RedesignRecoveryStoreTests
         var confirmed = await arrange.RoomStore.ConfirmRoomOwnershipAsync("tenant-a", "game-a", "room-1",
             "gs-2");
         Assert.Equal("Active", confirmed.Status);
+        // A repeated confirm replays the same activation (FIX-TAKE-03): the owner and the
+        // epoch it reports never move.
+        var reconfirmed = await arrange.RoomStore.ConfirmRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-2");
+        Assert.Equal("Active", reconfirmed.Status);
+        Assert.Equal(confirmed.Epoch, reconfirmed.Epoch);
+        Assert.Equal(confirmed.OwnerInstanceId, reconfirmed.OwnerInstanceId);
 
         // After the fenced confirm the recovery entry closes again…
         await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => store.PutRecoverySnapshotAsync(
