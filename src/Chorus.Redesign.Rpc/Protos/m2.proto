@@ -96,6 +96,22 @@ message RoomTakeoverReply {
   string status = 3;
 }
 
+// FIX-TAKE-05: the recovery sweep moves a timed-out open operation to a different
+// instance — a newer epoch, a fresh deadline, the old operation closed Failed. The
+// store refuses the move before the recorded deadline passes (database time decides).
+message ReassignRoomRecoveryRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  // The open, expired operation being replaced.
+  string operation_id = 4;
+  // The recovery operation the reassignment opens.
+  string new_operation_id = 5;
+  string from_instance = 6;
+  string to_instance = 7;
+  int32 lease_seconds = 8;
+}
+
 message RouteEventsRequest {
   string platform = 1;
   string app_id = 2;
@@ -321,6 +337,9 @@ service RoundStore {
   // the verified head (contracts 6.2.1), so activation never precedes a real recovery.
   rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (RoomTakeoverReply);
   rpc ConfirmRoomOwnership(ConfirmRoomOwnershipRequest) returns (RoomTakeoverReply);
+  // Control-plane only: the recovery sweep's reassignment of a timed-out open
+  // operation (FIX-TAKE-05).
+  rpc ReassignRoomRecovery(ReassignRoomRecoveryRequest) returns (RoomTakeoverReply);
 }
 
 service RoundInput {

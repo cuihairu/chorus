@@ -50,6 +50,9 @@ builder.Services.AddSingleton(new ClusterDirectory(serverCertificate, root, node
         : []));
 // The ownership lease registrar (architecture 4.2): renews live holders, lets silent ones expire.
 builder.Services.AddHostedService<OwnershipRenewalService>();
+// The recovery-deadline sweep (FIX-TAKE-05): closes expired open recoveries — reassigning
+// to a different host under a newer epoch, or parking them for an operator.
+builder.Services.AddHostedService<RoomRecoverySweepService>();
 // The match coordinator hosts inside the control plane (ADR-R02) once game endpoints are
 // configured; without them this is a plain control plane, matching nothing.
 if (gameEndpoints is { Length: > 0 })

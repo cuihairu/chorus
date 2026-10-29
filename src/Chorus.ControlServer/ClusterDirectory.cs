@@ -38,6 +38,10 @@ public sealed class ClusterDirectory(
     /// <summary>The number of configured game hosts — zero means the coordinator must not pair.</summary>
     public int GameHostCount => _gameHosts.Length;
 
+    /// <summary>The configured host instance ids — the recovery sweep's candidate list
+    /// (FIX-TAKE-05): a timed-out recovery moves to one of these, never a caller's word.</summary>
+    public IReadOnlyList<string> GameHostIds => _gameHosts.Select(host => host.InstanceId).ToArray();
+
     /// <summary>Round-robin over the configured hosts: spreading rooms before routing exists.</summary>
     public (string InstanceId, GrpcChannel Channel) NextGameHost()
     {

@@ -690,6 +690,127 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
     }
 
     /// <summary>
+    /// Moves a timed-out open recovery to a different instance (FIX-TAKE-05, architecture
+    /// failure table): one transaction closes the expired operation Failed, bumps the
+    /// ownership and room epochs again and opens the replacement operation with a fresh
+    /// deadline. Database time decides expiry — a live-but-slow target is reassigned exactly
+    /// like a silent one, and no path extends a deadline once written. The displaced target
+    /// cannot revive its epoch: the confirm path only admits the holder the ownership names.
+    /// </summary>
+    public async Task<RoomTakeover> ReassignRoomRecoveryAsync(string tenantId, string gameId,
+        string roomId, string operationId, string newOperationId, string fromInstance,
+        string toInstance, int leaseSeconds, CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
+        Require(operationId, nameof(operationId)); Require(newOperationId, nameof(newOperationId));
+        Require(fromInstance, nameof(fromInstance)); Require(toInstance, nameof(toInstance));
+        if (leaseSeconds is <= 0 or > 60) throw new ArgumentOutOfRangeException(nameof(leaseSeconds));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var recorded = new NpgsqlCommand("""
+            SELECT room_id,to_instance,target_epoch,phase,deadline_at FROM control.recovery_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND operation_id=@operation
+            FOR UPDATE
+            """, connection, transaction))
+        {
+            recorded.Parameters.AddWithValue("tenant", tenantId);
+            recorded.Parameters.AddWithValue("game", gameId);
+            recorded.Parameters.AddWithValue("operation", operationId);
+            await using var reader = await recorded.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken) || reader.GetString(3) != "Transferred")
+                throw new InvalidOperationException("The recovery operation is no longer open.");
+            if (reader.GetString(0) != roomId || reader.GetString(1) != fromInstance)
+                throw new InvalidOperationException(
+                    "The recovery operation was recorded for a different room or target.");
+            if (reader.GetDateTime(4) > DateTime.UtcNow)
+                throw new InvalidOperationException(
+                    "The recovery operation has not passed its deadline; the target keeps its chance.");
+            var recordedEpoch = reader.GetInt64(2);
+            await reader.DisposeAsync();
+            await using (var ownership = new NpgsqlCommand("""
+                SELECT owner_process_instance_id,status,epoch FROM control.ownership
+                WHERE kind='room' AND entity_id=@room FOR UPDATE
+                """, connection, transaction))
+            {
+                ownership.Parameters.AddWithValue("room", roomId);
+                await using var owner = await ownership.ExecuteReaderAsync(cancellationToken);
+                if (!await owner.ReadAsync(cancellationToken))
+                    throw new RedesignStaleOwnerException();
+                var holder = owner.GetString(0);
+                var status = owner.GetString(1);
+                var ownerEpoch = owner.GetInt64(2);
+                await owner.DisposeAsync();
+                if (holder != fromInstance)
+                    throw new InvalidOperationException($"The room is held by {holder}, not {fromInstance}.");
+                if (status != "Recovering")
+                    throw new InvalidOperationException(
+                        $"The room ownership is {status}; only a Recovering room reassigns.");
+                if (ownerEpoch != recordedEpoch)
+                    throw new InvalidOperationException("The recovery operation names a stale epoch.");
+            }
+        }
+        long epoch;
+        await using (var move = new NpgsqlCommand("""
+            UPDATE control.ownership SET owner_process_instance_id=@to, epoch=epoch+1,
+                lease_until=clock_timestamp()+@lease*interval '1 second', version=version+1
+            WHERE kind='room' AND entity_id=@room
+            RETURNING epoch
+            """, connection, transaction))
+        {
+            move.Parameters.AddWithValue("to", toInstance);
+            move.Parameters.AddWithValue("room", roomId);
+            move.Parameters.AddWithValue("lease", leaseSeconds);
+            var moved = await move.ExecuteScalarAsync(cancellationToken);
+            if (moved is null || (epoch = Convert.ToInt64(moved)) <= 1)
+                throw new InvalidOperationException("The ownership vanished mid-reassignment.");
+        }
+        await using (var closed = new NpgsqlCommand("""
+            UPDATE control.recovery_operation SET phase='Failed',
+                last_error='The recovery deadline passed before activation.',
+                updated_at=clock_timestamp()
+            WHERE tenant_id=@tenant AND game_id=@game AND operation_id=@operation
+              AND phase='Transferred'
+            """, connection, transaction))
+        {
+            closed.Parameters.AddWithValue("tenant", tenantId);
+            closed.Parameters.AddWithValue("game", gameId);
+            closed.Parameters.AddWithValue("operation", operationId);
+            await closed.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var operation = new NpgsqlCommand("""
+            INSERT INTO control.recovery_operation(tenant_id,game_id,operation_id,room_id,
+                from_instance,to_instance,target_epoch,phase,deadline_at)
+            VALUES (@tenant,@game,@operation,@room,@from,@to,@epoch,'Transferred',
+                clock_timestamp()+@lease*interval '1 second')
+            """, connection, transaction))
+        {
+            operation.Parameters.AddWithValue("tenant", tenantId);
+            operation.Parameters.AddWithValue("game", gameId);
+            operation.Parameters.AddWithValue("operation", newOperationId);
+            operation.Parameters.AddWithValue("room", roomId);
+            operation.Parameters.AddWithValue("from", fromInstance);
+            operation.Parameters.AddWithValue("to", toInstance);
+            operation.Parameters.AddWithValue("epoch", epoch);
+            operation.Parameters.AddWithValue("lease", leaseSeconds);
+            await operation.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var room = new NpgsqlCommand("""
+            UPDATE game.room SET epoch=epoch+1, updated_at=clock_timestamp()
+            WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
+              AND status IN ('Running','Finishing')
+            """, connection, transaction))
+        {
+            room.Parameters.AddWithValue("room", roomId);
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            await room.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return new RoomTakeover(toInstance, epoch, "Recovering");
+    }
+
+    /// <summary>
     /// Confirms a transferred ownership: Recovering becomes Active again, so the new owner's
     /// recovery and frame writes pass the fence. Idempotent for an already-Active owner.
     /// </summary>

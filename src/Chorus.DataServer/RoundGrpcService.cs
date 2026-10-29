@@ -187,6 +187,31 @@ public sealed class RoundGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    public override async Task<RoomTakeoverReply> ReassignRoomRecovery(
+        ReassignRoomRecoveryRequest request, ServerCallContext context)
+    {
+        // Control-plane only (FIX-TAKE-05): the recovery sweep's move of a timed-out open
+        // operation — never a caller-facing takeover path.
+        var caller = Require(context, "control-server");
+        try
+        {
+            var takeover = await roomStore.ReassignRoomRecoveryAsync(
+                TenantFor(caller, request.TenantId), request.GameId, request.RoomId,
+                request.OperationId, request.NewOperationId, request.FromInstance, request.ToInstance,
+                request.LeaseSeconds, context.CancellationToken);
+            return TakeoverReply(takeover);
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.NotFound, "The room has no ownership under this scope."));
+        }
+        catch (InvalidOperationException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
     public override async Task<RoomTakeoverReply> ConfirmRoomOwnership(
         ConfirmRoomOwnershipRequest request, ServerCallContext context)
     {

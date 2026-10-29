@@ -180,6 +180,109 @@ public sealed class RedesignRecoveryOperationTests
         }
     }
 
+    [Fact]
+    public async Task AnExpiredOpenOperationReassignsToANewInstanceWithANewerEpoch()
+    {
+        await using var arrange = await Arrange.RunningRoomAsync();
+        var control = new RedesignControlStore(arrange.Database.ConnectionString);
+        var moved = await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-1", "gs-2", 1, "recovery-op-1");
+        // The one-second deadline is the whole budget; nothing renews it (FIX-TAKE-05).
+        await Task.Delay(1100);
+        var expired = await control.ListExpiredOpenRoomRecoveriesAsync();
+        Assert.Contains(expired, operation => operation.OperationId == "recovery-op-1");
+        Assert.Equal(1, await control.CountRoomRecoveryOperationsAsync("tenant-a", "game-a", "room-1"));
+
+        var reassigned = await arrange.RoomStore.ReassignRoomRecoveryAsync("tenant-a", "game-a", "room-1",
+            "recovery-op-1", "recovery-op-2", "gs-2", "gs-3", 15);
+        Assert.Equal(moved.Epoch + 1, reassigned.Epoch);
+        Assert.Equal("gs-3", reassigned.OwnerInstanceId);
+        Assert.Equal("Recovering", reassigned.Status);
+
+        await using (var connection = new NpgsqlConnection(arrange.Database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var ownership = new NpgsqlCommand("""
+                SELECT (SELECT owner_process_instance_id FROM control.ownership WHERE kind='room' AND entity_id='room-1'),
+                       (SELECT epoch FROM control.ownership WHERE kind='room' AND entity_id='room-1'),
+                       (SELECT epoch FROM game.room WHERE room_id='room-1'),
+                       (SELECT phase||'/'||coalesce(last_error,'') FROM control.recovery_operation
+                        WHERE operation_id='recovery-op-1'),
+                       (SELECT phase FROM control.recovery_operation WHERE operation_id='recovery-op-2'),
+                       (SELECT to_instance FROM control.recovery_operation WHERE operation_id='recovery-op-2'),
+                       (SELECT target_epoch FROM control.recovery_operation WHERE operation_id='recovery-op-2'),
+                       (SELECT deadline_at>clock_timestamp()+interval '10 seconds'
+                        FROM control.recovery_operation WHERE operation_id='recovery-op-2')
+                """, connection);
+            await using var reader = await ownership.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("gs-3", reader.GetString(0));
+            Assert.Equal(reassigned.Epoch, reader.GetInt64(1));
+            Assert.Equal(reassigned.Epoch, reader.GetInt64(2));
+            Assert.StartsWith("Failed/The recovery deadline passed", reader.GetString(3));
+            Assert.Equal("Transferred", reader.GetString(4));
+            Assert.Equal("gs-3", reader.GetString(5));
+            Assert.Equal(reassigned.Epoch, reader.GetInt64(6));
+            Assert.True(reader.GetBoolean(7));
+        }
+        // The replacement has its own fresh deadline, so the sweep list is empty again.
+        Assert.Empty((await control.ListExpiredOpenRoomRecoveriesAsync())
+            .Where(operation => operation.RoomId == "room-1"));
+        Assert.Equal(2, await control.CountRoomRecoveryOperationsAsync("tenant-a", "game-a", "room-1"));
+    }
+
+    [Fact]
+    public async Task AReassignmentBeforeTheDeadlineIsRefused()
+    {
+        await using var arrange = await Arrange.RunningRoomAsync();
+        var moved = await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-1", "gs-2", 15, "recovery-op-1");
+        Assert.Empty(await new RedesignControlStore(arrange.Database.ConnectionString)
+            .ListExpiredOpenRoomRecoveriesAsync());
+        // The target keeps its chance: the deadline, not the caller, decides.
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            arrange.RoomStore.ReassignRoomRecoveryAsync("tenant-a", "game-a", "room-1",
+                "recovery-op-1", "recovery-op-2", "gs-2", "gs-3", 15));
+        Assert.Contains("deadline", refused.Message);
+        await using (var connection = new NpgsqlConnection(arrange.Database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var ownership = new NpgsqlCommand(
+                "SELECT epoch,status FROM control.ownership WHERE kind='room' AND entity_id='room-1'", connection);
+            await using var reader = await ownership.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(moved.Epoch, reader.GetInt64(0));
+            Assert.Equal("Recovering", reader.GetString(1));
+        }
+    }
+
+    [Fact]
+    public async Task ACompletedRecoveryCannotBeReassigned()
+    {
+        await using var arrange = await Arrange.RunningRoomAsync();
+        await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-1", "gs-2", 15, "recovery-op-1");
+        await arrange.RoomStore.ConfirmRoomOwnershipAsync("tenant-a", "game-a", "room-1", "gs-2");
+        var control = new RedesignControlStore(arrange.Database.ConnectionString);
+        await control.CompleteRoomRecoveryAsync("tenant-a", "game-a", "room-1",
+            recovered: true, lastTick: 5, lastError: null);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            arrange.RoomStore.ReassignRoomRecoveryAsync("tenant-a", "game-a", "room-1",
+                "recovery-op-1", "recovery-op-2", "gs-2", "gs-3", 15));
+    }
+
+    [Fact]
+    public async Task AReassignmentForADifferentTargetIsRefused()
+    {
+        await using var arrange = await Arrange.RunningRoomAsync();
+        await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-1", "gs-2", 1, "recovery-op-1");
+        await Task.Delay(1100);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            arrange.RoomStore.ReassignRoomRecoveryAsync("tenant-a", "game-a", "room-1",
+                "recovery-op-1", "recovery-op-2", "gs-3", "gs-1", 15));
+    }
+
     /// <summary>Test arrange: an admitted, activated room under a live ownership fence.</summary>
     private sealed class Arrange : IAsyncDisposable
     {

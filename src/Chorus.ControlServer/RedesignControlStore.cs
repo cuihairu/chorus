@@ -231,6 +231,53 @@ public sealed class RedesignControlStore(string connectionString)
     }
 
     /// <summary>
+    /// Open recovery operations past their deadline, oldest first (FIX-TAKE-05): the sweep's
+    /// work list. Deadline comparison is database time — a target that keeps reporting live
+    /// but never finishes its recovery appears here exactly like a silent one.
+    /// </summary>
+    public async Task<List<RoomRecoveryOperation>> ListExpiredOpenRoomRecoveriesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT tenant_id,game_id,operation_id,room_id,from_instance,to_instance,
+                target_epoch,phase,deadline_at,last_tick,last_error
+            FROM control.recovery_operation
+            WHERE phase='Transferred' AND deadline_at<clock_timestamp()
+            ORDER BY deadline_at LIMIT 50
+            """, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var expired = new List<RoomRecoveryOperation>();
+        while (await reader.ReadAsync(cancellationToken))
+            expired.Add(new RoomRecoveryOperation(reader.GetString(0), reader.GetString(1),
+                reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5),
+                reader.GetInt64(6), reader.GetString(7), reader.GetDateTime(8), reader.GetInt64(9),
+                reader.IsDBNull(10) ? null : reader.GetString(10)));
+        return expired;
+    }
+
+    /// <summary>
+    /// How many recovery operations a room has ever recorded — the sweep's reassignment
+    /// budget. A room that keeps timing out stops being moved automatically and waits for
+    /// an operator instead of churning epochs forever.
+    /// </summary>
+    public async Task<int> CountRoomRecoveryOperationsAsync(string tenantId, string gameId,
+        string roomId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT count(*) FROM control.recovery_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room
+            """, connection);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("room", roomId);
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+    }
+
+    /// <summary>
     /// Extends the lease of every Active ownership whose owner still reports live (architecture
     /// 4.2: the registrar renews on the owner's behalf while the owner is observable). An owner
     /// whose process row went stale is not renewed — its lease runs out and the entity becomes
