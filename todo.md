@@ -21,11 +21,16 @@
 
 代码入口：`src/Chorus.GameServer/RoomActor.cs`、`src/Chorus.DataServer/FrameGrpcService.cs`、`RedesignFrameStore.cs`。当前风险：提交成功但响应丢失后重新读取 Inbox，以原 CommitId 提交不同内容，引发幂等冲突并停房。
 
-- [ ] **FIX-FRAME-01：保存待确认帧。** 依赖：无。交付：Actor 保存原输入、完整 CommitFrame 请求、候选状态和待发布内容。验收：同一提交未确认时不再次取出或读取新输入，也不重新执行 ApplyTick；连续两次发送的规范化业务请求完全相同。
-- [ ] **FIX-FRAME-02：确认成功后只推进一次。** 依赖：FIX-FRAME-01。交付：Committed/Duplicate 回执均完成同一待确认帧，再清除 pending。验收：响应重放不重复推进 StateVersion、不重复发布命令回执或结果，发布状态与已提交 StateHash 一致。
-- [ ] **FIX-FRAME-03：区分暂时故障与确定拒绝。** 依赖：FIX-FRAME-01。交付：未知结果按原请求有界退避，StaleOwner/请求冲突停止推进并记录原因。验收：Unavailable 后仍重试原请求；旧 epoch 被拒后不再发新帧；取消能结束重试循环。
-- [ ] **FIX-FRAME-04：注入“提交成功、响应丢失”。** 依赖：FIX-FRAME-01、FIX-FRAME-02、FIX-FRAME-03。交付：真实 RoomActor→DataServer 故障测试，在 DB commit 后丢弃响应。验收：房间继续到终局，DB 每 tick 一帧、每输入一次消费、每效果一份；客户端链连续且最终状态与 DB 一致（AT14/27）。
-- [ ] **FIX-FRAME-05：注入“提交未完成、新输入到达”。** 依赖：FIX-FRAME-01、FIX-FRAME-02、FIX-FRAME-03。交付：提交前断连/回滚期间追加另一输入的测试。验收：旧 pending 帧原样重试，新输入只进入之后的帧，不能被混进原 CommitId。
+- [x] **FIX-FRAME-01：保存待确认帧。** 依赖：无。交付：Actor 保存原输入、完整 CommitFrame 请求、候选状态和待发布内容。验收：同一提交未确认时不再次取出或读取新输入，也不重新执行 ApplyTick；连续两次发送的规范化业务请求完全相同。
+  - 完成：bb9f4a9（RoomActor 增加 PendingFrame，TickOnceAsync 拆为构建一次+重发循环；IRoomLifecycle 测试缝）。验证：`dotnet test -c Release --filter RedesignFrameCommitUnitTests` 4/4 绿、连跑三次稳定（AnUnconfirmedFrame…断言未确认期间 Inbox 只读一次、三次发送字节级一致）；另 29 个 RoomActor 相关宿主/存储测试（M2 kill 恢复、M3 接管、M4 房间、RoundInput 存储）全绿。
+- [x] **FIX-FRAME-02：确认成功后只推进一次。** 依赖：FIX-FRAME-01。交付：Committed/Duplicate 回执均完成同一待确认帧，再清除 pending。验收：响应重放不重复推进 StateVersion、不重复发布命令回执或结果，发布状态与已提交 StateHash 一致。
+  - 完成：bb9f4a9（Committed/Duplicate 同一发布路径，发布后清 pending）。验证：单元 ADuplicateReceipt…（Duplicate 回执单步推进，重订阅快照 version=2）+ 宿主 AReplyLostAfterTheStoreCommits…（连丢 3 次回执后重发 4 次全同、DB 每 tick 恰一帧、命令回执只发一份）均绿。
+- [x] **FIX-FRAME-03：区分暂时故障与确定拒绝。** 依赖：FIX-FRAME-01。交付：未知结果按原请求有界退避，StaleOwner/请求冲突停止推进并记录原因。验收：Unavailable 后仍重试原请求；旧 epoch 被拒后不再发新帧；取消能结束重试循环。
+  - 完成：bb9f4a9（未确认帧按 250ms→8s 上限退避原请求重发；FailedPrecondition/InvalidArgument 停进并留原因；取消令牌退出重试）。验证：单元 AnUnknownOutcome…（永久 Unavailable 持续重试原请求、Dispose 取消后停止）、ADeterministicRejection…（FailedPrecondition 后停发、SuspenS 记录原因、订阅者收 ResyncRequired）均绿。
+- [x] **FIX-FRAME-04：注入“提交成功、响应丢失”。** 依赖：FIX-FRAME-01、FIX-FRAME-02、FIX-FRAME-03。交付：真实 RoomActor→DataServer 故障测试，在 DB commit 后丢弃响应。验收：房间继续到终局，DB 每 tick 一帧、每输入一次消费、每效果一份；客户端链连续且最终状态与 DB 一致（AT14/27）。
+  - 完成：bb9f4a9（RedesignFrameFaultHostTests：GameServer 数据面经测试内 TLS 中继代理，代理先转发真实提交再丢回执）。验证：`--filter RedesignFrameFaultHostTests` 2/2 绿——tick-12 连丢 3 次回执、4 次发送字节一致、首个回执 Committed 后续 Duplicate、DB 40 tick 恰 40 帧无重复、礼物命令恰一帧消费一份回执、RoundSync 链连续、流结果与 game.result 排名一致。
+- [x] **FIX-FRAME-05：注入“提交未完成、新输入到达”。** 依赖：FIX-FRAME-01、FIX-FRAME-02、FIX-FRAME-03。交付：提交前断连/回滚期间追加另一输入的测试。验收：旧 pending 帧原样重试，新输入只进入之后的帧，不能被混进原 CommitId。
+  - 完成：bb9f4a9（同一代理增加 Hold：真实提交后扣住回执，期间 AcceptClientInput 推入第二条输入）。验证：NewInputArrivingOnAHeldCommit… 绿——释放后 tick-12 重发与原请求字节一致且获 Duplicate 回执；迟到输入只出现在 tick>12 的恰一帧，tick-12 帧不含其事件 id；房间到终局、链连续。
 
 ### 22.2 本地房间生命周期与回收（P0）
 
