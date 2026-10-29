@@ -160,7 +160,7 @@ public sealed class FrameGrpcService(
         try
         {
             var plan = await recoveryStore.LoadRecoveryAsync(caller.TenantId, request.GameId,
-                request.RoomId, context.CancellationToken);
+                request.RoomId, cancellationToken: context.CancellationToken);
             if (plan is null) return new LoadRecoveryReply { Found = false };
             return new LoadRecoveryReply
             {

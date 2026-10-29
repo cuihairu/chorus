@@ -203,6 +203,49 @@ public sealed class RedesignRecoveryStoreTests
     }
 
     [Fact]
+    public async Task ALongRoundReadsOnlyTheBoundedCandidatesAndTheirFrameSpan()
+    {
+        await using var arrange = await Arrange.RunningRoomWithInboxAsync("gift-1");
+        var ids = await arrange.PendingEventIds();
+        var store = new RedesignRecoveryStore(arrange.Database.ConnectionString);
+
+        // A long round: 250 ticks with verified snapshots at 100 and 200 — the tick-0
+        // admission row makes three anchors in total.
+        for (var tick = 1; tick <= 250; tick++)
+        {
+            var inputs = tick == 1 ? [ids[0]] : Array.Empty<string>();
+            await arrange.FrameStore.CommitFrameAsync("tenant-a", "game-a", "room-1",
+                new FrameCommit($"commit-long-{tick}", "gs-1", arrange.Epoch, tick - 1, tick,
+                    inputs, [(byte)tick, (byte)tick, (byte)tick], [], "1.0.0", "cfg-1"));
+            if (tick is 100 or 200)
+            {
+                var payload = new byte[] { (byte)tick, 1, 2 };
+                await store.PutSnapshotAsync("tenant-a", "game-a", "room-1", "gs-1", arrange.Epoch,
+                    tick, payload, SHA256.HashData(payload), 1, $"snap-long-{tick}");
+            }
+        }
+
+        var plan = await store.LoadRecoveryAsync("tenant-a", "game-a", "room-1");
+        Assert.NotNull(plan);
+        Assert.Equal(250, plan!.LastTick);
+        // The bounded candidates: the two newest anchors, newest-first — the tick-0 row stays
+        // unread on the normal path.
+        Assert.Equal([100L, 200L], plan.Snapshots.Select(snapshot => snapshot.Tick).Reverse().ToArray());
+        // The frame span follows the oldest loaded candidate, not the oldest anchor in
+        // history: 150 frames bounded by the snapshot interval, never 250.
+        Assert.Equal(150, plan.Frames.Count);
+        Assert.Equal(101, plan.Frames[0].Tick);
+        Assert.Equal(250, plan.Frames[^1].Tick);
+        // The read is measured, not guessed (FIX-READ-02): the row counts and payload bytes
+        // the plan moved are part of its own answer.
+        Assert.NotNull(plan.Reads);
+        Assert.Equal(2, plan.Reads!.SnapshotRows);
+        Assert.Equal(150, plan.Reads.FrameRows);
+        Assert.Equal(1, plan.Reads.DeliveryRows);
+        Assert.True(plan.Reads.PayloadBytes > 0);
+    }
+
+    [Fact]
     public async Task ARecoveringOwnerPinsTheRecoveryHeadWhileEveryNormalWriteStaysFencedOut()
     {
         await using var arrange = await Arrange.RunningRoomWithInboxAsync("gift-1");

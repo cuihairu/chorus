@@ -21,7 +21,13 @@ public sealed record RecoveryFrame(
 public sealed record RecoveryPlan(
     string RoomId, string Status, long Epoch, long LastTick, long StateVersion,
     IReadOnlyList<RecoverySnapshot> Snapshots, IReadOnlyList<RecoveryDelivery> Deliveries,
-    IReadOnlyList<RecoveryFrame> Frames, IReadOnlyList<RoundParticipantState> Participants);
+    IReadOnlyList<RecoveryFrame> Frames, IReadOnlyList<RoundParticipantState> Participants,
+    RecoveryReadStats? Reads = null);
+
+/// <summary>What the recovery read actually moved (FIX-READ-02): row counts per material and
+/// the payload bytes they carried, so a long round's read cost is measured, not guessed.</summary>
+public sealed record RecoveryReadStats(
+    int SnapshotRows, int FrameRows, int DeliveryRows, long PayloadBytes);
 
 /// <summary>
 /// Snapshot persistence and recovery reads (architecture 8.2, 10.3). PutSnapshot attaches a
@@ -44,6 +50,10 @@ public sealed record RecoveryPlan(
 public sealed class RedesignRecoveryStore(string connectionString, Action? crashAfterSnapshotInsert = null,
     Action? afterHeadRead = null)
 {
+    /// <summary>How many newest snapshot candidates a normal recovery read loads (FIX-READ-02):
+    /// the fallback pair — the same two anchors retention keeps for a settled round.</summary>
+    public const int CandidateDepth = 2;
+
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
 
     /// <summary>
@@ -163,23 +173,27 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
     /// one repeatable-read snapshot (FIX-READ-01): the head the first read sees fixes the
     /// epoch, LastTick and StateVersion, and the material loads cannot mix in a frame, a
     /// snapshot or a status a concurrent commit produced after that instant — the selected
-    /// head is also the immutable boundary any later paging must stay within. Snapshots come
-    /// newest-first; frames cover the oldest snapshot's tick + 1 through the head, so a
+    /// head is also the immutable boundary any later paging must stay within. The normal
+    /// path reads the bounded newest snapshot candidates — the fallback pair, the same two
+    /// retention anchors a settled round keeps — and only the frames from the oldest loaded
+    /// candidate forward (FIX-READ-02), so a long round's read is bounded by the snapshot
+    /// interval, never by the whole history; a room whose history is shorter than the
+    /// candidate window simply loads what exists. Snapshots come newest-first, so a
     /// recoverer can walk any candidate snapshot forward to the head and verify every frame
     /// hash on the way.
     /// </summary>
     public async Task<RecoveryPlan?> LoadRecoveryAsync(string tenantId, string gameId, string roomId,
-        CancellationToken cancellationToken = default)
+        int candidateDepth = CandidateDepth, CancellationToken cancellationToken = default)
     {
         Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
+        if (candidateDepth <= 0) throw new ArgumentOutOfRangeException(nameof(candidateDepth));
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var view = await connection.BeginTransactionAsync(
             IsolationLevel.RepeatableRead, cancellationToken);
-        string status; long epoch, lastTick, stateVersion; long oldestSnapshotTick;
+        string status; long epoch, lastTick, stateVersion;
         await using (var room = new NpgsqlCommand("""
-            SELECT status,epoch,last_tick,state_version,
-                COALESCE((SELECT min(tick_id) FROM game.snapshot WHERE room_id=@room), 0)
+            SELECT status,epoch,last_tick,state_version
             FROM game.room WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
             """, connection, view))
         {
@@ -192,16 +206,16 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
             epoch = reader.GetInt64(1);
             lastTick = reader.GetInt64(2);
             stateVersion = reader.GetInt64(3);
-            oldestSnapshotTick = reader.GetInt64(4);
         }
         afterHeadRead?.Invoke();
         var snapshots = new List<RecoverySnapshot>();
         await using (var list = new NpgsqlCommand("""
             SELECT tick_id,schema_version,payload,payload_hash,verified FROM game.snapshot
-            WHERE room_id=@room ORDER BY tick_id DESC
+            WHERE room_id=@room ORDER BY tick_id DESC LIMIT @depth
             """, connection, view))
         {
             list.Parameters.AddWithValue("room", roomId);
+            list.Parameters.AddWithValue("depth", candidateDepth);
             await using var reader = await list.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
                 snapshots.Add(new RecoverySnapshot(reader.GetInt64(0), reader.GetInt32(1),
@@ -229,7 +243,9 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
             """, connection, view))
         {
             log.Parameters.AddWithValue("room", roomId);
-            log.Parameters.AddWithValue("fromTick", oldestSnapshotTick);
+            // The frame span starts at the oldest loaded candidate: the walk never needs a
+            // frame below any candidate it might replay from.
+            log.Parameters.AddWithValue("fromTick", snapshots.Count > 0 ? snapshots[^1].Tick : 0);
             await using var reader = await log.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
                 frames.Add(new RecoveryFrame(reader.GetInt64(0),
@@ -248,8 +264,13 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
                 participants.Add(new RoundParticipantState(reader.GetString(0), reader.GetString(1),
                     reader.GetString(2), reader.GetString(3)));
         }
+        var reads = new RecoveryReadStats(
+            snapshots.Count, frames.Count, deliveries.Count,
+            snapshots.Sum(snapshot => snapshot.Payload.LongLength + snapshot.PayloadHash.LongLength)
+                + frames.Sum(frame => frame.StateHash.LongLength)
+                + deliveries.Sum(delivery => (long)delivery.PayloadJson.Length));
         var plan = new RecoveryPlan(roomId, status, epoch, lastTick, stateVersion, snapshots, deliveries,
-            frames, participants);
+            frames, participants, reads);
         // The read-only view closes with the plan; a rollback would answer identically, so
         // the commit is just the cheapest exit that keeps the connection reusable.
         await view.CommitAsync(cancellationToken);
