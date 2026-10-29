@@ -110,6 +110,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
 
             var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
                 request.OwnerInstanceId, request.Epoch, configHash, initial, bindings);
+            actor.LoopEnded = Retire;
             if (!_actors.TryAdd(request.RoomId, actor))
             {
                 await actor.DisposeAsync();
@@ -133,6 +134,21 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// <summary>The actor of a room this host runs, or null — subscribers attach to it.</summary>
     internal RoomActor? FindRoom(string roomId) =>
         _actors.TryGetValue(roomId, out var actor) ? actor : null;
+
+    /// <summary>
+    /// Drops an actor whose loop ended without a committed result (FIX-ROOM-04): a stopped
+    /// or disposed actor leaves the dictionary so the room id stops masquerading as running.
+    /// The removal is identity-checked, so a delayed retirement never removes a newer actor
+    /// that has since taken the room; a completed room keeps its actor for the result tail
+    /// until release (FIX-END-14). Repeated retirement is a no-op.
+    /// </summary>
+    internal void Retire(RoomActor actor)
+    {
+        var status = actor.Status();
+        if (status.State is RoomRunState.Running or RoomRunState.Completed) return;
+        ((ICollection<KeyValuePair<string, RoomActor>>)_actors)
+            .Remove(new KeyValuePair<string, RoomActor>(actor.RoomId, actor));
+    }
 
     /// <summary>
     /// Recovers a room this process does not know (architecture 10.3): load the recovery plan,
@@ -292,6 +308,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
                 request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
                 plan.LastTick, plan.StateVersion);
+            actor.LoopEnded = Retire;
             if (!_actors.TryAdd(request.RoomId, actor))
             {
                 await actor.DisposeAsync();

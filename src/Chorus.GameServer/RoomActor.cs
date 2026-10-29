@@ -158,6 +158,10 @@ internal sealed class RoomActor : IAsyncDisposable
                 _subscribers.Clear();
                 _loopEnded = true;
             }
+            // FIX-ROOM-04: the runtime learns the loop ended here, outside the gate — it
+            // retires an actor that will never publish again; a finished room keeps its
+            // actor for the result tail.
+            LoopEnded?.Invoke(this);
         }
     }
 
@@ -463,6 +467,14 @@ internal sealed class RoomActor : IAsyncDisposable
 
     /// <summary>The room epoch subscribers validate against (architecture 8.3).</summary>
     internal long Epoch => _epoch;
+
+    /// <summary>The room this actor runs — the runtime's retirement key (FIX-ROOM-04).</summary>
+    internal string RoomId => _roomId;
+
+    /// <summary>Invoked once when the loop has fully ended, outside the publish gate.
+    /// The runtime retires actors that stopped without a result; finished rooms keep
+    /// theirs for the result tail.</summary>
+    internal Action<RoomActor>? LoopEnded { get; set; }
 
     /// <summary>True once the final frame committed: the room is Finishing on the data plane.</summary>
     public bool Completed => _finalCommitted;
