@@ -62,10 +62,17 @@ public sealed class EdgeRoomFanout(Func<RoomStreamRequest, CancellationToken, IA
         /// <summary>The stream of this room has run to its end. Cancel, never dispose: the
         /// superseded reader may still hold the old token.</summary>
         public CancellationTokenSource StreamCancellation { get; set; } = new();
+        /// <summary>Commands this room's seats sent and the store accepted, awaiting the delta
+        /// that consumes them — command id → the connection that sent it.</summary>
+        public Dictionary<string, string> PendingCommands { get; } = new(StringComparer.Ordinal);
         /// <summary>Serializes frame dispatch per room: the roomJoined send must complete
         /// before the frame queues behind it, and two frames must not interleave mid-room.</summary>
         public SemaphoreSlim Dispatch { get; } = new(1, 1);
     }
+
+    /// <summary>The pending-command bound per room: a client flooding commands the round never
+    /// consumes must not grow the room's tracking set without end.</summary>
+    private const int PendingCommandCapacity = 1024;
 
     private readonly object _gate = new();
     private readonly Dictionary<string, RoomState> _rooms = new(StringComparer.Ordinal);
@@ -128,10 +135,48 @@ public sealed class EdgeRoomFanout(Func<RoomStreamRequest, CancellationToken, IA
             foreach (var room in _rooms.Values)
             {
                 if (!room.Seats.Remove(connectionId)) continue;
+                DropPendingCommands(room, connectionId);
                 if (room.Seats.Count == 0) RemoveRoom(room);
                 break;
             }
         }
+    }
+
+    /// <summary>Registers a command the store accepted for a seat, so the delta that consumes
+    /// it can route the Applied receipt to the connection that sent it. False when the room is
+    /// gone or the connection holds no seat in it — the command raced the room's end or the
+    /// join — or the room's tracking set is full; in every case the command itself is the
+    /// store's to judge, only the receipt's routing is best-effort.</summary>
+    public bool TrackCommand(string roomId, string commandId, string connectionId)
+    {
+        lock (_gate)
+        {
+            if (!_rooms.TryGetValue(roomId, out var room)) return false;
+            if (!room.Seats.ContainsKey(connectionId)) return false;
+            if (room.PendingCommands.Count >= PendingCommandCapacity
+                && !room.PendingCommands.ContainsKey(commandId))
+                return false;
+            room.PendingCommands[commandId] = connectionId;
+            return true;
+        }
+    }
+
+    /// <summary>Drops a pending registration — a command the store refused has no Applied leg.</summary>
+    public void UntrackCommand(string roomId, string commandId)
+    {
+        lock (_gate)
+        {
+            if (_rooms.TryGetValue(roomId, out var room)) room.PendingCommands.Remove(commandId);
+        }
+    }
+
+    private static void DropPendingCommands(RoomState room, string connectionId)
+    {
+        // The caller holds the gate.
+        if (room.PendingCommands.Count == 0) return;
+        foreach (var command in room.PendingCommands
+            .Where(pair => pair.Value == connectionId).Select(pair => pair.Key).ToList())
+            room.PendingCommands.Remove(command);
     }
 
     /// <summary>Re-baselines a room from zero: the actor answers with the head snapshot and
@@ -343,6 +388,27 @@ public sealed class EdgeRoomFanout(Func<RoomStreamRequest, CancellationToken, IA
                         // A refused delta means the ordered queue is full: only a snapshot
                         // re-baselines it, and the room re-subscription below delivers one.
                         seat.Connection.Outbox.TryEnqueueOrdered(frame);
+                    }
+                    // The delta that consumes a command is the applied word (contracts 3.2):
+                    // each receipt follows the delta that carries it, on the ordered lane, to
+                    // exactly the seat that sent the command.
+                    foreach (var command in delta.Commands)
+                    {
+                        string? ownerId;
+                        lock (_gate)
+                        {
+                            if (!room.PendingCommands.Remove(command.CommandId, out ownerId))
+                                continue;
+                        }
+                        var owner = SeatsOf(room).FirstOrDefault(
+                            seat => seat.Connection.ConnectionId == ownerId);
+                        if (owner is null) continue;
+                        owner.Connection.Outbox.TryEnqueueOrdered(JsonSerializer.Serialize(
+                            new EdgeCommandReceipt
+                            {
+                                CommandId = command.CommandId, Status = "Applied",
+                                ReceiptId = $"{room.RoomId}:{command.Sequence}"
+                            }, EdgeJson.Options));
                     }
                     lock (_gate)
                     {

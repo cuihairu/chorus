@@ -243,6 +243,89 @@ public sealed class RedesignM4FanoutUnitTests
     }
 
     [Fact]
+    public async Task AConsumedCommandReceiptFollowsItsDeltaToTheSeatThatSentIt()
+    {
+        // The delta waits on a signal: the command must be tracked before the frame that
+        // consumes it exists, exactly like the wire (track, store, then the tick commits).
+        var signal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sync = new ScriptedSync().Stream(ct => DeltaAfterSignal(signal, ct));
+        var fanout = Fanout(sync);
+        using var seat = new RecordedConnection("conn-a");
+        fanout.Join("room-1", "game-a", "https://host-1", 4, "streamer", seat.Connection);
+        await WaitAsync(seat, 2);
+        Assert.True(fanout.TrackCommand("room-1", "cmd-1", "conn-a"));
+        // A connection that holds no seat, and a room that does not exist, track nothing —
+        // the receipt's routing is best-effort, never the command's fate.
+        Assert.False(fanout.TrackCommand("room-1", "cmd-other", "conn-gone"));
+        Assert.False(fanout.TrackCommand("room-none", "cmd-2", "conn-a"));
+
+        signal.SetResult();
+        // delta then its receipt — in that order, on the ordered lane.
+        var frames = await WaitAsync(seat, 4);
+        Assert.Equal("delta", frames[2].GetProperty("type").GetString());
+        Assert.Equal("commandReceipt", frames[3].GetProperty("type").GetString());
+        Assert.Equal("cmd-1", frames[3].GetProperty("commandId").GetString());
+        Assert.Equal("Applied", frames[3].GetProperty("status").GetString());
+        Assert.Equal("room-1:7", frames[3].GetProperty("receiptId").GetString());
+        // The untracked command in the same delta routes nowhere.
+        await Task.Delay(200, CancellationToken.None);
+        lock (seat.Frames) Assert.Equal(4, seat.Frames.Count);
+    }
+
+    private static async IAsyncEnumerable<SyncMessage> DeltaAfterSignal(
+        TaskCompletionSource signal, [EnumeratorCancellation] CancellationToken cancellation)
+    {
+        yield return Snapshot(4, 0, 1);
+        await signal.Task.WaitAsync(cancellation);
+        yield return new SyncMessage
+        {
+            Delta = new DeltaMessage
+            {
+                RoomId = "room-1", Epoch = 4, Tick = 1, StateVersion = 2,
+                BaseVersion = 1, ModuleVersion = "mod-1", ConfigHash = "cfg-1",
+                Commands =
+                {
+                    new CommandReceiptProto { CommandId = "cmd-1", Sequence = 7 },
+                    new CommandReceiptProto { CommandId = "cmd-other", Sequence = 8 }
+                }
+            }
+        };
+        await Task.Delay(Timeout.Infinite, cancellation);
+    }
+
+    [Fact]
+    public void CommandAndLeaveUplinksSpeakTheContractFieldNames()
+    {
+        var command = JsonSerializer.Serialize(new EdgeGameCommand
+        {
+            CommandId = "cmd-1", RoomId = "room-1", RoomEpoch = 4, ClientSequence = 2,
+            Payload = JsonDocument.Parse("""{"action":"boost"}""").RootElement
+        }, EdgeJson.Options);
+        Assert.Contains("\"type\":\"gameCommand\"", command);
+        Assert.Contains("\"commandId\":\"cmd-1\"", command);
+        Assert.Contains("\"roomId\":\"room-1\"", command);
+        Assert.Contains("\"roomEpoch\":4", command);
+        Assert.Contains("\"clientSequence\":2", command);
+        Assert.Contains("\"payload\":{\"action\":\"boost\"}", command);
+
+        var leave = JsonSerializer.Serialize(new EdgeLeaveRound
+        {
+            OperationId = "leave-1", RoomId = "room-1", Reason = "done"
+        }, EdgeJson.Options);
+        Assert.Contains("\"type\":\"leaveRound\"", leave);
+        Assert.Contains("\"operationId\":\"leave-1\"", leave);
+        Assert.Contains("\"reason\":\"done\"", leave);
+
+        var receipt = JsonSerializer.Serialize(new EdgeCommandReceipt
+        {
+            CommandId = "cmd-1", Status = "Accepted", ReceiptId = "room-1:7"
+        }, EdgeJson.Options);
+        Assert.Contains("\"type\":\"commandReceipt\"", receipt);
+        Assert.Contains("\"status\":\"Accepted\"", receipt);
+        Assert.Contains("\"receiptId\":\"room-1:7\"", receipt);
+    }
+
+    [Fact]
     public async Task AParkedRoomSurfacesAsSuspendedAndAVanishedRoomAsResync()
     {
         // Suspended: the client learns the room parked itself — visibly, with the recovery

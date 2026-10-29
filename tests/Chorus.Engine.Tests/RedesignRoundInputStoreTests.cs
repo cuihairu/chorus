@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using Chorus.ControlServer;
 using Chorus.Data.Redesign;
 using Chorus.DataServer;
@@ -298,6 +299,191 @@ public sealed class RedesignRoundInputStoreTests
                 WHERE platform='@chorus' AND disposition='Routed' AND attributed_room_id='room-1'
                 """, connection))
                 Assert.Equal(2L, Convert.ToInt64(await dispositions.ExecuteScalarAsync()));
+        }
+    }
+
+    [Fact]
+    public async Task WithdrawalIsIdempotentAndFreesTheSeatWhileTheRoomRunsOn()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+
+        var (p1, b1, s1) = await MountAsync(identityStore, bindingStore, "live-key-w1");
+        var (p2, b2, s2) = await MountAsync(identityStore, bindingStore, "live-key-w2");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-w1", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-w1", "gs-1", claim.Epoch,
+        [
+            new RoundParticipant(b1.BindingId, p1.StreamerId, "Host"),
+            new RoundParticipant(b2.BindingId, p2.StreamerId, "Challenger")
+        ], "1.0.0", "cfg-1", "pkg-1", "start-w1");
+
+        var withdrawn = await inputStore.WithdrawParticipationAsync("tenant-a", "game-a", s1.SessionId,
+            "room-w1", "leave-1");
+        Assert.Equal("room-w1", withdrawn.RoomId);
+        Assert.Equal("Left", withdrawn.State);
+        Assert.False(withdrawn.Duplicate);
+
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var rows = new NpgsqlCommand("""
+                SELECT p.participant_id,p.state,(b.current_room_id IS NOT DISTINCT FROM 'room-w1')
+                FROM game.participation p
+                JOIN live.binding b ON b.binding_id=p.binding_id
+                WHERE p.room_id='room-w1'
+                """, connection))
+            {
+                var byParticipant = new Dictionary<string, (string State, bool InRoom)>();
+                await using (var reader = await rows.ExecuteReaderAsync())
+                {
+                    while (await reader.ReadAsync())
+                        byParticipant[reader.GetString(0)] = (reader.GetString(1), reader.GetBoolean(2));
+                }
+                Assert.Equal(("Left", false), byParticipant[p1.StreamerId]);
+                Assert.Equal(("Active", true), byParticipant[p2.StreamerId]);
+            }
+            // The room itself never moved: the leaver's exit is not the round's end.
+            await using (var room = new NpgsqlCommand(
+                "SELECT status FROM game.room WHERE room_id='room-w1'", connection))
+                Assert.Equal("Preparing", await room.ExecuteScalarAsync());
+        }
+
+        var retry = await inputStore.WithdrawParticipationAsync("tenant-a", "game-a", s1.SessionId,
+            "room-w1", "leave-1");
+        Assert.True(retry.Duplicate);
+        Assert.Equal("Left", retry.State);
+        // A second operation on an already-Left participation withdraws quietly — the
+        // leaver's retry after a lost reply is never punished.
+        var again = await inputStore.WithdrawParticipationAsync("tenant-a", "game-a", s1.SessionId,
+            "room-w1", "leave-1b");
+        Assert.False(again.Duplicate);
+        Assert.Equal("Left", again.State);
+    }
+
+    [Fact]
+    public async Task WithdrawalFencesTheSessionTheRoomAndTheGame()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+
+        var (p1, b1, s1) = await MountAsync(identityStore, bindingStore, "live-key-w3");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-w3", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-w3", "gs-1", claim.Epoch,
+            [new RoundParticipant(b1.BindingId, p1.StreamerId, "Host")],
+            "1.0.0", "cfg-1", "pkg-1", "start-w3");
+
+        // A room this streamer never joined.
+        await Assert.ThrowsAsync<RoundAdmissionException>(() => inputStore.WithdrawParticipationAsync(
+            "tenant-a", "game-a", s1.SessionId, "room-none", "leave-x"));
+        // The wrong game names a binding that does not belong to it.
+        await Assert.ThrowsAsync<RoundAdmissionException>(() => inputStore.WithdrawParticipationAsync(
+            "tenant-a", "game-b", s1.SessionId, "room-w3", "leave-x"));
+        // A session another login replaced no longer speaks for the mount.
+        var takeover = await identityStore.LoginAsync(p1.StreamerId, "gateway-1", "connection-w3",
+            RandomNumberGenerator.GetBytes(32));
+        await Assert.ThrowsAsync<SessionRevokedException>(() => inputStore.WithdrawParticipationAsync(
+            "tenant-a", "game-a", s1.SessionId, "room-w3", "leave-x"));
+        // The room ending the participation first makes withdrawal a visible rejection —
+        // the abort closes the still-active seat, and a closed seat cannot leave.
+        await roomStore.AbortRoundAsync("tenant-a", "game-a", "room-w3", "gs-1", claim.Epoch,
+            "host-left", "abort-w3");
+        await Assert.ThrowsAsync<RoundAdmissionException>(() => inputStore.WithdrawParticipationAsync(
+            "tenant-a", "game-a", takeover.SessionId, "room-w3", "leave-late"));
+    }
+
+    [Fact]
+    public async Task CommandsStopAtTheSeatThatLeftWhileTheRoomAcceptsTheRest()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+
+        var (p1, b1, s1) = await MountAsync(identityStore, bindingStore, "live-key-w4");
+        var (p2, b2, s2) = await MountAsync(identityStore, bindingStore, "live-key-w5");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-w4", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-w4", "gs-1", claim.Epoch,
+        [
+            new RoundParticipant(b1.BindingId, p1.StreamerId, "Host"),
+            new RoundParticipant(b2.BindingId, p2.StreamerId, "Challenger")
+        ], "1.0.0", "cfg-1", "pkg-1", "start-w4");
+
+        await inputStore.WithdrawParticipationAsync("tenant-a", "game-a", s1.SessionId, "room-w4",
+            "leave-1");
+        const string payload = """{"action":"boost","level":2}""";
+        await Assert.ThrowsAsync<RoundAdmissionException>(() => inputStore.AcceptClientInputAsync(
+            "tenant-a", "game-a", s1.SessionId, "room-w4", claim.Epoch, "cmd-left", payload));
+        var staying = await inputStore.AcceptClientInputAsync("tenant-a", "game-a", s2.SessionId,
+            "room-w4", claim.Epoch, "cmd-stays", payload);
+        Assert.Equal(1L, staying.Sequence);
+    }
+
+    [Fact]
+    public async Task AFinalizedRoundAcceptsALeftParticipation()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+        var frameStore = new RedesignFrameStore(database.ConnectionString);
+        var settlementStore = new RedesignSettlementStore(database.ConnectionString);
+
+        var (p1, b1, s1) = await MountAsync(identityStore, bindingStore, "live-key-w6");
+        var (p2, b2, s2) = await MountAsync(identityStore, bindingStore, "live-key-w7");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-w6", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-w6", "gs-1", claim.Epoch,
+        [
+            new RoundParticipant(b1.BindingId, p1.StreamerId, "Host"),
+            new RoundParticipant(b2.BindingId, p2.StreamerId, "Challenger")
+        ], "1.0.0", "cfg-1", "pkg-1", "start-w6");
+        await roomStore.PrepareRoundAsync("tenant-a", "game-a", "room-w6", "gs-1", claim.Epoch,
+            [1, 2, 3], [4, 5, 6], 1, "prepare-w6");
+        await roomStore.ActivateRoundAsync("tenant-a", "game-a", "room-w6", "gs-1", claim.Epoch,
+            "activate-w6");
+        await inputStore.WithdrawParticipationAsync("tenant-a", "game-a", s1.SessionId, "room-w6",
+            "leave-1");
+        const string resultJson = """{"winner":"red"}""";
+        await frameStore.CommitFrameAsync("tenant-a", "game-a", "room-w6",
+            new FrameCommit("final-w6", "gs-1", claim.Epoch, 0, 1, [], [9, 9, 9], [],
+                "1.0.0", "cfg-1", Final: true, ResultJson: resultJson,
+                PlanHash: SHA256.HashData(Encoding.UTF8.GetBytes(resultJson)),
+                Grants: [new PlannedGrant("p1", "round-score", "room-w6/grant/p1", "points", 100)]));
+        await settlementStore.CommitResultAsync("tenant-a", "game-a", "room-w6", "settle-w6");
+        var finalized = await settlementStore.FinalizeRoundAsync("tenant-a", "game-a", "room-w6",
+            "finalize-w6");
+        Assert.Equal("Settled", finalized.Status);
+
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync();
+        await using (var rows = new NpgsqlCommand("""
+            SELECT p.participant_id,p.state,(b.current_room_id IS NULL)
+            FROM game.participation p
+            JOIN live.binding b ON b.binding_id=p.binding_id
+            WHERE p.room_id='room-w6'
+            """, connection))
+        {
+            var byParticipant = new Dictionary<string, (string State, bool Freed)>();
+            await using (var reader = await rows.ExecuteReaderAsync())
+            {
+                while (await reader.ReadAsync())
+                    byParticipant[reader.GetString(0)] = (reader.GetString(1), reader.GetBoolean(2));
+            }
+            // The leaver stays Left — finalize's close only touches Active/Offline — and both
+            // pointers end freed: the withdrawal cleared its own, the terminator cleared the rest.
+            Assert.Equal(("Left", true), byParticipant[p1.StreamerId]);
+            Assert.Equal(("Closed", true), byParticipant[p2.StreamerId]);
         }
     }
 

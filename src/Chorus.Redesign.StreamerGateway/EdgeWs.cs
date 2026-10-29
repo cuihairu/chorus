@@ -23,7 +23,8 @@ public sealed class EdgeWs(
     EdgeOptions options, EdgeSessionRegistry registry, TenantApplicationMap tenantApplications,
     EdgeSessionClient sessionClient, string gatewayInstanceId,
     EdgeQueueClient? queueClient = null, EdgeRoutingMonitor? routingMonitor = null,
-    EdgeRoundClient? roundClient = null, EdgeRoomFanout? fanout = null)
+    EdgeRoundClient? roundClient = null, EdgeRoomFanout? fanout = null,
+    EdgeInputClient? inputClient = null)
 {
     private const int ReceiveChunkBytes = 8 * 1024;
 
@@ -216,15 +217,20 @@ public sealed class EdgeWs(
                     }
                     break;
                 }
-                case EdgeTypes.GameCommand or EdgeTypes.LeaveRound:
-                    // In the protocol, wired in a later round of this milestone — an honest
-                    // refusal, not a silent drop.
-                    await connection.SendJsonAsync(new EdgeError
-                    {
-                        Code = EdgeErrorCodes.InvalidMessage,
-                        Message = $"The {type} uplink is not enabled on this gateway yet."
-                    }, cancellation);
+                case EdgeTypes.GameCommand:
+                {
+                    var command = root.Deserialize<EdgeGameCommand>(EdgeJson.Options)
+                        ?? throw new JsonException();
+                    await HandleGameCommandAsync(connection, command, cancellation);
                     break;
+                }
+                case EdgeTypes.LeaveRound:
+                {
+                    var leave = root.Deserialize<EdgeLeaveRound>(EdgeJson.Options)
+                        ?? throw new JsonException();
+                    await HandleLeaveRoundAsync(connection, leave, cancellation);
+                    break;
+                }
                 default:
                     // A closed type set (contracts 3.1): what is not defined is a violation,
                     // not a future message to skip over.
@@ -443,6 +449,98 @@ public sealed class EdgeWs(
         }
     }
 
+    /// <summary>GameCommand (contracts 3.1): the store's transaction is the judge — the
+    /// current session, the active participation, the live epoch. The Accepted receipt means
+    /// durably in the round's input record; the Applied word arrives on the sync stream with
+    /// the delta that consumes the command, which is why the command is tracked with the
+    /// fan-out before the store is asked.</summary>
+    private async Task HandleGameCommandAsync(EdgeConnection connection, EdgeGameCommand command,
+        CancellationToken cancellation)
+    {
+        if (inputClient is null || !connection.HasGameplay || connection.TenantId is not { Length: > 0 })
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "Start gameplay before sending game commands.",
+                OperationId = command.CommandId
+            }, cancellation);
+            return;
+        }
+        if (command.RoomId is not { Length: > 0 } || command.RoomEpoch <= 0
+            || command.Payload.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "A command must name its room, epoch and payload.",
+                OperationId = command.CommandId
+            }, cancellation);
+            return;
+        }
+        // Registered first: a frame that consumes the command the instant the receipt returns
+        // still finds its owner. A command the store then refuses is untracked below.
+        fanout?.TrackCommand(command.RoomId, command.CommandId, connection.ConnectionId);
+        try
+        {
+            var reply = await inputClient.AcceptClientInputAsync(connection.TenantId!,
+                connection.SessionId!, command.RoomId, command.RoomEpoch, connection.GameId!,
+                command.CommandId, command.Payload.GetRawText(), cancellation);
+            await connection.SendJsonAsync(new EdgeCommandReceipt
+            {
+                CommandId = reply.CommandId,
+                Status = "Accepted",
+                ReceiptId = $"{reply.RoomId}:{reply.Sequence}"
+            }, cancellation);
+        }
+        catch (RpcException error)
+        {
+            fanout?.UntrackCommand(command.RoomId, command.CommandId);
+            await RefuseAsync(connection, error, command.CommandId, cancellation, queueErrors: true,
+                invalidText: "The command is not valid for the mount's current round.");
+        }
+    }
+
+    /// <summary>LeaveRound (contracts 3.1): the participation withdraws on the store's word and
+    /// the room runs to its natural settlement for everyone else. The seat leaves the fan-out —
+    /// no more frames for a room the mount stepped out of — and success is silent: the protocol
+    /// has no leave acknowledgment, and the leaver's next word from the plane is a fresh match.</summary>
+    private async Task HandleLeaveRoundAsync(EdgeConnection connection, EdgeLeaveRound leave,
+        CancellationToken cancellation)
+    {
+        if (inputClient is null || !connection.HasGameplay || connection.TenantId is not { Length: > 0 })
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "Start gameplay before leaving a round.",
+                OperationId = leave.OperationId
+            }, cancellation);
+            return;
+        }
+        if (leave.RoomId is not { Length: > 0 })
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "A leave must name its room.",
+                OperationId = leave.OperationId
+            }, cancellation);
+            return;
+        }
+        try
+        {
+            await inputClient.WithdrawParticipationAsync(connection.TenantId!, connection.SessionId!,
+                leave.RoomId, connection.GameId!, leave.OperationId, cancellation);
+            fanout?.Leave(connection.ConnectionId);
+        }
+        catch (RpcException error)
+        {
+            await RefuseAsync(connection, error, leave.OperationId, cancellation, queueErrors: true,
+                invalidText: "The room is not active for this mount.");
+        }
+    }
+
     /// <summary>The routing watch callback: the mount's room appeared (or moved). The room
     /// becomes routing-visible the moment the round starts — before the ticket commits — so the
     /// push converges on the ticket: while the reservation is mid-flight (Reserved/Preparing)
@@ -572,7 +670,8 @@ public sealed class EdgeWs(
     }
 
     private static async Task RefuseAsync(EdgeConnection connection, RpcException error,
-        string? operationId, CancellationToken cancellation, bool queueErrors = false)
+        string? operationId, CancellationToken cancellation, bool queueErrors = false,
+        string? invalidText = null)
     {
         var mapped = queueErrors
             ? EdgeErrorMapping.FromQueueRpcStatus(error.StatusCode)
@@ -586,9 +685,9 @@ public sealed class EdgeWs(
             {
                 EdgeErrorCodes.SessionRevoked => "The session was refused or has ended.",
                 EdgeErrorCodes.SessionReplaced => "The session was replaced by another login.",
-                EdgeErrorCodes.InvalidMessage => queueErrors
+                EdgeErrorCodes.InvalidMessage => invalidText ?? (queueErrors
                     ? "The queue request is not valid for the mount's current ticket."
-                    : "The request is not valid.",
+                    : "The request is not valid."),
                 _ => "The request could not be completed."
             },
             OperationId = operationId

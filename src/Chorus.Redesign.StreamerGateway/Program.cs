@@ -87,6 +87,11 @@ var roundClient = new EdgeRoundClient(
 var gameChannels = new EdgeGameChannelPool(
     endpoint => ProcessGrpcClientFactory.Create(new Uri(endpoint), serverCertificate,
         root, nodeAuthority, clusterId, "game-server"));
+// The round input boundary (commands in, participations out) rides the same data-plane
+// endpoint as the queue; the edge names the tenant on every call.
+var inputClient = new EdgeInputClient(
+    () => ProcessGrpcClientFactory.Create(new Uri(dataEndpoint), serverCertificate,
+        root, nodeAuthority, clusterId, "data-server"));
 EdgeRoomFanout? fanout = null;
 if (routingMonitor is not null)
 {
@@ -116,7 +121,7 @@ if (routingMonitor is not null)
     };
 }
 var edgeWs = new EdgeWs(edgeOptions, registry, tenantApplications, sessionClient,
-    identity.ProcessInstanceId, queueClient, routingMonitor, roundClient, fanout);
+    identity.ProcessInstanceId, queueClient, routingMonitor, roundClient, fanout, inputClient);
 
 // Instance self-registration (architecture 4.4): the gateway reports its internal gRPC
 // endpoint — routing consumers are cluster processes, never public clients. The same control

@@ -268,8 +268,38 @@ public sealed class RoundInputGrpcService(
 {
     public override Task<ReadyReply> Ready(Empty request, ServerCallContext context)
     {
-        Require(context, "control-server", "game-server", "streamer-server", "platform-gateway");
+        Require(context, "control-server", "game-server", "streamer-server", "platform-gateway",
+            "streamer-gateway");
         return Task.FromResult(new ReadyReply { Ready = true, SchemaVersion = "4" });
+    }
+
+    public override async Task<ParticipationReply> WithdrawParticipation(
+        WithdrawParticipationRequest request, ServerCallContext context)
+    {
+        var caller = Require(context, "streamer-server", "game-server", "streamer-gateway");
+        try
+        {
+            var withdrawn = await inputStore.WithdrawParticipationAsync(TenantFor(caller, request.TenantId),
+                request.GameId, request.SessionId, request.RoomId, request.OperationId,
+                context.CancellationToken);
+            return new ParticipationReply
+            {
+                RoomId = withdrawn.RoomId, State = withdrawn.State, Duplicate = withdrawn.Duplicate
+            };
+        }
+        catch (SessionRevokedException)
+        {
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked."));
+        }
+        catch (RoundAdmissionException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
     public override async Task<RouteEventsReply> RouteEvents(RouteEventsRequest request,
@@ -307,11 +337,11 @@ public sealed class RoundInputGrpcService(
     public override async Task<ClientInputReply> AcceptClientInput(ClientInputRequest request,
         ServerCallContext context)
     {
-        var caller = Require(context, "streamer-server", "game-server");
+        var caller = Require(context, "streamer-server", "game-server", "streamer-gateway");
         try
         {
-            var receipt = await inputStore.AcceptClientInputAsync(caller.TenantId, request.GameId,
-                request.SessionId, request.RoomId, request.RoomEpoch, request.CommandId,
+            var receipt = await inputStore.AcceptClientInputAsync(TenantFor(caller, request.TenantId),
+                request.GameId, request.SessionId, request.RoomId, request.RoomEpoch, request.CommandId,
                 request.PayloadJson, context.CancellationToken);
             return new ClientInputReply
             {
@@ -349,5 +379,14 @@ public sealed class RoundInputGrpcService(
         if (!roles.Contains(caller.Role, StringComparer.Ordinal))
             throw new RpcException(new Status(StatusCode.PermissionDenied, "Role is not authorized."));
         return caller;
+    }
+
+    /// <summary>Empty names the certificate tenant; otherwise a cluster scope may name any tenant.</summary>
+    private static string TenantFor(ProcessIdentity caller, string requested)
+    {
+        if (string.IsNullOrEmpty(requested)) return caller.TenantId;
+        if (caller.TenantId != "@cluster" && caller.TenantId != requested)
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Tenant is not authorized."));
+        return requested;
     }
 }

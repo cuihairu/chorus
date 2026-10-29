@@ -118,6 +118,24 @@ message ClientInputRequest {
   string game_id = 4;
   string command_id = 5;
   string payload_json = 6;
+  // A cluster-scoped caller names the tenant; empty means the caller's own.
+  string tenant_id = 7;
+}
+
+// LeaveRound as the data plane owns it (contracts 3.1): the participation withdraws
+// while the room runs to its natural settlement — no abort, no early result.
+message WithdrawParticipationRequest {
+  string tenant_id = 1;
+  string session_id = 2;
+  string room_id = 3;
+  string game_id = 4;
+  string operation_id = 5;
+}
+
+message ParticipationReply {
+  string room_id = 1;
+  string state = 2;
+  bool duplicate = 3;
 }
 
 message ClientInputReply {
@@ -289,6 +307,7 @@ service RoundInput {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc RouteEvents(RouteEventsRequest) returns (RouteEventsReply);
   rpc AcceptClientInput(ClientInputRequest) returns (ClientInputReply);
+  rpc WithdrawParticipation(WithdrawParticipationRequest) returns (ParticipationReply);
 }
 
 // Settlement and round finalization (architecture 9.3). The final frame commits the

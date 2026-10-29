@@ -5,7 +5,7 @@ using Grpc.Core;
 namespace Chorus.ControlServer;
 
 /// <summary>The coordinator's identity and cadence, resolved from its certificate and configuration.</summary>
-public sealed record MatchCoordinatorOptions(string InstanceId, int IntervalMs);
+public sealed record MatchCoordinatorOptions(string InstanceId, int IntervalMs, int DurationTicks = 40);
 
 /// <summary>
 /// The production match coordinator (architecture 7.1-7.3, 10.1): a ControlServer background
@@ -290,7 +290,7 @@ public sealed class MatchCoordinatorService(
         {
             RoomId = roomId, GameId = gameId, OwnerInstanceId = ownership.OwnerInstanceId,
             Epoch = ownership.Epoch, OperationId = "prepare-" + roomId,
-            DurationTicks = 40, RandomSeed = SeedFor(roomId), TickMs = 25,
+            DurationTicks = options.DurationTicks, RandomSeed = SeedFor(roomId), TickMs = 25,
             Participants = { candidates.Select(candidate => new GameParticipantProto
             {
                 BindingId = candidate.BindingId, ParticipantId = candidate.ParticipantId,

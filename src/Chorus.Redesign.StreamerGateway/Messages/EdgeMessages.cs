@@ -250,3 +250,42 @@ public sealed record EdgeResyncRequired
     public long RoomEpoch { get; init; }
     public string? Reason { get; init; }
 }
+
+/// <summary>GameCommand (contracts 3.1): one durable command into the round the mount plays.
+/// The session and the participation validate in the store's transaction; the identity fields
+/// a client might attach are ignored — the mount's authenticated facts are the address.</summary>
+public sealed record EdgeGameCommand
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.GameCommand;
+    public required string CommandId { get; init; }
+    public required string RoomId { get; init; }
+    public long RoomEpoch { get; init; }
+    public long ClientSequence { get; init; }
+    public required System.Text.Json.JsonElement Payload { get; init; }
+}
+
+/// <summary>LeaveRound (contracts 3.1): withdraw from the round; the room runs to its natural
+/// settlement without the leaver. The reason is diagnostics the client names, never a fact the
+/// plane acts on.</summary>
+public sealed record EdgeLeaveRound
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.LeaveRound;
+    public required string OperationId { get; init; }
+    public required string RoomId { get; init; }
+    public string? Reason { get; init; }
+}
+
+/// <summary>CommandReceipt (contracts 3.2): the two words a command hears. Accepted means
+/// durably in the round's input record — not applied; Applied rides right after the delta that
+/// consumed the command. The receipt id is the room and the store-assigned sequence, so an
+/// exact retry replays the same receipt.</summary>
+public sealed record EdgeCommandReceipt
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.CommandReceipt;
+    public required string CommandId { get; init; }
+    public required string Status { get; init; }
+    public required string ReceiptId { get; init; }
+}

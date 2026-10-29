@@ -16,6 +16,10 @@ namespace Chorus.Engine.Tests;
 /// dropped connection rejoins by resume with a fresh snapshot at its declared baseline, a
 /// requestSnapshot re-baselines the chain, acknowledgements are recorded and never answered,
 /// and a room that parks itself surfaces as roomSuspended — visibly, never as a freeze.
+/// M4-5 adds the command legs on the same cluster: a game command is Accepted (durably in
+/// the record) then Applied with the delta that consumed it, a refused command is a visible
+/// error on a connection that stays open, and a LeaveRound withdraws the mount quietly while
+/// the room settles for everyone still in it.
 /// </summary>
 public sealed class RedesignM4HostRoundTests
 {
@@ -214,7 +218,209 @@ public sealed class RedesignM4HostRoundTests
         Assert.Equal(epoch, suspended.GetProperty("recoveryAttempt").GetInt64());
     }
 
+    [Fact]
+    public async Task CommandsAreAcceptedThenAppliedWithTheirDelta()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        // A long round: the command must land while the room still ticks, not race its end.
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment, roundDurationTicks: 400);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var first = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        using var second = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await first.HelloAsync();
+        await second.HelloAsync();
+        await LoginAndStartAsync(first, simulator, "open-m4-cmd-a");
+        await LoginAndStartAsync(second, simulator, "open-m4-cmd-b");
+        await QueueAsync(first, "join-a");
+        await QueueAsync(second, "join-b");
+        var room = await AwaitMatchAsync(first);
+        await AwaitMatchAsync(second);
+
+        var head = await ReadUntilAsync(first, EdgeTypes.Delta, TimeSpan.FromSeconds(30));
+        var roomEpoch = FirstFrameOf(head, EdgeTypes.RoomJoined).GetProperty("roomEpoch").GetInt64();
+        const string commandId = "cmd-edge-1";
+        await first.SendAsync(new EdgeGameCommand
+        {
+            CommandId = commandId, RoomId = room, RoomEpoch = roomEpoch, ClientSequence = 1,
+            Payload = JsonDocument.Parse("""{"action":"boost","level":2}""").RootElement
+        });
+        // Accepted: durably in the round's input record — a receipt, not a game effect.
+        var toAccepted = await ReadUntilAsync(first, EdgeTypes.CommandReceipt, TimeSpan.FromSeconds(30));
+        var accepted = toAccepted[^1];
+        Assert.Equal(commandId, accepted.GetProperty("commandId").GetString());
+        Assert.Equal("Accepted", accepted.GetProperty("status").GetString());
+        var receiptId = accepted.GetProperty("receiptId").GetString()!;
+        Assert.True(receiptId.StartsWith(room + ":", StringComparison.Ordinal), receiptId);
+
+        // Applied: rides right after the delta that consumed the command (contracts 3.2).
+        var toApplied = await ReadUntilAsync(first, EdgeTypes.CommandReceipt, TimeSpan.FromSeconds(30));
+        var applied = toApplied[^1];
+        Assert.Equal(commandId, applied.GetProperty("commandId").GetString());
+        Assert.Equal("Applied", applied.GetProperty("status").GetString());
+        Assert.Contains(toApplied.Take(toApplied.Count - 1),
+            frame => frame.GetProperty("type").GetString() == EdgeTypes.Delta);
+
+        // An exact retry replays the same receipt: one command, one sequence, one id.
+        await first.SendAsync(new EdgeGameCommand
+        {
+            CommandId = commandId, RoomId = room, RoomEpoch = roomEpoch, ClientSequence = 1,
+            Payload = JsonDocument.Parse("""{"action":"boost","level":2}""").RootElement
+        });
+        var retried = (await ReadUntilAsync(first, EdgeTypes.CommandReceipt, TimeSpan.FromSeconds(30)))[^1];
+        Assert.Equal("Accepted", retried.GetProperty("status").GetString());
+        Assert.Equal(receiptId, retried.GetProperty("receiptId").GetString());
+
+        // The connection stays a connection after all of it.
+        await AssertPingWorksAsync(first);
+    }
+
+    [Fact]
+    public async Task ACommandTheRoundCannotAcceptIsRefusedVisibly()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment, roundDurationTicks: 400);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var first = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        using var second = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await first.HelloAsync();
+        await second.HelloAsync();
+        await LoginAndStartAsync(first, simulator, "open-m4-cmdx-a");
+        await LoginAndStartAsync(second, simulator, "open-m4-cmdx-b");
+        await QueueAsync(first, "join-a");
+        await QueueAsync(second, "join-b");
+        var room = await AwaitMatchAsync(first);
+        await AwaitMatchAsync(second);
+
+        var head = await ReadUntilAsync(first, EdgeTypes.Delta, TimeSpan.FromSeconds(30));
+        var roomEpoch = FirstFrameOf(head, EdgeTypes.RoomJoined).GetProperty("roomEpoch").GetInt64();
+        // A stale epoch is fenced by the store; the edge says invalid_message and the
+        // connection stays open for the command that names the live epoch.
+        await first.SendAsync(new EdgeGameCommand
+        {
+            CommandId = "cmd-stale", RoomId = room, RoomEpoch = roomEpoch + 9, ClientSequence = 1,
+            Payload = JsonDocument.Parse("""{"action":"boost"}""").RootElement
+        });
+        var refused = await first.ExpectAsync(EdgeTypes.Error, TimeSpan.FromSeconds(30));
+        Assert.Equal(EdgeErrorCodes.InvalidMessage, refused.GetProperty("code").GetString());
+        await first.SendAsync(new EdgeGameCommand
+        {
+            CommandId = "cmd-live", RoomId = room, RoomEpoch = roomEpoch, ClientSequence = 2,
+            Payload = JsonDocument.Parse("""{"action":"boost"}""").RootElement
+        });
+        var accepted = await first.ExpectAsync(EdgeTypes.CommandReceipt, TimeSpan.FromSeconds(30));
+        Assert.Equal("cmd-live", accepted.GetProperty("commandId").GetString());
+        await AssertPingWorksAsync(first);
+    }
+
+    [Fact]
+    public async Task LeaveRoundStopsFramesForTheLeaverWhileTheRoomSettles()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var first = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        using var second = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await first.HelloAsync();
+        await second.HelloAsync();
+        await LoginAndStartAsync(first, simulator, "open-m4-leave-a");
+        await LoginAndStartAsync(second, simulator, "open-m4-leave-b");
+        await QueueAsync(first, "join-a");
+        await QueueAsync(second, "join-b");
+        var room = await AwaitMatchAsync(first);
+        await AwaitMatchAsync(second);
+        await ReadUntilAsync(first, EdgeTypes.Delta, TimeSpan.FromSeconds(30));
+        await ReadUntilAsync(second, EdgeTypes.Delta, TimeSpan.FromSeconds(30));
+
+        // The leave is silent on the wire (contracts 3.1 has no leave acknowledgment) —
+        // and a second leave with a new operation id is equally quiet.
+        await first.SendAsync(new EdgeLeaveRound
+        {
+            OperationId = "leave-1", RoomId = room, Reason = "done"
+        });
+        await first.SendAsync(new EdgeLeaveRound
+        {
+            OperationId = "leave-2", RoomId = room, Reason = "retry"
+        });
+
+        // The room settles for everyone still in it: the stayer hears the frozen result.
+        var settled = await ReadUntilAsync(second, EdgeTypes.RoundResult, TimeSpan.FromSeconds(30));
+        Assert.Equal(room, ResultIdOf(settled).Split(':')[0]);
+        // The leaver's ledger for the whole round, read in one pass: the room is over — the
+        // result was its last possible frame — so everything the leaver ever received after
+        // the leave is already in flight or already here. A timed-out read would abort the
+        // client socket, so the pong of a ping sent now is the ledger's end mark: the frames
+        // before it are everything that raced the leave (at most the one in-flight delta),
+        // and among them the sticky result and any error must both be absent — the result
+        // reaches every seat, so its absence is the seat's absence. The pong itself is the
+        // other half of the assertion: a leaver is still a client, and the connection
+        // answers.
+        await first.SendRawAsync("""{"type":"ping"}""");
+        var ledger = await ReadUntilAsync(first, EdgeTypes.Pong, TimeSpan.FromSeconds(30));
+        Assert.DoesNotContain(ledger, frame =>
+            frame.GetProperty("type").GetString() is EdgeTypes.RoundResult or EdgeTypes.Error);
+    }
+
+    [Fact]
+    public async Task LeaveRoundOnARoomTheMountIsNotInIsRefused()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var client = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await client.HelloAsync();
+        await LoginAndStartAsync(client, simulator, "open-m4-leave-none");
+
+        await client.SendAsync(new EdgeLeaveRound
+        {
+            OperationId = "leave-none", RoomId = "room-not-playing", Reason = "test"
+        });
+        var refused = await client.ExpectAsync(EdgeTypes.Error, TimeSpan.FromSeconds(30));
+        Assert.Equal(EdgeErrorCodes.InvalidMessage, refused.GetProperty("code").GetString());
+        await AssertPingWorksAsync(client);
+    }
+
+    [Fact]
+    public async Task GameCommandBeforeGameplayIsRefusedVisibly()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var client = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await client.HelloAsync();
+        // A login without a mount: the command has no round to name.
+        var secret = RandomNumberGenerator.GetBytes(32);
+        var credential = simulator.IssueCredential("app-1", "open-m4-cmd-early", "live-cmd-early",
+            TimeSpan.FromMinutes(5));
+        await client.SendAsync(new EdgeLoginWithPlatformLaunch
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential,
+            LoginAttemptId = "attempt-cmd-early", NextResumeSecret = secret
+        });
+        await client.ExpectAsync(EdgeTypes.LoginReady, TimeSpan.FromSeconds(30));
+        await client.SendAsync(new EdgeGameCommand
+        {
+            CommandId = "cmd-early", RoomId = "room-anywhere", RoomEpoch = 1, ClientSequence = 1,
+            Payload = JsonDocument.Parse("""{"action":"boost"}""").RootElement
+        });
+        var refused = await client.ExpectAsync(EdgeTypes.Error, TimeSpan.FromSeconds(30));
+        Assert.Equal(EdgeErrorCodes.InvalidMessage, refused.GetProperty("code").GetString());
+        await AssertPingWorksAsync(client);
+    }
+
     // ---- helpers ----
+
+    /// <summary>The liveness proof after any refusal: the connection is still a connection.</summary>
+    private static async Task AssertPingWorksAsync(RedesignM4WsClient client)
+    {
+        // The ping uplink carries no fields beyond its type, so it goes out as raw text.
+        await client.SendRawAsync("""{"type":"ping"}""");
+        await client.ExpectAsync(EdgeTypes.Pong, TimeSpan.FromSeconds(30));
+    }
 
     private sealed record Mount(string SessionId, string StreamerId, string BindingId, byte[] Secret);
 
@@ -301,7 +507,16 @@ public sealed class RedesignM4HostRoundTests
         var deltas = 0;
         foreach (var frame in frames)
         {
-            if (frame.GetProperty("type").GetString() != EdgeTypes.Delta) continue;
+            var frameType = frame.GetProperty("type").GetString();
+            if (frameType == EdgeTypes.Snapshot)
+            {
+                // A snapshot re-baselines the client like any real one (a late joiner seats
+                // itself from the head): the chain restarts at the version the snapshot
+                // names, and the deltas after it chain on from there.
+                chained = frame.GetProperty("stateVersion").GetInt64();
+                continue;
+            }
+            if (frameType != EdgeTypes.Delta) continue;
             deltas++;
             Assert.Equal(room, frame.GetProperty("roomId").GetString());
             // No gaps, no replays: each delta applies to the version the chain last named.
@@ -384,7 +599,7 @@ public sealed class RedesignM4HostRoundTests
     /// instance and self-reports it — the coordinator's directory writes "game-1" into every
 
     private static async Task<(int WssPort, DevelopmentPlatformSimulator Simulator)> StartEdgeClusterAsync(
-        RedesignM0HostTests.HostEnvironment environment)
+        RedesignM0HostTests.HostEnvironment environment, int roundDurationTicks = 40)
     {
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
         var accessKey = RandomNumberGenerator.GetBytes(32);
@@ -394,7 +609,8 @@ public sealed class RedesignM4HostRoundTests
             {
                 ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
                 ["CHORUS_GAME_ENDPOINTS"] = $"game-1=https://localhost:{gamePort}",
-                ["CHORUS_MATCH_INTERVAL_MS"] = "200"
+                ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+                ["CHORUS_ROUND_DURATION_TICKS"] = roundDurationTicks.ToString(CultureInfo.InvariantCulture)
             });
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
         using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-m4-room"))

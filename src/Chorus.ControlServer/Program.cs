@@ -57,8 +57,11 @@ if (gameEndpoints is { Length: > 0 })
     var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])
         ?? throw new InvalidOperationException("The ControlServer certificate carries no process identity.");
     var intervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_MATCH_INTERVAL_MS") ?? "500");
+    // The round length the coordinator asks for: the default keeps the demo cadence, a longer
+    // window is how a test lets a client act mid-round instead of racing its settlement.
+    var durationTicks = int.Parse(Environment.GetEnvironmentVariable("CHORUS_ROUND_DURATION_TICKS") ?? "40");
     builder.Services.AddSingleton(
-        new MatchCoordinatorOptions(identity.ProcessInstanceId, intervalMs));
+        new MatchCoordinatorOptions(identity.ProcessInstanceId, intervalMs, durationTicks));
     builder.Services.AddHostedService<MatchCoordinatorService>();
 }
 builder.Services.AddGrpc();
