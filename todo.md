@@ -53,7 +53,8 @@
 
 代码入口：`src/Chorus.ControlServer/TakeoverGrpcService.cs`、`RedesignControlStore.cs`、`src/Chorus.DataServer/RedesignRoomStore.cs`。当前风险：恢复 RPC 前已 Confirm 为 Active；目标进程存活即可续租，不能说明房间恢复成功。
 
-- [ ] **FIX-TAKE-01：定义恢复与激活的权限矩阵。** 依赖：无。交付：在 `redesign-contracts.md` 明确 Allocated/Recovering/Active 的允许操作、超时和合法转换。验收：矩阵分别列出 LoadRecovery、恢复快照、CommitFrame、Subscribe、续租权限；恢复失败不得被解释为业务 Ready。
+- [x] **FIX-TAKE-01：定义恢复与激活的权限矩阵。** 依赖：无。交付：在 `redesign-contracts.md` 明确 Allocated/Recovering/Active 的允许操作、超时和合法转换。验收：矩阵分别列出 LoadRecovery、恢复快照、CommitFrame、Subscribe、续租权限；恢复失败不得被解释为业务 Ready。
+  - 完成：fde0726（contracts §6.2.1 新增矩阵与转换/超时段落）。验证：逐格对照实现语义——RedesignRoomStore（接管仅 from-Active、同事务 epoch+1 与 status='Recovering'；Confirm 仅点名 owner+租约未过期且幂等回读；Recovering 期间 LockRoomOwnershipAsync 全拒，含新 owner 的 PutSnapshot——矩阵将 Recovering 恢复快照写标注为仅点名 owner/epoch 的目标契约，由 FIX-TAKE-02 实现，现行全拒在 todo 未勾项如实保留）；LoadRecovery 只读；续租由控制面代续（redesign-m3-implementation.md 15s/5s）。恢复失败不解释为 Ready 已写入矩阵下方约束段。
 - [ ] **FIX-TAKE-02：提供受限的恢复快照写入。** 依赖：FIX-TAKE-01。交付：Recovering 状态仅允许指定 owner/epoch 提交校验后的恢复快照。验收：新 owner 可保存恢复头；旧 owner、错误 epoch 和普通帧写仍被拒，不能借该入口绕过帧栅栏。
 - [ ] **FIX-TAKE-03：恢复成功后原子激活。** 依赖：FIX-TAKE-02、FIX-ROOM-03。交付：去掉恢复 RPC 前的 Active 确认，按恢复凭据执行 fenced 激活。验收：恢复失败不出现 Ready/Active 假成功；重复确认返回同一激活结果；恢复期间旧 owner 仍不可写。
 - [ ] **FIX-TAKE-04：持久记录恢复操作。** 依赖：FIX-TAKE-01。交付：保存 OperationId、目标 owner/epoch、阶段、期限、进度及最后错误。验收：控制面重启可查询并继续原操作，不凭 RPC 超时认定未执行，不使用新 ID 重复转移 epoch。
