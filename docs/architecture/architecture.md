@@ -6,6 +6,8 @@ title: Chorus 分布式直播游戏服务器完整设计
 
 ## 0. 文档状态与阅读入口
 
+- 阅读顺序：[术语表](../zh/reference/glossary.md) → 本文架构与职责 → [房间恢复完整方案](../zh/design/room-recovery.md)及[状态同步与离线策略](../zh/design/authoritative-sync.md)。Tick 是每房间独立的逻辑步号；房间 epoch 是所有权代次，不是游戏时钟或输入窗口。
+
 - 版本：重设计 1.0；日期：2026-10-25。
 - 状态：完整目标方案，供审阅与实施拆解；不是当前代码能力声明，也不是生产验收通过声明。
 - 需求来源：用户本轮明确要求，以及[直播玩法领域调研](../research/live-interactive-redesign-baseline.md)。不以旧实现兼容性为约束。
@@ -162,6 +164,8 @@ DataServer 与 ControlServer 使用同一 PostgreSQL 集群的不同 schema 和�
 
 ### 4.2 目录记录与租约
 
+这里的 Epoch 表示指定实体的所有权代次。房间所有权代次不随 Tick 前进；恢复／接管时推进，用于拒绝旧执行者。字段作用域及其他版本号的区别见[术语表](../zh/reference/glossary.md)。
+
 `Ownership(Kind, EntityId, OwnerProcessInstanceId, Epoch, LeaseUntil, Status, Version)` 是权威记录。租约与 CAS 使用数据库时间；ControlServer 负责授予和续租。初始租约 15 秒、续租间隔 5 秒，均为待压测配置。
 
 新实例总是新 ProcessInstanceId。主动迁移或租约到期后，ControlServer 在锁住 ownership 行的事务中递增 Epoch、分配新实例，并生成有版本路由事件。旧实例即使仍运行，也不能提交旧 epoch 的数据。
@@ -183,6 +187,8 @@ ControlServer 提供版本化全量快照 + 增量 Watch，消费者断流或版
 跨进程递送提示可丢失，持久收件箱和已提交状态不可依赖提示存在。恢复者用持久游标补扫；Watch 不是可靠日志的替代品。
 
 ### 4.5 独立房间 epoch 的 GM 测试操作（目标契约）
+
+本节处理的是房间所有权代次，不是快进／回退游戏时间。业务暂停和客户端追赶使用 Tick 及状态基线；接管、GM 推进后的重建和激活顺序见[房间恢复方案](../zh/design/room-recovery.md)。
 
 每个房间拥有独立的 ownership epoch；不与进程启动代、连接代、挂载代、RoundGeneration 或其他房间共享。迁移仍正常推进 epoch；另外提供保持当前 owner 不变的 `BumpRoomEpoch`，用于单独测试 fencing、路由刷新与恢复。现有 Admin 服务尚无该指令，实施见 TODO §22.11。
 
@@ -425,10 +431,12 @@ NodeAgent 幂等执行 EnsureRunning / Drain / Stop，先把命令写本机日�
 
 ### 10.3 房间跨节点恢复
 
+完整流程、权限矩阵、异常分支和实现差距见[房间恢复完整方案](../zh/design/room-recovery.md)。以下为摘要，不能省略准备／路由／激活屏障。
+
 1. 观察到异常只能标记 Suspected；明确退出或租约过期触发恢复决策。
 2. 控制面事务递增 RoomEpoch、选择兼容包的健康进程，设置 Recovering。
-3. 新 GameServer 加载快照、重放帧、校验状态哈希，恢复未消费输入和计时器。恢复必须保留故障前业务阶段：Running 才继续 Tick；Preparing 交给匹配准备恢复；Finishing 只恢复结果/结算与输入收尾，不重启战斗；Settled/Closed 由数据服务完成收尾，不再分配游戏执行 owner。
-4. 新实例提交 RecoveryReady，更新可服务路由；Gateway 通知客户端 ResyncRequired 并发送新 epoch 完整快照。
+3. 新 GameServer 固定持久恢复头，加载快照、重放连续帧并校验哈希，恢复未消费输入和计时器；此时仍不启动 Tick。保留故障前业务阶段：Paused 保持冻结；Preparing 交给匹配准备恢复；Finishing 只恢复结果／收尾；Settled/Closed 不再分配游戏执行 owner。
+4. 新实例持久提交受限恢复检查点与准备凭据；两个 Gateway 安装新 owner/epoch 路由并确认后，控制面按凭据授予激活资格，确认允许路由开放，再激活本地 Actor。原状态 Running 才继续 Tick；Paused 仍需玩法 Resume 屏障。客户端收到新 epoch 完整快照，再接续连续增量。
 5. 旧实例恢复后提交被 DataServer 拒绝，主动卸载；未能卸载时 Agent 回收。无需等旧进程“确认死亡”才进行数据库 fencing。
 6. 快照损坏、包缺失、重放不一致，分别显示 RoomRecoveryFailed 原因，保留证据并尝试上一有效快照；连续失败进入 Suspended，按本局故障策略中止和补偿。
 

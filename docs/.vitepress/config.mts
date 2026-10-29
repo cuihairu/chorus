@@ -14,6 +14,7 @@ const guideLinks = [
   "/guide/quickstart-frame-sync",
 ];
 const designLinks = [
+  "/design/room-recovery",
   "/design/authoritative-sync",
   "/design/developer-capabilities",
   "/design/gameserver-threading-current",
@@ -35,6 +36,7 @@ const designLinks = [
   "/audit-doc-consistency",
 ];
 const referenceLinks = [
+  "/reference/glossary",
   "/reference/protocol",
   "/reference/config",
   "/reference/operations",

@@ -1,5 +1,7 @@
 # Multi-streamer synchronization, reconnect and anti-cheat
 
+Read the [glossary](../reference/glossary.md) first: Tick is per-room simulation progress; RoomEpoch is ownership generation. Ordinary reconnect and business pause do not require an epoch bump. The [complete room recovery design](./room-recovery.md) covers server takeover, replay, route barriers and activation.
+
 Target contract, 2026-10-29. Synchronization means a single authoritative room commits logical frames and distributes state. See the separate [current threading model](./gameserver-threading-current.md) for implementation facts.
 
 The diagrams below are separate traces. Sequence diagrams run **top to bottom**; `t01…` labels show causal order, not milliseconds. The offline-policy figure is a mutually exclusive branch flow. Each diagram names its participants and starting state. Read full-size SVGs to inspect messages.

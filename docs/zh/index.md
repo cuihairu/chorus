@@ -24,6 +24,8 @@ features:
 
 ## 进程架构与房间管理
 
+建议先读[术语表：房间、对局、Tick 与所有权代次](/zh/reference/glossary)，再读[游戏房间恢复完整方案](/zh/design/room-recovery)。后者包含故障判定、旧执行者隔离、重放恢复、路由屏障与客户端追赶，并单独说明当前实现差距。
+
 七类进程角色；一个 GameServer 管理多个房间，每个 RoomActor 串行推进自己的 Tick。图示为重设计架构，网关集成及生产验收仍在推进。
 
 PlatformGateway 根据直播挂载、对局归属及所有权目录，将事件直接推送到目标 GameServer，由 RoomRuntime 投递给对应 RoomActor。GameServer 通过 DataServer 完成持久化与恢复。此为用户确认的目标链路，现有拉取实现的迁移见 TODO §22.9。

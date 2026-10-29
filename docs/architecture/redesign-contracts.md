@@ -6,6 +6,8 @@ title: 重设计协议与数据契约
 
 版本：1.0，2026-10-25。配套[完整设计](architecture.md)。本文件定义目标协议语义，示意字段不是已生成的 Protobuf SDK。
 
+字段含义先见[术语表](../zh/reference/glossary.md)：RoomEpoch 是房间所有权代次，Tick 是逻辑进度，RoundGeneration 是连续对局归属代次，三者不可混用。恢复准备凭据、路由安装／开放确认及激活权限见[房间恢复完整方案](../zh/design/room-recovery.md)，由 FIX-TAKE-01/02/03 和 FIX-REC-01 落实，不代表当前协议已有完整实现。
+
 ## 1. 通用消息与错误
 
 所有内部 RPC 使用 mTLS gRPC/Protobuf，实例认证绑定本次进程身份。业务 ID 使用 opaque string，平台 ID 必须保留原始字符串，禁止转 JavaScript Number 丢精度。

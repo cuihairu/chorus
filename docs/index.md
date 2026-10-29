@@ -24,6 +24,8 @@ features:
 
 ## Process architecture and room management
 
+Start with the [glossary: rooms, rounds, ticks and ownership epochs](/reference/glossary). For failure detection, fencing, replay, route barriers and client catch-up, read the [complete room recovery design](/design/room-recovery). Implementation gaps are stated separately.
+
 Seven process roles. Each GameServer manages multiple rooms, with a serial tick loop per RoomActor. This diagram shows the target redesign; gateway integration and production validation are ongoing.
 
 PlatformGateway resolves the room and its owner, then pushes events directly to the target GameServer. RoomRuntime delivers each event to the matching RoomActor. GameServer uses DataServer for persistence and recovery. This is the agreed target flow; migration from the existing pull implementation is tracked in TODO §22.9.
