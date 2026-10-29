@@ -570,17 +570,45 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
     /// handover bumps the ownership and room epochs in one transaction, marks the room
     /// Recovering and extends the lease — the old owner is fenced from the new epoch, and no
     /// frame or snapshot write passes the fence until the ownership is confirmed Active again.
+    /// FIX-TAKE-04: the same transaction records the recovery operation (target owner, epoch,
+    /// deadline); a retry after a lost reply replays the recorded outcome by the operation id,
+    /// so the epoch never bumps twice for one recovery.
     /// </summary>
     public async Task<RoomTakeover> TransferRoomOwnershipAsync(string tenantId, string gameId,
         string roomId, string fromInstance, string toInstance, int leaseSeconds,
-        CancellationToken cancellationToken = default)
+        string operationId, CancellationToken cancellationToken = default)
     {
         Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
         Require(fromInstance, nameof(fromInstance)); Require(toInstance, nameof(toInstance));
+        Require(operationId, nameof(operationId));
         if (leaseSeconds is <= 0 or > 60) throw new ArgumentOutOfRangeException(nameof(leaseSeconds));
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        // A same-id retry of an already-committed transfer replays its outcome instead of
+        // failing the from-Active guard — the reply was lost, not the transfer.
+        await using (var recorded = new NpgsqlCommand("""
+            SELECT room_id,from_instance,to_instance,target_epoch FROM control.recovery_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND operation_id=@operation
+            """, connection, transaction))
+        {
+            recorded.Parameters.AddWithValue("tenant", tenantId);
+            recorded.Parameters.AddWithValue("game", gameId);
+            recorded.Parameters.AddWithValue("operation", operationId);
+            await using var reader = await recorded.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var room = reader.GetString(0);
+                var from = reader.GetString(1);
+                var to = reader.GetString(2);
+                var recordedEpoch = reader.GetInt64(3);
+                await reader.DisposeAsync();
+                if (room != roomId || from != fromInstance || to != toInstance)
+                    throw new IdempotencyConflictException();
+                return new RoomTakeover(to, recordedEpoch, await OwnershipStatusAsync(
+                    tenantId, gameId, roomId, connection, transaction, cancellationToken) ?? "Recovering");
+            }
+        }
         await using (var ownership = new NpgsqlCommand("""
             SELECT tenant_id,game_id,owner_process_instance_id,status
             FROM control.ownership WHERE kind='room' AND entity_id=@room FOR UPDATE
@@ -615,6 +643,23 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
             if (moved is null || (epoch = Convert.ToInt64(moved)) <= 1)
                 throw new InvalidOperationException("The ownership vanished mid-transfer.");
         }
+        await using (var operation = new NpgsqlCommand("""
+            INSERT INTO control.recovery_operation(tenant_id,game_id,operation_id,room_id,
+                from_instance,to_instance,target_epoch,phase,deadline_at)
+            VALUES (@tenant,@game,@operation,@room,@from,@to,@epoch,'Transferred',
+                clock_timestamp()+@lease*interval '1 second')
+            """, connection, transaction))
+        {
+            operation.Parameters.AddWithValue("tenant", tenantId);
+            operation.Parameters.AddWithValue("game", gameId);
+            operation.Parameters.AddWithValue("operation", operationId);
+            operation.Parameters.AddWithValue("room", roomId);
+            operation.Parameters.AddWithValue("from", fromInstance);
+            operation.Parameters.AddWithValue("to", toInstance);
+            operation.Parameters.AddWithValue("epoch", epoch);
+            operation.Parameters.AddWithValue("lease", leaseSeconds);
+            await operation.ExecuteNonQueryAsync(cancellationToken);
+        }
         await using (var room = new NpgsqlCommand("""
             UPDATE game.room SET epoch=epoch+1, updated_at=clock_timestamp()
             WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
@@ -628,6 +673,20 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
         }
         await transaction.CommitAsync(cancellationToken);
         return new RoomTakeover(toInstance, epoch, "Recovering");
+    }
+
+    /// <summary>The ownership row's current status, or null when the room has none.</summary>
+    private static async Task<string?> OwnershipStatusAsync(string tenantId, string gameId, string roomId,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var status = new NpgsqlCommand("""
+            SELECT status FROM control.ownership
+            WHERE kind='room' AND entity_id=@room AND tenant_id=@tenant AND game_id=@game
+            """, connection, transaction);
+        status.Parameters.AddWithValue("room", roomId);
+        status.Parameters.AddWithValue("tenant", tenantId);
+        status.Parameters.AddWithValue("game", gameId);
+        return await status.ExecuteScalarAsync(cancellationToken) as string;
     }
 
     /// <summary>

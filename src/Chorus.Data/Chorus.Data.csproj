@@ -26,6 +26,7 @@
     <EmbeddedResource Include="Redesign/0015_process_endpoint.sql" />
     <EmbeddedResource Include="Redesign/0016_deployment_plan.sql" />
     <EmbeddedResource Include="Redesign/0017_admin_gate.sql" />
+    <EmbeddedResource Include="Redesign/0018_recovery_operation.sql" />
   </ItemGroup>
 
 </Project>

@@ -42,6 +42,11 @@ public sealed class TakeoverGrpcService(
             string.IsNullOrWhiteSpace(request.EntityId) || string.IsNullOrWhiteSpace(request.ToInstanceId) ||
             request.LeaseSeconds is <= 0 or > 60)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The takeover request is incomplete."));
+        // Room transfers belong to a named recovery operation (FIX-TAKE-04): a lost reply
+        // replays by this id instead of bumping the epoch a second time.
+        if (request.Kind == "room" && string.IsNullOrWhiteSpace(request.OperationId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "A room transfer names the recovery operation it belongs to."));
         // The control plane is the authority: the handover names the current holder so a stale
         // command cannot move an entity that already changed hands.
         var ownership = await controlStore.GetOwnershipAsync(
@@ -70,7 +75,7 @@ public sealed class TakeoverGrpcService(
         {
             TenantId = request.TenantId, GameId = request.GameId, RoomId = request.EntityId,
             FromInstance = ownership.OwnerInstanceId, ToInstance = request.ToInstanceId,
-            LeaseSeconds = request.LeaseSeconds
+            LeaseSeconds = request.LeaseSeconds, OperationId = request.OperationId
         }, deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: context.CancellationToken);
         return new TransferOwnershipReply
         {
@@ -115,6 +120,12 @@ public sealed class TakeoverGrpcService(
         if (recovered.Recovered && after.Status != "Active")
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
                 $"The recovery reported success but the ownership is {after.Status}."));
+        // FIX-TAKE-04: the open operation records the outcome — a control-plane restart
+        // reads the phase instead of inferring it from lost RPC replies. A timed-out
+        // recovery never reaches here, so the operation stays open for the retry.
+        await controlStore.CompleteRoomRecoveryAsync(request.TenantId, request.GameId, request.RoomId,
+            recovered.Recovered, recovered.LastTick, recovered.Recovered ? null : recovered.Note,
+            context.CancellationToken);
         return new TakeoverRoomReply
         {
             OwnerInstanceId = after.OwnerInstanceId, Epoch = after.Epoch,

@@ -187,10 +187,11 @@ public sealed class RedesignM3TakeoverHostTests
         Assert.Equal("Running", duringOutage.Status);
 
         // The control plane hands the room to B: both epochs bump, the room parks Recovering.
+        // The transfer belongs to a named recovery operation (FIX-TAKE-04).
         var transferred = await takeover.TransferOwnershipAsync(new TransferOwnershipRequest
         {
             TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = roomId,
-            ToInstanceId = "game-b", LeaseSeconds = 15
+            ToInstanceId = "game-b", LeaseSeconds = 15, OperationId = "at25-recovery"
         });
         Assert.Equal("game-b", transferred.OwnerInstanceId);
         Assert.Equal("Recovering", transferred.Status);
@@ -210,6 +211,20 @@ public sealed class RedesignM3TakeoverHostTests
         // The recoverer replays the frames after the last snapshot and deposits a fresh
         // snapshot at the head it pinned.
         Assert.Equal(recovered.LastTick, await SnapshotTickAsync(environment, roomId));
+
+        // The recovery operation records its outcome (FIX-TAKE-04): the phase and the
+        // committed head survive a control-plane restart.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var operation = new NpgsqlCommand(
+                "SELECT phase,last_tick FROM control.recovery_operation WHERE room_id=@room", connection);
+            operation.Parameters.AddWithValue("room", roomId);
+            await using var reader = await operation.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("Activated", reader.GetString(0));
+            Assert.True(reader.GetInt64(1) >= headTick);
+        }
 
         // The routing snapshot follows the handover: B holds the room at the bumped epoch.
         var snapshot = await routing.GetRoutingSnapshotAsync(new Empty());

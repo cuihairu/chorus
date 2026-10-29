@@ -161,7 +161,7 @@ public sealed class RedesignRecoveryStoreTests
                 "1.0.0", "cfg-1"));
         var store = new RedesignRecoveryStore(arrange.Database.ConnectionString);
         var takeover = await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
-            "gs-1", "gs-2", 15);
+            "gs-1", "gs-2", 15, "transfer-take-2");
         Assert.Equal("Recovering", takeover.Status);
 
         var payload = new byte[] { 3, 1, 4 };
@@ -223,7 +223,7 @@ public sealed class RedesignRecoveryStoreTests
             "tenant-a", "game-a", "room-1", "gs-1", arrange.Epoch, 1, payload, hash, 1, "recovery-take-2e"));
 
         var takeover = await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
-            "gs-1", "gs-2", 15);
+            "gs-1", "gs-2", 15, "transfer-take-2e");
         Assert.True((await store.PutRecoverySnapshotAsync("tenant-a", "game-a", "room-1", "gs-2",
             takeover.Epoch, 1, payload, hash, 1, "recovery-take-2f")).Verified);
         var confirmed = await arrange.RoomStore.ConfirmRoomOwnershipAsync("tenant-a", "game-a", "room-1",

@@ -77,6 +77,10 @@ message TransferRoomOwnershipRequest {
   string from_instance = 4;
   string to_instance = 5;
   int32 lease_seconds = 6;
+  // The recovery operation this transfer belongs to (FIX-TAKE-04): the transfer
+  // transaction records it, and a retry after a lost reply replays the recorded
+  // outcome by this id instead of bumping the epoch a second time.
+  string operation_id = 7;
 }
 
 message ConfirmRoomOwnershipRequest {

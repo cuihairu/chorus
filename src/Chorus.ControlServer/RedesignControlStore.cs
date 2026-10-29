@@ -5,6 +5,13 @@ namespace Chorus.ControlServer;
 public sealed record NodeStatus(string AgentInstanceId, long ReportSequence);
 public sealed record ProcessStatus(bool Accepted, string Readiness, string EntityRecovery);
 public sealed record OwnerStatus(string OwnerInstanceId, long Epoch, DateTime LeaseUntilUtc, string Status);
+
+/// <summary>A persistent room-recovery operation (FIX-TAKE-04): the transfer's target and
+/// epoch, the open phase, its deadline, the committed progress and the last error.</summary>
+public sealed record RoomRecoveryOperation(
+    string TenantId, string GameId, string OperationId, string RoomId, string FromInstance,
+    string ToInstance, long TargetEpoch, string Phase, DateTime DeadlineAt, long LastTick,
+    string? LastError);
 public sealed record RoomRoute(string RoomId, string TenantId, string GameId, string OwnerInstanceId,
     long Epoch, string? Endpoint, string Status);
 public sealed record StreamerRoute(string StreamerId, string BindingId, string RoomId, string State,
@@ -168,6 +175,59 @@ public sealed class RedesignControlStore(string connectionString)
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken)
             ? new OwnerStatus(reader.GetString(0), reader.GetInt64(1), reader.GetDateTime(2), reader.GetString(3)) : null;
+    }
+
+    /// <summary>
+    /// The open (still Transferred) room-recovery operation, or null (FIX-TAKE-04). A
+    /// restarted control plane continues from here — a timed-out recovery RPC left the
+    /// operation open, and continuing it never needs a second transfer or epoch bump.
+    /// </summary>
+    public async Task<RoomRecoveryOperation?> GetOpenRoomRecoveryAsync(string tenantId, string gameId,
+        string roomId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT operation_id,from_instance,to_instance,target_epoch,phase,deadline_at,last_tick,last_error
+            FROM control.recovery_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room AND phase='Transferred'
+            ORDER BY created_at DESC LIMIT 1
+            """, connection);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("room", roomId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? new RoomRecoveryOperation(tenantId, gameId, reader.GetString(0), roomId, reader.GetString(1),
+                reader.GetString(2), reader.GetInt64(3), reader.GetString(4), reader.GetDateTime(5),
+                reader.GetInt64(6), reader.IsDBNull(7) ? null : reader.GetString(7))
+            : null;
+    }
+
+    /// <summary>
+    /// Records a recovery attempt's outcome on the room's open operation row: the phase
+    /// (Activated on success, Failed with the reason otherwise) and the committed progress.
+    /// The row is progress, never authority — the ownership row stays the fence. A no-op
+    /// when no open row exists, so rooms transferred before the record landed still recover.
+    /// </summary>
+    public async Task CompleteRoomRecoveryAsync(string tenantId, string gameId, string roomId,
+        bool recovered, long lastTick, string? lastError, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            UPDATE control.recovery_operation
+            SET phase=@phase, last_tick=GREATEST(last_tick,@tick),
+                last_error=@error, updated_at=clock_timestamp()
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room AND phase='Transferred'
+            """, connection);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("room", roomId);
+        command.Parameters.AddWithValue("phase", recovered ? "Activated" : "Failed");
+        command.Parameters.AddWithValue("tick", lastTick);
+        command.Parameters.AddWithValue("error", lastError is null ? DBNull.Value : lastError);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     /// <summary>

@@ -362,6 +362,10 @@ message TransferOwnershipRequest {
   string entity_id = 4;
   string to_instance_id = 5;
   int32 lease_seconds = 6;
+  // Required for room transfers (FIX-TAKE-04): names the persistent recovery operation
+  // the transfer belongs to; ignored for streamer entities, whose completion is
+  // client-driven.
+  string operation_id = 7;
 }
 
 message TransferOwnershipReply {

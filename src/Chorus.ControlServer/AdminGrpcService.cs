@@ -212,6 +212,10 @@ public sealed class AdminGrpcService(
         if (recovered.Recovered && after.Status != "Active")
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
                 $"The recovery reported success but the ownership is {after.Status}."));
+        // The same FIX-TAKE-04 outcome record TakeoverRoom writes.
+        await controlStore.CompleteRoomRecoveryAsync(request.TenantId, request.GameId, request.RoomId,
+            recovered.Recovered, recovered.LastTick, recovered.Recovered ? null : recovered.Note,
+            context.CancellationToken);
         return new AdminRoomRecoveryReply
         {
             OwnerInstanceId = after.OwnerInstanceId, Epoch = after.Epoch,

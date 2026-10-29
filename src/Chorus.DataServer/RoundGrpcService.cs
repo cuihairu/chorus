@@ -167,7 +167,8 @@ public sealed class RoundGrpcService(
         {
             var takeover = await roomStore.TransferRoomOwnershipAsync(
                 TenantFor(caller, request.TenantId), request.GameId, request.RoomId,
-                request.FromInstance, request.ToInstance, request.LeaseSeconds, context.CancellationToken);
+                request.FromInstance, request.ToInstance, request.LeaseSeconds, request.OperationId,
+                context.CancellationToken);
             return TakeoverReply(takeover);
         }
         catch (RedesignStaleOwnerException)
@@ -177,6 +178,11 @@ public sealed class RoundGrpcService(
         catch (InvalidOperationException error)
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The operation was retried with a different transfer."));
         }
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
