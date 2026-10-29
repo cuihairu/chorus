@@ -49,7 +49,9 @@
 - [x] **FIX-ROOM-06：验证同进程二次接管。** 依赖：FIX-ROOM-02、FIX-ROOM-03、FIX-ROOM-04。交付：A→B→A 房间迁移测试。验收：A 使用新 epoch 从持久头恢复，旧对象不阻止激活、不恢复旧状态，始终只有一个可提交者。
   - 完成：3040f0d（新 RedesignM3DoubleTakeoverHostTests：全程无 kill 的 A→B→A 往返。A→B 转移后旧宿主的旧对象经数据面 fence 学会移交——room_progress 状态转 Stopped（FIX-ROOM-04 按对象身份退役、retired 状态存续），旧 epoch 提交被 FailedPrecondition 拒；B 推进越过原 head 后 B→A，同一进程在新 epoch 从持久头恢复激活（旧对象不阻止）、LastTick ≥ B 的 head；旧 epoch 直连 RecoverRoom 被拒不复活旧状态；ledger 恰 2 条操作各 Activated、ownership 终态 game-a/epoch+2/Active；房间在原宿主自然跑完）。
   - 验证：新 1/1 绿（23s）；回归 M3Takeover/M3TakeoverKill/ActivationGate/ActorRetirement/M2RoomHost 11/11 绿；残留检查干净（宿主进程 0、chorus_m% 库 0）。
-- [ ] **FIX-ROOM-07：验证长时间房间周转。** 依赖：FIX-ROOM-04、FIX-ROOM-05。交付：连续创建/结束/回收房间的 soak 报告，记录轮数、活跃 Actor、缓存项、订阅数和内存趋势。验收：静置回收后 Actor/订阅计数回落，缓存不超上限；无随历史房数线性增长的存活 Actor。
+- [x] **FIX-ROOM-07：验证长时间房间周转。** 依赖：FIX-ROOM-04、FIX-ROOM-05。交付：连续创建/结束/回收房间的 soak 报告，记录轮数、活跃 Actor、缓存项、订阅数和内存趋势。验收：静置回收后 Actor/订阅计数回落，缓存不超上限；无随历史房数线性增长的存活 Actor。
+  - 完成：d97ade1（两腿 soak。单元腿 RedesignRoomTurnoverSoakUnitTests：单 RoomRuntime 40 轮 prepare→完成→结算（结算计数=轮数）→授权 release，FindRoom 全空（存活 Actor 不随历史线性增长）、RetainedResults=8 时冻结结果恰留最新 8 轮其余逐出（缓存不超上限）、重复/未知 release 均 false、未提交结果的运行中房不可 release、订阅以冻结 RoundResult 收流排空不泄漏、40 轮后仍可开新房；RSS/分配字节数按 8 轮分度记录进输出。宿主腿 RedesignM3RoomTurnoverSoakHostTests：真实栈单宿主连续 8 轮 mount→claim→start→prepare→自然终局→FinalizeRound Settled，每轮绑定指针清空后才开下一轮，末尾 Running 自报行归零（按自报周期轮询收敛）、live.binding 残留指针 0、8 房全 Settled、宿主进程存活，RSS 趋势逐轮记录（实测 111→116MB 平台期））。
+  - 验证：单元 2/2 绿、宿主 1/1 绿（45s）；回归 ResultRetention/ActivationGate/ActorRetirement/RoomProgress/两 soak 19/19 绿；残留检查干净（宿主进程 0、chorus_m% 库 0）。
 
 ### 22.3 接管状态、就绪与活性（P0）
 
