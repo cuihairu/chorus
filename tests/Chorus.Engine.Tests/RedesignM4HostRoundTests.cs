@@ -214,7 +214,10 @@ public sealed class RedesignM4HostRoundTests
             LastSeenRoomId = room
         });
         await resumed.ExpectAsync(EdgeTypes.LoginReady, TimeSpan.FromSeconds(30));
-        var suspended = await resumed.ExpectAsync(EdgeTypes.RoomSuspended, TimeSpan.FromSeconds(30));
+        // 存活性等待（事件不变量），不是性能断言：被停机的房间要先过 15s 所有权门
+        // 与 5s 恢复扫掠的默认节拍，再经路由传播到边缘；CI 满载 runner 上各段都会
+        // 拖长（本地典型 ~20s），窗口按外部负载余量放宽。
+        var suspended = await resumed.ExpectAsync(EdgeTypes.RoomSuspended, TimeSpan.FromSeconds(90));
         Assert.Equal(epoch, suspended.GetProperty("recoveryAttempt").GetInt64());
     }
 
