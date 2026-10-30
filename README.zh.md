@@ -6,7 +6,7 @@
 <h1 align="center">Chorus</h1>
 
 <p align="center">
-  面向直播弹幕/礼物驱动的互动对战游戏框架（服务器权威 Tick + 状态快照）
+  面向直播间弹幕/礼物事件的弹幕游戏框架——结构化玩法输入，服务器权威对局仿真与结算
 </p>
 
 <p align="center">

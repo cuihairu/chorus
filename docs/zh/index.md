@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: Chorus
-  text: 跨机多房间实时协作服务端
-  tagline: 基于 WebSocket 的房间编排、状态同步与故障切换
+  text: 弹幕游戏框架
+  tagline: 把直播间弹幕/礼物事件整理成结构化玩法输入，驱动服务器权威对局；多直播间对局编排与故障切换内建
   actions:
     - theme: brand
       text: 快速开始
@@ -14,12 +14,14 @@ hero:
       link: https://github.com/cuihairu/chorus
 
 features:
-  - title: 多房间编排
-    details: 支持跨机器的房间分配、容量保护与生命周期管理。
-  - title: 状态同步
-    details: 房间内状态变更实时广播，支持顺序与一致性校验。
+  - title: 弹幕变玩法输入
+    details: 直播间评论、礼物、点赞经验证、归一化、去重，成为对局有界有序的输入。
+  - title: 多直播间对局编排
+    details: 跨机器编排多个直播间的对局：分配、容量保护与生命周期管理。
+  - title: 服务器权威对局仿真
+    details: 每个对局串行推进服务器权威 Tick，状态有序广播并有一致性校验。
   - title: 故障切换
-    details: 节点失联时自动迁移房间，最小化中断。
+    details: 节点失联时旧执行者被隔离，对局在其他节点恢复，最小化中断。
 ---
 
 ## 进程架构与房间管理

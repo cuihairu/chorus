@@ -60,7 +60,7 @@ const prefix = (links: string[], p: string) =>
 
 export default withMermaid(defineConfig({
   title: "Chorus",
-  description: "An interactive battle game framework driven by live-stream danmaku/gifts",
+  description: "A danmaku game framework for live-stream chat and gift events",
   base: process.env.VITEPRESS_BASE || "/chorus/",
   head: [["link", { rel: "icon", href: "/logo.svg" }]],
   locales: {

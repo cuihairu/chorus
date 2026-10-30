@@ -6,7 +6,7 @@
 <h1 align="center">Chorus</h1>
 
 <p align="center">
-  A live-stream chat/gift-driven interactive battle game framework (server-authoritative tick + state snapshots)
+  A danmaku game framework for live-stream chat and gift events — structured gameplay input, server-authoritative simulation and settlement
 </p>
 
 <p align="center">

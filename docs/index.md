@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: Chorus
-  text: Cross-machine, multi-room real-time collaboration server
-  tagline: WebSocket-based room orchestration, state synchronization, and failover
+  text: Danmaku game framework
+  tagline: Turns live-stream chat and gift events into structured gameplay input, driving server-authoritative matches with multi-room orchestration and failover
   actions:
     - theme: brand
       text: Get started
@@ -14,12 +14,14 @@ hero:
       link: https://github.com/cuihairu/chorus
 
 features:
-  - title: Multi-room orchestration
-    details: Cross-machine room assignment, capacity protection, and lifecycle management.
-  - title: State synchronization
-    details: Real-time broadcast of state changes within a room, with ordering and consistency checks.
+  - title: From danmaku to gameplay input
+    details: Live-stream chat, gifts and likes are verified, normalized and deduplicated into bounded, ordered input for authoritative matches.
+  - title: Multi-room match orchestration
+    details: Cross-machine orchestration of matches across many live rooms, with assignment, capacity protection and lifecycle management.
+  - title: Authoritative match simulation
+    details: Server-authoritative tick simulation per match, with ordered state broadcast and consistency checks.
   - title: Failover
-    details: Automatically migrate rooms when a node becomes unreachable, minimizing disruption.
+    details: A failed node is fenced off and its matches recover on another node, minimizing disruption.
 ---
 
 ## Process architecture and room management
