@@ -63,6 +63,13 @@ public sealed class GameHostGrpcService(RoomRuntime runtime, TrustedProcessCerti
         {
             return await runtime.RecoverRoomAsync(request, context.CancellationToken);
         }
+        catch (RecoveryQueueFullException error)
+        {
+            // FIX-PERF-08: a recovery the host's bounded queue refuses is ResourceExhausted —
+            // an explicit "no recovery capacity right now", never a silent fake success. The
+            // room stays Recovering for the next sweep.
+            throw new RpcException(new Status(StatusCode.ResourceExhausted, error.Message));
+        }
         catch (ArgumentException error)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));

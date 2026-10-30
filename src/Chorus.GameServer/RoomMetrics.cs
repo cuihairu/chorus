@@ -36,9 +36,13 @@ public sealed class RoomMetrics : IDisposable
 
     public Histogram<double> Whole { get; }
 
+    public Histogram<double> RecoveryQueue { get; }
+
     public Histogram<double> RecoveryRead { get; }
 
     public Histogram<double> RecoveryReplay { get; }
+
+    public Histogram<double> RecoveryActivate { get; }
 
     public RoomMetrics(string meterName = MeterName)
     {
@@ -60,12 +64,18 @@ public sealed class RoomMetrics : IDisposable
         Whole = _meter.CreateHistogram<double>(
             "room.tick.whole", "ms",
             "One whole tick, wake to verdict and publish; early returns pay their time too.");
+        RecoveryQueue = _meter.CreateHistogram<double>(
+            "room.recovery.queue", "ms",
+            "Waiting for a recovery slot before the heavy work (FIX-PERF-08 concurrency gate).");
         RecoveryRead = _meter.CreateHistogram<double>(
             "room.recovery.read", "ms",
             "Loading one recovery window's plan, page by page.");
         RecoveryReplay = _meter.CreateHistogram<double>(
             "room.recovery.replay", "ms",
             "Replaying one recovery window's frame span to the head.");
+        RecoveryActivate = _meter.CreateHistogram<double>(
+            "room.recovery.activate", "ms",
+            "The fenced ownership confirm that activates a recovered room (FIX-PERF-08).");
     }
 
     /// <summary>Starts a phase clock on the Stopwatch timestamp; no allocation.</summary>

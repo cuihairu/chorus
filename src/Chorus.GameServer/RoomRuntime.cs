@@ -24,6 +24,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     // new allocation is refused on. Recovery reserves unconditionally, so the counter tracks
     // every room the host actually holds, not only the ones admitted by Prepare.
     private readonly RoomAdmissionBudget _admission;
+    private readonly RecoveryConcurrencyGate? _recoveryGate;
     private readonly int _overBudgetFactorOverride;
     private readonly int _overBudgetWindowOverride;
     private readonly ConcurrentDictionary<string, RoomActor> _actors = new(StringComparer.Ordinal);
@@ -46,16 +47,20 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     internal int RetainedResults { get; set; } = 256;
 
     public RoomRuntime(Grpc.Net.Client.GrpcChannel dataChannel,
-        int? maxActiveRooms = null, int? maxDegradedRooms = null)
+        int? maxActiveRooms = null, int? maxDegradedRooms = null,
+        int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null)
         : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
             new Settlement.SettlementClient(dataChannel), dataChannel,
-            maxActiveRooms: maxActiveRooms, maxDegradedRooms: maxDegradedRooms) { }
+            maxActiveRooms: maxActiveRooms, maxDegradedRooms: maxDegradedRooms,
+            maxConcurrentRecoveries: maxConcurrentRecoveries,
+            maxQueuedRecoveries: maxQueuedRecoveries) { }
 
     /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
     internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
         Settlement.SettlementClient settlement, Grpc.Net.Client.GrpcChannel? dataChannel = null,
         RoomMetrics? metrics = null, int? maxActiveRooms = null, int? maxDegradedRooms = null,
-        int overBudgetFactor = 0, int overBudgetWindow = 0)
+        int overBudgetFactor = 0, int overBudgetWindow = 0,
+        int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null)
     {
         _rounds = rounds;
         _frames = frames;
@@ -65,6 +70,11 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         _admission = new RoomAdmissionBudget(maxActiveRooms, maxDegradedRooms);
         _overBudgetFactorOverride = overBudgetFactor;
         _overBudgetWindowOverride = overBudgetWindow;
+        // FIX-PERF-08: the concurrency gate exists only when configured — absent means an
+        // explicit, not accidental, unbounded host. A mistyped bound fails closed above.
+        _recoveryGate = maxConcurrentRecoveries is { } concurrent
+            ? new RecoveryConcurrencyGate(concurrent, maxQueuedRecoveries ?? 0)
+            : null;
     }
 
     /// <summary>
@@ -406,6 +416,21 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 // from the actor's own state, never from the dictionary alone.
                 return AnswerForKnownActor(request, known.Status());
             }
+            // FIX-PERF-08: the heavy work of a takeover — the plan load and the frame replay
+            // that dominate a mass recovery's memory — is bounded to a set number of
+            // concurrent recoveries; the rest wait (the queue distribution is measured), and a
+            // recovery past the queue is refused explicitly instead of being left to OOM the
+            // host. The slot is held only for the recovery work, not for the room's lifetime:
+            // once the actor is running, the active-room admission budget (FIX-PERF-07) owns
+            // the memory. A recovery never reserves an admission slot until it actually lands,
+            // so a refused recovery leaks nothing.
+            if (_recoveryGate is { } gate)
+            {
+                var queueStart = _metrics.Start();
+                using var lease = await gate.EnterAsync(cancellationToken);
+                _metrics.Record(_metrics.RecoveryQueue, queueStart);
+                return await RecoverUnknownRoomAsync(request, cancellationToken);
+            }
             return await RecoverUnknownRoomAsync(request, cancellationToken);
         }
         finally
@@ -737,6 +762,9 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     private async Task<RecoverRoomReply?> ActivateRecoveredRoomAsync(RecoverRoomRequest request,
         LoadRecoveryReply plan, CancellationToken cancellationToken)
     {
+        // FIX-PERF-08: the fenced confirm is a recovery phase of its own — the distribution
+        // ships with the read and replay spans in the mass-recovery report.
+        var activateStart = _metrics.Start();
         try
         {
             await _rounds.ConfirmRoomOwnershipAsync(new ConfirmRoomOwnershipRequest
@@ -744,6 +772,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 GameId = request.GameId, RoomId = request.RoomId,
                 OwnerInstance = request.OwnerInstanceId
             }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            _metrics.Record(_metrics.RecoveryActivate, activateStart);
             return null;
         }
         catch (RpcException error)

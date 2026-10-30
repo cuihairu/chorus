@@ -49,7 +49,12 @@ builder.Services.AddSingleton(trustedCertificates);
 // silently admitting unbounded rooms.
 var maxActiveRooms = OptionalPositiveInt("CHORUS_GAME_MAX_ACTIVE_ROOMS");
 var maxDegradedRooms = OptionalPositiveInt("CHORUS_GAME_MAX_DEGRADED_ROOMS");
-builder.Services.AddSingleton(new RoomRuntime(DataChannel(), maxActiveRooms, maxDegradedRooms));
+// FIX-PERF-08: the recovery concurrency budget. Absent means an explicitly unbounded host;
+// a mistyped bound fails closed like the admission budget above.
+var maxConcurrentRecoveries = OptionalPositiveInt("CHORUS_GAME_MAX_CONCURRENT_RECOVERIES");
+var maxQueuedRecoveries = OptionalNonNegativeInt("CHORUS_GAME_MAX_QUEUED_RECOVERIES");
+builder.Services.AddSingleton(new RoomRuntime(DataChannel(), maxActiveRooms, maxDegradedRooms,
+    maxConcurrentRecoveries, maxQueuedRecoveries));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
 // tells the control plane itself where it serves, so routing can reach it. The certificate
 // is the identity — the report claims exactly what it proves.
@@ -88,5 +93,15 @@ static int? OptionalPositiveInt(string name)
     if (!int.TryParse(raw, out var value) || value <= 0)
         throw new InvalidOperationException(
             $"{name} must be a positive integer when set, not '{raw}'.");
+    return value;
+}
+
+static int? OptionalNonNegativeInt(string name)
+{
+    var raw = Environment.GetEnvironmentVariable(name);
+    if (raw is null) return null;
+    if (!int.TryParse(raw, out var value) || value < 0)
+        throw new InvalidOperationException(
+            $"{name} must be a non-negative integer when set, not '{raw}'.");
     return value;
 }

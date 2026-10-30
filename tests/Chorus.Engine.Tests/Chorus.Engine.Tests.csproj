@@ -53,6 +53,7 @@
 
   <ItemGroup>
     <None Include="capacity-acceptance.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="recovery-acceptance.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
