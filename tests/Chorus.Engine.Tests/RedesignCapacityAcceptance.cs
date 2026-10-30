@@ -64,16 +64,16 @@ public sealed record CapacityReport(
             _ => "FAILED"
         };
         return
-            $"""
+            FormattableString.Invariant($"""
         capacity acceptance: {verdictText} (target: {Config.Rooms} rooms @ {Config.TickHz} Hz)
           environment: {Environment}  started {StartedUtc:HH:mm:ss'Z'}  ran {(EndedUtc - StartedUtc).TotalSeconds:0.0}s
-          budgets: aggregate frame rate >= {Config.AggregateFrameRateFloor:0}/s, per-room completion p95 <= {Config.PerRoomCompletionP95BudgetMs:0} ms, common active window >= {Config.CommonWindowFloorMs:0} ms, plan fill >= {Config.PlanFillFloor:P0}
-        """ +
+          budgets: aggregate frame rate >= {Config.AggregateFrameRateFloor:0}/s, per-room completion p95 <= {Config.PerRoomCompletionP95BudgetMs:0} ms, common active window >= {Config.CommonWindowFloorMs:0} ms, plan fill >= {Config.PlanFillFloor * 100:0}%
+        """) +
         (Measurement is null
             ? ""
-            : "\n" + $"""
-              measured: {Measurement.AggregateFrameRate:0.0} frames/s, completion p95 {Measurement.PerRoomCompletionP95Ms:0} ms, common window {Measurement.CommonWindowMs:0} ms, plan fill {(Measurement.PlannedInputs <= 0 ? 0 : (double)Measurement.EmittedInputs / Measurement.PlannedInputs):P1} (planned {Measurement.PlannedInputs}, emitted {Measurement.EmittedInputs}, backlog {Measurement.BacklogInputs}), frames {Measurement.FramesCommitted}/{Measurement.FramesExpected}
-              """) +
+            : "\n" + FormattableString.Invariant($"""
+              measured: {Measurement.AggregateFrameRate:0.0} frames/s, completion p95 {Measurement.PerRoomCompletionP95Ms:0} ms, common window {Measurement.CommonWindowMs:0} ms, plan fill {(Measurement.PlannedInputs <= 0 ? 0 : (double)Measurement.EmittedInputs / Measurement.PlannedInputs * 100):0.0}% (planned {Measurement.PlannedInputs}, emitted {Measurement.EmittedInputs}, backlog {Measurement.BacklogInputs}), frames {Measurement.FramesCommitted}/{Measurement.FramesExpected}
+              """)) +
         (Reasons.Count == 0 ? "" : "\n  reasons:\n" + string.Join("", Reasons.Select(reason => $"   - {reason}\n")));
     }
 }
@@ -126,22 +126,24 @@ public static class CapacityAcceptance
     {
         var reasons = new List<string>();
         if (measurement.Rooms != config.Rooms || measurement.TicksPerRoom != config.TicksPerRoom)
-            reasons.Add($"the workload shape ({measurement.Rooms} rooms x {measurement.TicksPerRoom} ticks) " +
-                        $"does not match the acceptance target ({config.Rooms} x {config.TicksPerRoom})");
+            reasons.Add(FormattableString.Invariant(
+                $"the workload shape ({measurement.Rooms} rooms x {measurement.TicksPerRoom} ticks) does not match the acceptance target ({config.Rooms} x {config.TicksPerRoom})"));
         if (measurement.FramesCommitted != measurement.FramesExpected)
-            reasons.Add($"the rooms committed {measurement.FramesCommitted} frames, expected {measurement.FramesExpected}");
+            reasons.Add(FormattableString.Invariant(
+                $"the rooms committed {measurement.FramesCommitted} frames, expected {measurement.FramesExpected}"));
         if (measurement.CommonWindowMs < config.CommonWindowFloorMs)
-            reasons.Add($"the common active window {measurement.CommonWindowMs:0} ms is below the floor {config.CommonWindowFloorMs:0} ms");
+            reasons.Add(FormattableString.Invariant(
+                $"the common active window {measurement.CommonWindowMs:0} ms is below the floor {config.CommonWindowFloorMs:0} ms"));
         if (measurement.AggregateFrameRate < config.AggregateFrameRateFloor)
-            reasons.Add($"the aggregate frame rate {measurement.AggregateFrameRate:0.0}/s is below the target " +
-                        $"{config.AggregateFrameRateFloor:0}/s ({config.Rooms} rooms x {config.TickHz} Hz)");
+            reasons.Add(FormattableString.Invariant(
+                $"the aggregate frame rate {measurement.AggregateFrameRate:0.0}/s is below the target {config.AggregateFrameRateFloor:0}/s ({config.Rooms} rooms x {config.TickHz} Hz)"));
         if (measurement.PerRoomCompletionP95Ms > config.PerRoomCompletionP95BudgetMs)
-            reasons.Add($"the per-room completion p95 {measurement.PerRoomCompletionP95Ms:0} ms is over the budget " +
-                        $"{config.PerRoomCompletionP95BudgetMs:0} ms (at {config.TickHz} Hz a full round is {config.TicksPerRoom * 1000.0 / config.TickHz:0} ms)");
+            reasons.Add(FormattableString.Invariant(
+                $"the per-room completion p95 {measurement.PerRoomCompletionP95Ms:0} ms is over the budget {config.PerRoomCompletionP95BudgetMs:0} ms (at {config.TickHz} Hz a full round is {config.TicksPerRoom * 1000.0 / config.TickHz:0} ms)"));
         var fill = measurement.PlannedInputs <= 0 ? 1.0 : (double)measurement.EmittedInputs / measurement.PlannedInputs;
         if (fill < config.PlanFillFloor)
-            reasons.Add($"the input generator kept only {fill:P1} of its plan (planned {measurement.PlannedInputs}, " +
-                        $"emitted {measurement.EmittedInputs}, backlog {measurement.BacklogInputs}) — the achieved rate never replaces the target");
+            reasons.Add(FormattableString.Invariant(
+                $"the input generator kept only {fill * 100:0.0}% of its plan (planned {measurement.PlannedInputs}, emitted {measurement.EmittedInputs}, backlog {measurement.BacklogInputs}) — the achieved rate never replaces the target"));
         if (measurement.InputFirstError is { } firstError)
             reasons.Add($"the input generator recorded an error: {firstError}");
         return new CapacityReport(
