@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
+using Chorus.Adapters.Abstractions;
 using Chorus.Redesign.Platform;
 using Chorus.Redesign.PlatformGateway;
 using Chorus.Redesign.Rpc;
@@ -17,18 +18,39 @@ var port = int.Parse(Environment.GetEnvironmentVariable("CHORUS_PORT") ?? "7504"
 var dataPort = int.Parse(Environment.GetEnvironmentVariable("CHORUS_DATA_PORT") ?? "7501");
 var dataEndpoint = Environment.GetEnvironmentVariable("CHORUS_DATA_ENDPOINT")
     ?? $"https://localhost:{dataPort}";
-
-builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Any, port, listen =>
+// The public webhook listener (architecture 6.1): platform callers present signatures, not
+// mTLS client certificates, so the ingress face gets its own HTTP/1.1 listener. Absent by
+// default — a gateway without ingress duty does not open a public port.
+var ingressPortRaw = Environment.GetEnvironmentVariable("CHORUS_INGRESS_PORT");
+if (ingressPortRaw is { Length: > 0 }
+    && (!int.TryParse(ingressPortRaw, out var parsed) || parsed <= 0))
 {
-    listen.Protocols = HttpProtocols.Http2;
-    listen.UseHttps(https =>
+    throw new InvalidOperationException($"CHORUS_INGRESS_PORT must be a positive integer when set, not '{ingressPortRaw}'.");
+}
+var ingressPort = ingressPortRaw is { Length: > 0 } ? int.Parse(ingressPortRaw) : 0;
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Listen(IPAddress.Any, port, listen =>
     {
-        https.ServerCertificate = serverCertificate;
-        https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
-        https.ClientCertificateValidation = (certificate, _, _) =>
-            trustedCertificates.ValidateAndRemember(certificate, root, clusterId, [nodeAuthority]);
+        listen.Protocols = HttpProtocols.Http2;
+        listen.UseHttps(https =>
+        {
+            https.ServerCertificate = serverCertificate;
+            https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+            https.ClientCertificateValidation = (certificate, _, _) =>
+                trustedCertificates.ValidateAndRemember(certificate, root, clusterId, [nodeAuthority]);
+        });
     });
-}));
+    if (ingressPort > 0)
+    {
+        options.Listen(IPAddress.Any, ingressPort, listen =>
+        {
+            listen.Protocols = HttpProtocols.Http1;
+            listen.UseHttps(https => https.ServerCertificate = serverCertificate);
+        });
+    }
+});
 
 // No database credentials on this host (architecture 9.3): the lease protocol lives behind the
 // data-plane channel, and this identity — the process certificate — is what the leases see.
@@ -69,6 +91,13 @@ builder.Services.AddGrpc();
 // credentials refuses to start naming the key, and an unlisted platform contributes zero
 // registrations and zero credential reads.
 var enabledPlatforms = PlatformModuleAssembly.AddPlatformModules(builder.Services, builder.Configuration);
+if (ingressPort > 0)
+{
+    builder.Services.AddSingleton(sp => new PlatformIngressEndpoint(
+        sp.GetService<IPlatformEventVerifier>(),
+        sp.GetServices<IPlatformEventMapper>(),
+        new PlatformIngest.PlatformIngestClient(DataChannel())));
+}
 
 var app = builder.Build();
 // Host-visible startup evidence goes to the console channel the test harness captures —
@@ -83,6 +112,13 @@ if (builder.Configuration.GetValue(PlatformModuleAssembly.AllowAllConfigurationK
         $"{PlatformModuleAssembly.AllowAllConfigurationKey} is enabled; platform signatures are not required. Development only.");
 }
 app.MapGrpcService<GatewayGrpcService>();
+if (ingressPort > 0)
+{
+    // The webhook face answers only on the ingress listener's port; the declaration itself is
+    // inert on the cluster listener where no platform caller can reach it.
+    app.MapPost("/ingress/{platform}", async (string platform, HttpContext context,
+        PlatformIngressEndpoint endpoint) => await endpoint.HandleAsync(platform, context));
+}
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

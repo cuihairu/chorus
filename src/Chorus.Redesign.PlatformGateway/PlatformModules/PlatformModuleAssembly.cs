@@ -90,11 +90,15 @@ public static class PlatformModuleAssembly
         if (ingestModules.Count > 0)
         {
             // Ingress:AllowAll (default false) keeps the unsigned dev verifier mounted; without
-            // it the router fails closed for platforms without a real verifier.
+            // it the router fails closed for platforms without a real verifier. The simulator
+            // mapper rides along with the test mapper: the simulator is the one platform a
+            // development fleet can mount, so it is the one whose events can be driven through
+            // the ingress face into a room.
             if (configuration.GetValue(AllowAllConfigurationKey, false))
             {
                 services.AddSingleton<AllowAllPlatformEventVerifier>();
                 services.AddSingleton<IPlatformEventMapper, TestPlatformEventMapper>();
+                services.AddSingleton<IPlatformEventMapper, SimulatorPlatformEventMapper>();
             }
             services.AddSingleton(sp => new PlatformEventVerifierRouter(
                 sp.GetServices<IPlatformNamedEventVerifier>(),

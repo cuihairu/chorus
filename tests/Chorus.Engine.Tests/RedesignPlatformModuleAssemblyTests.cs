@@ -196,6 +196,9 @@ public sealed class RedesignPlatformModuleAssemblyTests
         using var provider = services.BuildServiceProvider();
         Assert.NotNull(provider.GetRequiredService<AllowAllPlatformEventVerifier>());
         Assert.Contains(provider.GetServices<IPlatformEventMapper>(), mapper => mapper is TestPlatformEventMapper);
+        // The simulator mapper rides along: it is the one platform a development fleet can
+        // mount, so ingress-face parity runs on it.
+        Assert.Contains(provider.GetServices<IPlatformEventMapper>(), mapper => mapper is SimulatorPlatformEventMapper);
     }
 
     [Fact]
