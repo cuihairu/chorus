@@ -115,6 +115,14 @@ public sealed class RedesignRecoveryStoreTests
         Assert.Equal(2, plan.LastTick);
         Assert.Equal(3, plan.StateVersion); // activation at 1 plus two commits
 
+        // FIX-MODULE-01: the room row is the identity authority — the plan carries the
+        // module facts the room was admitted and prepared under, not caller-supplied ones.
+        Assert.Equal(50, plan.TickMs);
+        Assert.Equal("1.0.0", plan.ModuleVersion);
+        Assert.Equal("cfg-1", plan.ConfigHash);
+        Assert.Equal("pkg-1", plan.PackageHash);
+        Assert.Equal("DeterministicReplay", plan.RecoveryMode);
+
         // Snapshots newest-first, with the prepare-time tick-0 row still unverified.
         Assert.Equal(2, plan.Snapshots.Count);
         Assert.Equal(2, plan.Snapshots[0].Tick);

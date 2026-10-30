@@ -121,6 +121,11 @@ public sealed class RedesignRecoveryFallbackUnitTests
         {
             Found = true, RoomId = "room-r4-unit", Status = "Running", Epoch = 1,
             LastTick = _frames.Count, StateVersion = _frames.Count + 1,
+            // FIX-MODULE-01: the plan carries the room's persisted identity; a scripted
+            // recovery must restate it or the identity check refuses the plan.
+            TickMs = 25, ModuleVersion = GameModuleIdentity.ModuleVersion,
+            ConfigHash = GameModuleIdentity.ConfigHash, PackageHash = GameModuleIdentity.PackageHash,
+            RecoveryMode = GameModuleIdentity.RecoveryMode,
             Snapshots =
             {
                 anchorSpecs.Select(spec =>

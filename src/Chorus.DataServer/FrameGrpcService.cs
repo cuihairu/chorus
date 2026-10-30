@@ -189,6 +189,8 @@ public sealed class FrameGrpcService(
             {
                 Found = true, RoomId = page.RoomId, Status = page.Status, Epoch = page.Epoch,
                 LastTick = page.LastTick, StateVersion = page.StateVersion,
+                TickMs = page.TickMs, ModuleVersion = page.ModuleVersion, ConfigHash = page.ConfigHash,
+                PackageHash = page.PackageHash, RecoveryMode = page.RecoveryMode,
                 Snapshots =
                 {
                     page.Snapshots.Select(snapshot => new RecoverySnapshotProto

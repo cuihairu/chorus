@@ -18,11 +18,19 @@ public sealed record RecoveryDelivery(
 public sealed record RecoveryFrame(
     long Tick, IReadOnlyList<string> InputEventIds, byte[] StateHash, string ModuleVersion, string ConfigHash);
 
+/// <param name="TickMs">
+/// The room's persisted tick cadence (FIX-MODULE-01) alongside the rest of the module
+/// identity: the recovery rebuilds the module from these room facts — never from a
+/// caller-supplied tick or module guess — so the original round's cadence, version,
+/// package and checkpoint policy survive a takeover or admin retry unchanged.
+/// </param>
 public sealed record RecoveryPlan(
     string RoomId, string Status, long Epoch, long LastTick, long StateVersion,
     IReadOnlyList<RecoverySnapshot> Snapshots, IReadOnlyList<RecoveryDelivery> Deliveries,
     IReadOnlyList<RecoveryFrame> Frames, IReadOnlyList<RoundParticipantState> Participants,
-    RecoveryReadStats? Reads = null);
+    RecoveryReadStats? Reads = null,
+    int TickMs = 50, string ModuleVersion = "", string ConfigHash = "",
+    string PackageHash = "", string RecoveryMode = "");
 
 /// <summary>What the recovery read actually moved (FIX-READ-02): row counts per material and
 /// the payload bytes they carried, so a long round's read cost is measured, not guessed.</summary>
@@ -213,8 +221,10 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
         await using var view = await connection.BeginTransactionAsync(
             IsolationLevel.RepeatableRead, cancellationToken);
         string status; long epoch, lastTick, stateVersion;
+        int tickMs; string moduleVersion, configHash, packageHash, recoveryMode;
         await using (var room = new NpgsqlCommand("""
-            SELECT status,epoch,last_tick,state_version
+            SELECT status,epoch,last_tick,state_version,tick_ms,module_version,config_hash,
+                   package_hash,recovery_mode
             FROM game.room WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
             """, connection, view))
         {
@@ -227,6 +237,11 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
             epoch = reader.GetInt64(1);
             lastTick = reader.GetInt64(2);
             stateVersion = reader.GetInt64(3);
+            tickMs = reader.GetInt32(4);
+            moduleVersion = reader.GetString(5);
+            configHash = reader.GetString(6);
+            packageHash = reader.GetString(7);
+            recoveryMode = reader.GetString(8);
         }
         afterHeadRead?.Invoke();
         var snapshots = new List<RecoverySnapshot>();
@@ -299,7 +314,7 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
                 + frames.Sum(frame => frame.StateHash.LongLength)
                 + deliveries.Sum(delivery => (long)delivery.PayloadJson.Length));
         var plan = new RecoveryPlan(roomId, status, epoch, lastTick, stateVersion, snapshots, deliveries,
-            frames, participants, reads);
+            frames, participants, reads, tickMs, moduleVersion, configHash, packageHash, recoveryMode);
         // The read-only view closes with the plan; a rollback would answer identically, so
         // the commit is just the cheapest exit that keeps the connection reusable.
         await view.CommitAsync(cancellationToken);

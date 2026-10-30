@@ -332,6 +332,15 @@ message LoadRecoveryReply {
   // Present when more rows follow in the same view; absent on the last page. The head
   // fields above ride on every page so a reader can verify the view never moved.
   bytes next_page_token = 11;
+  // The room's persisted identity (FIX-MODULE-01): the recovery reads the module facts the
+  // room was admitted under back from the room row instead of accepting a caller-supplied
+  // tick or module guess. These ride on every page with the head fields so a reader
+  // validates the identity against the same consistent view it replays.
+  int32 tick_ms = 12;
+  string module_version = 13;
+  string config_hash = 14;
+  string package_hash = 15;
+  string recovery_mode = 16;
 }
 
 service RoundStore {
@@ -457,6 +466,10 @@ message PrepareRoundRequest {
   // The room's tick cadence, persisted with the room so a stall governor can recover it
   // on another host without guessing (FIX-TAKE-07).
   int32 tick_ms = 9;
+  // The room's recovery/checkpoint mode, persisted with the room so a recovery rebuilds
+  // the module under the policy the room was prepared with, never under a caller-supplied
+  // guess (FIX-MODULE-01). Empty = the cluster's shipped mode.
+  string recovery_mode = 10;
 }
 
 message ActivateRoundRequest {
@@ -528,17 +541,28 @@ message PrepareRoomReply {
   int64 tick = 5;
 }
 
+// The recovery identity contract (FIX-MODULE-01): the room's identity is a persisted fact,
+// never a caller opinion. A recovery is refused — recovered=false with a named note — when
+// the request restates a tick different from the room's persisted cadence, or when the
+// room's package, module version or checkpoint mode is one this host cannot load. A
+// recovery never changes the original round's tick, config or module.
 message RecoverRoomRequest {
   string room_id = 1;
   string game_id = 2;
   string owner_instance_id = 3;
   int64 epoch = 4;
+  // The tick cadence the caller expects the room to run at; 0 means "use the room's
+  // persisted cadence". A positive value that disagrees with the persisted cadence is
+  // refused, so a takeover or admin retry cannot silently change the room's tick.
   int32 tick_ms = 5;
 }
 
 message RecoverRoomReply {
   string room_id = 1;
   bool recovered = 2;
+  // The outcome, named for the contract: a tick mismatch names the persisted cadence, a
+  // missing package names the unknown package, an incompatible module names the version or
+  // checkpoint mode the room was persisted under.
   string note = 3;
   string status = 4;
   int64 last_tick = 5;

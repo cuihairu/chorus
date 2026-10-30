@@ -152,7 +152,8 @@ public sealed class RedesignRecoveryCapacityBenchmarkTests(ITestOutputHelper out
             {
                 RoomId = owners[index].EntityId, OwnerInstanceId = "game-a",
                 Epoch = owners[index].Epoch, GameId = "game-a",
-                ModuleVersion = "1.0.0", ConfigHash = "cfg-rec-cap", PackageHash = "pkg-rec-cap",
+                ModuleVersion = GameModuleIdentity.ModuleVersion, ConfigHash = GameModuleIdentity.ConfigHash,
+                PackageHash = GameModuleIdentity.PackageHash,
                 OperationId = $"start-rec-cap-{index}", TenantId = "tenant-a",
                 Participants =
                 {

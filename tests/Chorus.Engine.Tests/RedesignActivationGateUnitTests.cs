@@ -137,6 +137,10 @@ public sealed class RedesignActivationGateUnitTests
         {
             Found = true, RoomId = "room-gate", Status = "Running", Epoch = 1,
             LastTick = 0, StateVersion = 1,
+            // FIX-MODULE-01: the plan carries the room's persisted identity.
+            TickMs = 25, ModuleVersion = GameModuleIdentity.ModuleVersion,
+            ConfigHash = GameModuleIdentity.ConfigHash, PackageHash = GameModuleIdentity.PackageHash,
+            RecoveryMode = GameModuleIdentity.RecoveryMode,
             Snapshots = { new RecoverySnapshotProto
             {
                 Tick = 0, SchemaVersion = initial.SchemaVersion,

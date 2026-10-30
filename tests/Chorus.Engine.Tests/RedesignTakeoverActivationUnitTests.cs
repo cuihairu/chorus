@@ -161,6 +161,10 @@ public sealed class RedesignTakeoverActivationUnitTests
         {
             Found = true, RoomId = "room-take-3", Status = status, Epoch = 8,
             LastTick = 0, StateVersion = 1,
+            // FIX-MODULE-01: the plan carries the room's persisted identity.
+            TickMs = 25, ModuleVersion = GameModuleIdentity.ModuleVersion,
+            ConfigHash = GameModuleIdentity.ConfigHash, PackageHash = GameModuleIdentity.PackageHash,
+            RecoveryMode = GameModuleIdentity.RecoveryMode,
             Snapshots = { new RecoverySnapshotProto
             {
                 Tick = 0, SchemaVersion = initial.SchemaVersion,

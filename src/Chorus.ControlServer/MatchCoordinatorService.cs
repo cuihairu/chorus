@@ -278,10 +278,14 @@ public sealed class MatchCoordinatorService(
         GameHost.GameHostClient gameHost, CancellationToken cancellationToken)
     {
         var deadline = DateTime.UtcNow.Add(CallTimeout);
+        // FIX-MODULE-01: the room is admitted under the cluster's declared module identity —
+        // the single authority for the package, version and config pin a recovery later
+        // validates the room against.
         await _rounds.StartRoundAsync(new StartRoundRequest
         {
             RoomId = roomId, OwnerInstanceId = ownership.OwnerInstanceId, Epoch = ownership.Epoch,
-            GameId = gameId, ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            GameId = gameId, ModuleVersion = GameModuleIdentity.ModuleVersion,
+            ConfigHash = GameModuleIdentity.ConfigHash, PackageHash = GameModuleIdentity.PackageHash,
             OperationId = "start-" + roomId, TenantId = tenantId,
             Participants = { candidates.Select(candidate => new RoundParticipantProto
             {
