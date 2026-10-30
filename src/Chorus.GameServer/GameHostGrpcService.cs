@@ -34,6 +34,20 @@ public sealed class GameHostGrpcService(RoomRuntime runtime, TrustedProcessCerti
         // own status — the caller sees exactly what the store refused.
     }
 
+    public override async Task<ActivateRoomReply> ActivateRoom(ActivateRoomRequest request,
+        ServerCallContext context)
+    {
+        Require(context, "control-server", "game-server");
+        try
+        {
+            return await runtime.ActivateRoomAsync(request, context.CancellationToken);
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
     public override async Task<RecoverRoomReply> RecoverRoom(RecoverRoomRequest request,
         ServerCallContext context)
     {

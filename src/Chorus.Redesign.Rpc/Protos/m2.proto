@@ -396,10 +396,13 @@ service FrameStore {
 
 // Room preparation on the game host (architecture 7.2). The control plane names the
 // admitted room and its module configuration; the host derives the deterministic initial
-// state, deposits the tick-0 snapshot, activates the round and starts the room actor.
+// state, deposits the tick-0 snapshot, activates the round and starts the room actor —
+// or, when the prepare defers activation, holds the room until ActivateRoom releases it.
 service GameHost {
   rpc Ready(chorus.redesign.m0.Empty) returns (chorus.redesign.m0.ReadyReply);
   rpc PrepareRoom(PrepareRoomRequest) returns (PrepareRoomReply);
+  // FIX-PERF-03: release a held room across the fleet's common start line.
+  rpc ActivateRoom(ActivateRoomRequest) returns (ActivateRoomReply);
   // Snapshot recovery (architecture 10.3): replay from the newest usable snapshot, resume
   // ticking; a Finishing room recovers its tail without restarting battle ticks.
   rpc RecoverRoom(RecoverRoomRequest) returns (RecoverRoomReply);
@@ -497,6 +500,24 @@ message PrepareRoomRequest {
   // builds resumes from the pinned head without hanging.
   int32 hang_after_tick = 11;
   int32 hang_ms = 12;
+  // FIX-PERF-03 synchronized start: the room is prepared and held — round Preparing,
+  // actor not ticking — until ActivateRoom releases it, so a fleet can cross one
+  // common start line instead of staggering by prepare order.
+  bool deferred_activation = 13;
+}
+
+message ActivateRoomRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  string operation_id = 5;
+}
+
+message ActivateRoomReply {
+  string room_id = 1;
+  bool duplicate = 2;
+  string status = 3;
 }
 
 message PrepareRoomReply {

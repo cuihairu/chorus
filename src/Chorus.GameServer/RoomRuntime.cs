@@ -21,6 +21,10 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     private readonly Settlement.SettlementClient _settlement;
     private readonly RoomMetrics _metrics;
     private readonly ConcurrentDictionary<string, RoomActor> _actors = new(StringComparer.Ordinal);
+
+    // FIX-PERF-03: rooms whose actor has crossed the start line. Presence means Start ran;
+    // a room held by _actors but absent here is prepared and waiting for ActivateRoom.
+    private readonly ConcurrentDictionary<string, byte> _activated = new(StringComparer.Ordinal);
     // Per-room activation gates (FIX-ROOM-03): prepare and recovery reach the actor
     // dictionary only through their room's gate, so interleaved callers never both
     // decide the room is unknown and start a second loop.
@@ -114,11 +118,14 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 SnapshotHash = ByteString.CopyFrom(hash), SnapshotSchemaVersion = initial.SchemaVersion,
                 OperationId = request.OperationId + "/prepare", TickMs = request.TickMs
             }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
-            await _rounds.ActivateRoundAsync(new ActivateRoundRequest
-            {
-                RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
-                GameId = request.GameId, OperationId = request.OperationId + "/activate"
-            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            // A deferred prepare holds the room — round Preparing, actor not ticking — for
+            // ActivateRoom to release across a common start line (FIX-PERF-03).
+            if (!request.DeferredActivation)
+                await _rounds.ActivateRoundAsync(new ActivateRoundRequest
+                {
+                    RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                    GameId = request.GameId, OperationId = request.OperationId + "/activate"
+                }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
 
             var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
                 request.OwnerInstanceId, request.Epoch, configHash, initial, bindings,
@@ -132,10 +139,78 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     RoomId = request.RoomId, Duplicate = true, Status = "Prepared", StateVersion = 1
                 };
             }
+            if (request.DeferredActivation)
+            {
+                actor.HoldForCommonStart();
+                return new PrepareRoomReply
+                {
+                    RoomId = request.RoomId, Duplicate = false, Status = "Prepared", StateVersion = 1
+                };
+            }
             actor.Start();
+            _activated.TryAdd(request.RoomId, 0);
             return new PrepareRoomReply
             {
                 RoomId = request.RoomId, Duplicate = false, Status = "Running", StateVersion = 1
+            };
+        }
+        finally
+        {
+            activation.Release();
+        }
+    }
+
+    /// <summary>
+    /// Releases a room prepared with deferred activation (FIX-PERF-03): the round flips to
+    /// Running and the actor starts. A retry after a lost reply answers duplicate — Start
+    /// never runs twice — and a fence that does not match the held room never releases it.
+    /// </summary>
+    public async Task<ActivateRoomReply> ActivateRoomAsync(ActivateRoomRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        Require(request.RoomId, "room_id"); Require(request.GameId, "game_id");
+        Require(request.OwnerInstanceId, "owner_instance_id"); Require(request.OperationId, "operation_id");
+        if (request.Epoch <= 0) throw new ArgumentException("The room epoch must be positive.");
+        var activation = _activations.GetOrAdd(request.RoomId, static _ => new SemaphoreSlim(1, 1));
+        await activation.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_actors.TryGetValue(request.RoomId, out var actor))
+                throw new ArgumentException(
+                    $"The room {request.RoomId} is not held by this host.");
+            if (actor.GameId != request.GameId || actor.OwnerInstanceId != request.OwnerInstanceId ||
+                actor.Epoch != request.Epoch)
+                throw new ArgumentException(
+                    "The activation fence does not match the held room.");
+            if (!_activated.TryAdd(request.RoomId, 0))
+                return new ActivateRoomReply
+                {
+                    RoomId = request.RoomId, Duplicate = true, Status = "Running"
+                };
+            try
+            {
+                // Running before the first tick: the actor's first commit must meet a Running
+                // round, not race the flip.
+                await _rounds.ActivateRoundAsync(new ActivateRoundRequest
+                {
+                    RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                    GameId = request.GameId, OperationId = request.OperationId
+                }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            }
+            catch
+            {
+                // The start-line flag only means "released" once the round flip held: a failed
+                // activation rolls it back, or a retry would answer duplicate and leave the
+                // room held forever (the stall governor rightly ignores Preparing).
+                _activated.TryRemove(new KeyValuePair<string, byte>(request.RoomId, 0));
+                throw;
+            }
+            actor.ReleaseFromHold();
+            actor.Start();
+            return new ActivateRoomReply
+            {
+                RoomId = request.RoomId, Duplicate = false, Status = "Running"
             };
         }
         finally
@@ -166,6 +241,9 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         _retiredStatuses[actor.RoomId] = status;
         ((ICollection<KeyValuePair<string, RoomActor>>)_actors)
             .Remove(new KeyValuePair<string, RoomActor>(actor.RoomId, actor));
+        // The start-line flag follows the actor out, so a room id re-prepared later starts
+        // from a clean slate rather than answering activations as duplicates (FIX-PERF-03).
+        _activated.TryRemove(new KeyValuePair<string, byte>(actor.RoomId, 0));
     }
 
     /// <summary>
@@ -449,6 +527,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     };
                 }
                 actor.Start();
+                _activated.TryAdd(request.RoomId, 0);
                 return new RecoverRoomReply
                 {
                     RoomId = request.RoomId, Recovered = true, Status = "Running",
@@ -658,6 +737,14 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 LastTick = status.LastCommittedTick,
                 Note = "The room is already running on this host."
             };
+        if (status.State == RoomRunState.Preparing)
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = false, Status = "Preparing",
+                LastTick = status.LastCommittedTick,
+                Note = "The room is held for a common start (FIX-PERF-03) and has not begun " +
+                       "ticking; recover it only after the start line releases it."
+            };
         return new RecoverRoomReply
         {
             RoomId = request.RoomId, Recovered = false, Status = DescribeRunState(status.State),
@@ -674,6 +761,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         RoomRunState.Running => "Running",
         RoomRunState.Completed => "Finishing",
         RoomRunState.Stopped => "Stopped",
+        RoomRunState.Preparing => "Preparing",
         _ => "Disposed"
     };
 

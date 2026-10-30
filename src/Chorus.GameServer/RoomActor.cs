@@ -11,6 +11,10 @@ namespace Chorus.GameServer;
 /// stopped actor carries its reason; nothing outside may infer liveness from timers.</summary>
 internal enum RoomRunState
 {
+    /// <summary>Prepared and held: not yet released across the common start line
+    /// (FIX-PERF-03). No loop runs and no frame has committed — the stall governor must
+    /// not read a held fleet as frozen-Running.</summary>
+    Preparing,
     /// <summary>The loop is awake and committing frames.</summary>
     Running,
     /// <summary>The final frame committed and the manifest settled.</summary>
@@ -549,6 +553,26 @@ internal sealed class RoomActor : IAsyncDisposable
     {
         lock (_publishGate) return new RoomActorStatus(_runState, _epoch, _lastTick, _stopReason,
             _lastCommittedAt);
+    }
+
+    /// <summary>The activation fence this actor was built under (FIX-PERF-03 release check;
+    /// the epoch itself is the subscriber-facing property above).</summary>
+    internal string GameId => _gameId;
+    internal string OwnerInstanceId => _ownerInstanceId;
+
+    /// <summary>A prepared-but-unreleased room reports Preparing (FIX-PERF-03).</summary>
+    internal void HoldForCommonStart()
+    {
+        lock (_publishGate) _runState = RoomRunState.Preparing;
+    }
+
+    /// <summary>The release across the start line: back to Running before the loop starts.</summary>
+    internal void ReleaseFromHold()
+    {
+        lock (_publishGate)
+        {
+            if (_runState == RoomRunState.Preparing) _runState = RoomRunState.Running;
+        }
     }
 
     private static DateTime Deadline() => DateTime.UtcNow.AddSeconds(10);
