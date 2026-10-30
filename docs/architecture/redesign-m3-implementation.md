@@ -132,3 +132,17 @@ M3-7 拆出的独立交付：streamer 实体进 control.ownership 体系，控�
 | AT31（礼物→帧→奖励全链追溯） | **闭合** | M3-9：TraceRound 六链 join 只读 + 结算未跑→RetrySettlement 受控修复→链路闭合，全程审计 |
 
 M3 九轮全部落地（M3-1 4cd31f7 … M3-8 e6caaa3、M3-9 6f37a92）。下一里程碑按验收顺序为 M4（StreamerGateway WSS 生产边缘，见架构 contracts §3 目标态）；硬件阻塞项（AT24/25/28 独立机形式、M0 双 OS 出口、ROOM-07/09/11/12）维持 open 待环境。
+
+## M3-8 后续已落地：平台模块按需装配（6585adb，2026-10-30）
+
+2026-10-30 用户拍板：不同开发商面向的平台不同，网关不应编译期无条件全量挂载平台适配器——按需开启+配置即可。问题在组合根：旧线 `src/Chorus.PlatformGateway/Program.cs` 把三平台验证器/映射器/能力表编译期写死无条件注册；接口层（IPlatformEventMapper/Verifier/Router/CapabilityRegistry）本就齐备。改造落在重构线，旧线宿主不动。
+
+- **IPlatformModule 契约**（Chorus.Redesign.Platform，新增 Protocol 项目引用 + M.E.Configuration/DI.Abstractions 9.0.0 包引用）：`Name` / `Capabilities`（`PlatformModuleSurface`: EventIngest|Login|Writeback + 事件种类集合）/ `ValidateConfiguration`（fail-fast 点名缺失键）/ `ConfigureServices`。模块实现留在宿主侧（Chorus.Redesign.PlatformGateway），抽象包不拖具体平台适配器。
+- **四个模块**（Chorus.Redesign.PlatformGateway/PlatformModules/，项目引用复用 Chorus.Adapters.Platforms 实现，零复制代码）：
+  - Bilibili：验签 AccessKeyId/AccessKeySecret + 映射 SessionId；桥接 hosted service 只在 open-live 凭据四件套齐全时挂（`BilibiliIngressBridgeHostedService.IsConfigured` 同旧线规则）；能力行复用 Engine `PlatformCapabilities.Bilibili` 不复述。
+  - Douyin：验签 AppSecret（签名头走适配器默认）；占位 schema 映射器。
+  - Kuaishou：VerifyToken + 推文加密 MsgEncryptKey（推送到达即加密，解密键是工作必需非可选）。
+  - MiniGame：抖音小游戏 code2session（`Ingress:MiniGame:Douyin:AppId/AppSecret`，ApiBaseUrl 可选供测试桩）——唯一端点形状经官方文档核实的小游戏平台；无事件面不进事件能力表；快手小游戏端点未核实不接线（不编造能力）。
+- **按配置装配**（PlatformModuleAssembly）：`Ingress:Platforms` 列表内=注册+读密钥；未列=零注册零密钥读取；列表未知名/重名=启动报错点名全部可选模块（防拼错静默失效）；全部启用模块**先验证后注册**（拒启不留半装配状态）；PlatformEventVerifierRouter 只在有事件模块启用时挂，`Ingress:AllowAll` 追加开发验签+TestPlatformEventMapper（默认 false，路由对无验签平台 fail-closed）；PlatformCapabilityRegistry 由启用列表生成（未列平台 SupportsEventKind=false）；启动 console 打印 `platform modules enabled: ...`（与 metrics dump 同通道，测试可断言）。
+- 证据：单测 `RedesignPlatformModuleAssemblyTests` 9 例——空列表零挂载零能力行/子集只挂所列且未列平台密钥**零读取**（CountingConfiguration 计数断言实测，非结构推断）/缺密钥拒启点名全部缺失键且容器零平台描述符/未知名 fail-closed 列出四模块/重名拒绝/MiniGame 挂载但无事件能力行/桥接仅全凭据时挂/AllowAll 挂开发验签+Test mapper/MiniGame 缺键点名。宿主 `RedesignPlatformModuleHostTests` 2 例——真实网关进程：单平台子集配置照常起、Ready 面服务、输出含 `platform modules enabled: bilibili`；启用 douyin 但缺 AppSecret 启动即崩（StartAsync 抛 exited with），进程输出点名 `Ingress:Douyin:AppSecret`。回归：M3-8 平台任务宿主 2 例绿（无 Ingress 配置=零模块=原行为不变）；全量 Release 1428/1428 绿（谷值，4m13s）；残留 0 进程 0 库。
+- 诚实边界：本交付是**组合正确性**——verifier/mapper/auth client 注册进 DI 即组合就绪；网关公网 ingress HTTP 面（旧线 `/ingress/{platform}` 的重构线等价物）与事件直推链路（FIX-INPUT-02..06）仍 open，注册服务的消费端随边缘面落地；MiniGame 身份绑定/排名上报留在库侧，待其重构线宿主出现再接线。
