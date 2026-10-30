@@ -74,7 +74,10 @@ if (controlEndpoint is { Length: > 0 })
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId,
         reportIntervalMs, roomProgress: () => runtime.RoomStatuses().Select(entry => new RoomProgressReport(
             entry.RoomId, entry.Status.Epoch, entry.Status.State.ToString(), entry.Status.LastCommittedTick,
-            entry.Status.LastCommittedAt?.ToUnixTimeMilliseconds(), entry.Status.StopReason)).ToList()));
+            entry.Status.LastCommittedAt?.ToUnixTimeMilliseconds(), entry.Status.StopReason)).ToList(),
+        // The budget speaks in the report (FIX-SCHED-02): a host at cap announces Full and
+        // the scheduler stops offering it rooms.
+        admission: () => runtime.AdmissionState));
 }
 builder.Services.AddGrpc();
 

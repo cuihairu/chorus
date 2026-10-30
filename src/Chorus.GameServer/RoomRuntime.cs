@@ -924,6 +924,15 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         return count;
     }
 
+    /// <summary>The admission word this host reports to the control plane (FIX-SCHED-02):
+    /// <c>Full</c> when its own budget would refuse a new room, <c>Accepting</c> otherwise.
+    /// The scheduler filters on it, so a capacity-bound host stops being offered rooms
+    /// instead of answering every offer with a refusal.</summary>
+    internal string AdmissionState =>
+        _admission.WouldRefuse(DegradedRoomCount())
+            ? Chorus.Redesign.Rpc.ProcessAdmission.Full
+            : Chorus.Redesign.Rpc.ProcessAdmission.Accepting;
+
     private static void Require(string? value, string name)
     {
         if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException("Value is required.", name);

@@ -44,6 +44,79 @@ public sealed class RedesignClusterDirectoryUnitTests
     private static GameHostReport Report(string instanceId, string endpoint, DateTime observedAtUtc) =>
         new(instanceId, endpoint, observedAtUtc, "Ready", "Open");
 
+    private static GameHostReport Report(
+        string instanceId, string endpoint, DateTime observedAtUtc, string readiness, string admission) =>
+        new(instanceId, endpoint, observedAtUtc, readiness, admission);
+
+    [Fact]
+    public void IneligibleHostsStayReachableButNeverTakeANewRoom()
+    {
+        // FIX-SCHED-02: the three states that bar a host from NEW rooms — not ready, full at
+        // its own budget, drained by the admin. Membership keeps all four (existing rooms
+        // still need channels); selection sees only the one Ready, admitting host.
+        using var certificates = new Certificates();
+        var directory = Directory(certificates, [], TimeSpan.FromSeconds(60));
+        var now = DateTime.UtcNow;
+        directory.ApplyReports(
+        [
+            Report("game-ok", "https://localhost:4004", now, "Ready", "Accepting"),
+            Report("game-notready", "https://localhost:1001", now, "Preparing", "Accepting"),
+            Report("game-full", "https://localhost:2002", now, "Ready", "Full"),
+            Report("game-draining", "https://localhost:3003", now, "Ready", "Draining"),
+        ], now);
+        Assert.Equal(4, directory.GameHostCount);
+        Assert.NotNull(directory.GameHostChannel("game-draining"));
+        Assert.NotNull(directory.GameHostChannel("game-full"));
+        Assert.Equal(1, directory.EligibleGameHostCount);
+        var picked = new HashSet<string>();
+        for (var index = 0; index < 6; index++)
+            picked.Add(directory.NextGameHost().InstanceId);
+        Assert.True(picked.SetEquals(["game-ok"]), $"Only game-ok may take rooms, saw {string.Join(",", picked)}");
+        // Capacity frees: the next report says Accepting again and the host returns to the
+        // pool — a full host is paused, not evicted.
+        directory.ApplyReports(
+            [Report("game-full", "https://localhost:2002", now.AddSeconds(1), "Ready", "Accepting")],
+            now.AddSeconds(1));
+        Assert.Equal(2, directory.EligibleGameHostCount);
+        picked.Clear();
+        for (var index = 0; index < 6; index++)
+            picked.Add(directory.NextGameHost().InstanceId);
+        Assert.True(picked.SetEquals(["game-ok", "game-full"]));
+        // An unknown admission word never admits — the filter fails closed.
+        directory.ApplyReports(
+            [Report("game-odd", "https://localhost:5005", now.AddSeconds(2), "Ready", "whatever")],
+            now.AddSeconds(2));
+        Assert.Equal(2, directory.EligibleGameHostCount);
+        Assert.NotNull(directory.GameHostChannel("game-odd"));
+    }
+
+    [Fact]
+    public void EligibilityExpiresAtSelectionTimeEvenWithoutARefresh()
+    {
+        // FIX-SCHED-01's boundary was that a refresh which dies leaves the last snapshot in
+        // place; FIX-SCHED-02 re-checks evidence age at selection, so yesterday's host is
+        // never offered a room — while its channel stays resolvable for the rooms it holds.
+        using var certificates = new Certificates();
+        var directory = Directory(certificates, ["game-a=https://localhost:1001"],
+            TimeSpan.FromSeconds(6));
+        var clock = DateTime.UtcNow;
+        directory.UtcNow = () => clock;
+        Assert.Equal(1, directory.GameHostCount);
+        Assert.Equal(1, directory.EligibleGameHostCount);
+        Assert.NotNull(directory.NextGameHost().Channel);
+
+        clock += TimeSpan.FromSeconds(7); // no refresh ever folded new evidence
+        Assert.Equal(1, directory.GameHostCount); // membership unchanged: still reachable
+        Assert.NotNull(directory.GameHostChannel("game-a"));
+        Assert.Equal(0, directory.EligibleGameHostCount);
+        Assert.Throws<InvalidOperationException>(() => directory.NextGameHost());
+
+        // A fresh report revives eligibility without re-creating anything.
+        directory.ApplyReports([Report("game-a", "https://localhost:1001", clock)], clock);
+        Assert.Equal(1, directory.EligibleGameHostCount);
+        Assert.Equal("game-a", directory.NextGameHost().InstanceId);
+    }
+
     [Fact]
     public void SeedsPopulateTheDirectoryInIdOrder()
     {

@@ -235,12 +235,12 @@ public sealed class AdminGrpcService(
             $$"""{"process":"{{request.ProcessInstanceId}}"}""", context.CancellationToken);
         if (!acted)
         {
-            var currentLifecycle = await adminStore.ReadProcessLifecycleAsync(
+            var currentAdmission = await adminStore.ReadProcessAdmissionAsync(
                 request.ProcessInstanceId, context.CancellationToken);
             return new AdminDrainProcessReply
             {
-                ProcessInstanceId = request.ProcessInstanceId, Found = currentLifecycle is not null,
-                Lifecycle = currentLifecycle ?? "", Duplicate = true
+                ProcessInstanceId = request.ProcessInstanceId, Found = currentAdmission is not null,
+                Lifecycle = currentAdmission ?? "", Duplicate = true
             };
         }
         var lifecycle = await adminStore.DrainProcessAsync(request.ProcessInstanceId, context.CancellationToken)

@@ -83,6 +83,81 @@ public sealed class RedesignGameHostDirectoryStoreTests
         Assert.Empty(await control.ListGameHostReportsAsync(60));
     }
 
+    [Fact]
+    public async Task ADrainSurvivesOptimisticSelfReportsAndTheHostStaysListed()
+    {
+        // FIX-SCHED-02: the admin's Draining is the admission ratchet — a drained host that
+        // keeps reporting cannot un-drain itself — and the drained host stays in the feed,
+        // because its existing rooms still need the control plane to reach them.
+        await using var database = await CreateDatabaseAsync();
+        var control = new RedesignControlStore(database.ConnectionString);
+        var admin = new RedesignAdminStore(database.ConnectionString);
+        await control.RegisterNodeAsync("node-a", "agent-1", "{}");
+        var started = DateTime.UtcNow;
+        await control.ReportProcessAsync("node-a", "agent-1", "node-a/game-server",
+            "game-server", "game-dir-drain", 1, "Running", "Ready", "Healthy", "Accepting",
+            "Steady", started, endpoint: "https://localhost:1001");
+
+        Assert.Equal("Draining", await admin.DrainProcessAsync("game-dir-drain"));
+
+        // The host's own reports keep coming and keep saying Running/Accepting: the report
+        // is accepted (the process is alive and its evidence refreshes) but its admission
+        // word loses to the ratchet.
+        var reported = await control.ReportProcessAsync("node-a", "agent-1", "node-a/game-server",
+            "game-server", "game-dir-drain", 2, "Running", "Ready", "Healthy", "Accepting",
+            "Steady", started, endpoint: "https://localhost:1001");
+        Assert.True(reported.Accepted);
+        var entry = Assert.Single(await control.ListGameHostReportsAsync(60));
+        Assert.Equal("game-dir-drain", entry.InstanceId);
+        Assert.Equal("Ready", entry.Readiness);
+        Assert.Equal("Draining", entry.Admission);
+        // The duplicate-drain reply speaks the durable fact: admission, not the lifecycle
+        // the host's own report flipped back.
+        Assert.Equal("Draining", await admin.ReadProcessAdmissionAsync("game-dir-drain"));
+    }
+
+    [Fact]
+    public async Task ADrainedOwnersRoomsKeepTheirLeasesRenewed()
+    {
+        // The other half of FIX-SCHED-02: drain stops NEW rooms, never the leases of the
+        // rooms the host already holds — while a drained owner keeps reporting, the renewal
+        // registrar still extends its room leases; silence, not drain, is what lets a lease
+        // run out.
+        await using var database = await CreateDatabaseAsync();
+        var control = new RedesignControlStore(database.ConnectionString);
+        var admin = new RedesignAdminStore(database.ConnectionString);
+        await control.RegisterNodeAsync("node-a", "agent-1", "{}");
+        var started = DateTime.UtcNow;
+        await control.ReportProcessAsync("node-a", "agent-1", "node-a/game-server",
+            "game-server", "game-lease-1", 1, "Running", "Ready", "Healthy", "Accepting",
+            "Steady", started, endpoint: "https://localhost:1001");
+        var claimed = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room",
+            "room-lease-a", "game-lease-1", 15);
+        Assert.Equal("Active", claimed.Status);
+
+        Assert.Equal("Draining", await admin.DrainProcessAsync("game-lease-1"));
+        // The drained host keeps reporting — its rooms are still live on it — and between
+        // the drain and its next report the row genuinely says lifecycle Draining: the
+        // registrar must treat that owner as alive and renew anyway.
+        Assert.Equal(1, await control.RenewLiveOwnershipsAsync(15, 15));
+        var after = await control.GetOwnershipAsync("tenant-a", "game-a", "room", "room-lease-a");
+        Assert.Equal("Active", after!.Status);
+        Assert.True(after.LeaseUntilUtc > DateTime.UtcNow.AddSeconds(10),
+            "The drained owner's room lease was not pushed a full lease ahead.");
+
+        // The counterproof: a silent owner (no fresh report) loses its renewal — the lease
+        // runs out and the entity becomes takeable. Drain was never the trigger; silence is.
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var backdate = new NpgsqlCommand(
+                "UPDATE control.process SET observed_at=clock_timestamp()-interval '120 seconds'",
+                connection);
+            await backdate.ExecuteNonQueryAsync();
+        }
+        Assert.Equal(0, await control.RenewLiveOwnershipsAsync(15, 15));
+    }
+
     private static async Task<TemporaryDatabase> CreateDatabaseAsync()
     {
         var source = Environment.GetEnvironmentVariable("CHORUS_TEST_POSTGRES")

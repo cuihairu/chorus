@@ -555,7 +555,7 @@ public sealed class RedesignM3HostTests
         Assert.Contains(current.Instances, instance => instance.ProcessInstanceId == "game-m3-7a"
             && instance.Role == "game-server" && instance.NodeId == "node-a"
             && instance.SlotId == "node-a/game-server" && instance.Endpoint == $"https://localhost:{gamePortA}"
-            && instance.Readiness == "Ready" && instance.Admission == "Open");
+            && instance.Readiness == "Ready" && instance.Admission == "Accepting");
         Assert.Contains(current.Instances, instance => instance.ProcessInstanceId == "game-m3-7b"
             && instance.SlotId == "node-a/game-server#2" && instance.Endpoint == $"https://localhost:{gamePortB}"
             && instance.Readiness == "Ready");

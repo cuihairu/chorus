@@ -180,7 +180,10 @@ public sealed class MatchCoordinatorService(
     private async Task PairPartitionAsync(string partition, TermStatus term,
         CancellationToken cancellationToken)
     {
-        if (directory.GameHostCount == 0) return;
+        // Eligibility, not membership (FIX-SCHED-02): a fleet whose hosts are all stale, not
+        // ready, full, or draining is reachable but takes no new rooms — the queue keeps the
+        // tickets until one host admits again.
+        if (directory.EligibleGameHostCount == 0) return;
         var window = (await _queue.ListQueuedAsync(
             new ListQueuedRequest { PartitionKey = partition, Max = CandidateWindow },
             deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: cancellationToken)).Tickets;

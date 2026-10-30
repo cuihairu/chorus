@@ -183,6 +183,149 @@ public sealed class RedesignClusterDirectoryHostTests
         }
     }
 
+    [Fact]
+    public async Task FullAndDrainedHostsTakeNoNewRoomsWhileKeepingTheirOwn()
+    {
+        // FIX-SCHED-02's acceptance: a host full at its own budget and a host the admin
+        // drained take no new rooms — the queue waits instead — while the rooms they already
+        // hold keep living where they are. game-sched-b is capped at one room (FIX-PERF-07);
+        // when it holds its cap its own report says Full, and the scheduler stops offering.
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var controlEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+            ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+            ["CHORUS_DIRECTORY_REFRESH_MS"] = "500",
+            ["CHORUS_DIRECTORY_STALE_SECONDS"] = "6",
+            ["CHORUS_ROUND_DURATION_TICKS"] = "10000"
+        };
+        using var fleet = await FleetAsync(environment, simulatorKey, accessKey, controlEnvironment);
+        var portA = RedesignM0HostTests.HostEnvironment.FreePort();
+        var portB = RedesignM0HostTests.HostEnvironment.FreePort();
+        await environment.StartAsync("Chorus.GameServer", portA, "game-server",
+            GameEnvironment(environment.DataPort, fleet.ControlEndpoint, "node-a/game-server"),
+            clientTenant: "tenant-a", instanceId: "game-sched-a");
+        var capped = GameEnvironment(environment.DataPort, fleet.ControlEndpoint, "node-a/game-server#2");
+        capped["CHORUS_GAME_MAX_ACTIVE_ROOMS"] = "1";
+        await environment.StartAsync("Chorus.GameServer", portB, "game-server", capped,
+            clientTenant: "tenant-a", instanceId: "game-sched-b");
+        var bothReported = await WaitForAsync(async () =>
+            (await fleet.Routing.GetRoutingSnapshotAsync(new Empty())).Instances.Count == 2,
+            TimeSpan.FromSeconds(30));
+        Assert.True(bothReported, "The two self-reporting hosts never appeared.");
+        // One refresh beat so the directory folds both before the first pairing cycle.
+        await Task.Delay(TimeSpan.FromMilliseconds(600));
+
+        // Wave one: both hosts admit; the round-robin spreads one room to each.
+        await PairAndCommitAsync(environment, fleet, "sched-full", 4);
+        var afterWaveOne = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        Assert.Equal(2, afterWaveOne.Rooms.Count);
+        Assert.Equal(2, afterWaveOne.Rooms.Select(room => room.OwnerInstanceId).Distinct().Count());
+        var roomOnCapped = afterWaveOne.Rooms
+            .Single(room => room.OwnerInstanceId == "game-sched-b").RoomId;
+        var roomOnDrainTarget = afterWaveOne.Rooms
+            .Single(room => room.OwnerInstanceId == "game-sched-a").RoomId;
+
+        // The capped host's own report announces Full: budget → self-report → snapshot.
+        var fullAnnounced = await WaitForAsync(async () =>
+            (await fleet.Routing.GetRoutingSnapshotAsync(new Empty())).Instances.Any(instance =>
+                instance.ProcessInstanceId == "game-sched-b" && instance.Admission == "Full"),
+            TimeSpan.FromSeconds(15));
+        Assert.True(fullAnnounced, "The capped host never announced Full.");
+        // The announce proves the STORE flipped; the directory folds on its own refresh beat
+        // (500ms), so give the fold a beat before asking the scheduler to respect the word.
+        await Task.Delay(TimeSpan.FromMilliseconds(1000));
+
+        // Wave two pairs while the capped host is Full: only the uncapped host is eligible.
+        var waveTwo = await PairAndCommitAsync(environment, fleet, "sched-next", 2);
+        var waveTwoRooms = await RoomsOfAsync(fleet, waveTwo);
+        Assert.NotEmpty(waveTwoRooms);
+        var afterWaveTwo = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        foreach (var roomId in waveTwoRooms)
+        {
+            var room = Assert.Single(afterWaveTwo.Rooms, candidate => candidate.RoomId == roomId);
+            Assert.Equal("game-sched-a", room.OwnerInstanceId);
+            Assert.Equal($"https://localhost:{portA}", room.Endpoint);
+        }
+
+        // The admin drains the other host — it holds rooms that must keep living.
+        using var adminCertificate = environment.Certificate("@cluster", "control-server", "admin-sched");
+        using var adminChannel = environment.Channel(environment.ControlPort, adminCertificate,
+            "control-server");
+        var drained = await new Admin.AdminClient(adminChannel).DrainProcessAsync(
+            new AdminDrainProcessRequest
+            {
+                RequestId = "drain-sched-a", Operator = "acceptance", Reason = "FIX-SCHED-02",
+                ProcessInstanceId = "game-sched-a"
+            });
+        Assert.Equal("Draining", drained.Lifecycle);
+        var drainAnnounced = await WaitForAsync(async () =>
+            (await fleet.Routing.GetRoutingSnapshotAsync(new Empty())).Instances.Any(instance =>
+                instance.ProcessInstanceId == "game-sched-a" && instance.Admission == "Draining"),
+            TimeSpan.FromSeconds(15));
+        Assert.True(drainAnnounced, "The drained host's admission never settled to Draining.");
+        // Same two-plane beat as above: without it a fast mount can enqueue before the
+        // directory folds the drain, and the coordinator would rightly pair onto the stale
+        // word — the race is in the test's pace, not in the scheduler.
+        await Task.Delay(TimeSpan.FromMilliseconds(1000));
+
+        // Admission stops, service does not: the drained host's room stays routed to it, and
+        // the capped host's room keeps its owner too.
+        var afterDrain = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        Assert.Equal("game-sched-a", Assert.Single(afterDrain.Rooms,
+            candidate => candidate.RoomId == roomOnDrainTarget).OwnerInstanceId);
+        Assert.Equal("game-sched-b", Assert.Single(afterDrain.Rooms,
+            candidate => candidate.RoomId == roomOnCapped).OwnerInstanceId);
+
+        // No eligible host remains — one Draining, one Full — so wave three's tickets park
+        // in the queue instead of being forced onto an ineligible host.
+        var waveThree = new List<(string StreamerId, string SessionId, string BindingId)>();
+        for (var index = 0; index < 2; index++)
+        {
+            var mount = await MountAsync(environment, fleet.Simulator, $"sched-park-{index}");
+            waveThree.Add(mount);
+            await EnqueueAsync(environment, mount, $"sched-park-enqueue-{index}");
+        }
+        var parked = true;
+        var parkDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(6);
+        while (DateTime.UtcNow < parkDeadline)
+        {
+            foreach (var mount in waveThree)
+            {
+                var ticket = await fleet.Queue.GetTicketAsync(new GetTicketRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", BindingId = mount.BindingId
+                });
+                if (ticket.Ticket.State == "Committed") parked = false;
+            }
+            if (!parked) break;
+            await Task.Delay(300);
+        }
+        Assert.True(parked, "A room was forced onto a full or drained host. " + await ParkDiagnosticsAsync(fleet, waveThree));
+        var afterPark = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        Assert.True(afterWaveTwo.Rooms.Count == afterPark.Rooms.Count,
+            "The room set changed while no host was eligible. " + await ParkDiagnosticsAsync(fleet, waveThree)
+            + $" before={afterWaveTwo.Rooms.Count} after={afterPark.Rooms.Count}");
+    }
+
+    /// <summary>The park-window diagnostics: every instance's readiness/admission and every
+    /// wave-three room's owner, so a forced pairing says who took it and under what word.</summary>
+    private static async Task<string> ParkDiagnosticsAsync(Fleet fleet,
+        IReadOnlyList<(string StreamerId, string SessionId, string BindingId)> mounts)
+    {
+        var snapshot = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        var instances = string.Join(",", snapshot.Instances.Select(instance =>
+            $"{instance.ProcessInstanceId}:{instance.Readiness}/{instance.Admission}"));
+        var rooms = string.Join(",", snapshot.Rooms.Select(room =>
+            $"{room.RoomId}@{room.OwnerInstanceId}:{room.Status}"));
+        var bound = string.Join(",", snapshot.Streamers
+            .Where(row => mounts.Any(mount => mount.StreamerId == row.StreamerId))
+            .Select(row => $"{row.StreamerId}->{row.RoomId}"));
+        return $"instances[{instances}] rooms[{rooms}] parked[{bound}]";
+    }
+
     private sealed class Fleet : IDisposable
     {
         public DevelopmentPlatformSimulator Simulator { get; }

@@ -71,6 +71,14 @@ internal sealed class RoomAdmissionBudget
         return AdmissionOutcome.Admitted;
     }
 
+    /// <summary>Would a reserve be refused right now (FIX-SCHED-02)? A pure predicate over
+    /// the same two dimensions <see cref="TryReserve"/> enforces, taken without a slot so
+    /// the self-report never moves capacity: the answer the process report publishes as
+    /// <c>Full</c> — the scheduler filters on it before ever offering a room.</summary>
+    public bool WouldRefuse(int degradedRooms)
+        => (_maxDegradedRooms is { } load && degradedRooms >= load)
+           || (_maxActiveRooms is { } cap && Volatile.Read(ref _activeRooms) >= cap);
+
     /// <summary>Reserves a slot unconditionally (recovery): a room this host must run is
     /// never refused, but it still counts, so the instance stops accepting new rooms.</summary>
     public void Reserve() => Interlocked.Increment(ref _activeRooms);

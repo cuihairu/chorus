@@ -116,13 +116,16 @@ public sealed class RedesignAdminStore(string connectionString)
             reader.GetDateTime(2), reader.GetString(3));
     }
 
-    public async Task<string?> ReadProcessLifecycleAsync(string processInstanceId,
+    /// <summary>The durable drain fact (FIX-SCHED-02): admission, not lifecycle — a drained
+    /// host that keeps self-reporting flips its lifecycle back to Running while the admin's
+    /// Draining ratchet survives, so the duplicate-drain reply must speak admission.</summary>
+    public async Task<string?> ReadProcessAdmissionAsync(string processInstanceId,
         CancellationToken cancellationToken = default)
     {
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand(
-            "SELECT lifecycle FROM control.process WHERE process_instance_id=@instance", connection);
+            "SELECT admission FROM control.process WHERE process_instance_id=@instance", connection);
         command.Parameters.AddWithValue("instance", processInstanceId);
         return await command.ExecuteScalarAsync(cancellationToken) as string;
     }
@@ -422,8 +425,9 @@ public sealed class RedesignAdminStore(string connectionString)
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
-            UPDATE control.process SET lifecycle='Draining', observed_at=clock_timestamp()
-            WHERE process_instance_id=@instance RETURNING lifecycle
+            UPDATE control.process SET lifecycle='Draining', admission='Draining',
+                observed_at=clock_timestamp()
+            WHERE process_instance_id=@instance RETURNING admission
             """, connection);
         command.Parameters.AddWithValue("instance", processInstanceId);
         return await command.ExecuteScalarAsync(cancellationToken) as string;

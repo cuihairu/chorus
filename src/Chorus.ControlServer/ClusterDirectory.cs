@@ -4,9 +4,11 @@ using Grpc.Net.Client;
 
 namespace Chorus.ControlServer;
 
-/// <summary>One live game host as the control plane knows it: where it serves and when that
-/// was last proven (FIX-SCHED-01). The evidence clock is the process report's observed_at —
-/// a configured seed carries its construction time until a report takes the entry over.</summary>
+/// <summary>One live game host as the control plane knows it: where it serves, when that
+/// was last proven (FIX-SCHED-01), and whether it wants new rooms (FIX-SCHED-02) — the
+/// readiness and admission the report carried. The evidence clock is the process report's
+/// observed_at — a configured seed carries its construction time until a report takes the
+/// entry over.</summary>
 public sealed record GameHostReport(
     string InstanceId, string Endpoint, DateTime ObservedAtUtc, string Readiness, string Admission);
 
@@ -19,6 +21,10 @@ public sealed record GameHostReport(
 /// evidence ages past the staleness gate leaves the directory so its address is never used
 /// for a new assignment. Configured endpoints remain the bootstrap seed — they hold their
 /// construction-time evidence and expire under the same gate unless reports keep them alive.
+/// Membership and eligibility are separate answers (FIX-SCHED-02): every reachable host —
+/// drained, full, not ready — stays in the directory so its existing rooms keep a channel,
+/// while <see cref="NextGameHost"/> and <see cref="EligibleGameHostCount"/> see only hosts
+/// whose evidence is fresh, whose readiness is Ready and whose admission takes new rooms.
 /// Each entry names the host instance and where it serves — "id=endpoint" pairs, or a bare
 /// endpoint whose address doubles as the instance id (M3-4 convention). The instance id is
 /// what the coordinator writes into ownership and commit fences; the self-reported routing
@@ -51,8 +57,13 @@ public sealed class ClusterDirectory
     private volatile GameHostEntry[] _hosts;
     private int _cursor;
 
+    /// <summary>Test seam: the selection-time freshness check reads this clock, so a unit
+    /// test can age evidence past the staleness gate without sleeping.</summary>
+    internal Func<DateTime> UtcNow { get; set; } = static () => DateTime.UtcNow;
+
     private sealed record GameHostEntry(
-        string InstanceId, string Endpoint, GrpcChannel Channel, DateTime LastEvidenceUtc);
+        string InstanceId, string Endpoint, GrpcChannel Channel, DateTime LastEvidenceUtc,
+        string Readiness, string Admission);
 
     public ClusterDirectory(X509Certificate2 clientCertificate, X509Certificate2 root,
         X509Certificate2 nodeAuthority, string clusterId, string dataEndpoint,
@@ -73,7 +84,9 @@ public sealed class ClusterDirectory
                 var (instanceId, endpoint) = separator < 0
                     ? (entry, entry)
                     : (entry[..separator], entry[(separator + 1)..]);
-                return new GameHostEntry(instanceId, endpoint, ChannelFor(endpoint), DateTime.UtcNow);
+                // A configured seed is trusted to admit until a report says otherwise.
+                return new GameHostEntry(instanceId, endpoint, ChannelFor(endpoint), DateTime.UtcNow,
+                    "Ready", ProcessAdmission.Accepting);
             })
             .OrderBy(host => host.InstanceId, StringComparer.Ordinal)
             .ToArray();
@@ -82,7 +95,10 @@ public sealed class ClusterDirectory
     /// <summary>Folds a fresh batch of game-host reports into the directory: new instances
     /// join, a restarted instance's new address replaces its old one, and every entry whose
     /// last evidence (report or seed construction) is older than the staleness gate —
-    /// including entries absent from this batch — leaves.</summary>
+    /// including entries absent from this batch — leaves. Readiness and admission ride with
+    /// the report (FIX-SCHED-02): the entry keeps them for the scheduler, and no value of
+    /// either removes the host — an unreachable host leaves by evidence, an unwanted one by
+    /// eligibility.</summary>
     public void ApplyReports(IReadOnlyList<GameHostReport> reports, DateTime nowUtc)
     {
         var merged = _hosts.ToDictionary(host => host.InstanceId, StringComparer.Ordinal);
@@ -91,7 +107,8 @@ public sealed class ClusterDirectory
             if (string.IsNullOrWhiteSpace(report.InstanceId) || string.IsNullOrWhiteSpace(report.Endpoint))
                 continue;
             merged[report.InstanceId] = new GameHostEntry(
-                report.InstanceId, report.Endpoint, ChannelFor(report.Endpoint), report.ObservedAtUtc);
+                report.InstanceId, report.Endpoint, ChannelFor(report.Endpoint), report.ObservedAtUtc,
+                report.Readiness, report.Admission);
         }
         var cutoff = nowUtc - _staleAfter;
         _hosts = merged.Values
@@ -117,14 +134,34 @@ public sealed class ClusterDirectory
     /// (FIX-TAKE-05): a timed-out recovery moves to one of these, never a caller's word.</summary>
     public IReadOnlyList<string> GameHostIds => _hosts.Select(host => host.InstanceId).ToArray();
 
-    /// <summary>Round-robin over the live hosts: spreading rooms before routing exists.</summary>
+    /// <summary>How many hosts may take a NEW room right now (FIX-SCHED-02): fresh evidence,
+    /// Ready, admitting admission. Zero does not mean nobody is reachable — a fleet drained
+    /// for maintenance still serves — it means pairing must wait.</summary>
+    public int EligibleGameHostCount => EligibleHosts(UtcNow()).Length;
+
+    /// <summary>Round-robin over the hosts that may take a new room (FIX-SCHED-02): fresh
+    /// evidence, Ready, and admission that accepts — a NotReady, Full or Draining host is
+    /// never offered one. Eligibility is judged at selection time too, not only at fold
+    /// time: a refresh that silently stopped must not keep serving yesterday's evidence.</summary>
     public (string InstanceId, GrpcChannel Channel) NextGameHost()
     {
-        var hosts = _hosts;
+        var hosts = EligibleHosts(UtcNow());
         if (hosts.Length == 0)
-            throw new InvalidOperationException("No live game hosts are in the directory for the coordinator.");
+            throw new InvalidOperationException(
+                "No eligible game hosts are in the directory for the coordinator: every live host is " +
+                "stale, not ready, full, or draining.");
         var host = hosts[Interlocked.Increment(ref _cursor) % hosts.Length];
         return (host.InstanceId, host.Channel);
+    }
+
+    private GameHostEntry[] EligibleHosts(DateTime nowUtc)
+    {
+        var cutoff = nowUtc - _staleAfter;
+        return _hosts
+            .Where(host => host.LastEvidenceUtc >= cutoff
+                && string.Equals(host.Readiness, "Ready", StringComparison.Ordinal)
+                && ProcessAdmission.AdmitsNewRooms(host.Admission))
+            .ToArray();
     }
 
     /// <summary>The channel of one live host — a recovered room's owner must be reached

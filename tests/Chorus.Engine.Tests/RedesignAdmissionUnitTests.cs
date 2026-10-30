@@ -150,6 +150,50 @@ public sealed class RedesignAdmissionUnitTests
         Assert.Equal(0, tight.ActiveRooms);
     }
 
+    [Fact]
+    public void WouldRefuseMirrorsTheBudgetWithoutConsumingASlot()
+    {
+        // FIX-SCHED-02's report surface: the predicate answers what TryReserve would do,
+        // over the same dimensions, while taking nothing — a self-report must never move
+        // capacity by asking about it.
+        var budget = new RoomAdmissionBudget(maxActiveRooms: 2, maxDegradedRooms: null);
+        for (var index = 0; index < 5; index++)
+            Assert.False(budget.WouldRefuse(degradedRooms: 0));
+        Assert.Equal(0, budget.ActiveRooms);
+        Assert.Equal(AdmissionOutcome.Admitted, budget.TryReserve(degradedRooms: 0));
+        Assert.Equal(AdmissionOutcome.Admitted, budget.TryReserve(degradedRooms: 0));
+        Assert.True(budget.WouldRefuse(degradedRooms: 0));
+        Assert.Equal(AdmissionOutcome.ActiveRoomCap, budget.TryReserve(degradedRooms: 0));
+        Assert.Equal(2, budget.ActiveRooms); // the predicate's questions left the cap intact
+        budget.Release();
+        Assert.False(budget.WouldRefuse(degradedRooms: 0));
+        // The load dimension shows through the predicate at zero active rooms.
+        var loaded = new RoomAdmissionBudget(maxActiveRooms: 10, maxDegradedRooms: 1);
+        Assert.True(loaded.WouldRefuse(degradedRooms: 1));
+        Assert.Equal(0, loaded.ActiveRooms);
+        // No budget configured: the host never reports itself full.
+        Assert.False(new RoomAdmissionBudget(null, null).WouldRefuse(degradedRooms: 999));
+    }
+
+    [Fact]
+    public async Task TheSelfReportedAdmissionStateFollowsTheHeldSlots()
+    {
+        // The word the process report publishes (FIX-SCHED-02): Accepting while the host
+        // has headroom, Full the moment its own budget would refuse — the scheduler filters
+        // on this instead of offering rooms a saturated host must refuse.
+        var rounds = new ScriptedRoundStore();
+        var frames = new ScriptedFrameStore();
+        await using var runtime = new RoomRuntime(rounds, frames, new ScriptedSettlement(),
+            maxActiveRooms: 1);
+        Assert.Equal(ProcessAdmission.Accepting, runtime.AdmissionState);
+        var first = await runtime.PrepareRoomAsync(Prepare("room-report-a", "op-report-1"));
+        Assert.False(first.Duplicate);
+        Assert.Equal(ProcessAdmission.Full, runtime.AdmissionState);
+        await Assert.ThrowsAsync<RoomAdmissionException>(
+            () => runtime.PrepareRoomAsync(Prepare("room-report-b", "op-report-2")));
+        Assert.Equal(ProcessAdmission.Full, runtime.AdmissionState);
+    }
+
     private static async Task<string> TryPrepareAsync(RoomRuntime runtime, string roomId, string operationId)
     {
         try

@@ -24,7 +24,8 @@ public sealed class ProcessSelfReporter(
     X509Certificate2 clientCertificate, X509Certificate2 root, X509Certificate2 nodeAuthority,
     ProcessIdentity identity, string controlEndpoint, string endpoint, string slotId,
     int intervalMs, ILogger<ProcessSelfReporter>? logger = null,
-    Func<IReadOnlyList<RoomProgressReport>>? roomProgress = null) : BackgroundService
+    Func<IReadOnlyList<RoomProgressReport>>? roomProgress = null,
+    Func<string>? admission = null) : BackgroundService
 {
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(5);
 
@@ -49,7 +50,9 @@ public sealed class ProcessSelfReporter(
                     Lifecycle = "Running",
                     Readiness = "Ready",
                     Health = "Healthy",
-                    Admission = "Open",
+                    // The host's own capacity word (FIX-SCHED-02): a GameServer at budget
+                    // reports Full so the scheduler stops offering rooms before trying.
+                    Admission = admission?.Invoke() ?? ProcessAdmission.Accepting,
                     EntityRecovery = "Steady",
                     StartedUnixMs = startedAtUnixMs,
                     Role = identity.Role,

@@ -107,7 +107,12 @@ public sealed class RedesignControlStore(string connectionString)
             ON CONFLICT(process_instance_id) DO UPDATE
             SET report_sequence=excluded.report_sequence,started_at=excluded.started_at,
                 lifecycle=excluded.lifecycle,
-                readiness=excluded.readiness,health=excluded.health,admission=excluded.admission,
+                readiness=excluded.readiness,health=excluded.health,
+                -- Draining is the admin's word and it is one way (FIX-SCHED-02): a drained
+                -- instance that keeps reporting cannot un-drain itself — returning to
+                -- service is an admin act, never the host's optimism.
+                admission=CASE WHEN control.process.admission='Draining'
+                    THEN 'Draining' ELSE excluded.admission END,
                 entity_recovery=excluded.entity_recovery,endpoint=excluded.endpoint,observed_at=clock_timestamp()
             WHERE control.process.agent_instance_id=excluded.agent_instance_id
               AND (control.process.started_at<excluded.started_at
@@ -139,9 +144,13 @@ public sealed class RedesignControlStore(string connectionString)
     }
 
     /// <summary>The live game-host directory feed (FIX-SCHED-01): game-server processes with
-    /// a reported endpoint, still Running and observed within the freshness window. This is
-    /// the valid process report the ClusterDirectory is maintained from — staleness, not a
-    /// config file, decides who stays reachable for new assignments.</summary>
+    /// a reported endpoint, alive (Running, or Draining — a drained host keeps serving its
+    /// existing rooms, so the control plane keeps its address; only Exited is gone) and
+    /// observed within the freshness window. This is the valid process report the
+    /// ClusterDirectory is maintained from — staleness, not a config file, decides who
+    /// stays reachable. Admission and readiness ride along (FIX-SCHED-02): the directory
+    /// keeps every reachable host and its scheduler filters on these, so a drained or full
+    /// host stops taking NEW rooms without becoming unreachable for the ones it holds.</summary>
     public async Task<IReadOnlyList<GameHostReport>> ListGameHostReportsAsync(
         int freshnessSeconds, CancellationToken cancellationToken = default)
     {
@@ -154,7 +163,7 @@ public sealed class RedesignControlStore(string connectionString)
             JOIN control.deployment d ON d.slot_id=p.slot_id
             WHERE d.role='game-server'
               AND p.endpoint IS NOT NULL
-              AND p.lifecycle='Running'
+              AND p.lifecycle IN ('Running','Draining')
               AND p.observed_at>=clock_timestamp()-@fresh*interval '1 second'
             ORDER BY p.process_instance_id
             """, connection);
@@ -423,10 +432,12 @@ public sealed class RedesignControlStore(string connectionString)
 
     /// <summary>
     /// Extends the lease of every Active ownership whose owner still reports live (architecture
-    /// 4.2: the registrar renews on the owner's behalf while the owner is observable). An owner
-    /// whose process row went stale is not renewed — its lease runs out and the entity becomes
-    /// takeable. A legacy owner without any process row is never renewed: it keeps its own
-    /// renewal discipline.
+    /// 4.2: the registrar renews on the owner's behalf while the owner is observable). Live
+    /// means Running or Draining (FIX-SCHED-02): a drained host keeps serving the rooms it
+    /// holds, so their leases keep renewing — drain stops NEW assignments, never the rooms
+    /// already running. An owner whose process row went stale is not renewed — its lease runs
+    /// out and the entity becomes takeable. A legacy owner without any process row is never
+    /// renewed: it keeps its own renewal discipline.
     /// </summary>
     public async Task<int> RenewLiveOwnershipsAsync(int leaseSeconds, int gateSeconds,
         CancellationToken cancellationToken = default)
@@ -441,7 +452,7 @@ public sealed class RedesignControlStore(string connectionString)
             FROM control.process AS process
             WHERE ownership.status='Active'
               AND process.process_instance_id=ownership.owner_process_instance_id
-              AND process.lifecycle='Running'
+              AND process.lifecycle IN ('Running','Draining')
               AND process.observed_at>=clock_timestamp()-@gate*interval '1 second'
             """, connection);
         command.Parameters.AddWithValue("lease", leaseSeconds);
