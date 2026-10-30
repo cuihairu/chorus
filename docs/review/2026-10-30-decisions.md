@@ -125,6 +125,31 @@
 
 ---
 
+## 条目 5：旧架构三宿主删除（2026-10-31 立项并执行，用户令）
+
+**事实**：2026-10-30 追加立项「待平台模块迁移+平价验收（每平台真实弹幕事件走通 redesign 入口）后删除 `src/Chorus.PlatformGateway`、`src/Chorus.StreamerGateway`、`src/Chorus.Gateway`，单 commit，CI 全绿门禁」。2026-10-31 用户改令收口：**不等真机**——用 DevelopmentPlatformSimulator 做平价验收（每平台事件经 IPlatformModule→装配→路由全链路），测试绿即删，重构闭环当天收口。
+
+### 推荐决策
+
+**已执行。** 平价门控按用户改令取 simulator 全链路；真实平台腿如实记账（launch adapter 未过生产准入不可挂载，事件停持久收件箱 PendingAttribution 即目标态）。
+
+### 执行结果
+
+- 平价：ingress 公网面 + 2 facts（真平台三签名验签落库 / simulator 全链路进房间 delivery + 重试 duplicate）= f1fc79e；全量门禁谷值 1371/1371。
+- 删除：48623a5（单 commit，32 文件 -4379 行）——三宿主 + 14 个宿主测试文件 + ModuleRestoreTests 两个 split-mode fact；保留 `Chorus.Gateway.Core/Runtime`（面/演员库）与 `Chorus.Adapters.Abstractions/Platforms`（redesign 模块引用其契约，按立项条款「仍引用则保留」）。
+- 证据：`docs/architecture/redesign-m3-implementation.md`「旧线宿主下线已执行」节。
+
+### 待用户
+
+无（闭环完成；CI 偶发共租 runner 时序失败为既有开放问题，本地谷值全量为准）。
+
+### 明确不做/延后
+
+- 不 bump version、不打 tag、不建 Release、不跑发版 workflow。
+- 真实平台适配器维持 NotProductionReady（准入仍走条目 1/2 的用户输入门控）。
+
+---
+
 ## 小结
 
 | 条目 | 推荐决策 | 立即动作 | 状态 |
@@ -133,3 +158,4 @@
 | FIX-ENV-06 快手准入（todo.md:154） | 暂缓，需用户提供授权应用+凭据+脱敏样本 | 无 | 需用户输入，暂缓 |
 | FIX-ENV-08 Windows 实机验收（todo.md:157） | 暂缓，需用户提供 Windows 目标节点 | 无 | 需用户输入，暂缓 |
 | 22.19 转实施门控（todo.md:350-352） | 维持仅规划，转实施/已支持须用户确认 | 无 | 需用户确认，暂缓 |
+| 旧架构三宿主删除（2026-10-31 追加） | 已执行（simulator 平价即删，用户改令） | f1fc79e + 48623a5，闭环完成 | 已执行 |
