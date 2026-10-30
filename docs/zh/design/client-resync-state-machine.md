@@ -1,37 +1,37 @@
 ---
-title: Client Resync State Machine
+title: 客户端重同步状态机
 ---
 
 
-# Client Resync State Machine
+# 客户端重同步状态机
 
-This document defines how the client converges, catches up, and resynchronizes around the server-authoritative tick, with the goal of separating "light catching up" from "heavy recovery" and avoiding infinite frame backfill.
+本文定义客户端如何在服务端权威 tick 周围收敛、追赶与重同步，目标是把"轻度追赶"与"重度恢复"分开，避免无限帧回填。
 
-It is recommended to read it together with:
+建议与以下文档一起阅读：
 
-- [Frame Sync Design](./frame-sync.md)
-- [Frame Sync Best Practices](./frame-sync-best-practices.md)
-- [Parameter Tuning](../reference/tuning.md)
+- [帧同步设计](./frame-sync.md)
+- [帧同步最佳实践](./frame-sync-best-practices.md)
+- [参数调优](../reference/tuning.md)
 
-## Design Goals
+## 设计目标
 
-The client state machine needs to address four things:
+客户端状态机需要处理四件事：
 
-- Under normal conditions, steadily follow the server-authoritative tick
-- When lightly behind, catch up gently without overloading the main thread
-- When heavily behind, switch to snapshot recovery quickly
-- After recovery, return to the stable following state
+- 正常情况下稳定跟随服务端权威 tick
+- 轻度落后时温和追赶，不过载主线程
+- 重度落后时快速切到快照恢复
+- 恢复后回到稳定跟随状态
 
-## Core Principles
+## 核心原则
 
-- The client must not consider itself authoritative
-- The client must not backfill frames without limit
-- The client must not insist on replaying all history when heavily behind
-- The client ACK must be based on "applied state", not on "message received"
+- 客户端不得自认权威
+- 客户端不得无限制回填帧
+- 重度落后时不得坚持重放全部历史
+- 客户端 ACK 必须基于"已应用状态"，而非"已收到消息"
 
-## Suggested States
+## 建议状态
 
-The client sync process is suggested to be split into the following states:
+客户端同步过程建议拆为以下状态：
 
 1. `Bootstrapping`
 2. `Following`
@@ -40,141 +40,141 @@ The client sync process is suggested to be split into the following states:
 5. `ApplyingSnapshot`
 6. `Degraded`
 
-## State Definitions
+## 状态定义
 
 ### `Bootstrapping`
 
-Entry conditions:
+进入条件：
 
-- Just joined the room
-- Just reconnected
-- Local has no usable authoritative state yet
+- 刚加入房间
+- 刚重连
+- 本地尚无可用权威状态
 
-Behavior:
+行为：
 
-- Wait for `welcome`
-- Establish authoritative parameters such as `tickDurationMs`, `inputDelayTicks`
-- Wait for the first usable snapshot
+- 等待 `welcome`
+- 建立 `tickDurationMs`、`inputDelayTicks` 等权威参数
+- 等待首个可用快照
 
-Exit conditions:
+退出条件：
 
-- After successfully applying the first snapshot, transition to `Following`
+- 成功应用首个快照后，转到 `Following`
 
 ### `Following`
 
-Entry conditions:
+进入条件：
 
-- Local state is basically consistent with the server-authoritative tick
+- 本地状态与服务器权威 tick 基本一致
 
-Behavior:
+行为：
 
-- Advance at the authoritative tick rhythm as normal
-- Apply deltas or periodic snapshots
-- Send `ack.lastAppliedTickId` after the state has truly been applied
+- 按权威 tick 节奏正常推进
+- 应用增量或周期快照
+- 状态真正应用后发送 `ack.lastAppliedTickId`
 
-Exit conditions:
+退出条件：
 
-- `lagTicks` exceeds the light threshold, transition to `CatchingUp`
-- Receive a server forced snapshot, transition to `ApplyingSnapshot`
-- No valid sync data received for a long time, transition to `ResyncRequired`
+- `lagTicks` 超轻度阈值，转 `CatchingUp`
+- 收到服务端强制快照，转 `ApplyingSnapshot`
+- 长时间无有效同步数据，转 `ResyncRequired`
 
 ### `CatchingUp`
 
-Entry conditions:
+进入条件：
 
-- Lightly behind
+- 轻度落后
 
-Behavior:
+行为：
 
-- Run a small number of extra logic ticks within a controlled upper limit
-- Keep the render thread available; unlimited catching up is not allowed
-- Every frame or every second must have a catch-up budget cap
+- 在受控上限内运行少量额外逻辑 tick
+- 保持渲染线程可用；不允许无限追赶
+- 每帧或每秒必须有追赶预算上限
 
-Suggested limits:
+建议上限：
 
-- At most `1` extra logic tick backfilled per render frame
-- At most `5~10` extra logic ticks backfilled per second
+- 每渲染帧最多回填 `1` 个额外逻辑 tick
+- 每秒最多回填 `5~10` 个额外逻辑 tick
 
-Exit conditions:
+退出条件：
 
-- `lagTicks` returns to the safe zone, transition to `Following`
-- `lagTicks` keeps widening, transition to `ResyncRequired`
-- Forced snapshot received, transition to `ApplyingSnapshot`
+- `lagTicks` 回到安全区，转 `Following`
+- `lagTicks` 持续扩大，转 `ResyncRequired`
+- 收到强制快照，转 `ApplyingSnapshot`
 
 ### `ResyncRequired`
 
-Entry conditions:
+进入条件：
 
-- `lagTicks` exceeds the resync threshold
-- `lastAckAgeMs` stays too high
-- Local catching up cannot converge in a finite time
+- `lagTicks` 超重同步阈值
+- `lastAckAgeMs` 持续过高
+- 本地追赶无法在有限时间内收敛
 
-Behavior:
+行为：
 
-- Stop continuing to expand the frame-backfill budget
-- Discard stale local recovery plans
-- Wait for a forced snapshot or proactively request the latest snapshot
+- 停止继续扩大帧回填预算
+- 丢弃过期的本地恢复计划
+- 等待强制快照，或主动请求最新快照
 
-Exit conditions:
+退出条件：
 
-- After receiving a usable snapshot, transition to `ApplyingSnapshot`
+- 收到可用快照后，转 `ApplyingSnapshot`
 
 ### `ApplyingSnapshot`
 
-Entry conditions:
+进入条件：
 
-- A new authoritative snapshot received
+- 收到新的权威快照
 
-Behavior:
+行为：
 
-- Atomically replace the local logic state to `snapshot.tickId`
-- Clean up already-expired deltas
-- Rebuild the subsequent to-be-applied window
-- Send ACK after the state is truly complete
+- 把本地逻辑状态原子替换到 `snapshot.tickId`
+- 清理已过期的增量
+- 重建后续待应用窗口
+- 状态真正完成后发送 ACK
 
-Key requirements:
+关键要求：
 
-- ACK must be sent after the state is applied
-- Do not ACK early at the moment of "starting to process the snapshot"
+- ACK 必须在状态应用后发送
+- 不得在"开始处理快照"的瞬间提前 ACK
 
-Exit conditions:
+退出条件：
 
-- After the state switch completes, transition to `Following`
-- If snapshot application fails, transition to `Degraded`
+- 状态切换完成后，转 `Following`
+- 快照应用失败，转 `Degraded`
 
 ### `Degraded`
 
-Entry conditions:
+进入条件：
 
-- Snapshot application failed
-- Local state corrupted
-- The sync component entered an abnormal state
+- 快照应用失败
+- 本地状态损坏
+- 同步组件进入异常状态
 
-Behavior:
+行为：
 
-- Pause normal sync advancement
-- Log the error
-- Wait for reinitialization or a full reconnect
+- 暂停正常同步推进
+- 记录错误
+- 等待重新初始化或完整重连
 
-Exit conditions:
+退出条件：
 
-- After re-obtaining the initialization context and snapshot, transition to `Bootstrapping`
+- 重新取得初始化上下文与快照后，转 `Bootstrapping`
 
-## Recommended Thresholds
+## 推荐阈值
 
-The following is a practical default division:
+以下是一个实用默认划分：
 
-- Light catch-up range: `lagTicks <= 3~5`
-- Forced resync range: `lagTicks > 5~10`
-- ACK timeout alarm: `lastAckAgeMs > 2 * tickDurationMs * maxLagTicks`
+- 轻度追赶区间：`lagTicks <= 3~5`
+- 强制重同步区间：`lagTicks > 5~10`
+- ACK 超时告警：`lastAckAgeMs > 2 * tickDurationMs * maxLagTicks`
 
-This is not a fixed standard, but it is suitable as an initial value.
+这不是固定标准，但适合作初始值。
 
-> Note: this repo's code `maxLagTicks` defaults to **50** (`src/Chorus.Engine/Session/SessionConfig.cs:8`), far above the recommended range here; the thresholds in this section are for state machine behavior design, and the actual forced resync trigger point is governed by `maxLagTicks`.
+> 注：本仓库代码 `maxLagTicks` 默认为 **50**（`src/Chorus.Engine/Session/SessionConfig.cs:8`），远高于此处推荐区间；本节阈值是状态机行为设计，实际强制重同步触发点由 `maxLagTicks` 决定。
 
-## Suggested Events
+## 建议事件
 
-The state machine typically needs to respond to these events:
+状态机通常需要响应这些事件：
 
 - `OnWelcomeReceived`
 - `OnSnapshotReceived`
@@ -185,39 +185,39 @@ The state machine typically needs to respond to these events:
 - `OnSnapshotApplyFailed`
 - `OnReconnect`
 
-The two most critical of these are:
+其中最关键的两个：
 
 - `OnLagEvaluated`
 - `OnSnapshotReceived`
 
-The former decides whether to keep catching up; the latter decides whether to switch to the recovery path directly.
+前者决定是否继续追赶；后者决定是否直接切到恢复路径。
 
-## Recommended Transitions
+## 推荐转换
 
-It can be implemented with the logic below:
+可用以下逻辑实现：
 
 1. `Bootstrapping -> Following`
-   Condition: successfully applied the first snapshot
+   条件：成功应用首个快照
 2. `Following -> CatchingUp`
-   Condition: light lag
+   条件：轻度落后
 3. `CatchingUp -> Following`
-   Condition: lag converged
+   条件：落后已收敛
 4. `CatchingUp -> ResyncRequired`
-   Condition: lag widened or the catch-up budget exhausted
+   条件：落后扩大或追赶预算耗尽
 5. `Following -> ApplyingSnapshot`
-   Condition: forced snapshot received
+   条件：收到强制快照
 6. `ResyncRequired -> ApplyingSnapshot`
-   Condition: new snapshot received
+   条件：收到新快照
 7. `ApplyingSnapshot -> Following`
-   Condition: snapshot applied successfully
+   条件：快照应用成功
 8. `ApplyingSnapshot -> Degraded`
-   Condition: snapshot application failed
+   条件：快照应用失败
 9. `Degraded -> Bootstrapping`
-   Condition: reinitialized
+   条件：已重新初始化
 
-## Sequence Diagram
+## 时序图
 
-The diagram below describes the recommended flow of "the client falls behind lightly, fails to converge, and finally switches to forced snapshot recovery":
+下图描述"客户端轻度落后、无法收敛、最终切到强制快照恢复"的推荐流程：
 
 ```mermaid
 sequenceDiagram
@@ -240,59 +240,59 @@ sequenceDiagram
   C->>C: enter Following
 ```
 
-The two most critical points in this flow are:
+该流程中最关键的两点：
 
-- Light lag first goes through limited catching up, not an immediate forced jump
-- Once it is judged that convergence is impossible, switch to snapshot directly, and do not continue backfilling the complete history
+- 轻度落后先走有限追赶，而非立即强制跳变
+- 一旦判定无法收敛，直接切快照，不再继续回填完整历史
 
-## A Common Erroneous Flow
+## 常见错误流程
 
-The implementation below is very common and the most prone to problems:
+以下实现非常普遍且最容易出问题：
 
-1. The client detects that it is behind
-2. It starts backfilling many logic frames within a single frame
-3. During backfilling it still does full rendering and full presentation computation
-4. The main thread becomes more stuck
-5. ACK becomes slower
-6. The server keeps judging it as more behind
-7. The client keeps increasing its catch-up intensity
+1. 客户端检测到自己落后
+2. 它在单帧内开始回填大量逻辑帧
+3. 回填期间仍做完整渲染与完整表现层计算
+4. 主线程更卡
+5. ACK 更慢
+6. 服务端持续判定它更落后
+7. 客户端持续加大追赶强度
 
-This is a classic vicious cycle.
+这是一个经典恶性循环。
 
-The correct approach is:
+正确做法是：
 
-- Under light lag, only do controlled catching up
-- After exceeding the threshold, immediately switch to snapshot recovery
+- 轻度落后只做受控追赶
+- 超过阈值后立即切到快照恢复
 
-## Correct ACK Semantics
+## 正确的 ACK 语义
 
-`ack.lastAppliedTickId` means:
+`ack.lastAppliedTickId` 的含义：
 
-- The client has truly completed applying the authoritative state for that tick
+- 客户端已真正完成该 tick 权威状态的应用
 
-It should not mean:
+它不应表示：
 
-- The client has already received the data for that tick
-- The client has already put the message into a queue
-- The client plans to apply it later
+- 客户端已收到该 tick 的数据
+- 客户端已把消息放入队列
+- 客户端计划稍后应用
 
-If ACK is sent too early, the server will mistakenly judge that the client has caught up, causing the recovery strategy to be distorted.
+若 ACK 发送过早，服务端会误判客户端已追上，导致恢复策略失真。
 
-## Rendering Layer Suggestions
+## 渲染层建议
 
-When the client logic switches snapshots, there is usually a visual jump, so the presentation layer is suggested to do these compensations:
+客户端逻辑切换快照时通常有视觉跳变，因此表现层建议做这些补偿：
 
-- Position interpolation
-- Easing of HP and UI values
-- Soft transitions of animation states
-- Smooth camera transitions
+- 位置插值
+- 血量与 UI 数值缓动
+- 动画状态软过渡
+- 相机平滑过渡
 
-Note:
+注意：
 
-- These compensations can only be done in the presentation layer
-- Do not let the visual layer feed back into the logic layer's ack and tick judgment
+- 这些补偿只能在表现层做
+- 不得让视觉层回馈到逻辑层的 ack 与 tick 判定
 
-## Pseudocode Sketch
+## 伪代码草图
 
 ```text
 state = Bootstrapping
@@ -321,44 +321,44 @@ onUpdate():
     requestOrWaitSnapshot()
 ```
 
-Implementation can be finer, but do not change the core principles: catching up has a budget, recovery relies on snapshots.
+实现可以更细，但不要改变核心原则：追赶有预算，恢复靠快照。
 
-## Server-Side Support Requirements
+## 服务端配合要求
 
-For the client state machine to be stable, the server must at least satisfy the following conditions:
+要让客户端状态机稳定，服务端至少要满足以下条件：
 
-- Keep advancing the authoritative tick; do not pause for slow endpoints
-- Be able to judge `lagTicks` per client
-- Be able to send normal snapshots and forced snapshots
-- Be able to avoid repeatedly sending snapshots in short intervals via `resyncCooldownMs`
+- 持续推进权威 tick；不为慢端点暂停
+- 能按客户端判定 `lagTicks`
+- 能发送正常快照与强制快照
+- 能经 `resyncCooldownMs` 避免短间隔内反复发快照
 
-The `SessionActor` in the current project already has this main chain, so the client implementation should converge around that behavior rather than defining another recovery model on its own.
+当前项目的 `SessionActor` 已有这条主链，客户端实现应围绕该行为收敛，而不是自创另一套恢复模型。
 
-The server has already exposed diagnostic fields per client that the state machine can consume directly (the `clients[]` of `/sessions`): `lagTicks`、`lastAckAgeMs`、`resyncCount`、`lastResyncAgeMs`、`connectedTickId`、`lastAckTickId` (the `SessionClientDiagnostics` in `src/Chorus.Engine/Session/SessionDiagnostics.cs`).
+服务端已暴露可供状态机直接消费的每客户端诊断字段（`/sessions` 的 `clients[]`）：`lagTicks`、`lastAckAgeMs`、`resyncCount`、`lastResyncAgeMs`、`connectedTickId`、`lastAckTickId`（`src/Chorus.Engine/Session/SessionDiagnostics.cs` 的 `SessionClientDiagnostics`）。
 
-## Observability Suggestions
+## 可观测性建议
 
-The client side should at least expose these metrics:
+客户端侧至少应暴露这些指标：
 
-- The current state machine state
+- 当前状态机状态
 - `lastAppliedTickId`
 - `lastReceivedSnapshotTickId`
-- The current `lagTicks`
-- Number of ticks backfilled per second
-- Snapshot application time
-- Number of snapshot application failures
+- 当前 `lagTicks`
+- 每秒回填的 tick 数
+- 快照应用耗时
+- 快照应用失败次数
 
-If you need to investigate "why it keeps catching up but cannot catch up", these metrics are very critical.
+若要排查"为什么一直追却追不上"，这些指标非常关键。
 
-## Summary
+## 总结
 
-The essence of the client resync state machine is to split "convergence under small fluctuations" and "recovery after severe deviation" into two paths.
+客户端重同步状态机的本质是把"小波动下的收敛"与"严重偏差后的恢复"分成两条路径。
 
-A stable solution generally satisfies these points:
+一个稳定方案通常满足这些点：
 
-- Follow the authoritative tick under normal conditions
-- Do limited catching up under light lag
-- Take a snapshot directly under heavy lag
-- ACK reflects only the truly applied state
+- 正常情况下跟随权威 tick
+- 轻度落后做有限追赶
+- 重度落后直接取快照
+- ACK 只反映真正应用的状态
 
-As long as the client is still trying to "backfill infinitely to complete all history", this state machine is not healthy enough.
+只要客户端还在尝试"无限回填以补全全部历史"，这个状态机就还不够健康。
