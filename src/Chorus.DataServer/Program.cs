@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
+MetricsConsoleDump.StartFromEnvironment();
 var connectionString = Required("CHORUS_DATABASE_CONNECTION_STRING");
 var clusterId = Required("CHORUS_CLUSTER_ID");
 var root = X509Certificate2.CreateFromPem(File.ReadAllText(Required("CHORUS_ROOT_CA_PEM")));
