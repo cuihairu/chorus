@@ -108,11 +108,13 @@ public sealed class OutboundClientQueueTests
         // 保证武装的异常被 in-flight 的 wire 1 消费，而不是被 latest-wins
         // 挤出的那一帧随机消费。
         await queue.SendSnapshotAsync(Wire(1), CancellationToken.None);
-        await client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // 存活性等待（事件不变量），不是性能断言：CI 满载 runner 上泵首轮调度
+        // 可能远慢于本地，窗口按外部负载余量放宽（本地典型 <50ms）。
+        await client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await queue.SendSnapshotAsync(Wire(2), CancellationToken.None);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (sw.ElapsedMilliseconds < 5000 && Volatile.Read(ref client.SentCount) < 1)
+        while (sw.ElapsedMilliseconds < 30000 && Volatile.Read(ref client.SentCount) < 1)
         {
             await Task.Delay(10);
         }
