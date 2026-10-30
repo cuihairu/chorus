@@ -170,3 +170,21 @@ M3-5 时代的 `ClusterDirectory` 只吃 `CHORUS_GAME_ENDPOINTS` 静态配置（
 **删除（48623a5，单 commit，32 文件 -4379 行）**：`src/Chorus.Gateway`、`src/Chorus.PlatformGateway`、`src/Chorus.StreamerGateway` 三宿主出 sln 出库；引用方清空 = 测试工程 3 个 ProjectReference + 14 个宿主测试文件（含 `WebApplicationFactory<Chorus.Gateway.Program>` 族与 split-mode IPC 族）+ ModuleRestoreTests 两个 split-mode fact（测的是已删宿主的桥接面，引擎侧恢复逻辑另有 monolith fact 覆盖）。**保留**：`Chorus.Gateway.Core/Runtime`（面/演员库，PlatformIngressFaceTests 等继续直接测）、`Chorus.Adapters.Abstractions/Platforms`（redesign 模块仍引用其 mapper/verifier 契约）。
 
 **门禁**：谷值全量 Release 1371/1371 绿（谷值 6.43/9.27 起，7m02s；= 1440 基线 + 2 平价 fact − 71 个旧线宿主测试）；残留 0 进程 0 库；build 12 警告与删除前持平（零新增）。CI 注意：64d7afc 上 ci workflow 失败为已知共租 runner 时序族（IpcAckResyncLoop/M2 delta 流两例，本地谷值 1440/1440 为准）；docs workflow 死链 `https://localhost:2002` 是 M3-5 后续小节的裸 URL，已改码格式（8ff5aef）。
+
+## 按就绪与容量选择目标已落地：准入词 + 排空棘轮 + 目录资格分离（FIX-SCHED-02，18935f5）
+
+M3-5 的 `ClusterDirectory` 只维护「可达性」：谁在报告、端点在哪、证据是否新鲜。它**看不到**三样调度事实——host 的 readiness 自报在目录边界被丢弃、admin 排空是瞬时字（宿主下一次自报就把 lifecycle/admission 盖回去）、宿主容量只在 `PrepareRoom` 时被动拒绝（FIX-PERF-07 的预算）。后果是调度器把新房塞给 NotReady/已排空/已满的宿主，让宿主每轮都以 `ResourceExhausted` 回答。FIX-SCHED-02 把「准入」建成显式的、端到端的词：
+
+- **准入词汇表**（`ProcessAdmission`，新）：`Accepting`（规范）、`Full`（宿主自报容量）、`Draining`（管理员单向棘轮）；遗留 `"Open"` 入站容忍（`AdmitsNewRooms` 对 Accepting/Open 为真），未知词 fail-closed——配置写错不会变成「无限接纳」。
+- **GameServer 自报链**：`RoomAdmissionBudget.WouldRefuse(degradedRooms)` 是 `TryReserve` 的纯谓词（同两维：测得负载/活跃房数），**不占槽**——自报永不移动容量；`RoomRuntime.AdmissionState` 据此返回 `Full`/`Accepting`；`ProcessSelfReporter` 新增 admission 回调，GameServer 接线 `() => runtime.AdmissionState`（原硬编码 `"Open"`）。宿主在预算满时自报 `Full`，调度器在**提供房之前**就不再选它。
+- **排空单向棘轮（SQL）**：`ReportProcessAsync` upsert 的 `admission=CASE WHEN control.process.admission='Draining' THEN 'Draining' ELSE excluded.admission END`——排空是管理员的词，宿主乐观自报（预算有头寸时总说 Accepting）顶不住；重新投产是管理动作（un-drain RPC open，见诚实边界）。`DrainProcessAsync` 同写 `lifecycle+admission='Draining'` RETURNING admission；重复排空回复改读 `ReadProcessAdmissionAsync`（原 `ReadProcessLifecycleAsync` 读的是宿主自报随时翻回的 lifecycle，重复排空会错报）。
+- **feed 语义**：`lifecycle IN ('Running','Draining')`——排空宿主**留在**目录（其既有房还需控制面够到）；只有 Exited 是真离去。
+- **目录 membership/eligibility 分离**：条目新增 `readiness`/`admission`；`EligibleHosts` = 证据新鲜 + `Ready` + `AdmitsNewRooms`；`NextGameHost` 只在 eligible 上轮询（选择时以 `UtcNow` seam **重查**——刷新死掉也不给昨天的宿主），无 eligible 时抛错并点名四种不可选因；`EligibleGameHostCount` 新增；种子默认 `Ready`/`Accepting`。
+- **配对器门**：`GameHostCount==0` → `EligibleGameHostCount==0`——全舰排空/全满/全 NotReady 时配对周期直接返回，**票留在队列**等任一宿主再准入。
+- **续租谓词对齐**：`RenewLiveOwnershipsAsync` 由 `lifecycle='Running'` 改为 `IN ('Running','Draining')`——排空宿主在「drain 写入 → 下次自报（≤500ms）」窗口内 lifecycle 确为 Draining，续租必须照续，否则其既有房租约流失、被夺走（违反「排空不杀旧房」）；**沉默（observed_at 过窗）才是租约流失触发器**。
+
+**证据**（+7 fact，全部在 18935f5）：目录单元 2——NotReady/Full/Draining 四宿主 `GameHostCount=4` 而 `EligibleGameHostCount=1`、仅 game-ok 被轮询、Full→Accepting 自报回池（满宿主是暂停不是驱逐）、未知词 fail-closed 但仍可达；证据过期（`UtcNow` seam +7s > 6s 窗）选择时即失效而成员/通道不动、新自报复活。准入单元 2——`WouldRefuse` 镜像 TryReserve 两维、5 次询问不占槽、释放后转回；`AdmissionState` 随槽位 Accepting→Full（cap=1 持满）。store 2——棘轮顶住乐观自报（宿主再报 Accepting，feed 仍 Draining）且排空宿主仍列 feed；排空宿主租约照续（`RenewLiveOwnershipsAsync`=1、lease_until 推满）+ 静默（observed_at 回拨 120s）不续。宿主 1（端到端，真实 control/data/streamer/game 宿主）——`game-sched-b` 以 `CHORUS_GAME_MAX_ACTIVE_ROOMS=1` 持满自报 Full；wave1 4 mounts 两房两 owner；wave2 2 mounts 全落 `game-sched-a`；admin drain `game-sched-a` 回复 `Lifecycle=Draining`；a/b 既有房路由不动；wave3 2 mounts 票停车 6s 不 commit、房数不增。M3-7 自报词断言 `"Open"`→`"Accepting"`（遗留词入站仍容忍）。
+
+**竞态教训（两平面收敛）**：宿主测试的「宣告」只证明 **store 平面**翻转（路由快照读到新词）；**目录**按自己的 `CHORUS_DIRECTORY_REFRESH_MS` 节奏折叠。两者可差一个折叠周期——快跑里 wave3 挂载（TLS+Login+StartGameplay 仅 ~300ms）抢在折叠前入队，协调器按**陈旧 Accepting** 正常配对（12s 快跑失败：票被 commit）；慢跑里配对落在 6s 停车窗之后（49s 失败：计数断言抓到房数变）。修复：full/drain 宣告后各等一个折叠节拍（1s）再发下一波。这不是调度器 bug——稳态收敛后拒绝正确（目录单元测试钉住）；是测试节奏没等目录。
+
+**诚实边界**：无 un-drain 管理动作（棘轮单向，重新投产 RPC open——恢复服务是管理员显式动作）；Full/Draining 宿主的既有房不迁移（自然结算，逐房迁移 open）；容量释放回池已在自然结算路径验证、`ReleaseRoomAsync` 钩子（FIX-END-14）未接线（回收路径的槽释放未验）。
