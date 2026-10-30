@@ -1,52 +1,52 @@
 ---
-title: Getting Started
+title: 快速上手
 ---
 
 
-# Getting Started
+# 快速上手
 
-## Environment
+## 环境
 
-- .NET SDK: `10.0.x` (see `global.json`)
-- Node.js: a supported LTS release (used to build the VitePress documentation site; see `package.json` for the package manager scripts)
+- .NET SDK：`10.0.x`（见 `global.json`）
+- Node.js：受支持的 LTS 版本（用于构建 VitePress 文档站；包管理脚本见 `package.json`）
 
-## Running the Server (Locally)
+## 本地运行服务端
 
 ```bash
 dotnet run --project src/Chorus.Server
 ```
 
-The service port depends on `src/Chorus.Server/Properties/launchSettings.json` (by default something like `http://localhost:5083`, and can also be overridden with `ASPNETCORE_URLS`):
+服务端口取决于 `src/Chorus.Server/Properties/launchSettings.json`（默认类似 `http://localhost:5083`，也可用 `ASPNETCORE_URLS` 覆盖）：
 
-- `GET /health`: health check
-- `GET /sessions`: session/client metrics
-- `GET /metrics`: Prometheus text metrics (provided by both Server and Gateway)
-- `GET /faces`: listener face counters
-- `GET /matches`: room statistics (single-process mode only)
-- `POST /ingress/{platform}`: inject test events (simulate platform events, `test` is the example)
-- `WS /ws`: streamer client connection entry point
+- `GET /health`：健康检查
+- `GET /sessions`：会话/客户端指标
+- `GET /metrics`：Prometheus 文本指标（Server 与 Gateway 都提供）
+- `GET /faces`：监听面计数器
+- `GET /matches`：房间统计（仅单进程模式）
+- `POST /ingress/{platform}`：注入测试事件（模拟平台事件，`test` 为示例）
+- `WS /ws`：主播客户端连接入口
 
-## WebSocket: Connecting and Receiving Snapshots
+## WebSocket：连接并接收快照
 
-Connect: `ws://localhost:<serverPort>/ws`
+连接：`ws://localhost:<serverPort>/ws`
 
-The first message must send `hello`:
+第一条消息必须发 `hello`：
 
 ```json
 {"type":"hello"}
 ```
 
-The server returns `welcome`, which contains `sessionId` and the tick parameters.
+服务端返回 `welcome`，其中含 `sessionId` 与 tick 参数。
 
-After that, the server continuously sends `snapshot` (currently once per tick by default); after applying the snapshot, the client should reply with `ack`:
+此后服务端持续下发 `snapshot`（当前默认每 tick 一次）；客户端应用快照后应回 `ack`：
 
 ```json
 {"type":"ack","sessionId":"<sessionId>","clientId":"<clientId>","lastAppliedTickId":123}
 ```
 
-When the client falls behind by more than `maxLagTicks`, the server additionally pushes `snapshot(forced=true, reason=\"lag\")`, prompting the client to immediately align its tick with that snapshot.
+客户端落后超过 `maxLagTicks` 时，服务端额外推送 `snapshot(forced=true, reason=\"lag\")`，提示客户端立即按该快照对齐 tick。
 
-## Injecting Test Events (Simulating a Platform)
+## 注入测试事件（模拟平台）
 
 ```bash
 curl -X POST http://localhost:<serverPort>/ingress/test \
@@ -59,13 +59,13 @@ curl -X POST http://localhost:<serverPort>/ingress/test \
 - `test` 平台示例：`POST /ingress/test`，body 需包含 `sessionId`
 ```
 
-## Building the Documentation Site (Static Pages)
+## 构建文档站（静态页）
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm docs:build
 ```
 
-Output directory: `docs/.vuepress/dist`
+输出目录：`docs/.vuepress/dist`
 
-> **Dependency pin note**: The documentation site is an old VuePress 1.x + webpack 4 chain, and `package.json`'s `overrides` has a batch of security pins. When changing pins, verify locally that both `npm ci` and `npm run docs:build` pass before committing — two pitfalls already hit: an override key in the form `"a>b"` is pnpm syntax, and npm rejects it with `EINVALIDTAGNAME` (nested objects are the npm form); webpack-log 3.0.2 declares `nanoid: ^2.0.3` and calls `require('nanoid')` as a function, so pinning to nanoid 3.x makes the build fail at `nanoid is not a function`.
+> **依赖锁定注意**：文档站是老的 VuePress 1.x + webpack 4 链，`package.json` 的 `overrides` 有一批安全锁。改动锁定时先本地验证 `npm ci` 与 `npm run docs:build` 都通过再提交——已踩过两个坑：形如 `"a>b"` 的 override 键是 pnpm 语法，npm 会以 `EINVALIDTAGNAME` 拒绝（嵌套对象才是 npm 形式）；webpack-log 3.0.2 声明 `nanoid: ^2.0.3` 且把 `require('nanoid')` 当函数调用，锁到 nanoid 3.x 会让构建报 `nanoid is not a function` 失败。

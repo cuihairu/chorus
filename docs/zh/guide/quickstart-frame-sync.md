@@ -1,23 +1,23 @@
 ---
-title: "Quickstart: Frame Sync Integration"
+title: "快速上手：帧同步接入"
 ---
 
 
-# Quickstart: Frame Sync Integration
+# 快速上手：帧同步接入
 
-This page gives new projects the **minimal runnable** integration steps: one WebSocket client + one callback, rendering the authoritative state by frame number.
+本页给新项目**最小可运行**的接入步骤：一个 WebSocket 客户端 + 一个回调，按帧号渲染权威状态。
 
-> **SDK shipped (2026-10-14, frame sync P3)**: `Chorus.Client.ChorusClient` integrates in one call — hello/welcome handshake, render-by-frame-number callback
-> (`FramePlayer` state machine, idempotent dropping of replayed/old frames), post-apply ACK, and automatic `resync` to pull missing frames. End-to-end tests
-> `ChorusClientTests` (3 cases, including a real /ws).
+> **SDK 已交付（2026-10-14，帧同步 P3）**：`Chorus.Client.ChorusClient` 一次调用完成接入——hello/welcome 握手、按帧号渲染回调
+> （`FramePlayer` 状态机，对重放/旧帧幂等丢弃）、应用后 ACK、自动 `resync` 拉取缺帧。端到端测试
+> `ChorusClientTests`（3 例，含真 /ws）。
 >
-> Honest boundary: the SDK is a **minimal entry point** (single connection, single callback, no automatic reconnect — the reconnect/backoff strategy is left to the
-> integrator; the load test tool `ClientSimulation` demonstrates the full form). For the protocol see [Protocol Reference](../reference/protocol.md); for frame sync
-> semantics see [Frame Sync Design](../design/frame-sync.md).
+> 诚实边界：SDK 是**最小入口**（单连接、单回调、无自动重连——重连/退避策略留给
+> 接入方；压测工具 `ClientSimulation` 演示完整形态）。协议见[协议参考](../reference/protocol.md)；帧同步
+> 语义见[帧同步设计](../design/frame-sync.md)。
 
 ---
 
-## Three-Line Integration (SDK)
+## 三行接入（SDK）
 
 ```csharp
 await using var client = await ChorusClient.ConnectAsync(
@@ -25,24 +25,24 @@ await using var client = await ChorusClient.ConnectAsync(
     state => RenderYourGame(state));   // 回调只收已应用的最新帧，按帧号严格递增
 ```
 
-The callback runs on the receive loop, **do not block it**; `ChorusClientOptions` lets you tune ACK sampling (`AckEveryFrames`, default 2) and the `resync` cooldown (default 2s).
+回调运行在接收循环上，**不要阻塞它**；`ChorusClientOptions` 可调 ACK 采样（`AckEveryFrames`，默认 2）与 `resync` 冷却（默认 2s）。
 
 ---
 
-## Protocol Steps (The SDK Does These for You; Reference for the Raw Protocol Approach)
+## 协议步骤（SDK 已替你做；裸协议接入时参考）
 
-1. **Connect** `ws://<host>/ws` (for the port see [Configuration Reference](../reference/config.md); the single-process default is `http://localhost:5083`).
-2. **Send `hello`**: with `sessionId` / `clientId` / `protocolVersion`.
-3. **Receive `welcome`**: read the authoritative cadence configuration (tick parameters); do not keep local defaults.
-4. **Render loop**: receive `snapshot`, use `tickId` (frame number) to render `state`; drop frames whose number ≤ the applied frame (idempotent; a replayed window won't render twice).
-5. **Send `ack`**: send `lastAppliedTickId` **after the snapshot is actually applied** (not "received").
-6. **Gap detection**: frame number > applied frame + 1 → frames were lost, send `resync` (`fromFrameId` = applied frame + 1) to pull every frame in the window.
-7. **Lag handling**: receive a `forced=true && reason="lag"` or `reason="resync-gap"` snapshot → align immediately, do not backfill history.
-8. **One callback**: `Action<JsonElement>` handles `state`; the rendering layer subscribes to it.
+1. **连接** `ws://<host>/ws`（端口见[配置参考](../reference/config.md)；单进程默认 `http://localhost:5083`）。
+2. **发 `hello`**：带 `sessionId` / `clientId` / `protocolVersion`。
+3. **收 `welcome`**：读权威节拍配置（tick 参数）；别再守本地默认值。
+4. **渲染循环**：收 `snapshot`，用 `tickId`（帧号）渲染 `state`；帧号 ≤ 已应用帧的直接丢弃（幂等；重放窗口不会渲染两遍）。
+5. **发 `ack`**：在快照**真正应用后**才发 `lastAppliedTickId`（不是"收到"）。
+6. **缺口检测**：帧号 > 已应用帧 + 1 → 丢帧了，发 `resync`（`fromFrameId` = 已应用帧 + 1）拉取窗口内每一帧。
+7. **滞后处理**：收到 `forced=true && reason="lag"` 或 `reason="resync-gap"` 快照 → 立即对齐，不回填历史。
+8. **一个回调**：`Action<JsonElement>` 处理 `state`；渲染层订阅它。
 
 ---
 
-## Raw Protocol Skeleton (C#; for a semantic reference implementation see `Chorus.Client`)
+## 裸协议骨架（C#；语义参考实现见 `Chorus.Client`）
 
 ```csharp
 // 依赖：System.Net.WebSockets（.NET 10 内置）
@@ -110,31 +110,31 @@ static async Task Send(ClientWebSocket ws, object payload)
 }
 ```
 
-> The example above is about 45 lines and **untested** (raw-protocol reference code); the **tested** implementation of the same semantics is
-> `Chorus.Client` (`ChorusClient` = handshake + replay + ACK sampling + resync cooldown; `FramePlayerTests` 7 cases + `ChorusClientTests` 3 cases), and the load test tool
-> `ClientSimulation` also uses it. For the `forced` branch and the full catch-up strategy of "lag > maxLagTicks waiting for resync", see [Frame Sync Design](../design/frame-sync.md) §4.5.
+> 上例约 45 行且**未测试**（裸协议参考代码）；同一语义的**已测试**实现是
+> `Chorus.Client`（`ChorusClient` = 握手 + 重放 + ACK 采样 + resync 冷却；`FramePlayerTests` 7 例 + `ChorusClientTests` 3 例），压测工具
+> `ClientSimulation` 也用它。`forced` 分支与"lag > maxLagTicks 等重同步"的完整追赶策略见[帧同步设计](../design/frame-sync.md) §4.5。
 
 ---
 
-## Key Constraints
+## 关键约束
 
-- **Frame number = `tickId`**: monotonically increasing, delivered with the snapshot (`ServerSnapshot.cs:8`). The client sorts and renders by frame number.
-- **ACK semantics**: `lastAppliedTickId` = the frame number **actually applied**, not "received" (`protocol.md:121-130`).
-- **ACK rate limiting**: `Faces:StreamerWs:AckPerMinute` defaults to **600/connection/minute** (`src/Chorus.Gateway.Core/Faces/StreamerWsFaceOptions.cs:21`),
-  over-limit ACKs are silently dropped (the `/faces` `streamerWs.ackDropped` counter). With the default `tickDurationMs=66` (≈15.2 snapshots/minute),
-  one ACK per frame is about 909/minute, which **will hit the limit** — the skeleton should sample ACKs or raise the value.
-- **Forced snapshots**: `forced=true && reason="lag"` → align immediately, no history backfill (`protocol.md:104-105`); `reason="resync-gap"` → your `resync` request
-  window has been evicted, this frame is the latest alignment, **do not pull again**.
-- **resync rate limiting**: two layers (`Faces:StreamerWs:ResyncPerMinute` default 30/connection/minute + the engine cooldown `Session:ResyncRequestCooldownMs`
-  default 1000ms). Send it once only on a real gap; replayed frames are idempotently dropped.
-- **Idempotency**: snapshots with frame number ≤ the applied one are dropped outright.
-- **Auth**: `/ws` is **fail-closed** by default — requires `Faces:StreamerWs:AuthTokens` or explicitly enabling `AllowAnonymous` ([Configuration Reference](../reference/config.md)).
+- **帧号 = `tickId`**：单调递增、随快照下发（`ServerSnapshot.cs:8`）。客户端按帧号排序渲染。
+- **ACK 语义**：`lastAppliedTickId` = **真正应用**的帧号，不是"收到"（`protocol.md:121-130`）。
+- **ACK 限流**：`Faces:StreamerWs:AckPerMinute` 默认 **600/连接/分钟**（`src/Chorus.Gateway.Core/Faces/StreamerWsFaceOptions.cs:21`），
+  超限 ACK 被静默丢弃（`/faces` 的 `streamerWs.ackDropped` 计数）。默认 `tickDurationMs=66`（≈15.2 快照/分钟）时，
+  每帧一个 ACK 约 909/分钟，**必撞限**——骨架应对 ACK 采样或调大该值。
+- **强制快照**：`forced=true && reason="lag"` → 立即对齐、不回填历史（`protocol.md:104-105`）；`reason="resync-gap"` → 你的 `resync` 请求
+  窗口已被逐出，本帧即最新对齐，**不要再拉**。
+- **resync 限流**：两层（`Faces:StreamerWs:ResyncPerMinute` 默认 30/连接/分钟 + 引擎冷却 `Session:ResyncRequestCooldownMs`
+  默认 1000ms）。只在真缺口时发一次；重放帧会被幂等丢弃。
+- **幂等**：帧号 ≤ 已应用帧的快照直接丢弃。
+- **鉴权**：`/ws` 默认 **fail-closed**——需要 `Faces:StreamerWs:AuthTokens` 或显式开启 `AllowAnonymous`（见[配置参考](../reference/config.md)）。
 
 ---
 
-## Related Pages
+## 相关页面
 
-- [Frame Sync Design](../design/frame-sync.md) — frame number semantics / frame backfill / catch-up strategy
-- [Protocol Reference](../reference/protocol.md) — `hello` / `welcome` / `snapshot` / `ack` / `resync` messages
-- [API Reference](../reference/api.md) — backend/admin endpoints
-- [Versioning Policy](../reference/versioning.md) — compatibility rules
+- [帧同步设计](../design/frame-sync.md) —— 帧号语义 / 帧回填 / 追赶策略
+- [协议参考](../reference/protocol.md) —— `hello` / `welcome` / `snapshot` / `ack` / `resync` 消息
+- [API 参考](../reference/api.md) —— 后端/管理端点
+- [版本策略](../reference/versioning.md) —— 兼容性规则

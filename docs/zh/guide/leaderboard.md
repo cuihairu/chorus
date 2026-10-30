@@ -1,33 +1,33 @@
 ---
-title: Leaderboard
+title: 排行榜
 ---
 
 
-# Leaderboard
+# 排行榜
 
-Encapsulation status: **integrated this round** (2026-10-15). The `LeaderboardStore` storage has long been in the library (`src/Chorus.Data/Leaderboard.cs:40`),
-but previously had no DI registration, no endpoint, and no callers; this round wired it into the two session hosts (Server / EngineHost),
-and made the reference gameplay (`Chorus.SampleGame`) the first authoritative score writer. Tests: `tests/Chorus.Engine.Tests/LeaderboardEndpointTests.cs` (8 cases).
+封装状态：**本轮接线完成**（2026-10-15）。`LeaderboardStore` 存储早已在库里（`src/Chorus.Data/Leaderboard.cs:40`），
+但此前没有 DI 注册、没有端点、没有调用方；本轮把它接进两个会话宿主（Server / EngineHost），
+并让参考玩法（`Chorus.SampleGame`）成为第一个权威写分方。测试：`tests/Chorus.Engine.Tests/LeaderboardEndpointTests.cs`（8 例）。
 
-## Data Model
+## 数据模型
 
-Four scopes (`Leaderboard.cs:10-16`); `scopeId` is the leaderboard key:
+四个 scope（`Leaderboard.cs:10-16`）；`scopeId` 是榜键：
 
-| scope | scopeId | Typical Source |
+| scope | scopeId | 典型来源 |
 |---|---|---|
-| `room` | session id | engine-side module projects per tick ("Writing Scores" on this page) |
-| `match` | match id | per-match settlement (same as above; the gameplay decides when to project) |
-| `period` | period label (e.g. `day:2026-10-15`) | async aggregator (not wired, see Boundaries) |
-| `global` | fixed key | async aggregator (not wired, see Boundaries) |
+| `room` | 会话 id | 引擎侧模块按 tick 投影（本页"写分"） |
+| `match` | 对局 id | 按对局结算（同上；何时投影由玩法定） |
+| `period` | 周期标签（如 `day:2026-10-15`） | 异步聚合器（未接线，见边界） |
+| `global` | 固定键 | 异步聚合器（未接线，见边界） |
 
-Ordering: score descending, ties broken by participant id lexicographic order (results don't jitter), ties share competition ranks (1,2,2,4),
-implemented in `Leaderboard.cs:137-157`. `Freeze` (`:104`) freezing seals the leaderboard: all subsequent writes are rejected (fail-visible),
-and queries always return the ranking at freeze time; `Query` (`:124`) returns an independent snapshot, with unknown leaderboards returning an empty list (not an error).
+排序：分数降序，并列按参与者 id 字典序（结果不抖动），并列共享比赛名次（1,2,2,4），
+实现在 `Leaderboard.cs:137-157`。`Freeze`（`:104`）冻结封榜：此后一切写入被拒（fail-visible），
+查询恒返回冻结时刻的名次；`Query`（`:124`）返回独立快照，未知榜单返回空列表（不报错）。
 
-## Writing Scores: The Only Write Entry, on the Engine Side
+## 写分：唯一写入口在引擎侧
 
-Design rule (`Leaderboard.cs:21-38` class comment, audit §9.2): **only the engine side can write scores; clients cannot self-report**.
-In code this lands as one seam:
+设计规则（`Leaderboard.cs:21-38` 类注释、审计 §9.2）：**只有引擎侧能写分；客户端不能自报**。
+代码落成一个缝：
 
 ```
 IGameModule.ApplyEvents（游戏规则，权威状态）
@@ -35,17 +35,17 @@ IGameModule.ApplyEvents（游戏规则，权威状态）
     → LeaderboardScoreSink → LeaderboardStore.UpsertScore(Room, sessionId, participantId, score)
 ```
 
-- Seam interface: `src/Chorus.Engine/Abstractions/ISessionScoreSink.cs:11` (single method `ProjectScore`, `:17`;
-  called on the tick path, implementations must not block and must not throw).
-- Host implementation: `src/Chorus.Gateway.Core/Leaderboard/LeaderboardHost.cs:16` — writes scores replace-style into
-  the room leaderboard. **Replace semantics** is the key: re-projecting the same participant overwrites rather than accumulates,
-  naturally idempotent, with no double-scoring problem.
-- Host registration (DI singleton): `src/Chorus.Server/Program.cs:26-27`, `src/Chorus.EngineHost/Program.cs:14-15`.
-- Reference implementation: `src/Chorus.SampleGame/SampleGameModule.cs` — projects only the participants **touched** in the current batch each tick
-  (`:40`), with the rule `likes + gifts + comments` (`:89`, "who lit up the room" rather than gift amounts);
-  when the session restores from a snapshot it re-projects all participants to rebuild the room leaderboard (`:205`).
+- 缝接口：`src/Chorus.Engine/Abstractions/ISessionScoreSink.cs:11`（单方法 `ProjectScore`，`:17`；
+  在 tick 路径上调用，实现不得阻塞、不得抛）。
+- 宿主实现：`src/Chorus.Gateway.Core/Leaderboard/LeaderboardHost.cs:16` —— 写分以替换式进
+  房间榜。**替换语义**是关键：同一参与者重投影是覆盖而非累加，
+  天然幂等，没有双计分问题。
+- 宿主注册（DI 单例）：`src/Chorus.Server/Program.cs:26-27`、`src/Chorus.EngineHost/Program.cs:14-15`。
+- 参考实现：`src/Chorus.SampleGame/SampleGameModule.cs` —— 每 tick 只投影本批**被触及**的参与者
+  （`:40`），规则为 `likes + gifts + comments`（`:89`，"谁点亮了直播间"而非礼物金额）；
+  会话从快照恢复时重投影全部参与者重建房间榜（`:205`）。
 
-When writing your own gameplay, just implement the same pattern:
+写自己的玩法时照抄同一模式即可：
 
 ```csharp
 // 模块构造（经 IGameModuleFactory 注入 sink；sink 为 null 时零开销、不投影）
@@ -56,23 +56,23 @@ public MyGameModule(string sessionId, ISessionScoreSink? scores)
 _scores?.ProjectScore(sessionId, userId, authoritativeTotal);
 ```
 
-## Reading Scores: Read-Only Query Endpoint
+## 读分：只读查询端点
 
-`GET /leaderboard/{scope}/{scopeId}?top=N`, exposed by the two **session-holding** hosts
-(`src/Chorus.Server/Program.cs:145`, `src/Chorus.EngineHost/Program.cs:53`;
-the gateway holds no session state and has no such endpoint):
+`GET /leaderboard/{scope}/{scopeId}?top=N`，由两个**持会话**宿主暴露
+（`src/Chorus.Server/Program.cs:145`、`src/Chorus.EngineHost/Program.cs:53`；
+网关不持会话状态、无此端点）：
 
 ```bash
 curl http://localhost:5083/leaderboard/room/s1?top=10
 ```
 
-| Parameter | Meaning | Constraints |
+| 参数 | 含义 | 约束 |
 |---|---|---|
-| `scope` | `room` / `match` / `period` / `global` (case-insensitive) | unknown value → 400 `unknown_scope` |
-| `scopeId` | leaderboard key (room leaderboard = session id; period leaderboard = period label) | single path segment (must not contain `/`); blank → 400 `invalid_scope_id` |
-| `top` | top N; defaults to returning everything | 1–1000 (`LeaderboardHost.cs:38`), out of range → 400 `invalid_top` |
+| `scope` | `room` / `match` / `period` / `global`（大小写不敏感） | 未知值 → 400 `unknown_scope` |
+| `scopeId` | 榜键（房间榜 = 会话 id；周期榜 = 周期标签） | 单路径段（不得含 `/`）；空白 → 400 `invalid_scope_id` |
+| `top` | 前 N 名；缺省返回全部 | 1–1000（`LeaderboardHost.cs:38`），越界 → 400 `invalid_top` |
 
-Response (200):
+响应（200）：
 
 ```json
 {
@@ -87,21 +87,21 @@ Response (200):
 }
 ```
 
-| Status Code | Condition |
+| 状态码 | 条件 |
 |---|---|
-| 200 | query succeeded (a leaderboard never written returns empty `entries`, `frozen:false`) |
-| 400 `{error:"unknown_scope"}` | scope not among the four |
-| 400 `{error:"invalid_scope_id"}` | scopeId blank |
-| 400 `{error:"invalid_top",top,max}` | `top` out of range |
+| 200 | 查询成功（从未写过的榜返回空 `entries`、`frozen:false`） |
+| 400 `{error:"unknown_scope"}` | scope 不在四者之列 |
+| 400 `{error:"invalid_scope_id"}` | scopeId 空白 |
+| 400 `{error:"invalid_top",top,max}` | `top` 越界 |
 
-Endpoint implementation: `src/Chorus.Gateway.Core/Leaderboard/LeaderboardHost.cs:48` (routing), `:53` (handling).
-The endpoint has no auth and, like the other diagnostic surfaces, falls under the intranet assumption (see the auth section of [API Reference](../reference/api.md)).
+端点实现：`src/Chorus.Gateway.Core/Leaderboard/LeaderboardHost.cs:48`（路由）、`:53`（处理）。
+端点无鉴权，与其他诊断面一样落在内网假设下（见 [API 参考](../reference/api.md)的鉴权章节）。
 
-## Direct Library Use (Without HTTP)
+## 直接用库（不走 HTTP）
 
-`LeaderboardStore` is a thread-safe pure in-memory library, usable directly by referencing `Chorus.Data`:
-`UpsertScore` (`:55`, replace) / `AddDelta` (`:75`, idempotent delta) / `Freeze` (`:104`) /
-`IsFrozen` (`:113`) / `Query` (`:124`).
+`LeaderboardStore` 是线程安全的纯内存库，直接引用 `Chorus.Data` 即可用：
+`UpsertScore`（`:55`，替换）/ `AddDelta`（`:75`，幂等增量）/ `Freeze`（`:104`）/
+`IsFrozen`（`:113`）/ `Query`（`:124`）。
 
 ```csharp
 using Chorus.Data;
@@ -118,25 +118,25 @@ foreach (var entry in store.Query(LeaderboardScope.Room, "s1", top: 10))
 }
 ```
 
-Rule for choosing between the two APIs (class comment §9.2): **use `UpsertScore` for authoritative state projection**
-(re-projection overwrites); **use `AddDelta` for replay streams** (must supply a sourceId as the idempotency anchor,
-claiming the anchor first and then changing the score, `:91`).
+两个 API 的选用规则（类注释 §9.2）：**权威状态投影用 `UpsertScore`**
+（重投影即覆盖）；**重放流用 `AddDelta`**（必须给 sourceId 作幂等锚，
+先占锚再改分，`:91`）。
 
-## Boundaries (What It Doesn't Do)
+## 边界（不做什么）
 
-- **In-memory, no persistence**: leaderboards live and die with the process; a restart wipes them. The room leaderboard is rebuilt by the session-restore path
-  (`SampleGameModule.cs:205`); period/global leaderboards are lost on restart — products that need cross-restart settlement must ship it themselves.
-- **Clients cannot write scores**: the only write entry is the engine-side `ISessionScoreSink`; the HTTP surface is read-only. Self-reported scores do not exist in this design.
-- **period/global aggregation not wired**: `AddDelta` and its sourceId ledger exist for an async aggregator (the Data Worker in the design);
-  this repo has no callers; `DataCommandOutbox` is likewise a handoff buffer, not persistence.
-- **`AddDelta` ledger is unbounded**: one deduplication record per sourceId per leaderboard (`Leaderboard.cs:45`); long-period high-frequency sources grow memory indefinitely.
-  Real-time projection always uses `UpsertScore`; aggregators using `AddDelta` must manage period key rotation / ledger size themselves.
-- **Platform-native leaderboards not wired**: the Douyin rank-upload adapters (`DouyinRankUploadAdapter`, `PlatformLeaderboardRegistry`)
-  are in the library with no host wiring; see [Douyin Mini Game Platform Reference](../reference/platform-douyin-mini-game.md).
-- **The gateway has no such endpoint**: in split mode, query EngineHost directly; leaderboards stay on the engine side for the lifetime of the session.
+- **内存态、不持久化**：榜随进程生灭；重启即清空。房间榜由会话恢复路径重建
+  （`SampleGameModule.cs:205`）；period/global 榜重启即丢——需要跨重启结算的产品自行实现。
+- **客户端写不了分**：唯一写入口是引擎侧 `ISessionScoreSink`；HTTP 面只读。本设计不存在自报分数。
+- **period/global 聚合未接线**：`AddDelta` 与其 sourceId 账本是为异步聚合器（设计中的 Data Worker）准备的；
+  本仓没有调用方；`DataCommandOutbox` 同样只是交接缓冲，不是持久化。
+- **`AddDelta` 账本无界**：每榜每 sourceId 一条去重记录（`Leaderboard.cs:45`）；长周期高频来源会让内存无限增长。
+  实时投影一律 `UpsertScore`；用 `AddDelta` 的聚合器要自管周期键轮换/账本体量。
+- **平台原生榜未接线**：抖音排行上报适配器（`DouyinRankUploadAdapter`、`PlatformLeaderboardRegistry`）
+  在库里但无宿主接线；见[抖音小游戏平台参考](../reference/platform-douyin-mini-game.md)。
+- **网关无此端点**：拆分模式直查 EngineHost；榜在会话生命周期内留在引擎侧。
 
-## Related Pages
+## 相关页面
 
-- [Architecture Overview](../architecture.md) Decision 8 (replace-style projection vs real-time aggregation)
-- [Battle](./battle.md) (where scores come from: audience events → tick → module)
-- [API Reference](../reference/api.md) (endpoint table)
+- [架构总览](../architecture.md) 决策 8（替换式投影 vs 实时聚合）
+- [对战](./battle.md)（分数从哪来：观众事件 → tick → 模块）
+- [API 参考](../reference/api.md)（端点表）
