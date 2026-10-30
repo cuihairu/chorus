@@ -239,6 +239,39 @@ public sealed class RedesignRecoveryCapacityBenchmarkTests(ITestOutputHelper out
         var failures = outcomes.Where(entry => !entry.Recovered)
             .Select(entry => $"{entry.Error} ({(entry.Refused ? "refused" : "failed")}, {entry.TotalMs:0} ms)")
             .ToList();
+        if (recoveredRooms != RoomCount)
+        {
+            // A recovery that did not land says who fenced or refused it: the control plane's
+            // governance log lines (stall migration, sweep reassignment) name the racer.
+            var controlHost = environment.HostProcesses.Single(
+                entry => entry.Instance == "Chorus.ControlServer").Process;
+            var dataHost = environment.HostProcesses.Single(
+                entry => entry.Instance == "Chorus.DataServer").Process;
+            foreach (var (name, process) in new[] { ("control", controlHost), ("data", dataHost), ("game-b", gameB) })
+            {
+                output.WriteLine($"--- {name} output tail ---");
+                foreach (var line in environment.HostOutput(process)
+                             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                             .Select(line => line.TrimEnd('\r')).TakeLast(40))
+                    output.WriteLine("  " + line);
+            }
+            // The refused room's own operation row carries the recovery's note (the reason the
+            // activation or the head pin was refused) — the one witness the reply drops.
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand(
+                    "SELECT room_id, phase, last_error, last_tick FROM control.recovery_operation " +
+                    "WHERE room_id LIKE 'room-rec-cap-%' AND phase <> 'Activated'", connection);
+                await using var reader = await command.ExecuteReaderAsync();
+                output.WriteLine("--- unfinished recovery operations ---");
+                while (await reader.ReadAsync())
+                    output.WriteLine(
+                        $"  {reader.GetString(0)} phase={reader.GetString(1)} " +
+                        $"tick={reader.GetInt64(3)} " +
+                        $"error={(reader.IsDBNull(2) ? "(none)" : reader.GetString(2))}");
+            }
+        }
         Assert.True(recoveredRooms == RoomCount,
             $"Only {recoveredRooms} rooms recovered; first failure: {firstFailure}; " +
             $"failures: {string.Join("; ", failures)}");
@@ -355,7 +388,7 @@ public sealed class RedesignRecoveryCapacityBenchmarkTests(ITestOutputHelper out
                 ToInstanceId = "game-b", LeaseSeconds = 15, TickMs = TickMs
             });
             return new RecoveryOutcome(reply.Recovered, false,
-                reply.Recovered ? null : $"{reply.Status}@{reply.LastTick}",
+                reply.Recovered ? null : $"{reply.Status}@{reply.LastTick} (epoch {reply.Epoch})",
                 (DateTime.UtcNow - started).TotalMilliseconds);
         }
         catch (RpcException error) when (error.StatusCode == StatusCode.ResourceExhausted)
