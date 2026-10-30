@@ -48,13 +48,15 @@ public sealed record RecoveryReadStats(
 /// must stay invisible to the plan it is loading.
 /// </param>
 public sealed class RedesignRecoveryStore(string connectionString, Action? crashAfterSnapshotInsert = null,
-    Action? afterHeadRead = null)
+    Action? afterHeadRead = null, Chorus.Data.Redesign.DataMetrics? metrics = null)
 {
     /// <summary>How many newest snapshot candidates a normal recovery read loads (FIX-READ-02):
     /// the fallback pair — the same two anchors retention keeps for a settled round.</summary>
     public const int CandidateDepth = 2;
 
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
+    private readonly Chorus.Data.Redesign.DataMetrics _metrics =
+        metrics ?? Chorus.Data.Redesign.DataMetrics.Default;
 
     /// <summary>
     /// Persists a full snapshot of the state at the room's current head tick. The store
@@ -190,7 +192,24 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
         Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
         if (candidateDepth <= 0) throw new ArgumentOutOfRangeException(nameof(candidateDepth));
         await using var connection = new NpgsqlConnection(connectionString);
-        await connection.OpenAsync(cancellationToken);
+        var openStart = _metrics.Start();
+        try { await connection.OpenAsync(cancellationToken); }
+        finally { _metrics.Record(_metrics.ConnOpen, openStart); }
+        var readStart = _metrics.Start();
+        try
+        {
+            return await LoadRecoveryQueriesAsync(connection, tenantId, gameId, roomId, candidateDepth,
+                cancellationToken);
+        }
+        finally { _metrics.Record(_metrics.ReadExec, readStart); }
+    }
+
+    /// <summary>The recovery read itself, on an open connection (FIX-PERF-02 read metrics):
+    /// one repeatable-read view, head first, then every material the plan cites.</summary>
+    private async Task<RecoveryPlan?> LoadRecoveryQueriesAsync(NpgsqlConnection connection,
+        string tenantId, string gameId, string roomId, int candidateDepth,
+        CancellationToken cancellationToken)
+    {
         await using var view = await connection.BeginTransactionAsync(
             IsolationLevel.RepeatableRead, cancellationToken);
         string status; long epoch, lastTick, stateVersion;
