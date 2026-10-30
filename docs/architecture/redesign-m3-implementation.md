@@ -188,3 +188,21 @@ M3-5 的 `ClusterDirectory` 只维护「可达性」：谁在报告、端点在�
 **竞态教训（两平面收敛）**：宿主测试的「宣告」只证明 **store 平面**翻转（路由快照读到新词）；**目录**按自己的 `CHORUS_DIRECTORY_REFRESH_MS` 节奏折叠。两者可差一个折叠周期——快跑里 wave3 挂载（TLS+Login+StartGameplay 仅 ~300ms）抢在折叠前入队，协调器按**陈旧 Accepting** 正常配对（12s 快跑失败：票被 commit）；慢跑里配对落在 6s 停车窗之后（49s 失败：计数断言抓到房数变）。修复：full/drain 宣告后各等一个折叠节拍（1s）再发下一波。这不是调度器 bug——稳态收敛后拒绝正确（目录单元测试钉住）；是测试节奏没等目录。
 
 **诚实边界**：无 un-drain 管理动作（棘轮单向，重新投产 RPC open——恢复服务是管理员显式动作）；Full/Draining 宿主的既有房不迁移（自然结算，逐房迁移 open）；容量释放回池已在自然结算路径验证、`ReleaseRoomAsync` 钩子（FIX-END-14）未接线（回收路径的槽释放未验）。
+
+## 持久模块恢复身份落地：房间行是身份权威 + 具名拒绝契约（FIX-MODULE-01，80aad99）
+
+根因一句话：`game.room(module_version, config_hash, package_hash, tick_ms)` 是**只写不读**——StartRound 写进身份列后，恢复计划只从 `game.frame` 取身份，模块由「调用方 `tick_ms` + 硬编码字面量」重建（原 `RoomRuntime.RecoverUnknownRoomAsync` 顶部 `new RedesignGameModuleManifest("example-factions", "1.0.0", request.TickMs, …)`）。后果：takeover/admin 恢复传一个不同的 `tick_ms` 就**静默改掉原局的节拍**；房间持久的身份列从不参与恢复；「缺包/不兼容」没有任何错误契约——恢复只在模块读不出快照时才 park，不说「这个包我加载不了」。
+
+- **单一身份权威**（`Chorus.Redesign.Rpc.GameModuleIdentity`，新）：`Name/ModuleVersion/ConfigHash/PackageHash/RecoveryMode` 常量。协调器 `StartRound` 的三件套（原硬编码 `"1.0.0"/"cfg-1"/"pkg-1"`）改从此读；`RoomRuntime.PrepareRoomAsync` 的 manifest 也从这里取 name/version/recovery-mode（原 `"example-factions"/"1.0.0"/DeterministicReplay` 字面量）。MODULE-02 的注册表会把这里的 pin 换成真实包记录，届时恢复校验就是真正的注册表查找。
+- **恢复模式持久化**（迁移 0021，`game.room.recovery_mode text NOT NULL DEFAULT 'DeterministicReplay'`）：`PrepareRoundRequest.recovery_mode = 10`，game-server 把 manifest 的 `CheckpointMode` 写进 prepare（`RedesignRoomStore` 的 cadence UPDATE 由 `SET tick_ms` 扩为 `SET tick_ms, recovery_mode`）——恢复模式和节拍是同一个「prepare 时钉下的房间事实」。
+- **恢复回读房间身份**：`RecoveryPlan` 增 `TickMs/ModuleVersion/ConfigHash/PackageHash/RecoveryMode`（room SELECT 扩读，随每页 head 字段一起载）；`LoadRecoveryReply` 增 12–16（tick_ms/module_version/config_hash/package_hash/recovery_mode）随每页传；`RoomRuntime.RecoverUnknownRoomAsync` 把 manifest 构造**挪到** plan 的 found/epoch 校验之后、用 plan 的持久身份（`plan.TickMs/plan.ModuleVersion/plan.RecoveryMode`）建模块，不再用 `request.TickMs` + 硬编码。
+- **具名拒绝契约**（恢复失败是 `Recovered=false` + `Note`，契约即命名的 Note，已写进 `RecoverRoomRequest/Reply` 的 proto 注释）：
+  - `request.TickMs > 0 && != plan.TickMs` → 拒：`…does not match the room's persisted cadence …ms; a recovery cannot change a room's tick`（`request.TickMs=0` = 「用持久节拍」，入口校验放宽 0..1000）。
+  - `plan.ModuleVersion != GameModuleIdentity.ModuleVersion` → 拒：`…is not the version this host loads…; the module is incompatible`（不兼容版本契约）。
+  - `plan.PackageHash != GameModuleIdentity.PackageHash` → 拒：`…is not the package this host loads…; the package is missing or unknown`（缺包契约）。
+  - `plan.RecoveryMode` 未知 → 拒 `…is not a known mode`；`!= GameModuleIdentity.RecoveryMode`（shipped 之外，如 FullCheckpoint）→ 拒 `…is not the mode this host loads…; the module is incompatible`。
+  - config 不由请求携带（恢复的 config 一直来自**持久帧**的 config_hash，已是权威）——房间行的 config pin 作为身份随 plan 暴露、供契约校验与查看，不再静默改写。
+
+**证据**（+9 fact，全在 80aad99）：迁移测试 37 表/21 迁移；store 1——`LoadRecovery` 计划带出房间行持久身份（tick 50、1.0.0、cfg-1、pkg-1、DeterministicReplay，`RedesignRecoveryStoreTests`）；单元 6（`RedesignModuleIdentityUnitTests`，新）——`tick_ms=0` 用持久节拍恢复成功、改写节拍（plan 25 / req 10）拒绝并点名持久节拍、未知包拒绝并点名缺包、不兼容版本拒绝、未知恢复模式拒绝、FullCheckpoint 恢复模式拒绝（本机只载 shipped）；既有 4 个用 scripted `LoadRecoveryReply` 的单元（fallback/activation-gate/takeover-activation/tick-metrics）补 identity 字段（fixture 必须重述房间持久身份否则被契约拒——这正是契约在生效）；容量基准的 `pkg-rec-cap/cfg-rec-cap` 改 `GameModuleIdentity`（该 opt-in 基准测容量不测包身份，用 shipped 身份不受契约拒）。回归：恢复宿主族 20/20（M2 + M3 takeover/double-takeover/takeover-kill/recovery-sweep/admission）；全量 Release 1384/1384 绿（谷值 3.47/8.85，4m24s；= 1378 基线 + 6 单元 fact）；残留 0 进程 0 库。首轮全量出现 1 例 `ControlPostgresIntegrationTests.PostgresProvider_ConcurrentRoomEventsKeepAllReceipts` 失败——旧线（`Chorus.Protocol` 旧网关 Postgres provider）的并发 `.Single()` 断言，与本改动无关，重跑该类 12/12 绿，属已知共租时序族。
+
+**诚实边界**：config 的**权威**在持久帧（`frame.config_hash`），房间行的 `config_hash` 是 StartRound 写下的**声明 pin**（协调器拿不到派生 payload 哈希，两值本质不同）——MODULE-01 让 pin 随 plan 暴露并纳入身份校验，但不把 pin 与帧哈希强行合一；`SnapshotEveryTicks` 未进身份契约（prepare/recovery 都用 manifest 默认 100，两侧一致；checkpoint 语义属 MODULE-03）；缺包/不兼容在 MODULE-01 阶段是「对唯一 shipped 身份的比对」（真注册表在 MODULE-02），升级窗口/旧包保留是 MODULE-04。
