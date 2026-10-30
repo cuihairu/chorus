@@ -48,6 +48,10 @@ sha1Hex(rawBody + 消息验证Token) == 请求头 kwaisign
 2. **Response body format not strictly verified**: the official guidance is to respond success after receiving a message (this document treats `200` as success); whether a specific JSON must be returned (e.g. `{"result":1,"message_id":...}`) is pending joint debugging confirmation.
 3. **Live event push channel form** (HTTP callback vs. platform-side WS push) is unconfirmed, same risk as Douyin: if it is platform-side WS push, `/ingress/kuaishou` remains the forwarding target, and the interface is unchanged.
 
+### Launch 半侧设计说明（未实装，fail-closed 占位保留）
+
+与抖音不同（抖音 code2Session 官方口径已于 2026-10-14 核实并实装，见 platform-douyin.md §2.2/§2.5），**快手的服务端登录/主播启动校验 API 尚无任何已核实的官方口径**（端点、鉴权方式、凭证类型、官方文档链接均缺），故不做投机实现。StreamerServer 继续注册 fail-closed 占位 stub `KuaishouLaunchAdapter`（拒绝一切登录，不校验任何凭证）。要生产化需要先补齐：官方端点与协议版本、鉴权方案、凭证类型与脱敏样本、签名测试向量（对应 FIX-ENV-06 待用户提供）；核实后按抖音同款模式实装（真实适配器 + HTTP 桩金测 + 环境变量注入凭据）。
+
 ## 2. Current Implementation Contract
 
 ### 2.1 Callback Address and Route

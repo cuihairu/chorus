@@ -97,6 +97,16 @@ Program.cs 不注册默认实例；接线等真实小游戏凭证与事件配置
 | `DouyinMiniGameOptions.ApiBaseUrl` | 仅测试桩替换；生产恒用官方域名 `minigame.zijieapi.com` |
 | `competition_id` / `schedule_id` / `rank_status` | 赛事标识，适配器构造函数参数（由赛事后端分配） |
 
+### 2.5 新架构 Launch 适配器（真实 code2Session 调用，2026-10-31 实装）
+
+StreamerServer 的主播登录校验（contracts §5 `VerifyLaunch` / `RedesignPlatformGateway`）此前由 fail-closed 占位 stub（`DouyinLaunchAdapter`）承担；现已实装真实调用 `DouyinMiniGameLaunchAdapter`（`src/Chorus.Platform/DouyinMiniGameLaunchAdapter.cs`），映射到官方 code2Session：
+
+- **凭证编码**：`LaunchCredential` 即客户端登录凭证——裸值为 tt.login `code`；带 `anonymous:` 前缀为 `anonymous_code`（这是客户端侧的本地编码约定，非官方协议猜测）。
+- **身份与直播键**：成功后 OpenId = `openid`（匿名登录时为 `anonymous:anonymous_openid`，前缀区分两个命名空间）；`CanonicalLiveSessionKey` 确定性推导为 `douyin-live:{appId}:{identity}`（每个主播每 app 一个规范直播会话）。官方直播间绑定 API 未核实，故不虚构房间键。`session_key` 属敏感凭据，在适配器内直接丢弃，绝不离开适配器。
+- **环境变量**：`CHORUS_DOUYIN_APP_ID` / `CHORUS_DOUYIN_APP_SECRET`（两者必须同时配置，缺一启动即拒）；`CHORUS_DOUYIN_API_BASE_URL` 仅测试桩替换，生产恒用官方域名。未配置时保持原 fail-closed stub（拒绝一切登录）。凭据只经环境注入，不进仓不进 CI。
+- **ProductionReady=true 的依据**：code2Session 官方口径 2026-10-14 核实（本文 §2.2）；金测 `DouyinMiniGameLaunchAdapterTests`（HTTP 桩，10 例）。真实凭据联调（FIX-ENV-05）与入口事件半侧仍 open。
+- **错误码**（稳定，消息不含 credential/secret）：`malformed-credential` / `app-mismatch`（本地拒绝，不发请求）/ `platform-rejected`（含官方错误码，如 40018）/ `platform-unreachable`（HTTP 非 2xx 或网络故障，可重试）/ `platform-response-invalid`。
+
 ## 3. 事件入口实现契约（联调占位，非官方）
 
 ### 3.1 回调地址与路由

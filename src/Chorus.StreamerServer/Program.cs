@@ -41,9 +41,26 @@ var readOnlyTenants = tenantApplications.ToDictionary(
         app => app.Key, app => app.Value, StringComparer.Ordinal),
     StringComparer.Ordinal);
 
-// Platform adapters: named platforms stay NotProductionReady stubs; the development
-// simulator is registered only when explicitly enabled with its own signing key.
-var adapters = new List<IPlatformLaunchAdapter> { new DouyinLaunchAdapter(), new KuaishouLaunchAdapter() };
+// Platform adapters: kuaishou stays a fail-closed stub (no verified launch API yet, see
+// docs/zh/reference/platform-kuaishou.md). Douyin gets the real code2Session launch adapter
+// when credentials are configured (docs/zh/reference/platform-douyin.md §2.5); without them
+// the fail-closed stub stays. The development simulator is registered only when explicitly
+// enabled with its own signing key.
+var douyinAppId = Environment.GetEnvironmentVariable("CHORUS_DOUYIN_APP_ID");
+var douyinAppSecret = Environment.GetEnvironmentVariable("CHORUS_DOUYIN_APP_SECRET");
+var douyinConfigured = !string.IsNullOrWhiteSpace(douyinAppId) || !string.IsNullOrWhiteSpace(douyinAppSecret);
+if (douyinConfigured && (string.IsNullOrWhiteSpace(douyinAppId) || string.IsNullOrWhiteSpace(douyinAppSecret)))
+    throw new InvalidOperationException("CHORUS_DOUYIN_APP_ID and CHORUS_DOUYIN_APP_SECRET must both be set.");
+var adapters = new List<IPlatformLaunchAdapter>
+{
+    douyinConfigured
+        ? new DouyinMiniGameLaunchAdapter(douyinAppId!, douyinAppSecret!,
+            Environment.GetEnvironmentVariable("CHORUS_DOUYIN_API_BASE_URL"))
+        : new DouyinLaunchAdapter(),
+    new KuaishouLaunchAdapter()
+};
+if (douyinConfigured)
+    Console.WriteLine("douyin launch verification uses the real code2Session API (credentials from environment).");
 var allowNotProductionReady = false;
 if (Environment.GetEnvironmentVariable("CHORUS_PLATFORM_SIMULATOR") == "true")
 {

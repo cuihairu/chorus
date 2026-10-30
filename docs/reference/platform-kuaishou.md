@@ -48,6 +48,10 @@ sha1Hex(rawBody + 消息验证Token) == 请求头 kwaisign
 2. **Response body format not strictly verified**: the official guidance is to respond success after receiving a message (this document treats `200` as success); whether a specific JSON must be returned (e.g. `{"result":1,"message_id":...}`) is pending joint debugging confirmation.
 3. **Live event push channel form** (HTTP callback vs. platform-side WS push) is unconfirmed, same risk as Douyin: if it is platform-side WS push, `/ingress/kuaishou` remains the forwarding target, and the interface is unchanged.
 
+### Launch-half design note (not implemented; fail-closed stub stays)
+
+Unlike Douyin (whose code2Session official contract was verified 2026-10-14 and implemented for real, see platform-douyin.md §2.2/§2.5), **no verified official server-side login/streamer-launch API exists for Kuaishou yet** (endpoint, auth scheme, credential type, and official doc link are all missing), so nothing is implemented speculatively. StreamerServer keeps registering the fail-closed stub `KuaishouLaunchAdapter` (rejecting every launch, verifying no credential). Productionizing requires first: the official endpoint and protocol version, the auth scheme, the credential type with sanitized samples, and signature test vectors (pending user input under FIX-ENV-06); once verified, it follows the Douyin pattern (a real adapter + HTTP-stub golden tests + environment-injected credentials).
+
 ## 2. Current Implementation Contract
 
 ### 2.1 Callback Address and Route

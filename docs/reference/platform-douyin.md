@@ -97,6 +97,16 @@ Program.cs does not register default instances; wiring waits for real mini game 
 | `DouyinMiniGameOptions.ApiBaseUrl` | Only replaced in test stubs; production always uses the official domain `minigame.zijieapi.com` |
 | `competition_id` / `schedule_id` / `rank_status` | Event identifiers, adapter constructor parameters (assigned by the event backend) |
 
+### 2.5 Redesign Launch Adapter (real code2Session calls, landed 2026-10-31)
+
+StreamerServer's streamer login verification (contracts §5 `VerifyLaunch` / `RedesignPlatformGateway`) was previously served by the fail-closed stub (`DouyinLaunchAdapter`); it is now implemented for real by `DouyinMiniGameLaunchAdapter` (`src/Chorus.Platform/DouyinMiniGameLaunchAdapter.cs`), mapped to the official code2Session:
+
+- **Credential encoding**: `LaunchCredential` carries the client login code — a bare value is a tt.login `code`; a value prefixed with `anonymous:` is an `anonymous_code` (a local client-side encoding convention, not an official protocol guess).
+- **Identity and live key**: on success OpenId = `openid` (for anonymous logins `anonymous:anonymous_openid`, the prefix separating the two namespaces); `CanonicalLiveSessionKey` derives deterministically as `douyin-live:{appId}:{identity}` (one canonical live session per streamer per app). No official live-room binding API is verified, so no room key is invented. `session_key` is sensitive and dropped inside the adapter; it never leaves it.
+- **Environment variables**: `CHORUS_DOUYIN_APP_ID` / `CHORUS_DOUYIN_APP_SECRET` (both must be set; one without the other refuses to start); `CHORUS_DOUYIN_API_BASE_URL` is only replaced in test stubs; production always uses the official domain. Without credentials the original fail-closed stub stays (rejecting every launch). Credentials arrive only via the environment, never in the repo or CI.
+- **Basis for ProductionReady=true**: the code2Session official contract was verified 2026-10-14 (§2.2); golden tests `DouyinMiniGameLaunchAdapterTests` (HTTP stub, 10 cases). Real-credential joint debugging (FIX-ENV-05) and the event-ingress half remain open.
+- **Error codes** (stable; messages never include the credential or secret): `malformed-credential` / `app-mismatch` (rejected locally, no request sent) / `platform-rejected` (carries the official error code, e.g. 40018) / `platform-unreachable` (non-2xx HTTP or network failure, retryable) / `platform-response-invalid`.
+
 ## 3. Event Entry Implementation Contract (joint-debugging placeholder, not official)
 
 ### 3.1 Callback Address and Routing
