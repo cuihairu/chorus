@@ -33,6 +33,13 @@ public sealed class GameHostGrpcService(RoomRuntime runtime, TrustedProcessCerti
             // SCHED-02) — never a reply the caller could mistake for a duplicate.
             throw new RpcException(new Status(StatusCode.ResourceExhausted, error.Message));
         }
+        catch (ModulePackageException error)
+        {
+            // FIX-MODULE-02: a room naming a package this host does not ship is refused as
+            // FailedPrecondition — a deployment fact, not a bad request and not capacity —
+            // and never silently rebuilt under the default example module.
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
         catch (ArgumentException error)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));

@@ -74,7 +74,7 @@ internal sealed class RoomActor : IAsyncDisposable
 
     private readonly IRoomLifecycle _runtime;
     private readonly FrameStore.FrameStoreClient _frames;
-    private readonly ExampleGameModule _module;
+    private readonly IRedesignGameModule _module;
     private readonly RoomMetrics _metrics;
     private readonly string _gameId;
     private readonly string _roomId;
@@ -115,7 +115,7 @@ internal sealed class RoomActor : IAsyncDisposable
     // against an actor whose publishing loop is gone.
     private bool _loopEnded;
 
-    public RoomActor(IRoomLifecycle runtime, FrameStore.FrameStoreClient frames, ExampleGameModule module,
+    public RoomActor(IRoomLifecycle runtime, FrameStore.FrameStoreClient frames, IRedesignGameModule module,
         string gameId, string roomId, string ownerInstanceId, long epoch, string configHash,
         ExampleGameState initialState, IReadOnlyDictionary<string, string> participantByBinding,
         long lastTick = 0, long stateVersion = 1, int hangAfterTick = 0, int hangMs = 0,

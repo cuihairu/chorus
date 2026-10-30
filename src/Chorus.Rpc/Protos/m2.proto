@@ -517,6 +517,11 @@ message PrepareRoomRequest {
   // actor not ticking — until ActivateRoom releases it, so a fleet can cross one
   // common start line instead of staggering by prepare order.
   bool deferred_activation = 13;
+  // FIX-MODULE-02: the package this room runs — the same hash StartRound pinned on the
+  // room row. Empty = the cluster's default package. A hash the game host does not ship
+  // is refused by name (FailedPrecondition); the host never falls back to the default
+  // example module for a room that named another package.
+  string package_hash = 14;
 }
 
 message ActivateRoomRequest {

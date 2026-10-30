@@ -121,7 +121,69 @@ public sealed class RedesignModuleIdentityUnitTests
 
         Assert.False(reply.Recovered);
         Assert.Contains(RedesignGameModuleManifest.FullCheckpoint, reply.Note, StringComparison.Ordinal);
-        Assert.Contains("not the mode this host loads", reply.Note, StringComparison.Ordinal);
+        Assert.Contains("is not the mode package", reply.Note, StringComparison.Ordinal);
+        Assert.Contains("incompatible", reply.Note, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ADuelRoomRecoversThroughTheDuelModuleNotTheDefault()
+    {
+        // FIX-MODULE-02: a pkg-duel-1 room's replay only verifies under the duel rules —
+        // the gift in tick 1 scores nothing there, while the default module would have
+        // moved red by 7 and committed a different state hash. Recovered=true proves the
+        // registry loaded the package the room persisted, not the example module.
+        var duel = RedesignModuleCatalog.Duel.Load(RedesignModuleCatalog.Duel.ManifestAt(25));
+        var initial = duel.CreateInitialState(new GameStartConfig(200, 777,
+            [new GameParticipant("host-id", GameStartConfig.RedFaction),
+             new GameParticipant("guest-id", GameStartConfig.BlueFaction)], 0));
+        var tickOne = duel.ApplyTick(initial, 1,
+            [new NormalizedInput("host-id", """{"kind":"gift","amount":7}""")]);
+        Assert.Empty(tickOne.Effects); // the gift is noise to a duel — the default would score
+        var payload = duel.Serialize(initial);
+        await using var runtime = new RoomRuntime(new ScriptedRoundStore(),
+            new ScriptedFrameStore(() => new LoadRecoveryReply
+            {
+                Found = true, RoomId = "room-id-1", Status = "Running", Epoch = 1,
+                LastTick = 1, StateVersion = 2,
+                TickMs = 25, ModuleVersion = "0.9.0", ConfigHash = "cfg-duel-1",
+                PackageHash = "pkg-duel-1", RecoveryMode = RedesignGameModuleManifest.DeterministicReplay,
+                Snapshots =
+                {
+                    new RecoverySnapshotProto
+                    {
+                        Tick = 0, SchemaVersion = initial.SchemaVersion,
+                        Payload = ByteString.CopyFrom(payload),
+                        PayloadHash = ByteString.CopyFrom(SHA256.HashData(payload)), Verified = true
+                    }
+                },
+                Frames = { new RecoveryFrameProto
+                {
+                    Tick = 1, InputEventIds = { "evt-gift" },
+                    StateHash = ByteString.CopyFrom(duel.ComputeStateHash(tickOne.State))
+                } },
+                Deliveries = { new RecoveryDeliveryProto
+                {
+                    EventId = "evt-gift", BindingId = "binding-host-id",
+                    PayloadJson = """{"kind":"gift","amount":7}"""
+                } },
+                Participants =
+                {
+                    new RoundParticipantStateProto
+                    {
+                        ParticipantId = "host-id", BindingId = "binding-host-id", State = "Active"
+                    }
+                }
+            }), new ScriptedSettlement());
+
+        var reply = await runtime.RecoverRoomAsync(new RecoverRoomRequest
+        {
+            RoomId = "room-id-1", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = 1, TickMs = 25
+        });
+
+        Assert.True(reply.Recovered);
+        Assert.Equal("Running", reply.Status);
+        Assert.Equal(1, reply.LastTick);
+        Assert.Equal(1, reply.ReplayedFrames);
     }
 
     /// <summary>A recoverable tick-0-at-head plan with the room's persisted identity, the

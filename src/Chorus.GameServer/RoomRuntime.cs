@@ -117,6 +117,17 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     RoomId = request.RoomId, Duplicate = true, Status = "Prepared", StateVersion = 1
                 };
 
+            // FIX-MODULE-02: the module loads through the package registry — the package
+            // the request names (empty = the cluster default, the same pin the
+            // coordinator wrote at StartRound). A package this host does not ship is
+            // refused by name before any capacity or data-plane work; the room is never
+            // silently rebuilt under the default example module.
+            if (!RedesignModuleCatalog.TryGet(request.PackageHash, out var package))
+                throw new ModulePackageException(
+                    $"The room names package \"{request.PackageHash}\", which this host does not " +
+                    $"ship (shipped: {RedesignModuleCatalog.ShippedList()}); the package is missing " +
+                    "or unknown.");
+
             // FIX-PERF-07: a new allocation reserves an admission slot before any data-plane
             // work, so a saturated host refuses — an existing room is never touched by a
             // refused admission — and concurrent prepares of different rooms cannot race past
@@ -133,15 +144,13 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     "refused until the overloaded rooms drain.");
             try
             {
-                // FIX-MODULE-01: the room is prepared under the cluster's declared module
+                // FIX-MODULE-01: the room is prepared under the package's declared module
                 // identity — the same authority the coordinator pinned at admission and a
-                // recovery later validates the room against.
-                var manifest = new RedesignGameModuleManifest(GameModuleIdentity.Name,
-                    GameModuleIdentity.ModuleVersion,
-                    request.TickMs > 0 ? request.TickMs : RedesignGameModuleManifest.Default.TickMs,
-                    RedesignGameModuleManifest.Default.SnapshotEveryTicks,
-                    GameModuleIdentity.RecoveryMode);
-                var module = new ExampleGameModule(manifest);
+                // recovery later validates the room against (FIX-MODULE-02: loaded
+                // through the registry, never hand-built).
+                var manifest = package.ManifestAt(
+                    request.TickMs > 0 ? request.TickMs : package.TickMs);
+                var module = package.Load(manifest);
                 var initial = module.CreateInitialState(new GameStartConfig(request.DurationTicks,
                     request.RandomSeed,
                     request.Participants.Select(participant =>
@@ -486,6 +495,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             // module by restating it, and a room whose package, version or checkpoint mode
             // this host cannot load is refused by name instead of silently rebuilt from
             // hardcoded literals. Validated before any module is built or replay starts.
+            // FIX-MODULE-02: "what this host loads" is the package registry — every
+            // package it ships, not the one hardcoded identity.
             if (plan.TickMs is < 1 or > 1000)
                 return new RecoverRoomReply
                 {
@@ -499,19 +510,21 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     Note = $"The recovery cadence {request.TickMs} ms does not match the room's " +
                            $"persisted cadence {plan.TickMs} ms; a recovery cannot change a room's tick."
                 };
-            if (plan.ModuleVersion != GameModuleIdentity.ModuleVersion)
+            if (!RedesignModuleCatalog.TryGet(plan.PackageHash, out var package))
+                return new RecoverRoomReply
+                {
+                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
+                    Note = $"The room's package \"{plan.PackageHash}\" is not a package this host " +
+                           $"ships (shipped: {RedesignModuleCatalog.ShippedList()}); the package is " +
+                           "missing or unknown."
+                };
+            if (plan.ModuleVersion != package.ModuleVersion)
                 return new RecoverRoomReply
                 {
                     RoomId = request.RoomId, Recovered = false, Status = plan.Status,
                     Note = $"The room's module version \"{plan.ModuleVersion}\" is not the version " +
-                           $"this host loads (\"{GameModuleIdentity.ModuleVersion}\"); the module is incompatible."
-                };
-            if (plan.PackageHash != GameModuleIdentity.PackageHash)
-                return new RecoverRoomReply
-                {
-                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The room's package \"{plan.PackageHash}\" is not the package this host " +
-                           $"loads (\"{GameModuleIdentity.PackageHash}\"); the package is missing or unknown."
+                           $"package \"{package.PackageHash}\" ships (\"{package.ModuleVersion}\"); " +
+                           "the module is incompatible."
                 };
             if (plan.RecoveryMode is not (RedesignGameModuleManifest.DeterministicReplay
                     or RedesignGameModuleManifest.FullCheckpoint))
@@ -520,16 +533,16 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     RoomId = request.RoomId, Recovered = false, Status = plan.Status,
                     Note = $"The room's recovery mode \"{plan.RecoveryMode}\" is not a known mode."
                 };
-            if (plan.RecoveryMode != GameModuleIdentity.RecoveryMode)
+            if (plan.RecoveryMode != package.RecoveryMode)
                 return new RecoverRoomReply
                 {
                     RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The room's recovery mode \"{plan.RecoveryMode}\" is not the mode this " +
-                           $"host loads (\"{GameModuleIdentity.RecoveryMode}\"); the module is incompatible."
+                    Note = $"The room's recovery mode \"{plan.RecoveryMode}\" is not the mode " +
+                           $"package \"{package.PackageHash}\" ships (\"{package.RecoveryMode}\"); " +
+                           "the module is incompatible."
                 };
-            var manifest = new RedesignGameModuleManifest(GameModuleIdentity.Name, plan.ModuleVersion,
-                plan.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks, plan.RecoveryMode);
-            var module = new ExampleGameModule(manifest);
+            var manifest = package.ManifestAt(plan.TickMs);
+            var module = package.Load(manifest);
             // Finishing rooms recover their result and settlement tail only; battle ticks are
             // never restarted for a round that already froze its result. FIX-TAKE-03: the
             // closing tail activates under the same fenced confirm before any settlement

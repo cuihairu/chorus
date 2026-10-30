@@ -79,6 +79,7 @@ public sealed record NormalizedInput(string ParticipantId, string PayloadJson);
 /// integer, all collections sorted, all randomness drawn from the carried seed.
 /// </summary>
 public sealed class ExampleGameModule(RedesignGameModuleManifest? manifest = null)
+    : IRedesignGameModule
 {
     public const string ScoreEffect = "score";
 

@@ -297,6 +297,9 @@ public sealed class MatchCoordinatorService(
         {
             RoomId = roomId, GameId = gameId, OwnerInstanceId = ownership.OwnerInstanceId,
             Epoch = ownership.Epoch, OperationId = "prepare-" + roomId,
+            // FIX-MODULE-02: the host loads the room under the same package StartRound
+            // pinned — one authority, no second opinion at the loading entry.
+            PackageHash = GameModuleIdentity.PackageHash,
             DurationTicks = options.DurationTicks, RandomSeed = SeedFor(roomId), TickMs = 25,
             Participants = { candidates.Select(candidate => new GameParticipantProto
             {
