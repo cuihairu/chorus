@@ -44,7 +44,12 @@ Grpc.Net.Client.GrpcChannel DataChannel() => ProcessGrpcClientFactory.Create(
     new Uri(dataEndpoint), dataIdentity, root, nodeAuthority, clusterId, "data-server");
 
 builder.Services.AddSingleton(trustedCertificates);
-builder.Services.AddSingleton(new RoomRuntime(DataChannel()));
+// FIX-PERF-07: the single-host admission budget. Unlike the data server's silent-disable on
+// an invalid value, the game host fails closed — a mistyped cap refuses to start rather than
+// silently admitting unbounded rooms.
+var maxActiveRooms = OptionalPositiveInt("CHORUS_GAME_MAX_ACTIVE_ROOMS");
+var maxDegradedRooms = OptionalPositiveInt("CHORUS_GAME_MAX_DEGRADED_ROOMS");
+builder.Services.AddSingleton(new RoomRuntime(DataChannel(), maxActiveRooms, maxDegradedRooms));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
 // tells the control plane itself where it serves, so routing can reach it. The certificate
 // is the identity — the report claims exactly what it proves.
@@ -75,3 +80,13 @@ await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
     ? value : throw new InvalidOperationException($"Set {name} before starting GameServer.");
+
+static int? OptionalPositiveInt(string name)
+{
+    var raw = Environment.GetEnvironmentVariable(name);
+    if (raw is null) return null;
+    if (!int.TryParse(raw, out var value) || value <= 0)
+        throw new InvalidOperationException(
+            $"{name} must be a positive integer when set, not '{raw}'.");
+    return value;
+}

@@ -20,6 +20,12 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     private readonly FrameStore.FrameStoreClient _frames;
     private readonly Settlement.SettlementClient _settlement;
     private readonly RoomMetrics _metrics;
+    // FIX-PERF-07: the single-host admission budget — active-room and measured-load caps a
+    // new allocation is refused on. Recovery reserves unconditionally, so the counter tracks
+    // every room the host actually holds, not only the ones admitted by Prepare.
+    private readonly RoomAdmissionBudget _admission;
+    private readonly int _overBudgetFactorOverride;
+    private readonly int _overBudgetWindowOverride;
     private readonly ConcurrentDictionary<string, RoomActor> _actors = new(StringComparer.Ordinal);
 
     // FIX-PERF-03: rooms whose actor has crossed the start line. Presence means Start ran;
@@ -39,20 +45,26 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// the persistent result on the data plane.</summary>
     internal int RetainedResults { get; set; } = 256;
 
-    public RoomRuntime(Grpc.Net.Client.GrpcChannel dataChannel)
+    public RoomRuntime(Grpc.Net.Client.GrpcChannel dataChannel,
+        int? maxActiveRooms = null, int? maxDegradedRooms = null)
         : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
-            new Settlement.SettlementClient(dataChannel), dataChannel) { }
+            new Settlement.SettlementClient(dataChannel), dataChannel,
+            maxActiveRooms: maxActiveRooms, maxDegradedRooms: maxDegradedRooms) { }
 
     /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
     internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
         Settlement.SettlementClient settlement, Grpc.Net.Client.GrpcChannel? dataChannel = null,
-        RoomMetrics? metrics = null)
+        RoomMetrics? metrics = null, int? maxActiveRooms = null, int? maxDegradedRooms = null,
+        int overBudgetFactor = 0, int overBudgetWindow = 0)
     {
         _rounds = rounds;
         _frames = frames;
         _settlement = settlement;
         _dataChannel = dataChannel;
         _metrics = metrics ?? RoomMetrics.Default;
+        _admission = new RoomAdmissionBudget(maxActiveRooms, maxDegradedRooms);
+        _overBudgetFactorOverride = overBudgetFactor;
+        _overBudgetWindowOverride = overBudgetWindow;
     }
 
     /// <summary>
@@ -95,64 +107,89 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     RoomId = request.RoomId, Duplicate = true, Status = "Prepared", StateVersion = 1
                 };
 
-            var manifest = new RedesignGameModuleManifest("example-factions", "1.0.0",
-                request.TickMs > 0 ? request.TickMs : RedesignGameModuleManifest.Default.TickMs,
-                RedesignGameModuleManifest.Default.SnapshotEveryTicks,
-                RedesignGameModuleManifest.DeterministicReplay);
-            var module = new ExampleGameModule(manifest);
-            var initial = module.CreateInitialState(new GameStartConfig(request.DurationTicks,
-                request.RandomSeed,
-                request.Participants.Select(participant =>
-                    new GameParticipant(participant.ParticipantId, participant.Faction)).ToList(),
-                request.FailAfterTick));
-            var payload = module.Serialize(initial);
-            var hash = SHA256.HashData(payload);
-            var configHash = Convert.ToHexString(hash).ToLowerInvariant();
-
-            // Data-plane receipts under deterministic operation ids: a retry after a lost reply
-            // replays the stored receipts instead of re-deriving anything.
-            await _rounds.PrepareRoundAsync(new PrepareRoundRequest
+            // FIX-PERF-07: a new allocation reserves an admission slot before any data-plane
+            // work, so a saturated host refuses — an existing room is never touched by a
+            // refused admission — and concurrent prepares of different rooms cannot race past
+            // the cap on a bare dictionary count. The slot is held for the room's lifetime and
+            // returned on a failed creation, so a room that did not start never leaks capacity.
+            var admission = _admission.TryReserve(DegradedRoomCount());
+            if (admission == AdmissionOutcome.ActiveRoomCap)
+                throw new RoomAdmissionException(
+                    $"The game host already runs {_admission.ActiveRooms} active rooms, at " +
+                    "its admission cap; the new allocation is refused.");
+            if (admission == AdmissionOutcome.LoadBudget)
+                throw new RoomAdmissionException(
+                    "The game host's measured load is at its budget; a new allocation is " +
+                    "refused until the overloaded rooms drain.");
+            try
             {
-                RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
-                GameId = request.GameId, SnapshotPayload = ByteString.CopyFrom(payload),
-                SnapshotHash = ByteString.CopyFrom(hash), SnapshotSchemaVersion = initial.SchemaVersion,
-                OperationId = request.OperationId + "/prepare", TickMs = request.TickMs
-            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
-            // A deferred prepare holds the room — round Preparing, actor not ticking — for
-            // ActivateRoom to release across a common start line (FIX-PERF-03).
-            if (!request.DeferredActivation)
-                await _rounds.ActivateRoundAsync(new ActivateRoundRequest
+                var manifest = new RedesignGameModuleManifest("example-factions", "1.0.0",
+                    request.TickMs > 0 ? request.TickMs : RedesignGameModuleManifest.Default.TickMs,
+                    RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+                    RedesignGameModuleManifest.DeterministicReplay);
+                var module = new ExampleGameModule(manifest);
+                var initial = module.CreateInitialState(new GameStartConfig(request.DurationTicks,
+                    request.RandomSeed,
+                    request.Participants.Select(participant =>
+                        new GameParticipant(participant.ParticipantId, participant.Faction)).ToList(),
+                    request.FailAfterTick));
+                var payload = module.Serialize(initial);
+                var hash = SHA256.HashData(payload);
+                var configHash = Convert.ToHexString(hash).ToLowerInvariant();
+
+                // Data-plane receipts under deterministic operation ids: a retry after a lost
+                // reply replays the stored receipts instead of re-deriving anything.
+                await _rounds.PrepareRoundAsync(new PrepareRoundRequest
                 {
                     RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
-                    GameId = request.GameId, OperationId = request.OperationId + "/activate"
+                    GameId = request.GameId, SnapshotPayload = ByteString.CopyFrom(payload),
+                    SnapshotHash = ByteString.CopyFrom(hash), SnapshotSchemaVersion = initial.SchemaVersion,
+                    OperationId = request.OperationId + "/prepare", TickMs = request.TickMs
                 }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+                // A deferred prepare holds the room — round Preparing, actor not ticking — for
+                // ActivateRoom to release across a common start line (FIX-PERF-03).
+                if (!request.DeferredActivation)
+                    await _rounds.ActivateRoundAsync(new ActivateRoundRequest
+                    {
+                        RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                        GameId = request.GameId, OperationId = request.OperationId + "/activate"
+                    }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
 
-            var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
-                request.OwnerInstanceId, request.Epoch, configHash, initial, bindings,
-                hangAfterTick: request.HangAfterTick, hangMs: request.HangMs, metrics: _metrics);
-            actor.LoopEnded = Retire;
-            if (!_actors.TryAdd(request.RoomId, actor))
-            {
-                await actor.DisposeAsync();
+                var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
+                    request.OwnerInstanceId, request.Epoch, configHash, initial, bindings,
+                    hangAfterTick: request.HangAfterTick, hangMs: request.HangMs, metrics: _metrics,
+                    overBudgetFactor: _overBudgetFactorOverride,
+                    overBudgetWindow: _overBudgetWindowOverride);
+                actor.LoopEnded = Retire;
+                if (!_actors.TryAdd(request.RoomId, actor))
+                {
+                    _admission.Release(); // the room was never held; the slot is free again
+                    await actor.DisposeAsync();
+                    return new PrepareRoomReply
+                    {
+                        RoomId = request.RoomId, Duplicate = true, Status = "Prepared", StateVersion = 1
+                    };
+                }
+                if (request.DeferredActivation)
+                {
+                    actor.HoldForCommonStart();
+                    return new PrepareRoomReply
+                    {
+                        RoomId = request.RoomId, Duplicate = false, Status = "Prepared", StateVersion = 1
+                    };
+                }
+                actor.Start();
+                _activated.TryAdd(request.RoomId, 0);
                 return new PrepareRoomReply
                 {
-                    RoomId = request.RoomId, Duplicate = true, Status = "Prepared", StateVersion = 1
+                    RoomId = request.RoomId, Duplicate = false, Status = "Running", StateVersion = 1
                 };
             }
-            if (request.DeferredActivation)
+            catch
             {
-                actor.HoldForCommonStart();
-                return new PrepareRoomReply
-                {
-                    RoomId = request.RoomId, Duplicate = false, Status = "Prepared", StateVersion = 1
-                };
+                _admission.Release(); // failed creation releases capacity
+                throw;
             }
-            actor.Start();
-            _activated.TryAdd(request.RoomId, 0);
-            return new PrepareRoomReply
-            {
-                RoomId = request.RoomId, Duplicate = false, Status = "Running", StateVersion = 1
-            };
         }
         finally
         {
@@ -239,8 +276,11 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         var status = actor.Status();
         if (status.State is RoomRunState.Running or RoomRunState.Completed) return;
         _retiredStatuses[actor.RoomId] = status;
-        ((ICollection<KeyValuePair<string, RoomActor>>)_actors)
-            .Remove(new KeyValuePair<string, RoomActor>(actor.RoomId, actor));
+        // FIX-PERF-07: the room left the host, so its admission slot returns — gated on the
+        // removal so a raced teardown (release/dispose already retired it) never double-frees.
+        if (((ICollection<KeyValuePair<string, RoomActor>>)_actors)
+            .Remove(new KeyValuePair<string, RoomActor>(actor.RoomId, actor)))
+            _admission.Release();
         // The start-line flag follows the actor out, so a room id re-prepared later starts
         // from a clean slate rather than answering activations as duplicates (FIX-PERF-03).
         _activated.TryRemove(new KeyValuePair<string, byte>(actor.RoomId, 0));
@@ -285,7 +325,11 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             if (final is null) return false; // a live room is not release material
             await actor.DisposeAsync();
             _retiredStatuses[roomId] = actor.Status();
-            _actors.TryRemove(new KeyValuePair<string, RoomActor>(roomId, actor));
+            // FIX-PERF-07: the slot returns with the room. A completed room's actor stays in
+            // the dictionary through its teardown (Retire leaves Completed rooms alone), so
+            // this removal is the one that frees it; the gate makes a raced teardown safe.
+            if (_actors.TryRemove(new KeyValuePair<string, RoomActor>(roomId, actor)))
+                _admission.Release();
             lock (_resultGate)
             {
                 if (!_finalResults.ContainsKey(roomId)) _releaseOrder.Enqueue(roomId);
@@ -515,10 +559,17 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant();
                 var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
                     request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
-                    plan.LastTick, plan.StateVersion, metrics: _metrics);
+                    plan.LastTick, plan.StateVersion, metrics: _metrics,
+                    overBudgetFactor: _overBudgetFactorOverride,
+                    overBudgetWindow: _overBudgetWindowOverride);
                 actor.LoopEnded = Retire;
+                // FIX-PERF-07: a recovered room is real load this host must run — a recovery
+                // is never refused (the scheduler assigned it here) — but it still reserves a
+                // slot, so a host full of recovered rooms stops accepting new allocations.
+                _admission.Reserve();
                 if (!_actors.TryAdd(request.RoomId, actor))
                 {
+                    _admission.Release();
                     await actor.DisposeAsync();
                     return new RecoverRoomReply
                     {
@@ -819,9 +870,29 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var actor in _actors.Values) await actor.DisposeAsync();
+        foreach (var actor in _actors.Values)
+        {
+            await actor.DisposeAsync();
+            // FIX-PERF-07: every actor the host held reserved one slot; a live room's teardown
+            // retires it (releasing there), a finished room stays in the dictionary until this
+            // removal — the gate keeps the free exactly once per reservation.
+            if (_actors.TryRemove(new KeyValuePair<string, RoomActor>(actor.RoomId, actor)))
+                _admission.Release();
+        }
         _actors.Clear();
         _dataChannel?.Dispose();
+    }
+
+    /// <summary>The host's measured load (FIX-PERF-07): rooms whose commits blow the tick
+    /// budget and are observably Degraded (FIX-PERF-06). This is the load signal a new
+    /// allocation is budgeted against — an honest count of demonstrably overloaded rooms,
+    /// not an estimate.</summary>
+    private int DegradedRoomCount()
+    {
+        var count = 0;
+        foreach (var actor in _actors.Values)
+            if (actor.Status().State == RoomRunState.Degraded) count++;
+        return count;
     }
 
     private static void Require(string? value, string name)

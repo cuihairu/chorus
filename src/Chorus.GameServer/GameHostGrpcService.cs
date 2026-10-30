@@ -26,6 +26,13 @@ public sealed class GameHostGrpcService(RoomRuntime runtime, TrustedProcessCerti
         {
             return await runtime.PrepareRoomAsync(request, context.CancellationToken);
         }
+        catch (RoomAdmissionException error)
+        {
+            // FIX-PERF-07: a saturated host refuses a new allocation as ResourceExhausted —
+            // the standard "no capacity" status the scheduler filters the instance on (FIX-
+            // SCHED-02) — never a reply the caller could mistake for a duplicate.
+            throw new RpcException(new Status(StatusCode.ResourceExhausted, error.Message));
+        }
         catch (ArgumentException error)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
