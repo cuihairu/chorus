@@ -52,6 +52,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="capacity-acceptance.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Chorus.ControlHost\Chorus.ControlHost.csproj" />
   </ItemGroup>
 

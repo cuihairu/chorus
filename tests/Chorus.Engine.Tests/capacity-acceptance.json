@@ -1,0 +1,10 @@
+{
+  "rooms": 100,
+  "tickHz": 20,
+  "ticksPerRoom": 100,
+  "hotRoomEventsPerSecond": 500,
+  "aggregateFrameRateFloor": 2000,
+  "perRoomCompletionP95BudgetMs": 5000,
+  "commonWindowFloorMs": 250,
+  "planFillFloor": 0.95
+}

@@ -16,8 +16,10 @@ namespace Chorus.Engine.Tests;
 /// keeps an honest plan: it records what the schedule called for, what it actually emitted,
 /// and the backlog — a sustained shortfall fails the run instead of quietly re-targeting the
 /// achieved rate. The report is honest dev-machine data, not a production capacity claim.
-/// Gated by CHORUS_RUN_M2_CAPACITY=1; assertions check the run happened and the plan was met,
-/// never a latency threshold.
+/// Gated by CHORUS_RUN_M2_CAPACITY=1; a run that happened is then held against the explicit
+/// acceptance config (<c>capacity-acceptance.json</c>, FIX-PERF-04) — the target architecture
+/// (100 rooms / 20 Hz), the completion-latency budget and the input plan can each fail the
+/// verdict; a disabled run reports NOT RUN and never counts as a pass.
 /// </summary>
 public sealed class RedesignM2CapacityBenchmarkTests(ITestOutputHelper output)
 {
@@ -33,9 +35,13 @@ public sealed class RedesignM2CapacityBenchmarkTests(ITestOutputHelper output)
     {
         if (Environment.GetEnvironmentVariable("CHORUS_RUN_M2_CAPACITY") != "1")
         {
-            output.WriteLine("M2 capacity benchmark not run; set CHORUS_RUN_M2_CAPACITY=1 to opt in.");
+            var notRun = CapacityAcceptance.NotRun(CapacityAcceptance.LoadConfig(),
+                "set CHORUS_RUN_M2_CAPACITY=1 to opt in — this run does not count as a capacity pass",
+                DateTime.UtcNow, DateTime.UtcNow);
+            output.WriteLine(notRun.Describe());
             return;
         }
+        var acceptanceStarted = DateTime.UtcNow;
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
         var accessKey = RandomNumberGenerator.GetBytes(32);
@@ -224,9 +230,6 @@ public sealed class RedesignM2CapacityBenchmarkTests(ITestOutputHelper output)
         var windowStart = sampled.Max(item => item.SampleStart);
         var windowEnd = sampled.Min(item => item.SampleEnd);
         var commonMs = (windowEnd - windowStart).TotalMilliseconds;
-        Assert.True(commonMs >= 250,
-            $"the {RoomCount} rooms share no meaningful common active window ({commonMs:F0} ms) — " +
-            $"the start line did not hold the fleet together");
 
         var durations = completed.Values
             .Select(finished => (finished - lineEnd).TotalMilliseconds)
@@ -261,14 +264,20 @@ public sealed class RedesignM2CapacityBenchmarkTests(ITestOutputHelper output)
             hotEvents.Planned, hotEvents.Backlog,
             hotEvents.Emitted / Math.Max(feedSeconds, 0.001), feedSeconds);
 
-        // The input plan is a plan — and the verdict comes after the evidence: a sustained
-        // shortfall fails the run with the planned/emitted/backlog ledger, and the achieved
-        // rate never replaces the target.
-        Assert.True(hotEvents.Emitted >= hotEvents.Planned * 0.95,
-            $"the input generator could not keep its plan: planned {hotEvents.Planned}, emitted " +
-            $"{hotEvents.Emitted}, backlog {hotEvents.Backlog} over {feedSeconds:0.0}s " +
-            $"({hotEvents.Emitted / Math.Max(feedSeconds, 0.001):0}/s achieved vs " +
-            $"{HotEventsPerSecond}/s target) — the baseline is short of the planned input");
+        // The verdict comes after the evidence: the explicit acceptance config's budgets
+        // (target architecture 100 rooms / 20 Hz, tick and completion latency, the input plan)
+        // can each fail the run; a disabled run reported NOT RUN never counts as a pass.
+        var measurement = new CapacityMeasurement(
+            Rooms: RoomCount, TicksPerRoom: DurationTicks,
+            FramesCommitted: frameCount, FramesExpected: (long)RoomCount * DurationTicks,
+            AggregateFrameRate: frameCount / Math.Max(wallSeconds, 0.001),
+            PerRoomCompletionP95Ms: p95, CommonWindowMs: commonMs,
+            PlannedInputs: hotEvents.Planned, EmittedInputs: hotEvents.Emitted,
+            BacklogInputs: hotEvents.Backlog, InputFirstError: hotEvents.FirstError?.Message);
+        var report = CapacityAcceptance.Evaluate(measurement, CapacityAcceptance.LoadConfig(),
+            acceptanceStarted, DateTime.UtcNow);
+        output.WriteLine(report.Describe());
+        Assert.Equal(CapacityVerdict.Passed, report.Verdict);
     }
 
     private sealed record Room(string StreamerId, string SessionId, string BindingId);
