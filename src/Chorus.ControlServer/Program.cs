@@ -43,11 +43,18 @@ builder.Services.AddSingleton(new RedesignAdminStore(connectionString));
 var dataEndpoint = Environment.GetEnvironmentVariable("CHORUS_DATA_ENDPOINT")
     ?? $"https://localhost:{Environment.GetEnvironmentVariable("CHORUS_DATA_PORT") ?? "7501"}";
 var gameEndpoints = Environment.GetEnvironmentVariable("CHORUS_GAME_ENDPOINTS");
+// Configured endpoints are the bootstrap seed of the game-host directory (FIX-SCHED-01);
+// the refresh loop then maintains it from valid process reports — new and restarted
+// instances join without a restart here, and silent ones age out so their addresses are
+// never used for a new assignment.
+var directoryStaleSeconds = OptionalPositiveInt("CHORUS_DIRECTORY_STALE_SECONDS") ?? 60;
+var directoryRefreshMs = OptionalPositiveInt("CHORUS_DIRECTORY_REFRESH_MS") ?? 2000;
 builder.Services.AddSingleton(new ClusterDirectory(serverCertificate, root, nodeAuthority,
     clusterId, dataEndpoint,
     gameEndpoints is { Length: > 0 }
         ? gameEndpoints.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-        : []));
+        : [],
+    TimeSpan.FromSeconds(directoryStaleSeconds)));
 // The ownership lease registrar (architecture 4.2): renews live holders, lets silent ones expire.
 builder.Services.AddHostedService<OwnershipRenewalService>();
 // The recovery-deadline sweep (FIX-TAKE-05): closes expired open recoveries — reassigning
@@ -56,9 +63,15 @@ builder.Services.AddHostedService<RoomRecoverySweepService>();
 // The stall governor (FIX-TAKE-07): acts on rooms whose head froze while their host's
 // heartbeat stayed fresh — migrating silent stalls, parking deterministic module faults.
 builder.Services.AddHostedService<RoomStallGovernanceService>();
-// The match coordinator hosts inside the control plane (ADR-R02) once game endpoints are
-// configured; without them this is a plain control plane, matching nothing.
-if (gameEndpoints is { Length: > 0 })
+// The directory refresh loop (FIX-SCHED-01): the control plane's view of the game hosts
+// follows the process reports, not the startup configuration alone.
+builder.Services.AddHostedService(serviceProvider => new ClusterDirectoryRefreshService(
+    serviceProvider.GetRequiredService<ClusterDirectory>(),
+    serviceProvider.GetRequiredService<RedesignControlStore>(),
+    TimeSpan.FromMilliseconds(directoryRefreshMs), TimeSpan.FromSeconds(directoryStaleSeconds)));
+// The match coordinator hosts inside the control plane (ADR-R02). It pairs only while the
+// directory holds live game hosts (FIX-SCHED-01) — seeded at startup or discovered since —
+// so a control plane that starts before its game hosts still pairs once they report.
 {
     var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])
         ?? throw new InvalidOperationException("The ControlServer certificate carries no process identity.");
@@ -83,5 +96,15 @@ await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
     ? value : throw new InvalidOperationException($"Set {name} before starting ControlServer.");
+
+static int? OptionalPositiveInt(string name)
+{
+    var raw = Environment.GetEnvironmentVariable(name);
+    if (raw is null) return null;
+    if (!int.TryParse(raw, out var value) || value <= 0)
+        throw new InvalidOperationException(
+            $"{name} must be a positive integer when set, not '{raw}'.");
+    return value;
+}
 
 public partial class Program;

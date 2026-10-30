@@ -94,18 +94,25 @@ public sealed class RedesignControlStore(string connectionString)
                 return new ProcessStatus(false, "NotReady", "SlotMismatch");
         }
 
+        // The upsert orders incarnations, not just sequences (FIX-SCHED-01): a restarted
+        // process under the same instance id starts its sequence over with a later
+        // started_at, and the newer incarnation takes the row over — its endpoint replaces
+        // the dead one's. A replay from an older incarnation, or a stale sequence inside the
+        // same one, is rejected; both leave the row exactly as the live process left it.
         await using var command = new NpgsqlCommand("""
             INSERT INTO control.process(process_instance_id,slot_id,node_id,agent_instance_id,report_sequence,
                 lifecycle,readiness,health,admission,entity_recovery,started_at,endpoint)
             VALUES (@instance,@slot,@node,@agent,@sequence,@lifecycle,@readiness,@health,@admission,@recovery,
                 @started,@endpoint)
             ON CONFLICT(process_instance_id) DO UPDATE
-            SET report_sequence=excluded.report_sequence,lifecycle=excluded.lifecycle,
+            SET report_sequence=excluded.report_sequence,started_at=excluded.started_at,
+                lifecycle=excluded.lifecycle,
                 readiness=excluded.readiness,health=excluded.health,admission=excluded.admission,
                 entity_recovery=excluded.entity_recovery,endpoint=excluded.endpoint,observed_at=clock_timestamp()
             WHERE control.process.agent_instance_id=excluded.agent_instance_id
-              AND control.process.report_sequence<excluded.report_sequence
-              AND control.process.started_at=excluded.started_at
+              AND (control.process.started_at<excluded.started_at
+                   OR (control.process.started_at=excluded.started_at
+                       AND control.process.report_sequence<excluded.report_sequence))
             RETURNING readiness,entity_recovery
             """, connection, transaction);
         command.Parameters.AddWithValue("instance", processInstanceId);
@@ -129,6 +136,35 @@ public sealed class RedesignControlStore(string connectionString)
         await reader.DisposeAsync();
         await transaction.CommitAsync(cancellationToken);
         return result;
+    }
+
+    /// <summary>The live game-host directory feed (FIX-SCHED-01): game-server processes with
+    /// a reported endpoint, still Running and observed within the freshness window. This is
+    /// the valid process report the ClusterDirectory is maintained from — staleness, not a
+    /// config file, decides who stays reachable for new assignments.</summary>
+    public async Task<IReadOnlyList<GameHostReport>> ListGameHostReportsAsync(
+        int freshnessSeconds, CancellationToken cancellationToken = default)
+    {
+        if (freshnessSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(freshnessSeconds));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT p.process_instance_id,p.endpoint,p.observed_at,p.readiness,p.admission
+            FROM control.process p
+            JOIN control.deployment d ON d.slot_id=p.slot_id
+            WHERE d.role='game-server'
+              AND p.endpoint IS NOT NULL
+              AND p.lifecycle='Running'
+              AND p.observed_at>=clock_timestamp()-@fresh*interval '1 second'
+            ORDER BY p.process_instance_id
+            """, connection);
+        command.Parameters.AddWithValue("fresh", freshnessSeconds);
+        var reports = new List<GameHostReport>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            reports.Add(new GameHostReport(reader.GetString(0), reader.GetString(1),
+                reader.GetDateTime(2), reader.GetString(3), reader.GetString(4)));
+        return reports;
     }
 
     public async Task<OwnerStatus> ClaimOwnershipAsync(

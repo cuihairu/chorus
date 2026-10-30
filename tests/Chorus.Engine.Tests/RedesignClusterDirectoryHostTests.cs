@@ -1,0 +1,310 @@
+using System.Security.Cryptography;
+using Chorus.Redesign.Platform;
+using Chorus.Redesign.Rpc;
+using Google.Protobuf;
+using Grpc.Core;
+using RoutingService = Chorus.Redesign.Rpc.Routing;
+
+namespace Chorus.Engine.Tests;
+
+/// <summary>
+/// The dynamic game-host directory (FIX-SCHED-01) on real hosts: a game instance that starts
+/// after the control plane is discovered from its self-reports and paired with — no restart,
+/// no configuration — a restarted instance is reached at its new address, and a silent
+/// instance ages out so its stale address never receives a new assignment.
+/// </summary>
+public sealed class RedesignClusterDirectoryHostTests
+{
+    private const string Partition = "tenant-a/game-a/rules-1/region-1/simulator/standard";
+
+    [Fact]
+    public async Task ANewGameHostIsDiscoveredAndPairedWithoutAControlRestart()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var controlEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+            // No configured game endpoints: the directory starts empty and must be filled by
+            // the self-report → refresh loop, not by configuration or a restart.
+            ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+            ["CHORUS_DIRECTORY_REFRESH_MS"] = "500",
+            ["CHORUS_DIRECTORY_STALE_SECONDS"] = "15",
+            // Long rounds: the assertions read live rooms from the routing snapshot, so the
+            // pairs must not settle and retire before the test has looked at them.
+            ["CHORUS_ROUND_DURATION_TICKS"] = "10000"
+        };
+        using var fleet = await FleetAsync(environment, simulatorKey, accessKey, controlEnvironment);
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            GameEnvironment(environment.DataPort, fleet.ControlEndpoint, null),
+            clientTenant: "tenant-a", instanceId: "game-sched-a");
+
+        // The self-report lands in the control plane's process table; the routing snapshot
+        // is the visible proof of the report the directory refresh will fold in.
+        var registered = await WaitForAsync(async () =>
+            (await fleet.Routing.GetRoutingSnapshotAsync(new Empty())).Instances.Any(
+                instance => instance.ProcessInstanceId == "game-sched-a"), TimeSpan.FromSeconds(30));
+        Assert.True(registered, "The self-reporting host never appeared in the routing snapshot.");
+
+        var mounts = new List<(string StreamerId, string SessionId, string BindingId)>();
+        for (var index = 0; index < 2; index++)
+            mounts.Add(await MountAsync(environment, fleet.Simulator, $"sched-new-{index}"));
+        foreach (var (mount, index) in mounts.Select((mount, index) => (mount, index)))
+            await EnqueueAsync(environment, mount, $"sched-new-enqueue-{index}");
+
+        var committed = await WaitForAsync(async () =>
+        {
+            foreach (var mount in mounts)
+            {
+                var ticket = await fleet.Queue.GetTicketAsync(
+                    new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = mount.BindingId });
+                if (ticket.Ticket.State != "Committed") return false;
+            }
+            return true;
+        }, TimeSpan.FromSeconds(60));
+        Assert.True(committed, "The coordinator never paired on the discovered host.");
+
+        var snapshot = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        var room = Assert.Single(snapshot.Rooms);
+        Assert.Equal("game-sched-a", room.OwnerInstanceId);
+        // The owner resolves to the address the host reported, not to any configured seed —
+        // there was none.
+        Assert.Equal($"https://localhost:{gamePort}", room.Endpoint);
+    }
+
+    [Fact]
+    public async Task ARestartedGameHostServesItsNewAddressWithoutAControlRestart()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var portOne = RedesignM0HostTests.HostEnvironment.FreePort();
+        var controlEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+            // The seed is bootstrap only: the restarted incarnation's report must take the
+            // entry over and replace the address, or the coordinator keeps dialing the grave.
+            ["CHORUS_GAME_ENDPOINTS"] = $"game-sched-b=https://localhost:{portOne}",
+            ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+            ["CHORUS_DIRECTORY_REFRESH_MS"] = "500",
+            ["CHORUS_DIRECTORY_STALE_SECONDS"] = "30",
+            ["CHORUS_ROUND_DURATION_TICKS"] = "10000"
+        };
+        using var fleet = await FleetAsync(environment, simulatorKey, accessKey, controlEnvironment);
+        await environment.StartAsync("Chorus.GameServer", portOne, "game-server",
+            GameEnvironment(environment.DataPort, fleet.ControlEndpoint, "node-a/game-server"),
+            clientTenant: "tenant-a", instanceId: "game-sched-b");
+
+        await PairAndCommitAsync(environment, fleet, "sched-r1", 2);
+        var beforeRestart = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        var firstRoom = Assert.Single(beforeRestart.Rooms);
+        Assert.Equal("game-sched-b", firstRoom.OwnerInstanceId);
+        Assert.Equal($"https://localhost:{portOne}", firstRoom.Endpoint);
+
+        // A crash and a restart under the same instance id on a new port: the report cycle
+        // hands the row to the newer incarnation, the directory re-points the entry.
+        environment.Kill("game-sched-b");
+        var portTwo = RedesignM0HostTests.HostEnvironment.FreePort();
+        await environment.StartAsync("Chorus.GameServer", portTwo, "game-server",
+            GameEnvironment(environment.DataPort, fleet.ControlEndpoint, "node-a/game-server"),
+            clientTenant: "tenant-a", instanceId: "game-sched-b");
+        var converged = await WaitForAsync(async () =>
+            (await fleet.Routing.GetRoutingSnapshotAsync(new Empty())).Instances.Any(
+                instance => instance.ProcessInstanceId == "game-sched-b"
+                    && instance.Endpoint == $"https://localhost:{portTwo}"), TimeSpan.FromSeconds(30));
+        Assert.True(converged, "The restarted incarnation never took its process row over.");
+
+        await PairAndCommitAsync(environment, fleet, "sched-r2", 2);
+        var snapshot = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        var newRoom = Assert.Single(snapshot.Rooms, room => room.RoomId != firstRoom.RoomId);
+        Assert.Equal("game-sched-b", newRoom.OwnerInstanceId);
+        Assert.Equal($"https://localhost:{portTwo}", newRoom.Endpoint);
+    }
+
+    [Fact]
+    public async Task ASilentGameHostAgesOutOfNewAssignments()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var controlEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+            // A short staleness gate so the eviction is observable inside the test window.
+            ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+            ["CHORUS_DIRECTORY_REFRESH_MS"] = "500",
+            ["CHORUS_DIRECTORY_STALE_SECONDS"] = "6",
+            ["CHORUS_ROUND_DURATION_TICKS"] = "10000"
+        };
+        using var fleet = await FleetAsync(environment, simulatorKey, accessKey, controlEnvironment);
+        var portA = RedesignM0HostTests.HostEnvironment.FreePort();
+        var portB = RedesignM0HostTests.HostEnvironment.FreePort();
+        await environment.StartAsync("Chorus.GameServer", portA, "game-server",
+            GameEnvironment(environment.DataPort, fleet.ControlEndpoint, "node-a/game-server"),
+            clientTenant: "tenant-a", instanceId: "game-sched-a");
+        await environment.StartAsync("Chorus.GameServer", portB, "game-server",
+            GameEnvironment(environment.DataPort, fleet.ControlEndpoint, "node-a/game-server#2"),
+            clientTenant: "tenant-a", instanceId: "game-sched-b");
+        var bothReported = await WaitForAsync(async () =>
+            (await fleet.Routing.GetRoutingSnapshotAsync(new Empty())).Instances.Count == 2,
+            TimeSpan.FromSeconds(30));
+        Assert.True(bothReported, "The two self-reporting hosts never appeared.");
+
+        // Wave one proves both hosts are assignable: round-robin spreads the two pairs.
+        await PairAndCommitAsync(environment, fleet, "sched-s1", 4);
+        var before = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        Assert.Equal(2, before.Rooms.Count);
+        Assert.Equal(2, before.Rooms.Select(room => room.OwnerInstanceId).Distinct().Count());
+
+        environment.Kill("game-sched-b");
+        // Past the staleness gate plus a refresh margin, the silent host has left the
+        // directory; whatever pairs next must land on the live host alone.
+        await Task.Delay(TimeSpan.FromSeconds(9));
+        await PairAndCommitAsync(environment, fleet, "sched-s2", 2);
+        var after = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        var freshRoom = Assert.Single(after.Rooms.Where(room =>
+            before.Rooms.All(older => older.RoomId != room.RoomId)).ToList());
+        Assert.Equal("game-sched-a", freshRoom.OwnerInstanceId);
+        Assert.Equal($"https://localhost:{portA}", freshRoom.Endpoint);
+    }
+
+    private sealed class Fleet : IDisposable
+    {
+        public DevelopmentPlatformSimulator Simulator { get; }
+        public string ControlEndpoint { get; }
+        public RoutingService.RoutingClient Routing { get; }
+        public MatchQueue.MatchQueueClient Queue { get; }
+        private readonly System.Security.Cryptography.X509Certificates.X509Certificate2 _certificate;
+        private readonly Grpc.Net.Client.GrpcChannel _routingChannel;
+        private readonly Grpc.Net.Client.GrpcChannel _dataChannel;
+
+        public Fleet(RedesignM0HostTests.HostEnvironment environment,
+            DevelopmentPlatformSimulator simulator, string controlEndpoint)
+        {
+            Simulator = simulator;
+            ControlEndpoint = controlEndpoint;
+            _certificate = environment.Certificate("@cluster", "control-server", "control-sched");
+            _routingChannel = environment.Channel(environment.ControlPort, _certificate, "control-server");
+            _dataChannel = environment.Channel(environment.DataPort, _certificate, "data-server");
+            Routing = new RoutingService.RoutingClient(_routingChannel);
+            Queue = new MatchQueue.MatchQueueClient(_dataChannel);
+        }
+
+        public void Dispose()
+        {
+            _routingChannel.Dispose();
+            _dataChannel.Dispose();
+            _certificate.Dispose();
+        }
+    }
+
+    private static async Task<Fleet> FleetAsync(RedesignM0HostTests.HostEnvironment environment,
+        byte[] simulatorKey, byte[] accessKey, IReadOnlyDictionary<string, string> controlEnvironment)
+    {
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", controlEnvironment);
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-sched"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-sched" });
+        }
+        return new Fleet(environment, new DevelopmentPlatformSimulator(simulatorKey),
+            $"https://localhost:{environment.ControlPort}");
+    }
+
+    /// <summary>Mounts count streamers, enqueues them and waits until every ticket committed.</summary>
+    private static async Task PairAndCommitAsync(RedesignM0HostTests.HostEnvironment environment,
+        Fleet fleet, string tag, int count)
+    {
+        var mounts = new List<(string StreamerId, string SessionId, string BindingId)>();
+        for (var index = 0; index < count; index++)
+            mounts.Add(await MountAsync(environment, fleet.Simulator, $"{tag}-{index}"));
+        foreach (var (mount, index) in mounts.Select((mount, index) => (mount, index)))
+            await EnqueueAsync(environment, mount, $"{tag}-enqueue-{index}");
+        var committed = await WaitForAsync(async () =>
+        {
+            foreach (var mount in mounts)
+            {
+                var ticket = await fleet.Queue.GetTicketAsync(
+                    new GetTicketRequest { TenantId = "tenant-a", GameId = "game-a", BindingId = mount.BindingId });
+                if (ticket.Ticket.State != "Committed") return false;
+            }
+            return true;
+        }, TimeSpan.FromSeconds(60));
+        Assert.True(committed, $"The coordinator did not commit the pairs for {tag}.");
+    }
+
+    private static Dictionary<string, string> GameEnvironment(int dataPort, string controlEndpoint,
+        string? slotId)
+    {
+        var variables = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = dataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_CONTROL_ENDPOINT"] = controlEndpoint,
+            ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+        };
+        if (slotId is not null) variables["CHORUS_SLOT_ID"] = slotId;
+        return variables;
+    }
+
+    private static async Task EnqueueAsync(RedesignM0HostTests.HostEnvironment environment,
+        (string StreamerId, string SessionId, string BindingId) mount, string operationId)
+    {
+        using var certificate = environment.Certificate("tenant-a", "streamer-server",
+            "streamer-" + operationId);
+        using var channel = environment.Channel(environment.DataPort, certificate, "data-server");
+        var queue = new MatchQueue.MatchQueueClient(channel);
+        await queue.EnqueueTicketAsync(new EnqueueTicketRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", BindingId = mount.BindingId,
+            SessionId = mount.SessionId, PartitionKey = Partition, OperationId = operationId
+        });
+    }
+
+    private static async Task<bool> WaitForAsync(Func<Task<bool>> probe, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await probe()) return true;
+            await Task.Delay(200);
+        }
+        return await probe();
+    }
+
+    private static async Task<(string StreamerId, string SessionId, string BindingId)> MountAsync(
+        RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator, string openId)
+    {
+        var liveKey = "live-sched-" + openId;
+        var credential = simulator.IssueCredential("app-1", openId, liveKey, TimeSpan.FromMinutes(10));
+        using var certificate = environment.Certificate("tenant-a", "streamer-server", "streamer-" + openId);
+        using var channel = environment.Channel(environment.StreamerPort, certificate, "streamer-server");
+        var session = new StreamerSession.StreamerSessionClient(channel);
+        var login = await session.LoginAsync(new LoginRequest
+        {
+            Platform = "simulator", AppId = "app-1", LaunchCredential = credential,
+            LoginAttemptId = "attempt-" + openId,
+            NextResumeSecret = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            GatewayInstanceId = "gateway-1", ConnectionId = "connection-" + openId
+        });
+        var mounted = await session.StartGameplayAsync(new StartGameplayRequest
+        {
+            AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "mount-" + openId
+        });
+        return (login.StreamerId, login.SessionId, mounted.BindingId);
+    }
+}

@@ -41,8 +41,8 @@ public sealed class MatchCoordinatorService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // The directory is seeded, not discovered (M3-5); a coordinator without game hosts
-        // still recovers reservations but never pairs.
+        // The directory follows the process reports (FIX-SCHED-01); a coordinator without
+        // live game hosts still recovers reservations but never pairs.
         while (!stoppingToken.IsCancellationRequested)
         {
             try
