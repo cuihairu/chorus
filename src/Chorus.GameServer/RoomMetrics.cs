@@ -75,5 +75,9 @@ public sealed class RoomMetrics : IDisposable
     public void Record(Histogram<double> instrument, long start) =>
         instrument.Record((Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency);
 
+    /// <summary>Elapsed milliseconds since a <see cref="Start"/> timestamp, without recording.</summary>
+    public double Elapsed(long start) =>
+        (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
+
     public void Dispose() => _meter.Dispose();
 }

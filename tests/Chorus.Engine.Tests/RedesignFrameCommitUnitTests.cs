@@ -101,30 +101,40 @@ public sealed class RedesignFrameCommitUnitTests
     }
 
     [Fact]
-    public async Task AnUnknownOutcomeRetriesForeverAndCancellationIsTheOnlyWayOut()
+    public async Task AnUnknownOutcomeIsResentVerbatimUpToTheRetryCeilingThenParksVisibly()
     {
         var store = new ScriptedFrameStore();
         var lifecycle = new ScriptedLifecycle();
         var lostReply = RpcError(StatusCode.Unavailable, "the store is unreachable");
         store.DefaultCommit = _ => Task.FromException<FrameReceiptReply>(lostReply);
-        var actor = NewRoom(store, lifecycle);
+        // FIX-PERF-06: the unknown outcome is bounded. The test seam makes the resends
+        // instant; production backs off 250ms..8s per resend before the ceiling parks the
+        // room for replay recovery instead of retrying forever silent under Running.
+        var actor = NewRoom(store, lifecycle, commitRetryDelay: TimeSpan.Zero);
         actor.Start();
 
-        Assert.True(await WaitForAsync(() => Task.FromResult(store.CommitCount >= 2)),
-            "The actor never retried its unconfirmed frame.");
+        // The first send plus MaxCommitRetries resends, then the room parks visibly.
+        Assert.True(await WaitForAsync(() => Task.FromResult(
+                lifecycle.SuspendCount == 1 && actor.Status().State == RoomRunState.Stopped)),
+            $"The actor never parked the unknown-outcome room (sends={store.CommitCount}).");
+        Assert.Equal(9, store.CommitCount);
+        Assert.Contains("stayed unknown after 8 retries", actor.Status().StopReason);
+        Assert.Contains("the store is unreachable", actor.Status().StopReason);
+        Assert.Contains("stayed unknown after 8 retries", lifecycle.SingleReason());
+        // The whole resend chain carried one identical request, and the loop stopped reading
+        // the inbox the moment the first frame went pending: a parked room publishes nothing
+        // uncommitted and re-consumes no input.
         var sent = store.CommitsSnapshot();
         var first = sent[0].ToByteArray();
         Assert.All(sent, request => Assert.Equal(first, request.ToByteArray()));
         Assert.Equal(1, store.InboxReadCount);
-        // An unknown outcome must not park the room: the frame may have committed.
-        Assert.Empty(lifecycle.SuspendReasons);
-
-        // Disposal cancels the retry loop; if the loop ignored the token, this await hangs.
-        await actor.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15));
-        var afterDispose = store.CommitCount;
-        Assert.True(afterDispose >= 2);
-        await Task.Delay(400);
-        Assert.Equal(afterDispose, store.CommitCount);
+        Assert.False(actor.Completed);
+        var subscriber = actor.Subscribe(0, 1);
+        var message = await NextAsync(subscriber);
+        Assert.Equal(SyncMessage.KindOneofCase.ResyncRequired, message!.KindCase);
+        Assert.Null(await NextAsync(subscriber));
+        await actor.DisposeAsync();
+        subscriber.Dispose();
     }
 
     [Fact]
@@ -244,7 +254,7 @@ public sealed class RedesignFrameCommitUnitTests
     };
 
     private static RoomActor NewRoom(ScriptedFrameStore store, ScriptedLifecycle lifecycle,
-        long durationTicks = 200, int failAfterTick = 0)
+        long durationTicks = 200, int failAfterTick = 0, TimeSpan? commitRetryDelay = null)
     {
         var module = new ExampleGameModule(new RedesignGameModuleManifest(
             "frame-commit-tests", "1.0.0-test", 25, 100,
@@ -257,7 +267,7 @@ public sealed class RedesignFrameCommitUnitTests
             new GameStartConfig(durationTicks, 777, participants, failAfterTick));
         var bindings = new Dictionary<string, string> { ["binding-host-fc"] = "host-fc" };
         return new RoomActor(lifecycle, store, module, "game-fc", "room-fc", "game-a", 1, "cfg-fc",
-            initial, bindings);
+            initial, bindings, commitRetryDelay: commitRetryDelay);
     }
 
     /// <summary>Reads the next committed message with a bound: a room that never publishes

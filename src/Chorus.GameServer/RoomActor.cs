@@ -17,6 +17,9 @@ internal enum RoomRunState
     Preparing,
     /// <summary>The loop is awake and committing frames.</summary>
     Running,
+    /// <summary>Every recent commit blew the tick budget (FIX-PERF-06): the room keeps
+    /// committing — progress over silence — but no longer poses as Running.</summary>
+    Degraded,
     /// <summary>The final frame committed and the manifest settled.</summary>
     Completed,
     /// <summary>The loop ended without a committed result: module failure, fence
@@ -57,6 +60,14 @@ internal sealed class RoomActor : IAsyncDisposable
 
     private const int MaxInputsPerTick = 200;
     private const int MaxConsecutiveModuleFailures = 3;
+    // FIX-PERF-06: an unknown commit outcome may not retry forever under a Running state —
+    // after this many bounded resends the room is parked visibly for replay recovery.
+    private const int MaxCommitRetries = 8;
+    // FIX-PERF-06: a commit slower than TickMs × factor is over budget; this many
+    // consecutive over-budget commits put the room in the observable Degraded state (it
+    // keeps committing — progress over silence) and one on-budget commit clears it.
+    private const int OverBudgetFactor = 10;
+    private const int OverBudgetWindow = 10;
     // Durable client commands ride the inbox on this platform; their dedup key is the
     // command id the subscriber correlates receipts against (architecture 6.3).
     private const string ClientCommandPlatform = "@chorus";
@@ -82,6 +93,7 @@ internal sealed class RoomActor : IAsyncDisposable
     private long _stateVersion;
     private string? _finalResultJson;
     private int _consecutiveModuleFailures;
+    private int _consecutiveOverBudget;
     private PendingFrame? _pending;
     private RoomRunState _runState = RoomRunState.Running;
     private string? _stopReason;
@@ -91,6 +103,11 @@ internal sealed class RoomActor : IAsyncDisposable
     // room resumes from the pinned head instead of freezing again.
     private readonly int _hangAfterTick;
     private readonly int _hangMs;
+    // FIX-PERF-06 test seams: an instant retry and a tighter budget keep the policy's unit
+    // evidence fast; production keeps the constants above (0 = no override).
+    private readonly TimeSpan? _commitRetryDelayOverride;
+    private readonly int _overBudgetFactorOverride;
+    private readonly int _overBudgetWindowOverride;
     private volatile bool _stopped;
     private volatile bool _disposed;
     private volatile bool _finalCommitted;
@@ -102,7 +119,8 @@ internal sealed class RoomActor : IAsyncDisposable
         string gameId, string roomId, string ownerInstanceId, long epoch, string configHash,
         ExampleGameState initialState, IReadOnlyDictionary<string, string> participantByBinding,
         long lastTick = 0, long stateVersion = 1, int hangAfterTick = 0, int hangMs = 0,
-        RoomMetrics? metrics = null)
+        RoomMetrics? metrics = null, TimeSpan? commitRetryDelay = null,
+        int overBudgetFactor = 0, int overBudgetWindow = 0)
     {
         _runtime = runtime;
         _frames = frames;
@@ -121,6 +139,9 @@ internal sealed class RoomActor : IAsyncDisposable
         _stateVersion = stateVersion;
         _hangAfterTick = hangAfterTick;
         _hangMs = hangMs;
+        _commitRetryDelayOverride = commitRetryDelay;
+        _overBudgetFactorOverride = overBudgetFactor;
+        _overBudgetWindowOverride = overBudgetWindow;
     }
 
     public void Start() => _run = Task.Run(() => RunAsync(_cancellation.Token));
@@ -305,19 +326,39 @@ internal sealed class RoomActor : IAsyncDisposable
                     cancellationToken).ConfigureAwait(false);
                 return;
             }
-            catch (RpcException)
+            catch (RpcException error)
             {
                 // FIX-FRAME-03: the outcome is unknown — the frame may have committed and
-                // only the reply was lost. Resend the exact request with bounded backoff
-                // until a verdict arrives: a duplicate commit replays the stored receipt
-                // (FIX-FRAME-02). Cancelling the loop is the only way out; suspending on a
-                // maybe-committed frame would abandon a room that is still live.
-                await Task.Delay(CommitRetryBackoff(retry++), cancellationToken)
+                // only the reply was lost. Resend the exact request with bounded backoff:
+                // a duplicate commit replays the stored receipt (FIX-FRAME-02). FIX-PERF-06
+                // bounds those resends — after MaxCommitRetries unknown outcomes the room is
+                // parked visibly for replay recovery instead of retrying forever silent.
+                // The pending frame was never published and its inputs were never consumed,
+                // so recovery resumes from the store's truth either way.
+                if (retry >= MaxCommitRetries)
+                {
+                    var reason =
+                        $"the commit outcome stayed unknown after {MaxCommitRetries} retries " +
+                        $"at tick {pendingFrame.Tick}: {error.Status.Detail}";
+                    _stopped = true;
+                    lock (_publishGate)
+                    {
+                        _runState = RoomRunState.Stopped;
+                        _stopReason = reason;
+                    }
+                    Console.Error.WriteLine($"room {_roomId} stopping: {reason}");
+                    await _runtime.SuspendRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch,
+                        reason, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                await Task.Delay(_commitRetryDelayOverride ?? CommitRetryBackoff(retry), cancellationToken)
                     .ConfigureAwait(false);
+                retry++;
                 _metrics.CommitRetries.Add(1);
             }
         }
         _metrics.Record(_metrics.Commit, commitStart);
+        AccountCommitBudget(commitStart, pendingFrame.Tick);
         _pending = null;
         // Publish under the gate also advances the actor head there, so subscribers only
         // ever observe a coherent committed triple (8.3). A committed and a duplicate
@@ -386,6 +427,38 @@ internal sealed class RoomActor : IAsyncDisposable
 
     private static TimeSpan CommitRetryBackoff(int retry) =>
         TimeSpan.FromMilliseconds(Math.Min(250 * (1L << Math.Min(retry, 5)), 8_000));
+
+    /// <summary>
+    /// FIX-PERF-06: the sustained-slowness policy. A committed frame that took longer than
+    /// TickMs × factor is over budget; overBudgetWindow consecutive over-budget commits put
+    /// the room in the observable Degraded state — the loop keeps committing (progress over
+    /// silence), the recovery face names it, and no frame or input is touched here. One
+    /// on-budget commit clears the streak and the state.
+    /// </summary>
+    private void AccountCommitBudget(long commitStart, long tick)
+    {
+        var factor = _overBudgetFactorOverride > 0 ? _overBudgetFactorOverride : OverBudgetFactor;
+        var window = _overBudgetWindowOverride > 0 ? _overBudgetWindowOverride : OverBudgetWindow;
+        if (_metrics.Elapsed(commitStart) > _module.Manifest.TickMs * (double)factor)
+        {
+            if (++_consecutiveOverBudget < window) return;
+            lock (_publishGate)
+            {
+                if (_runState != RoomRunState.Running) return;
+                _runState = RoomRunState.Degraded;
+            }
+            Console.Error.WriteLine(
+                $"room {_roomId} degraded at tick {tick}: the last {window} commits each took " +
+                $"longer than the {_module.Manifest.TickMs * factor}ms budget " +
+                $"(tick interval {_module.Manifest.TickMs} ms)");
+            return;
+        }
+        _consecutiveOverBudget = 0;
+        lock (_publishGate)
+        {
+            if (_runState == RoomRunState.Degraded) _runState = RoomRunState.Running;
+        }
+    }
 
     /// <summary>
     /// Fans the just-committed frame out to every subscriber (architecture 8.3): a coherent
@@ -587,8 +660,10 @@ internal sealed class RoomActor : IAsyncDisposable
         lock (_publishGate)
         {
             // A finished room keeps its Completed state through teardown; a live room the
-            // host is shutting down records that it was disposed, not that it stopped.
-            if (_runState == RoomRunState.Running) _runState = RoomRunState.Disposed;
+            // host is shutting down records that it was disposed, not that it stopped —
+            // a degraded room is still live, so it records Disposed too.
+            if (_runState is RoomRunState.Running or RoomRunState.Degraded)
+                _runState = RoomRunState.Disposed;
         }
         _cancellation.Cancel();
         try { await _run.ConfigureAwait(false); }

@@ -737,6 +737,14 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 LastTick = status.LastCommittedTick,
                 Note = "The room is already running on this host."
             };
+        if (status.State == RoomRunState.Degraded)
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = true, Status = "Degraded",
+                LastTick = status.LastCommittedTick,
+                Note = "The room keeps committing on this host but its commits blow the tick " +
+                       "budget (FIX-PERF-06); the slowness is observable, not silent."
+            };
         if (status.State == RoomRunState.Preparing)
             return new RecoverRoomReply
             {
@@ -759,6 +767,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     internal static string DescribeRunState(RoomRunState state) => state switch
     {
         RoomRunState.Running => "Running",
+        RoomRunState.Degraded => "Degraded",
         RoomRunState.Completed => "Finishing",
         RoomRunState.Stopped => "Stopped",
         RoomRunState.Preparing => "Preparing",
