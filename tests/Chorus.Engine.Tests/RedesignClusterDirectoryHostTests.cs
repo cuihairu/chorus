@@ -116,11 +116,20 @@ public sealed class RedesignClusterDirectoryHostTests
                     && instance.Endpoint == $"https://localhost:{portTwo}"), TimeSpan.FromSeconds(30));
         Assert.True(converged, "The restarted incarnation never took its process row over.");
 
-        await PairAndCommitAsync(environment, fleet, "sched-r2", 2);
+        var waveTwo = await PairAndCommitAsync(environment, fleet, "sched-r2", 2);
+        // The wave-2 mounts name their own rooms: whatever the dead room's tickets did in the
+        // background (settle, re-pair, split this wave across two rooms), every room THIS wave
+        // landed in must sit at the restarted incarnation's address.
+        var waveTwoRooms = await RoomsOfAsync(fleet, waveTwo);
+        Assert.NotEmpty(waveTwoRooms);
+        Assert.DoesNotContain(firstRoom.RoomId, waveTwoRooms);
         var snapshot = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
-        var newRoom = Assert.Single(snapshot.Rooms, room => room.RoomId != firstRoom.RoomId);
-        Assert.Equal("game-sched-b", newRoom.OwnerInstanceId);
-        Assert.Equal($"https://localhost:{portTwo}", newRoom.Endpoint);
+        foreach (var roomId in waveTwoRooms)
+        {
+            var room = Assert.Single(snapshot.Rooms, candidate => candidate.RoomId == roomId);
+            Assert.Equal("game-sched-b", room.OwnerInstanceId);
+            Assert.Equal($"https://localhost:{portTwo}", room.Endpoint);
+        }
     }
 
     [Fact]
@@ -162,12 +171,16 @@ public sealed class RedesignClusterDirectoryHostTests
         // Past the staleness gate plus a refresh margin, the silent host has left the
         // directory; whatever pairs next must land on the live host alone.
         await Task.Delay(TimeSpan.FromSeconds(9));
-        await PairAndCommitAsync(environment, fleet, "sched-s2", 2);
+        var waveTwo = await PairAndCommitAsync(environment, fleet, "sched-s2", 2);
+        var waveTwoRooms = await RoomsOfAsync(fleet, waveTwo);
+        Assert.NotEmpty(waveTwoRooms);
         var after = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
-        var freshRoom = Assert.Single(after.Rooms.Where(room =>
-            before.Rooms.All(older => older.RoomId != room.RoomId)).ToList());
-        Assert.Equal("game-sched-a", freshRoom.OwnerInstanceId);
-        Assert.Equal($"https://localhost:{portA}", freshRoom.Endpoint);
+        foreach (var roomId in waveTwoRooms)
+        {
+            var room = Assert.Single(after.Rooms, candidate => candidate.RoomId == roomId);
+            Assert.Equal("game-sched-a", room.OwnerInstanceId);
+            Assert.Equal($"https://localhost:{portA}", room.Endpoint);
+        }
     }
 
     private sealed class Fleet : IDisposable
@@ -227,8 +240,8 @@ public sealed class RedesignClusterDirectoryHostTests
     }
 
     /// <summary>Mounts count streamers, enqueues them and waits until every ticket committed.</summary>
-    private static async Task PairAndCommitAsync(RedesignM0HostTests.HostEnvironment environment,
-        Fleet fleet, string tag, int count)
+    private static async Task<List<(string StreamerId, string SessionId, string BindingId)>> PairAndCommitAsync(
+        RedesignM0HostTests.HostEnvironment environment, Fleet fleet, string tag, int count)
     {
         var mounts = new List<(string StreamerId, string SessionId, string BindingId)>();
         for (var index = 0; index < count; index++)
@@ -246,6 +259,20 @@ public sealed class RedesignClusterDirectoryHostTests
             return true;
         }, TimeSpan.FromSeconds(60));
         Assert.True(committed, $"The coordinator did not commit the pairs for {tag}.");
+        return mounts;
+    }
+
+    /// <summary>The rooms a wave's mounts actually landed in: read from the streamer routes,
+    /// not by diffing snapshots — a killed host's wave can be re-paired behind the test's back
+    /// and a diff would count that room as fresh.</summary>
+    private static async Task<List<string>> RoomsOfAsync(Fleet fleet,
+        IReadOnlyList<(string StreamerId, string SessionId, string BindingId)> mounts)
+    {
+        var snapshot = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        return mounts
+            .Select(mount => snapshot.Streamers.Single(row => row.StreamerId == mount.StreamerId).RoomId)
+            .Where(roomId => roomId.Length > 0)
+            .Distinct().ToList();
     }
 
     private static Dictionary<string, string> GameEnvironment(int dataPort, string controlEndpoint,
