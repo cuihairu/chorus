@@ -130,7 +130,11 @@ public sealed class RedesignTickMetricsUnitTests
         // recovery phases are separate instruments from the tick set.
         Assert.Equal(1, samples.Count("room.recovery.read"));
         Assert.Equal(1, samples.Count("room.recovery.replay"));
-        await Task.Delay(150); // the resumed actor's first ticks land too
+        // The resumed actor's first ticks land too — but under a loaded CI runner the
+        // first commit can lag a fixed sleep, so poll with a deadline instead.
+        var resumed = Task.Delay(TimeSpan.FromSeconds(30));
+        while (samples.Count("room.tick.commit") < 1 && !resumed.IsCompleted)
+            await Task.Delay(50);
         Assert.True(samples.Count("room.tick.commit") >= 1);
         Assert.Equal(0, samples.TaggedMeasurements);
     }
