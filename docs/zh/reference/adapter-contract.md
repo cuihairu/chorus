@@ -1,22 +1,22 @@
 ---
-title: Platform Adapter Contract
+title: 平台适配器契约
 ---
 
 
-# Platform Adapter Contract and Templates
+# 平台适配器契约与模板
 
-Onboarding a new live-streaming platform = implementing two interfaces + registration + secret configuration. The core is unaware of any platform-specific private fields.
+接入一个新的直播平台 = 实现两个接口 + 注册 + 密钥配置。核心不感知任何平台私有的字段。
 
-Related docs:
+相关文档：
 
-- [Douyin Integration](../reference/platform-douyin.md)
-- [Kuaishou Integration](../reference/platform-kuaishou.md)
-- [Bilibili Integration](../reference/platform-bilibili.md)
-- [Douyin Mini Game Integration](../reference/platform-douyin-mini-game.md)
-- [Kuaishou Mini Game Integration](../reference/platform-kuaishou-mini-game.md)
-- [Deployment and Security Configuration](../reference/deployment.md)
+- [抖音接入](../reference/platform-douyin.md)
+- [快手接入](../reference/platform-kuaishou.md)
+- [B 站接入](../reference/platform-bilibili.md)
+- [抖音小游戏接入](../reference/platform-douyin-mini-game.md)
+- [快手小游戏接入](../reference/platform-kuaishou-mini-game.md)
+- [部署与安全配置](../reference/deployment.md)
 
-## Contract
+## 契约
 
 ```csharp
 namespace Chorus.Adapters.Abstractions;
@@ -46,22 +46,22 @@ public interface IAudienceFactionRule
 }
 ```
 
-## Ingress Processing Order
+## 入口处理顺序
 
-`POST /ingress/{platform}` has a fixed order; integrators understand the failure semantics in this order:
+`POST /ingress/{platform}` 顺序固定；接入方按该顺序理解失败语义：
 
-1. Rate limiting (`Faces:PlatformIngress:RateLimitPerMinute`, default 1200/minute, by source IP) → **429**
-2. Request body limit (`Faces:PlatformIngress:MaxBodyBytes`, default 64KB) → **413**
-3. Processing timeout (`Faces:PlatformIngress:TimeoutMs`, default 5000ms, covers the whole read+process duration; client cancellation does not count) → **504**
-4. Signature verification → **401** (`Ingress:AllowAll` defaults to false; missing verifier also gives 401)
-5. Mapping (iterate over all `IPlatformEventMapper`; null return goes to the next) → if none match **400** `{"error":"unmapped_event"}`
-6. Faction rule completion (`Ingress:FactionRules:CommentKeywords` / `GiftIds`)
-7. Deduplication (`Ingress:DedupTtlSeconds`, default 600s, reserve/commit/rollback) → duplicates return `{"duplicated":true}` **200**
-8. Enter the SessionActor event lane → lane full with timeout **503** (at this point the dedup marker rolls back, and the platform can retry)
+1. 限流（`Faces:PlatformIngress:RateLimitPerMinute`，默认 1200/分钟，按来源 IP）→ **429**
+2. 请求体上限（`Faces:PlatformIngress:MaxBodyBytes`，默认 64KB）→ **413**
+3. 处理超时（`Faces:PlatformIngress:TimeoutMs`，默认 5000ms，覆盖整个读取+处理时长；客户端取消不计）→ **504**
+4. 验签 → **401**（`Ingress:AllowAll` 默认 false；缺验证器同样 401）
+5. 映射（遍历所有 `IPlatformEventMapper`；返回 null 交给下一个）→ 全都不匹配则 **400** `{"error":"unmapped_event"}`
+6. 阵营规则补全（`Ingress:FactionRules:CommentKeywords` / `GiftIds`）
+7. 去重（`Ingress:DedupTtlSeconds`，默认 600s，reserve/commit/rollback）→ 重复返回 `{"duplicated":true}` **200**
+8. 进入 SessionActor 事件通道 → 通道满且超时 **503**（此时去重标记回滚，平台可重试）
 
-Metrics: `chorus_ingress_*` / `chorus_events_*`, see [Observability](../reference/observability.md).
+指标：`chorus_ingress_*` / `chorus_events_*`，见[可观测性](../reference/observability.md)。
 
-## Unified Model `AudienceEvent`
+## 统一模型 `AudienceEvent`
 
 ```csharp
 public sealed record AudienceEvent(
@@ -80,11 +80,11 @@ public sealed record AudienceEvent(
 );
 ```
 
-- `eventId`: the platform-side event id; when empty, the mapper must derive a stable id (deduplication relies on it).
-- `matchId` / `factionId`: can be provided by the mapper, or completed by `IAudienceFactionRule`.
-- Unknown event types map to `Unknown`; **do not throw exceptions**.
+- `eventId`：平台侧事件 ID；为空时 mapper 必须推导稳定 ID（去重依赖它）。
+- `matchId` / `factionId`：可由 mapper 提供，也可由 `IAudienceFactionRule` 补全。
+- 未知事件类型映射为 `Unknown`；**不要抛异常**。
 
-## Template: Mapper
+## 模板：Mapper
 
 ```csharp
 using System.Text.Json;
@@ -160,7 +160,7 @@ public sealed class MyPlatformMapper : IPlatformEventMapper
 }
 ```
 
-## Template: Signature Verifier (fail-closed)
+## 模板：验签器（fail-closed）
 
 ```csharp
 public sealed class MyPlatformVerifier : IPlatformNamedEventVerifier
@@ -195,15 +195,15 @@ public sealed class MyPlatformVerifier : IPlatformNamedEventVerifier
 }
 ```
 
-Key points:
+要点：
 
-- Secrets are read from configuration; **never hard-coded**.
-- Use `FixedTimeEquals` for constant-time comparison to avoid timing side channels.
-- Timestamp windows and nonce anti-replay are implemented per the platform's documentation; fields not specified in the official documentation are treated as "pending joint debugging".
+- 密钥从配置读取，**绝不硬编码**。
+- 比较用 `FixedTimeEquals` 常量时间，避免时序侧信道。
+- 时间戳窗口与 nonce 防重放按平台官方文档实现；官方文档未给的字段一律按"待联调"处理。
 
-## Registration
+## 注册
 
-Use the existing Douyin registration in `Chorus.Server` / `Chorus.Gateway` as the template (the two hosts are isomorphic):
+以 `Chorus.Server` / `Chorus.Gateway` 现有的抖音注册为模板（两个宿主同构）：
 
 ```csharp
 // 1. 具名验证器：先注册具体类型，再以 IPlatformNamedEventVerifier 暴露给 Router 收集
@@ -219,30 +219,30 @@ builder.Services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredS
 builder.Services.AddSingleton<IPlatformEventMapper, MyPlatformMapper>();
 ```
 
-Two things to note:
+两个注意点：
 
-- The Router routes by `PlatformName` (case-insensitive), and a named verifier takes precedence over the fallback: even if `Ingress:AllowAll=true`, Douyin callbacks still go through `DouyinPlatformEventVerifier`.
-- Mapper iteration order = registration order. Put a mapper that "unconditionally swallows all bodies" last, or have it check `platform` first and then decide whether to take over.
+- Router 按 `PlatformName`（大小写不敏感）路由，具名验证器优先于 fallback：即使 `Ingress:AllowAll=true`，抖音回调仍走 `DouyinPlatformEventVerifier`。
+- Mapper 的遍历顺序 = 注册顺序。把"无条件吞掉所有 body"的 mapper 放最后，或让它先判断 `platform` 再决定是否接管。
 
-## Acceptance Tests (every adapter must pass)
+## 验收测试（每个适配器必须通过）
 
-1. Correct signature passes (200)
-2. Tampered body / missing signature / wrong secret → 401
-3. Duplicate `eventId` → `{"duplicated":true}` 200
-4. Unknown event type → no crash, mapped to `Unknown`
-5. Oversized body → 413
-6. Rate limit exceeded → 429
-7. Event lane full (`Session:MaxPendingEvents`) → 503 and dedup marker rolls back (platform retry can re-enter)
+1. 正确签名通过（200）
+2. 篡改 body / 缺签名 / 错密钥 → 401
+3. 重复 `eventId` → `{"duplicated":true}` 200
+4. 未知事件类型 → 不崩溃，映射为 `Unknown`
+5. 超大 body → 413
+6. 超限流 → 429
+7. 事件通道满（`Session:MaxPendingEvents`）→ 503 且去重标记回滚（平台重试可再进）
 
-## Convention for Pending Joint Debugging Field Markers
+## 待联调字段标记约定
 
-Fields that cannot be confirmed by official documentation are always handled per this convention; **do not fabricate**:
+官方文档无法确认的字段一律按本约定处理，**不得虚构**：
 
 ```csharp
 // TODO(待联调): 官方文档未给出 giftValue 字段，需沙箱联调确认后再启用
 GiftValue: null,
 ```
 
-- Uncertain field names, enum values, or signature algorithms → keep the interface and field position, leave values empty/`Unknown`, and list them in the "Pending Joint Debugging" section of the adapter doc.
-- Secrets, callback URLs, and platform appKeys all go through configuration, not code.
-- After joint debugging confirms them, backfill the fields and update the "Pending Joint Debugging" list in the corresponding `platform-*.md` to confirmed.
+- 不确定的字段名、枚举值、签名算法 → 保持接口与字段位置，值留空/`Unknown`，并在适配器文档的"待联调"章节列出。
+- 密钥、回调 URL、平台 appKey 一律走配置，不进代码。
+- 联调确认后回填字段，并把对应 `platform-*.md` 的"待联调"清单更新为已确认。
