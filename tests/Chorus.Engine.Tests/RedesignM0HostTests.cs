@@ -201,7 +201,14 @@ public sealed class RedesignM0HostTests
                 await using var create = new NpgsqlCommand($"CREATE DATABASE \"{_databaseName}\"", admin);
                 await create.ExecuteNonQueryAsync();
             }
-            var database = new NpgsqlConnectionStringBuilder(_admin.ConnectionString) { Database = _databaseName };
+            // FIX-PERF-05: the admin builder runs with Pooling=false and that must not leak
+            // into the string every host runs on. Unpooled, each store call pays a physical
+            // connect (TCP + docker proxy + a PG backend fork) — the 100-room benchmark
+            // measured 19,897 opens in 78s with data.conn.open p50 164.6ms and every phase
+            // inflated. Hosts get a pool sized for the lockstep burst (one inbox pull + one
+            // frame commit per room in flight); teardown kills the hosts before the drop.
+            var database = new NpgsqlConnectionStringBuilder(_admin.ConnectionString)
+                { Database = _databaseName, Pooling = true, MaxPoolSize = 250 };
             _connectionString = database.ConnectionString;
             await using (var connection = new NpgsqlConnection(_connectionString))
             {

@@ -54,13 +54,15 @@ public sealed class RedesignM2CapacityBenchmarkTests(ITestOutputHelper output)
             ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
         };
         await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
-        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server",
+            new Dictionary<string, string> { ["CHORUS_METRICS_DUMP_SECONDS"] = "5" });
         await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
             "streamer-server", streamerEnvironment);
         await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
             new Dictionary<string, string>
             {
-                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_METRICS_DUMP_SECONDS"] = "5"
             },
             clientTenant: "tenant-a");
 
@@ -192,6 +194,22 @@ public sealed class RedesignM2CapacityBenchmarkTests(ITestOutputHelper output)
 
         Assert.Equal(RoomCount, completed.Count);
         Assert.Equal((long)RoomCount * DurationTicks, frameCount);
+        // FIX-PERF-05: the rewards leg of the consistency guard — every room's final frame
+        // lands exactly one result row, and grants land for exactly the rooms whose final
+        // ranking contains a positive score (only the fed room scores here); a storage
+        // change may not disturb either.
+        Assert.Equal((long)RoomCount, await CountAsync(environment.DatabaseConnectionString,
+            "SELECT count(*) FROM game.result WHERE room_id LIKE 'room-cap-bench-%'"));
+        var scoringRooms = await CountAsync(environment.DatabaseConnectionString, """
+            SELECT count(*) FROM game.result
+            WHERE room_id LIKE 'room-cap-bench-%'
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(result->'ranking') entry
+                          WHERE (entry->>'score')::bigint > 0)
+            """);
+        var grantRooms = await CountAsync(environment.DatabaseConnectionString,
+            "SELECT count(DISTINCT room_id) FROM settlement.grant WHERE room_id LIKE 'room-cap-bench-%'");
+        Assert.Equal(scoringRooms, grantRooms);
+        Assert.True(grantRooms > 0, "the fed room's final score must produce its planned grants");
         Assert.True(hotRouted > 0,
             $"the hot room received no routed inputs (fed {hotEvents.Emitted}, " +
             $"dispositions {string.Join(",", dispositions)}" +
@@ -263,6 +281,27 @@ public sealed class RedesignM2CapacityBenchmarkTests(ITestOutputHelper output)
             WarmupTicks, DurationTicks, commonMs,
             hotEvents.Planned, hotEvents.Backlog,
             hotEvents.Emitted / Math.Max(feedSeconds, 0.001), feedSeconds);
+
+        // Phase percentiles straight out of the hosts' periodic meter dumps (the FIX-PERF-05
+        // measurement channel): whole-run distributions per phase — inbox pull, apply,
+        // serialize, commit, whole tick on the game server; connection open, transaction body,
+        // commit on the data server — so the bottleneck attribution ships with every report.
+        foreach (var (process, instance) in environment.HostProcesses)
+        {
+            if (!instance.Contains("GameServer") && !instance.Contains("DataServer")) continue;
+            var metricLines = environment.HostOutput(process)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.TrimEnd('\r'))
+                .Where(line => line.StartsWith("metrics name=", StringComparison.Ordinal))
+                .ToList();
+            if (metricLines.Count == 0) continue;
+            var firstInstrument = metricLines[0]["metrics name=".Length..].Split(' ')[0];
+            var lastBlockStart = metricLines.FindLastIndex(
+                line => line.StartsWith($"metrics name={firstInstrument} ", StringComparison.Ordinal));
+            output.WriteLine($"  phase percentiles ({instance}, whole run):");
+            foreach (var line in metricLines[lastBlockStart..])
+                output.WriteLine("    " + line);
+        }
 
         // The verdict comes after the evidence: the explicit acceptance config's budgets
         // (target architecture 100 rooms / 20 Hz, tick and completion latency, the input plan)
