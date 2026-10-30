@@ -1,90 +1,85 @@
 ---
-title: Versioning Policy and Compatibility
+title: 版本策略与兼容性
 ---
 
 
-# Versioning Policy and Compatibility
+# 版本策略与兼容性
 
-Related documents:
+相关文档：
 
-- [Deployment and Security](./deployment.md)
-- [Protocol Reference](./protocol.md)
-- [Observability](./observability.md)
+- [部署与安全](./deployment.md)
+- [协议参考](./protocol.md)
+- [可观测性](./observability.md)
 
-## Version Numbers
+## 版本号
 
-- Semantic versioning `MAJOR.MINOR.PATCH` (SemVer 2.0).
-- The 0.x phase allows breaking changes; change records live in commit messages and `docs/design/review-*.md`.
-- From 1.0 onward it is committed that only backward-compatible changes are allowed within the same major version.
-- **A formal release is triggered only when the maintainer explicitly supplies a version number**: push a `v*` tag → CI build + test → only after passing is a GitHub Release created. There is no automatic tagging, and binaries that have not passed tests are not put into Releases. Daily builds/rolling binaries, if enabled, are published only as rolling artifacts and do not carry a formal version number.
+- 语义化版本 `MAJOR.MINOR.PATCH`（SemVer 2.0）。
+- 0.x 阶段允许破坏性变更；变更记录在 commit 消息与 `docs/design/review-*.md` 中。
+- 从 1.0 起承诺同一主版本内只允许向后兼容的变更。
+- **只有维护者显式提供版本号时才触发正式发布**：推送 `v*` 标签 → CI 构建 + 测试 → 通过后才创建 GitHub Release。没有自动打标签，未通过测试的二进制不放入 Releases。每日构建/滚动二进制（若启用）只以滚动产物发布，不带正式版本号。
 
-## Compatibility Surfaces
+## 兼容面
 
-### 1) WebSocket Wire Protocol (Client ↔ Gateway)
+### 1）WebSocket 线协议（客户端 ↔ Gateway）
 
-| Message | Direction | Field Evolution Rule |
+| 消息 | 方向 | 字段演进规则 |
 | --- | --- | --- |
-| `hello` | C→S | Adding an optional field is OK; changing semantics / removing a field = breaking |
-| `welcome` | S→C | Same as above; tick parameters are added only, never removed |
-| `ack` | C→S | Same as above |
-| `snapshot` | S→C | Same as above; the content of `state` is determined by the `game` module |
-| `ping` / `pong` / `error` | Bidirectional | Same as above |
+| `hello` | C→S | 新增可选字段可以；改变语义/删除字段 = 破坏性 |
+| `welcome` | S→C | 同上；tick 参数只增不减 |
+| `ack` | C→S | 同上 |
+| `snapshot` | S→C | 同上；`state` 内容由 `game` 模块决定 |
+| `ping` / `pong` / `error` | 双向 | 同上 |
 
-- `ClientHello.ClientVersion` is a free string and is **not** a protocol version negotiation field.
-- Messages with an unknown `type` are rejected/ignored and do not cause the connection to close.
-- `hello.protocolVersion` / `welcome.protocolVersion` (since 2026-10-12, see [Protocol Reference](./protocol.md)):
-  default is treated as a legacy client and allowed through; if sent and not equal to the server's `ProtocolVersionPolicy.Current` → rejected with `protocol_mismatch`.
-  Parts that remain a **known gap**: this field is a single-value check rather than range negotiation (the server cannot declare "supports ≤N"),
-  and when the server upgrades to a new major version, legacy clients need to read `welcome.protocolVersion` and disconnect proactively.
+- `ClientHello.ClientVersion` 是自由字符串，**不是**协议版本协商字段。
+- 未知 `type` 的消息被拒绝/忽略，不导致连接关闭。
+- `hello.protocolVersion` / `welcome.protocolVersion`（自 2026-10-12，见[协议参考](./protocol.md)）：默认按旧版客户端放行；若发送且不等于服务端 `ProtocolVersionPolicy.Current` → 以 `protocol_mismatch` 拒绝。仍属**已知缺口**：该字段是单值检查而非范围协商（服务端无法声明"支持 ≤N"），且服务端升级到新主版本时旧客户端需读取 `welcome.protocolVersion` 并主动断开。
 
-### 2) Snapshot State Schema
+### 2）快照状态 Schema
 
-- Engine-side snapshots carry `V = 1` (schema version).
-- The version number has been lifted to the wire protocol's `ServerSnapshot` `v` field (2026-10-13, 2d157fa): engine snapshots are passed through (both the broadcast path `WireSnapshot` and the eng→gw IPC path `EngineBusSessionClient` carry it, and the gateway forwards it as-is); currently always `1`; when a legacy sender omits the field, the receiver reads it as the default `1`, compatible in both directions.
-- The remaining half (1.0): explicit rejection of an unknown `v` + forced resync semantics — to be decided when the first v2 schema is designed; there is currently only one version so there is nothing to trigger it; during the transition, a client that encounters an unrecognized `v` can just drop it + keep ACKing + wait for resync as the fallback.
-- Restore semantics (2026-10-14, `062cc68`): module restoration from a snapshot goes through `IGameModule.RestoreState(version, JsonElement)`, where the input is the wire protocol JSON and `version` has the same semantics as the wire protocol's `v`; an unknown version / exceeding `Session:MaxSnapshotBytes` / a module exception all fail-closed and reject session startup. Schema evolution rules are the same as the wire protocol (adding an optional field is compatible; removing/changing semantics is breaking).
+- 引擎侧快照携带 `V = 1`（schema 版本）。
+- 版本号已提升到线协议 `ServerSnapshot` 的 `v` 字段（2026-10-13，2d157fa）：引擎快照透传（广播路径 `WireSnapshot` 与 eng→gw IPC 路径 `EngineBusSessionClient` 都携带，Gateway 原样转发）；当前恒为 `1`；旧发送方省略该字段时，接收方按默认 `1` 读取，双向兼容。
+- 剩余一半（1.0）：显式拒绝未知 `v` + 强制重同步语义 —— 待设计首个 v2 schema 时再定；当前只有一版，无触发条件；过渡期间，客户端遇到无法识别的 `v` 可丢弃 + 继续 ACK + 等待重同步作为回退。
+- 恢复语义（2026-10-14，`062cc68`）：模块从快照恢复走 `IGameModule.RestoreState(version, JsonElement)`，输入为线协议 JSON，`version` 与线协议 `v` 语义相同；未知版本 / 超过 `Session:MaxSnapshotBytes` / 模块异常都 fail-closed 并拒绝会话启动。Schema 演进规则与线协议相同（新增可选字段兼容；删除/改变语义破坏性）。
 
-### 3) Ingress Interface (Platform ↔ Gateway)
+### 3）入口接口（平台 ↔ Gateway）
 
-- The URL shape `POST /ingress/{platform}` is unchanged; adding a platform name is compatible.
-- Body structure is defined by each platform mapper; adding an optional field is compatible, removing/changing semantics is breaking.
+- URL 形态 `POST /ingress/{platform}` 不变；新增平台名兼容。
+- Body 结构由各平台映射器定义；新增可选字段兼容，删除/改变语义破坏性。
 
-### 4) IPC (Gateway ↔ EngineHost)
+### 4）IPC（Gateway ↔ EngineHost）
 
-- Adding an optional field to `Envelope` (e.g. `SourceEventId`) is backward compatible; a new `Type` is handled by the receiver as an unknown type.
-- Changing `Ipc:Transport` requires a synchronized restart of both sides.
+- 给 `Envelope` 新增可选字段（如 `SourceEventId`）向后兼容；新的 `Type` 被接收方当作未知类型处理。
+- 改变 `Ipc:Transport` 需要两侧同步重启。
 
-### 5) Configuration
+### 5）配置
 
-- Unknown keys are ignored; keys that are removed / have changed semantics = breaking change and must be noted in the release notes.
-- Changes to `Session:*` defaults are non-breaking (they take effect when not configured); explicit configuration takes precedence.
+- 未知键忽略；被删除/改变语义的键 = 破坏性变更，必须在发布说明中记录。
+- `Session:*` 默认值变更非破坏性（未配置时生效）；显式配置优先。
 
-### 6) Module Contract (`IGameModule`, Engine Internal)
+### 6）模块契约（`IGameModule`，引擎内部）
 
-- `RestoreState(long version, JsonElement state)` is a required member of `IGameModule` (2026-10-14,
-  `062cc68`): a breaking change (0.x window; the implementation surface is only the in-repo `SampleGameModule` + test fakes). Restore semantics
-  are described in §2 above; the engine does not provide a built-in default restore implementation, and module authors are responsible for state reconstruction themselves.
-- From 1.0+ onward, `IGameModule` contract changes (adding/changing-semantics members) are treated as breaking and must be noted in the release notes.
+- `RestoreState(long version, JsonElement state)` 是 `IGameModule` 的必需成员（2026-10-14，`062cc68`）：破坏性变更（0.x 窗口；实现面仅仓内 `SampleGameModule` + 测试 fakes）。恢复语义见 §2；引擎不提供内置默认恢复实现，模块作者自行负责状态重建。
+- 从 1.0+ 起，`IGameModule` 契约变更（新增/改变语义成员）视为破坏性，必须在发布说明中记录。
 
-## Compatibility Decision Rules
+## 兼容性判定规则
 
-| Change Type | 0.x | 1.0+ |
+| 变更类型 | 0.x | 1.0+ |
 | --- | --- | --- |
-| Wire protocol adds an optional field | Allowed | Allowed |
-| Wire protocol adds a message type | Allowed | Allowed |
-| Remove/rename a field | Allowed (noted in release notes) | Forbidden |
-| Config adds a key | Allowed | Allowed |
-| Config removes/changes semantics | Allowed (noted in release notes) | Forbidden |
-| Add a platform adapter | Allowed | Allowed |
-| `Session:*` default change | Allowed (noted in release notes) | Cautious (explicit configuration takes precedence) |
-| `IGameModule` contract change | Allowed (0.x, noted in release notes) | Forbidden |
+| 线协议新增可选字段 | 允许 | 允许 |
+| 线协议新增消息类型 | 允许 | 允许 |
+| 删除/重命名字段 | 允许（发布说明记录） | 禁止 |
+| 配置新增键 | 允许 | 允许 |
+| 配置删除/改变语义 | 允许（发布说明记录） | 禁止 |
+| 新增平台适配器 | 允许 | 允许 |
+| `Session:*` 默认值变更 | 允许（发布说明记录） | 谨慎（显式配置优先） |
+| `IGameModule` 契约变更 | 允许（0.x，发布说明记录） | 禁止 |
 
-## Persistence and Data Migration
+## 持久化与数据迁移
 
-Standalone Server session state is in memory and has no restart recovery. ControlHost mode persists fenced room checkpoints, so those deployments must keep checkpoint schema and `IGameModule.RestoreState` compatibility in view during upgrades. Wire protocol and configuration compatibility rules still apply independently.
+独立服务端会话状态在内存中，无重启恢复。ControlHost 模式持久化受围栏保护（fenced）的房间检查点，故此类部署升级时必须保持检查点 schema 与 `IGameModule.RestoreState` 兼容性。线协议与配置兼容规则仍独立适用。
 
-## Upgrade Flow (Operations Perspective)
+## 升级流程（运维视角）
 
-1. Upgrade `EngineHost` first, then `Gateway` (old and new Gateways can coexist because they do not share in-memory state; but the IPC configuration must be consistent).
-2. Recommended rollout order: single-process form first, then split form.
-3. Rollback = restart the old version's process; clients automatically reconnect and resync, no coordination needed.
+1. 先升级 `EngineHost`，再升级 `Gateway`（新旧 Gateway 可共存，因为不共享内存状态；但 IPC 配置必须一致）。
+2. 建议发布顺序：先单进程形态，再分离形态。
+3. 回滚 = 重启旧版本进程；客户端自动重连并重同步，无需协调。

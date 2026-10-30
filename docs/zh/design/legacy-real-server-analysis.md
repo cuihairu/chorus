@@ -1,89 +1,89 @@
 ---
-title: Legacy Server Problem Analysis
+title: 旧版服务端问题分析
 ---
 
 
-# Legacy Server Problem Analysis (real-server)
+# 旧版服务端问题分析（real-server）
 
-This document is only about "problem identification + root cause summary"; it does not replicate the business/gameplay implementation of the old project.
+本文仅讨论"问题识别 + 根因总结"；不复制旧项目的业务/玩法实现。
 
-> **Source Note (2026-10-13 Audit)**: The `real-server` source code of the old project cited in this document is **not included in this repository**. Within the repo, `src/` and `tests/` contain zero hits for symbols such as `MultGameInfo` / `FRAME_INTERVAL` / `ServerLogic` / `MaxServerFrame`. The assertions below cannot be verified within this repo and are **relayed from the external project**; they can only be re-checked once the real-server source code is obtained.
+> **来源说明（2026-10-13 审计）**：本文引用的旧项目 `real-server` 源码**不在此仓库中**。仓库内 `src/` 与 `tests/` 对 `MultGameInfo` / `FRAME_INTERVAL` / `ServerLogic` / `MaxServerFrame` 等符号的命中数为零。下文断言无法在本仓库内验证，**均转述自外部项目**；须待取得 real-server 源码后方可复核。
 
-## How the existing "frame sync" is implemented
+## 现有"帧同步"如何实现
 
-In the old project `real-server`, `MultGameInfo.processFrame()` in `server1/server.gamelogic/Rooms/MultGameInfo.cs` packs "interaction inputs" at fixed intervals:
+在旧项目 `real-server` 中，`server1/server.gamelogic/Rooms/MultGameInfo.cs` 的 `MultGameInfo.processFrame()` 按固定间隔打包"交互输入"：
 
-- The server generates logic frames at `ConstValue.FRAME_INTERVAL = 100ms` (about 10Hz).
-- It dequeues `m_gameInputDataList` (viewer danmaku/gift and other inputs) "as much as possible" on every frame, forming `frameData`:
+- 服务端以 `ConstValue.FRAME_INTERVAL = 100ms`（约 10Hz）生成逻辑帧。
+- 每帧从 `m_gameInputDataList`（观众弹幕/礼物等输入）尽可能多地出队，形成 `frameData`：
   - `{"type":"frameData","id":<frameId>,"list":[ ...events ]}`
-- The per-frame data is stored in `m_frameDataMap[frameId]`, used for clients to pull supplementary frames via `reqFrameData` (reconnect/missing frames).
-- The client reports its local frame number via `reportFrame`, and the server uses "catch-up/pause" logic to try to keep the frame difference between the two ends from becoming too large.
+- 每帧数据存入 `m_frameDataMap[frameId]`，供客户端通过 `reqFrameData` 拉取补充帧（重连/丢帧）。
+- 客户端通过 `reportFrame` 上报本地帧号，服务端用"追赶/暂停"逻辑尽量使两端帧差不至于过大。
 
-Core conclusion: this is "event lockstep / input frame broadcast", not "server-authoritative simulation + state synchronization".
+核心结论：这是"事件锁步 / 输入帧广播"，而非"服务端权威模拟 + 状态同步"。
 
-## Key problems (causing frame desync/unstable resync)
+## 关键问题（导致帧失步/重同步不稳定）
 
-### 1) The server sends frames in a "time-driven" manner, but lacks a strict tick clock and drift control
+### 1）服务端以"时间驱动"方式发帧，但缺少严格的 tick 时钟与漂移控制
 
-Related logic (old project `real-server`):
+相关逻辑（旧项目 `real-server`）：
 
-- `server1/server.gamelogic/ServerLogic.cs`: the main loop uses `Thread.Sleep(50)` to poll `GameRooms.Pulse()`.
-- `server1/server.gamelogic/Rooms/MultGameInfo.cs`: uses `m_lastFrameTime` + `FRAME_INTERVAL` to decide whether to generate the next frame.
+- `server1/server.gamelogic/ServerLogic.cs`：主循环用 `Thread.Sleep(50)` 轮询 `GameRooms.Pulse()`。
+- `server1/server.gamelogic/Rooms/MultGameInfo.cs`：用 `m_lastFrameTime` + `FRAME_INTERVAL` 决定是否生成下一帧。
 
-Problem points:
+问题点：
 
-- The main loop is not a "fixed tick", but "best-effort polling"; when load increases, GC, log blocking, IO, etc. make one Pulse slower, frame generation produces jitter and "frame catch-up bursts".
-- The catch-up approach of `m_lastFrameTime += FRAME_INTERVAL` produces consecutive supplementary frames after a long pause (a large amount of `frameData` in a short time), which can easily overwhelm the client/network, further causing lag and a vicious cycle.
+- 主循环不是"固定 tick"，而是"尽力而为的轮询"；负载升高时 GC、日志阻塞、IO 等会让一次 Pulse 变慢，帧生成出现抖动与"帧追赶爆发"。
+- `m_lastFrameTime += FRAME_INTERVAL` 的追赶方式会在长时间停顿后连续生成补充帧（短时间内大量 `frameData`），极易压垮客户端/网络，进一步加剧延迟并形成恶性循环。
 
-### 2) The resync strategy chose to "pause the server", which drags down the fast end as well
+### 2）重同步策略选择"暂停服务端"，拖垮了快的一方
 
-Related logic: in `MultGameInfo.processFrame()`, the `serverPause` determination based on `m_Room1FrameID/m_Room2FrameID` (frame difference threshold `MaxServerFrame = 30`).
+相关逻辑：`MultGameInfo.processFrame()` 中基于 `m_Room1FrameID/m_Room2FrameID`（帧差阈值 `MaxServerFrame = 30`）的 `serverPause` 判定。
 
-Problem points:
+问题点：
 
-- One client stuttering/disconnecting triggers the server to stop sending new frames, causing the other client to also be unable to proceed (the perceived effect is "both sides freeze together").
-- In a live-stream battle scenario, the more reasonable approach is "server keeps advancing + laggard end catches up via snapshots", rather than "globally waiting for the slowest end".
+- 一方客户端卡顿/断线触发服务端停止发新帧，导致另一方也无法推进（观感即"双方一起卡死"）。
+- 在直播对战场景，更合理的方式是"服务端持续推进 + 慢的一方通过快照追赶"，而非"全局等待最慢的一方"。
 
-### 3) Lack of a clear "session start (tick 0) protocol" and a consistent beat convergence mechanism
+### 3）缺少清晰的"会话开始（tick 0）协议"与一致的节拍收敛机制
 
-In the current state, the frame number is more like a "server self-incrementing number", and does not simultaneously provide:
+当前状态下，帧号更像"服务端自增编号"，不同时提供：
 
-- The server time corresponding to the tick (or tickStartTime)
-- Authoritative configuration of tickDuration and how the client calibrates it
-- Whether the client should advance based on the "received tick" or the "local timer"
+- tick 对应的服务端时间（或 tickStartTime）
+- tickDuration 的权威配置及客户端如何校准
+- 客户端应依据"收到的 tick"还是"本地定时器"推进
 
-Relying only on `reportFrame` for outer-loop control easily leads to:
+仅依赖 `reportFrame` 做外环控制，容易导致：
 
-- Each client running on local time, drifting further and further apart
-- When frames are dropped/pause recovery happens, the deviation of both sides is amplified
+- 各客户端各自按本地时间运行，漂移越来越大
+- 丢帧/暂停恢复时，双方偏差被放大
 
-### 4) No hard cap on the number of events per frame, easily forming oversized packets and "frame explosion"
+### 4）每帧事件数无硬上限，容易形成超大包与"帧爆炸"
 
-Related logic: in `processFrame()`, `count = m_gameInputDataList.Count`, and then it tries to dequeue `count` times.
+相关逻辑：`processFrame()` 中 `count = m_gameInputDataList.Count`，然后尝试出队 `count` 次。
 
-Problem points:
+问题点：
 
-- During peak periods (gift combos/spamming), a large number of events are stuffed into a single frame, and a single `frameData` becomes huge (fragmentation, serialization overhead increases).
-- The client has to process a large number of events in one frame, causing stuttering -> falling further behind -> triggering resync/pause.
+- 高峰期（礼物连击/刷屏）大量事件被塞进单帧，单个 `frameData` 变得巨大（分片、序列化开销上升）。
+- 客户端需在单帧处理大量事件，造成卡顿 → 进一步落后 → 触发重同步/暂停。
 
-### 5) Supplementary frame storage is unbounded, and lacks the "snapshot" concept
+### 5）补充帧存储无上限，且缺少"快照"概念
 
-Related logic: `m_frameDataMap` keeps growing; `SyncFrameMsg()` can only replay frame data by range.
+相关逻辑：`m_frameDataMap` 持续增长；`SyncFrameMsg()` 只能按区间重放帧数据。
 
-Problem points:
+问题点：
 
-- Memory grows linearly with battle duration.
-- Reconnect recovery can only "replay many frames"; there is no fast recovery path of "state snapshot + small amount of incremental replay".
+- 内存随对战时长线性增长。
+- 重连恢复只能"重放大量帧"；没有"状态快照 + 少量增量重放"的快速恢复路径。
 
-### 6) Inbound/outbound messages cross-thread queues, ordering/backpressure is uncontrollable, and debugging is difficult
+### 6）入站/出站消息跨线程队列，顺序/背压不可控，排障困难
 
-The current state uses multi-threaded queues to mix platform events, server messages, and client messages for processing.
+当前状态用多线程队列混入平台事件、服务端消息与客户端消息一起处理。
 
-Problem points:
+问题点：
 
-- Lack of a per-client backpressure strategy (when processing cannot keep up, should it be downsampling or forced snapshot).
-- Lack of systematic observability metrics (tick latency, queue length, ack, dropped count, etc.), making troubleshooting costly.
+- 缺少按客户端的背压策略（处理跟不上时，是降采样还是强制快照）。
+- 缺少系统的可观测性指标（tick 延迟、队列长度、ack、丢弃数等），排障成本高。
 
-## Root Cause Summary (in 1 sentence)
+## 根因总结（一句话）
 
-The old implementation treats "live-stream interaction inputs" as lockstep frame event broadcasting, but does not design tick, backpressure, snapshots, and reconnect recovery as a closed-loop system; meanwhile, it uses the strategy of "pausing the server to wait for the slow end", which is naturally prone to running out of control under high-load and jitter scenarios.
+旧实现把"直播交互输入"当作锁步帧事件广播，却没有把 tick、背压、快照与重连恢复设计成一个闭环系统；同时采用"暂停服务端等待慢的一方"策略，在高负载与抖动场景下天然容易失控。
