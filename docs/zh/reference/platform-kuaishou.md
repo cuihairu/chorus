@@ -1,32 +1,32 @@
 ---
-title: "Platform Integration Reference: Kuaishou"
+title: "平台接入参考：快手"
 ---
 
 
-# Platform Integration Reference: Kuaishou (kuaishou)
+# 平台接入参考：快手（kuaishou）
 
-> Route: `POST /ingress/{platform}` (`platform=kuaishou`, same shape in single-process and Gateway).
-> Signature verification is fail-closed; deduplication goes through `EventDeduplicator` (msgId + TTL).
-> This document records the official findings research of 2026-10-12 and the current implementation contract, for reference and replacement during joint debugging.
+> 路由：`POST /ingress/{platform}`（`platform=kuaishou`，单机与 Gateway 同构）。
+> 签名校验 fail-closed；去重走 `EventDeduplicator`（msgId + TTL）。
+> 本文记录 2026-10-12 的官方事实调研与当前实现契约，供联调时对照替换。
 
-## 1. Official Findings (2026-10-12)
+## 1. 官方事实（2026-10-12）
 
-Unlike Douyin, Kuaishou's **message encryption/decryption and signature verification have official documentation content**:
+与抖音不同，快手的**消息加密解密与验签有官方文档内容**：
 
-- Official documentation: "Message Encryption/Decryption and Signature Verification"
-  `https://open.kuaishou.com/docs/saas/develop/api/encryptedMsg.html` (page marked updated 2023-02-08).
-- The open platform console requires developer login; the specific configuration entries inside the console are not confirmed (does not block implementation).
+- 官方文档："消息加密解密与验签"
+  `https://open.kuaishou.com/docs/saas/develop/api/encryptedMsg.html`（页面标注 2023-02-08 更新）。
+- 开放平台控制台需开发者登录；控制台内的具体配置项未确认（不阻塞实现）。
 
-### Official Signature Algorithm (Verified, Not a Placeholder)
+### 官方签名算法（已核实，非占位）
 
 ```
 sha1Hex(rawBody + 消息验证Token) == 请求头 kwaisign
 ```
 
-- Token comes from the "Message Verification Token" in the developer console (config `Ingress:Kuaishou:VerifyToken`).
-- Implementation location: `KuaishouPlatformEventVerifier.ComputeSignature`.
+- Token 来自开发者控制台的"消息验证Token"（配置 `Ingress:Kuaishou:VerifyToken`）。
+- 实现位置：`KuaishouPlatformEventVerifier.ComputeSignature`。
 
-### Official Message Envelope (Verified, Not a Placeholder)
+### 官方消息信封（已核实，非占位）
 
 ```json
 {
@@ -37,43 +37,43 @@ sha1Hex(rawBody + 消息验证Token) == 请求头 kwaisign
 }
 ```
 
-- Ciphertext algorithm (official): AES-256-CBC / PKCS7; Key = base64-decoded "Message Encryption/Decryption KEY" (32 bytes),
-  **IV = first 16 bytes of Key** (per official documentation).
-- `msgId` is the platform-unique message ID; this implementation uses it directly as the deduplication EventId.
-- The official documentation also states: failed pushes are retried (3 retries) → relies on deduplication idempotency; the TTL is recommended to cover the retry window (`Ingress:DedupTtlSeconds`, default 600s).
+- 密文算法（官方）：AES-256-CBC / PKCS7；Key = base64 解码的"消息加密解密 KEY"（32 字节），
+  **IV = Key 的前 16 字节**（依官方文档）。
+- `msgId` 是平台侧唯一消息 ID；本实现直接用作去重 EventId。
+- 官方文档另载：推送失败会重试（3 次）→ 依赖去重幂等；TTL 建议覆盖重试窗口（`Ingress:DedupTtlSeconds`，默认 600s）。
 
-### Known Risks (Confirm First During Joint Debugging)
+### 已知风险（联调时先确认）
 
-1. **Whether live events use this envelope is unconfirmed**: the official documentation describes the general encryption/decryption shell for the open platform's "message push"; whether live-streaming (danmaku/gift/like) events reuse this envelope and what the inner JSON structure is, is not given in the documentation. The inner layer currently follows the placeholder contract (same fields as Douyin); during joint debugging only replace `KuaishouPlatformEventMapper.TryMap`.
-2. **Response body format not strictly verified**: the official guidance is to respond success after receiving a message (this document treats `200` as success); whether a specific JSON must be returned (e.g. `{"result":1,"message_id":...}`) is pending joint debugging confirmation.
-3. **Live event push channel form** (HTTP callback vs. platform-side WS push) is unconfirmed, same risk as Douyin: if it is platform-side WS push, `/ingress/kuaishou` remains the forwarding target, and the interface is unchanged.
+1. **直播事件是否用此信封未确认**：官方文档描述的是开放平台"消息推送"的通用加解密外壳；直播（弹幕/礼物/点赞）事件是否复用该信封、内层 JSON 结构是什么，文档没有给出。内层当前按占位契约（与抖音同字段）；联调时只替换 `KuaishouPlatformEventMapper.TryMap`。
+2. **响应体格式未严格核实**：官方指引是收到消息后回成功（本文按 `200` 视为成功）；是否必须返回特定 JSON（如 `{"result":1,"message_id":...}`）待联调确认。
+3. **直播事件推送通道形态**（HTTP 回调 vs 平台侧 WS 推送）未确认，与抖音同风险：若是平台侧 WS 推送，`/ingress/kuaishou` 仍是转发目标，接口不变。
 
 ### Launch 半侧设计说明（未实装，fail-closed 占位保留）
 
 与抖音不同（抖音 code2Session 官方口径已于 2026-10-14 核实并实装，见 platform-douyin.md §2.2/§2.5），**快手的服务端登录/主播启动校验 API 尚无任何已核实的官方口径**（端点、鉴权方式、凭证类型、官方文档链接均缺），故不做投机实现。StreamerServer 继续注册 fail-closed 占位 stub `KuaishouLaunchAdapter`（拒绝一切登录，不校验任何凭证）。要生产化需要先补齐：官方端点与协议版本、鉴权方案、凭证类型与脱敏样本、签名测试向量（对应 FIX-ENV-06 待用户提供）；核实后按抖音同款模式实装（真实适配器 + HTTP 桩金测 + 环境变量注入凭据）。
 
-## 2. Current Implementation Contract
+## 2. 当前实现契约
 
-### 2.1 Callback Address and Route
+### 2.1 回调地址与路由
 
-- Configure the callback address on the Kuaishou side to point to this service: `https://<host>/ingress/kuaishou` (pending joint debugging: the actual configuration entry name in the console).
-- In single-process deployment it is handled by the `platform-ingress` listener face (rate limiting / request body limit / timeout, see `Faces:PlatformIngress` in `docs/reference/config.md` and `docs/design/process-topology.md`).
+- 快手侧回调地址配置指向本服务：`https://<host>/ingress/kuaishou`（待联调：控制台里实际的配置项名）。
+- 单机部署由 `platform-ingress` 监听面服务（限流 / 请求体限制 / 超时，见 `docs/reference/config.md` 的 `Faces:PlatformIngress` 与 `docs/design/process-topology.md`）。
 
-### 2.2 Signature Verification (`KuaishouPlatformEventVerifier`, Official Algorithm)
+### 2.2 签名校验（`KuaishouPlatformEventVerifier`，官方算法）
 
-| Item | Value | Notes |
+| 项 | 值 | 说明 |
 |---|---|---|
-| Algorithm | `sha1Hex(rawBody + VerifyToken)` lowercase hex | **Official** (see §1) |
-| Signature header | `kwaisign` (configurable via `Ingress:Kuaishou:SignatureHeader`) | Official header name |
-| Token | `Ingress:Kuaishou:VerifyToken` (config-injected, not hardcoded) | Not configured or empty → **reject all (fail-closed)**, and write ERROR log |
-| Comparison | `string.Equals(Ordinal)` (sha1hex comparison) | Missing header / empty header always rejected |
-| Platform name | Only accepts `platform == "kuaishou"` (case-insensitive) | Other platform names fail-closed |
+| 算法 | `sha1Hex(rawBody + VerifyToken)` 小写 hex | **官方**（见 §1） |
+| 签名头 | `kwaisign`（经 `Ingress:Kuaishou:SignatureHeader` 配置） | 官方头名 |
+| Token | `Ingress:Kuaishou:VerifyToken`（配置注入，非硬编码） | 未配置或空 → **全部拒绝（fail-closed）**，并记 ERROR 日志 |
+| 比较 | `string.Equals(Ordinal)`（sha1hex 比较） | 缺头 / 空头一律拒绝 |
+| 平台名 | 只接受 `platform == "kuaishou"`（大小写不敏感） | 其他平台名 fail-closed |
 
-Acceptance criteria: correct signature → pass; tampered body → reject; wrong Token → reject; missing Token / missing header → reject (see `KuaishouPlatformVerifierTests` and `KuaishouIngressEndpointTests`).
+验收标准：正确签名 → 通过；篡改 body → 拒绝；错误 Token → 拒绝；缺 Token / 缺头 → 拒绝（见 `KuaishouPlatformVerifierTests` 与 `KuaishouIngressEndpointTests`）。
 
-### 2.3 Event Envelope (`KuaishouPlatformEventMapper`)
+### 2.3 事件信封（`KuaishouPlatformEventMapper`）
 
-The outer layer is the official envelope (§1); `encryptedMsg` is decrypted with `Ingress:Kuaishou:MsgEncryptKey` (AES-256-CBC, IV=Key[0..16]). The inner JSON is a **placeholder contract** (same as Douyin, pending replacement during joint debugging):
+外层是官方信封（§1）；`encryptedMsg` 用 `Ingress:Kuaishou:MsgEncryptKey` 解密（AES-256-CBC，IV=Key[0..16]）。内层 JSON 是**占位契约**（与抖音同，待联调替换）：
 
 ```json
 {
@@ -89,41 +89,41 @@ The outer layer is the official envelope (§1); `encryptedMsg` is decrypted with
 }
 ```
 
-| Placeholder Event Name | `AudienceEventKind` |
+| 占位事件名 | `AudienceEventKind` |
 |---|---|
-| `comment` | `Comment` (danmaku) |
-| `gift` | `Gift` (gift) |
-| `like` | `Like` (like) |
-| Other / missing | `Unknown` (**does not crash**: stored but passthrough in the reducer, callback returns 200) |
+| `comment` | `Comment`（弹幕） |
+| `gift` | `Gift`（礼物） |
+| `like` | `Like`（点赞） |
+| 其他 / 缺失 | `Unknown`（**不崩溃**：已存储但 reducer 直通，回调返回 200） |
 
-Failure paths (all return `400 unmapped_event` or `401`, do not affect the service):
+失败路径（一律返回 `400 unmapped_event` 或 `401`，不影响服务）：
 
-- Decryption failure / missing `MsgEncryptKey` / non-base64 ciphertext / invalid inner JSON → `400`;
-- Missing `msgId` → `400` (reject delivery when the deduplication key is missing).
+- 解密失败 / 缺 `MsgEncryptKey` / 密文非 base64 / 内层 JSON 无效 → `400`；
+- 缺 `msgId` → `400`（去重键缺失即拒收投递）。
 
-### 2.4 Deduplication
+### 2.4 去重
 
-- Reuses `EventDeduplicator` (key `kuaishou:<msgId>`, TTL `Ingress:DedupTtlSeconds`, default 600s).
-- Duplicate events return `200 {"ok":true,"duplicated":true}`.
-- Official retry is 3 times → TTL must cover the retry window (600s is sufficient; verify against actual interval during joint debugging).
-- Deduplication is atomic (review P0-8, fixed in 78f2597): `EventDeduplicator.TryReserve` uses `ConcurrentDictionary.TryAdd` for atomic reservation (`src/Chorus.Adapters.Platforms/EventDeduplicator.cs:63-95`); delivery failure goes through `Rollback` to release the reservation (`src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs:114`); platform retries are fresh deliveries, not misjudged duplicates.
+- 复用 `EventDeduplicator`（键 `kuaishou:<msgId>`，TTL `Ingress:DedupTtlSeconds`，默认 600s）。
+- 重复事件返回 `200 {"ok":true,"duplicated":true}`。
+- 官方重试 3 次 → TTL 必须覆盖重试窗口（600s 足够；联调时按实际间隔复核）。
+- 去重是原子的（评审 P0-8，78f2597 修复）：`EventDeduplicator.TryReserve` 用 `ConcurrentDictionary.TryAdd` 做原子占位（`src/Chorus.Adapters.Platforms/EventDeduplicator.cs:63-95`）；投递失败经 `Rollback` 释放占位（`src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs:114`）；平台重试是一次全新投递而非误判重复。
 
-## 3. Joint Debugging Pending List (All Explicit, No Speculative Implementation)
+## 3. 联调待办清单（全部显式，不做投机实现）
 
-- [ ] Whether live events (danmaku/gift/like) go through the encryptedMsg envelope, and the official field names of the inner JSON.
-- [ ] The actual console entries for configuring the callback address and message Token / encryption KEY (requires developer login to the console).
-- [ ] Strict format of the successful callback response (whether a specific JSON body is required).
-- [ ] Push channel form: HTTP callback vs. platform-side WS push.
-- [ ] Current values of retry count / interval → verify deduplication TTL.
-- [ ] Mapping source for `session_id` (mapping table or rules from live room / room number → Chorus session).
-- [ ] Whether the event time field (platform-side time) is provided, for out-of-order placement.
-- [ ] Gift value units and combo (merging) semantics.
+- [ ] 直播事件（弹幕/礼物/点赞）是否走 encryptedMsg 信封，以及内层 JSON 的官方字段名。
+- [ ] 配置回调地址与消息 Token / 加密 KEY 的控制台实际入口（需开发者登录控制台）。
+- [ ] 回调成功的响应严格格式（是否必须返回特定 JSON body）。
+- [ ] 推送通道形态：HTTP 回调 vs 平台侧 WS 推送。
+- [ ] 重试次数 / 间隔的实际取值 → 校验去重 TTL。
+- [ ] `session_id` 的映射来源（直播间/房号 → Chorus 会话的映射表或规则）。
+- [ ] 是否提供事件时间字段（平台侧时间），用于乱序放置。
+- [ ] 礼物价值单位与连击（合并）语义。
 
-## 4. Acceptance Test Locations
+## 4. 验收测试位置
 
-| Case | Test |
+| 用例 | 测试 |
 |---|---|
-| Correct signature passes / tampered rejected / unknown type does not crash / duplicate deduplication | `KuaishouIngressEndpointTests` (HTTP end-to-end, TestHost, AES envelope constructed inside the test) |
-| Signature verification algorithm (sha1Hex standard) and fail-closed details | `KuaishouPlatformVerifierTests` |
-| Envelope decryption and mapping details | `KuaishouPlatformMapperTests` |
-| platform-ingress face rate limiting / request body limit / timeout | `IngressFaceGuardTests` + `IngressFaceEndpointTests` |
+| 正确签名通过 / 篡改拒绝 / 未知类型不崩溃 / 重复去重 | `KuaishouIngressEndpointTests`（HTTP 端到端，TestHost，测试内构造 AES 信封） |
+| 验签算法（sha1Hex 标准）与 fail-closed 细节 | `KuaishouPlatformVerifierTests` |
+| 信封解密与映射细节 | `KuaishouPlatformMapperTests` |
+| platform-ingress 面限流 / 请求体限制 / 超时 | `IngressFaceGuardTests` + `IngressFaceEndpointTests` |

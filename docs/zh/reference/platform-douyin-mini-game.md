@@ -1,57 +1,55 @@
 ---
-title: "Platform Integration Reference: Douyin Mini-Game"
+title: "平台接入参考：抖音小游戏"
 ---
 
 
-# Platform Integration Reference: Douyin Mini-Game (douyin mini-game)
+# 平台接入参考：抖音小游戏（douyin mini-game）
 
-> Scope: the client running inside the Douyin mini-game container (`tt.*` JS API) and the server-side integration half.
-> This is a **separate link** from live callback integration ([platform-douyin.md](platform-douyin.md)):
-> the live link is "the platform pushes events to this service"; the mini-game link is "client login + server-side identity exchange +
-> leaderboard projection". This document records the official public documentation research findings of 2026-10-14 and the current implementation contract.
+> 范围：跑在抖音小游戏容器内的客户端（`tt.*` JS API）与服务端接入半侧。
+> 它与直播回调接入（[platform-douyin.md](platform-douyin.md)）是**独立链路**：
+> 直播链路是"平台把事件推给本服务"；小游戏链路是"客户端登录 + 服务端身份交换 +
+> 排行榜投影"。本文记录 2026-10-14 官方公开文档的调研发现与当前实现契约。
 
-## 1. Official Findings (2026-10-14)
+## 1. 官方发现（2026-10-14）
 
-- Official documentation site: `developer.open-douyin.com/docs/resource/zh-CN/mini-game`,
-  with three sections — **Quick Start / Development / Operations**; navigation and index accessible anonymously.
-- The official **JavaScript API index page** (statically crawlable) has confirmed that the following API **names exist**:
-  - Login: `tt.login` (`/develop/api/open-capacity/log-in/tt-login`), `tt.checkSession`
-  - Open data domain: `tt.getOpenDataContext`, `tt.onMessage`
-  - Open data / cloud storage: `tt.setUserCloudStorage`, `tt.getUserCloudStorage`,
-    `tt.getCloudStorageByRelation`, `tt.removeUserCloudStorage`, `tt.getSharedCanvas`
-  - Game leaderboards: `tt.setImRankData`, `tt.getImRankList`, `tt.getImRankData`, `tt.setImRankDataInOpenContext`
-  - Network: `tt.getNetworkType`, `tt.onNetworkStatusChange`, `tt.offNetworkStatusChange`
-- **The individual API detail pages under the index are JS-rendered**; public crawling only retrieves the
-  navigation shell and cannot retrieve the signature / parameter / return structure / error code content — so
-  only "API existence" is confirmed; fields and semantics are all **not found in public documentation (pending verification)**.
-- **Server-side OpenAPI details obtained on re-verification 2026-10-14** (first round blocked by JS rendering):
-  getAccessToken / code2Session / player rank upload — the three endpoints, parameters, responses, and error
-  codes are all confirmed, and have landed in
-  `src/Chorus.Adapters.Platforms/Douyin/` (`DouyinMiniGameAuthClient` etc., see
-  [platform-douyin.md](platform-douyin.md) §2) — the capability table entry
-  `ServerSessionExchange` has been upgraded to VerifiedOfficial.
-- **The full server-side OpenAPI menu has been seen** (credentials / login / data cache / QR code / other /
-  subscription messages / tournament ×2): **there is no server-side push channel for live audience events**;
-  live interaction is client-side only — `tt.getLiveManager` + LiveManager — do not fabricate push clients.
-- **In-container real-time channel (WebSocket / connectSocket) is not listed in the official index**
-  (the network category has only the 3 APIs above) → the real-time communication capability is **not found in
-  public documentation (pending verification)**; the integration layer must not assume the mini-game container
-  provides WebSocket.
+- 官方文档站：`developer.open-douyin.com/docs/resource/zh-CN/mini-game`，
+  分**快速开始 / 开发 / 运营**三栏；导航与索引可匿名访问。
+- 官方 **JavaScript API 索引页**（可静态抓取）确认下列 API **名字存在**：
+  - 登录：`tt.login`（`/develop/api/open-capacity/log-in/tt-login`）、`tt.checkSession`
+  - 开放数据域：`tt.getOpenDataContext`、`tt.onMessage`
+  - 开放数据 / 云存储：`tt.setUserCloudStorage`、`tt.getUserCloudStorage`、
+    `tt.getCloudStorageByRelation`、`tt.removeUserCloudStorage`、`tt.getSharedCanvas`
+  - 游戏排行榜：`tt.setImRankData`、`tt.getImRankList`、`tt.getImRankData`、`tt.setImRankDataInOpenContext`
+  - 网络：`tt.getNetworkType`、`tt.onNetworkStatusChange`、`tt.offNetworkStatusChange`
+- **索引下的各 API 详情页是 JS 渲染**；公开抓取只能拿到
+  导航壳，拿不到签名 / 参数 / 返回结构 / 错误码内容——因此
+  只确认了"API 存在"；字段与语义均为**公开文档未找到（待核）**。
+- **服务端 OpenAPI 细节已在 2026-10-14 复核中取得**（首轮被 JS 渲染挡住）：
+  getAccessToken / code2Session / 玩家排行上报——三个端点、参数、响应、错误
+  码全部确认，并已落地在
+  `src/Chorus.Adapters.Platforms/Douyin/`（`DouyinMiniGameAuthClient` 等，见
+  [platform-douyin.md](platform-douyin.md) §2）——能力表条目
+  `ServerSessionExchange` 已升级为 VerifiedOfficial。
+- **服务端 OpenAPI 菜单已全部看到**（凭证 / 登录 / 数据缓存 / 二维码 / 其他 /
+  订阅消息 / 赛事 ×2）：**没有直播观众事件的服务端推送通道**；
+  直播互动只有客户端侧——`tt.getLiveManager` + LiveManager——不虚构推送客户端。
+- **容器内实时通道（WebSocket / connectSocket）不在官方索引内**
+  （网络类只有上面 3 个 API）→ 实时通信能力**公开文档未找到（待核）**；接入层不得假设小游戏容器
+  提供 WebSocket。
 
-### Verified vs. Pending Verification
+### 已核实与待核对照
 
-| Capability | Status | Basis |
+| 能力 | 状态 | 依据 |
 |---|---|---|
-| Client login to get code (`tt.login`) | **Verified** (API name) | Official JS API index page |
-| Server-side code2session to exchange session | **Verified** (2026-10-14 details) | [code-2-session official documentation](https://developer.open-douyin.com/docs/resource/zh-CN/mini-game/develop/server/log-in/code-2-session); landed, see [platform-douyin.md](platform-douyin.md) §2.2 |
-| In-container WebSocket real-time channel | **Not found in public documentation (pending verification)** | Official index network category has no socket API; server-side OpenAPI has no push channel (confirmed on re-verification) |
-| Open data domain (`tt.getOpenDataContext` / `tt.onMessage`) | **Verified** (API name) | Official JS API index page |
-| Friend leaderboards / cloud storage / game leaderboard APIs | **Verified** (API name) | Official JS API index page |
+| 客户端登录取 code（`tt.login`） | **已核实**（API 名） | 官方 JS API 索引页 |
+| 服务端 code2session 换 session | **已核实**（2026-10-14 细节） | [code-2-session 官方文档](https://developer.open-douyin.com/docs/resource/zh-CN/mini-game/develop/server/log-in/code-2-session)；已落地，见 [platform-douyin.md](platform-douyin.md) §2.2 |
+| 容器内 WebSocket 实时通道 | **公开文档未找到（待核）** | 官方索引网络类无 socket API；服务端 OpenAPI 无推送通道（复核确认） |
+| 开放数据域（`tt.getOpenDataContext` / `tt.onMessage`） | **已核实**（API 名） | 官方 JS API 索引页 |
+| 好友排行 / 云存储 / 游戏排行榜 API | **已核实**（API 名） | 官方 JS API 索引页 |
 
-## 2. Current Implementation Contract (`Chorus.Adapters.Platforms.MiniGame`)
+## 2. 当前实现契约（`Chorus.Adapters.Platforms.MiniGame`）
 
-The integration layer takes the **capability table** as the single source of truth; unverified capabilities are
-unavailable — to prevent fabricating platform capabilities:
+接入层以**能力表**为唯一事实来源；未核实的能力不可用——防止虚构平台能力：
 
 ```
 src/Chorus.Adapters.Platforms/MiniGame/
@@ -61,65 +59,62 @@ src/Chorus.Adapters.Platforms/MiniGame/
 └── MiniGameLeaderboardProjector.cs   // Chorus 排行行 → 平台中性 payload
 ```
 
-The three verified Douyin server-side OpenAPI items (token / code2Session / rank upload) are a
-**dedicated implementation** in `src/Chorus.Adapters.Platforms/Douyin/`
-(`DouyinAccessTokenProvider` / `DouyinMiniGameAuthClient` / `DouyinRankUploadAdapter`, 20 golden tests) — the
-generic layer (configuration-driven) is left to unverified platforms, without duplicating wiring with the
-dedicated implementation; see [platform-douyin.md](platform-douyin.md) §2.
+抖音已核实的三个服务端 OpenAPI（token / code2Session / 排行上报）是
+`src/Chorus.Adapters.Platforms/Douyin/` 里的**专属实现**
+（`DouyinAccessTokenProvider` / `DouyinMiniGameAuthClient` / `DouyinRankUploadAdapter`，20 个金测）——
+通用层（配置驱动）留给未核实平台，不与专属实现重复接线；
+见 [platform-douyin.md](platform-douyin.md) §2。
 
-### 2.1 Capability Table (`MiniGamePlatformCapabilities`)
+### 2.1 能力表（`MiniGamePlatformCapabilities`）
 
-- `Supports(capability)` returns true only for **VerifiedOfficial** capabilities;
-  capabilities not found in public documentation (pending verification) are never available.
-- Credentials / real-device joint debugging items are not capabilities; they are recorded separately in
-  `ExternalPending` (marked "pending external").
-- Unknown platform `TryGet` returns null (fail-visible).
+- `Supports(capability)` 只对 **VerifiedOfficial** 能力返回 true；
+  公开文档未找到（待核）的能力永不可用。
+- 凭据 / 真机联调项不是能力；它们单独记在
+  `ExternalPending`（标"待外部"）。
+- 未知平台 `TryGet` 返回 null（fail-visible）。
 
-### 2.2 Login Session Exchange (`HttpMiniGameLoginExchange`)
+### 2.2 登录会话交换（`HttpMiniGameLoginExchange`）
 
-- Endpoint, AppID, AppSecret, form field names, success flag field, account field names are **all
-  configuration-injected**; no platform-private field names are hardcoded (unverified platforms are explicitly
-  configured by the caller).
-- Missing credentials or endpoint → **reject everything (fail-closed)**: no request sent, ERROR log written
-  (only once).
-- Platform success flag mismatch / missing account id / non-2xx / malformed JSON / network exception →
-  return null.
-- Request body limit 16KB (over-limit bodies are not read or parsed).
-- HttpClient is injected by the caller; this implementation does not dispose it.
+- 端点、AppID、AppSecret、表单字段名、成功标志字段、账号字段名**全部配置注入**；
+  不硬编码任何平台私有字段名（未核实平台由调用方显式配置）。
+- 凭据或端点缺失 → **拒绝一切（fail-closed）**：不发请求、记 ERROR 日志
+  （只记一次）。
+- 平台成功标志不匹配 / 缺账号 id / 非 2xx / JSON 畸形 / 网络异常 →
+  返回 null。
+- 请求体上限 16KB（超限 body 不读不解析）。
+- HttpClient 由调用方注入；本实现不 Dispose 它。
 
-### 2.3 Identity Mapping (`MiniGameIdentityBinder`)
+### 2.3 身份映射（`MiniGameIdentityBinder`）
 
-- Login session → the **Player** identity in `PlatformIdentityRegistry` (§14); the default identity id is
-  deterministically derived as `<platform>:<platformAccountId>` (idempotent on re-login).
-- If the same platform account is already bound to another Chorus identity → **fail-visible** (report the
-  existing mapping, do not implicitly overwrite), to prevent a hijacked login code from taking over someone
-  else's identity.
+- 登录 session → `PlatformIdentityRegistry`（§14）里的 **Player** 身份；默认身份 id 确定性推导为
+  `<platform>:<platformAccountId>`（重登幂等）。
+- 同一平台账号已绑定到别的 Chorus 身份 → **fail-visible**（报出
+  既有映射，不隐式覆盖），防止被劫持的登录码接管他人身份。
 
-### 2.4 Leaderboard Projection (`MiniGameLeaderboardProjector`)
+### 2.4 排行榜投影（`MiniGameLeaderboardProjector`）
 
-- Input is the engine-side authoritative leaderboard rows (ranks are given by the caller; projection
-  **does not re-rank**).
-- Platform with unverified leaderboard capability → return null (do not assume the platform has a
-  leaderboard API).
-- Output is a **platform-neutral row payload** (rank / participantId / score);
-  drawing inside the open data domain sandbox is platform-side JavaScript, **not in this repository**
-  (pending external).
+- 输入是引擎侧权威排行榜行（名次由调用方给出；投影**不重新排名**）。
+- 排行能力未核实的平台 → 返回 null（不假设平台有
+  排行榜 API）。
+- 输出是**平台中性的行 payload**（rank / participantId / score）；
+  开放数据域沙箱内的绘制是平台侧 JavaScript，**不在本仓**
+  （待外部）。
 
-## 3. External Pending List (Credentials and Real-Device Joint Debugging, Explicitly No Guessing)
+## 3. 待外部清单（凭据与真机联调，显式不猜）
 
-- [ ] Mini-game AppID / AppSecret (credentials, to be provided externally, never written into code)
-- [x] Server-side code2session endpoint and parameters (verified against official documentation 2026-10-14 and landed, see [platform-douyin.md](platform-douyin.md) §2.2)
-- [ ] Real-device / developer-tool joint debugging to verify whether an in-container real-time channel (Socket) exists
-- [ ] Leaderboard drawing script inside the open data domain sandbox (platform-side JS, not in this repository)
+- [ ] 小游戏 AppID / AppSecret（凭据，待外部提供，永不写进代码）
+- [x] 服务端 code2session 端点与参数（2026-10-14 对照官方文档核实并落地，见 [platform-douyin.md](platform-douyin.md) §2.2）
+- [ ] 真机 / 开发者工具联调验证容器内是否存在实时通道（Socket）
+- [ ] 开放数据域沙箱内的排行榜绘制脚本（平台侧 JS，不在本仓）
 
-## 4. Acceptance Test Locations
+## 4. 验收测试位置
 
-| Case | Test |
+| 用例 | 测试 |
 |---|---|
-| Capability table verified / pending verification / pending external | `MiniGamePlatformCapabilitiesTests` |
-| code2session success / failure / fail-closed / field names / size limit | `MiniGameLoginExchangeTests` |
-| Douyin server-side OpenAPI three items (token / code2Session / rank upload) | `DouyinMiniGameClientTests` / `DouyinRankUploadAdapterTests` |
-| Identity mapping determinism / idempotency / conflict fail-visible | `MiniGameIdentityBinderTests` |
-| Leaderboard projection capability gating / truncation / input validation | `MiniGameLeaderboardProjectorTests` |
+| 能力表已核实 / 待核 / 待外部 | `MiniGamePlatformCapabilitiesTests` |
+| code2session 成功 / 失败 / fail-closed / 字段名 / 大小限制 | `MiniGameLoginExchangeTests` |
+| 抖音服务端 OpenAPI 三项（token / code2Session / 排行上报） | `DouyinMiniGameClientTests` / `DouyinRankUploadAdapterTests` |
+| 身份映射确定性 / 幂等 / 冲突 fail-visible | `MiniGameIdentityBinderTests` |
+| 排行榜投影能力门控 / 截断 / 入参校验 | `MiniGameLeaderboardProjectorTests` |
 
-Related: [platform-douyin.md](platform-douyin.md) (live callback), [adapter-contract.md](adapter-contract.md) (adapter contract).
+相关：[platform-douyin.md](platform-douyin.md)（直播回调）、[adapter-contract.md](adapter-contract.md)（适配器契约）。
