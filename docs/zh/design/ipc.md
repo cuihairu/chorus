@@ -1,88 +1,88 @@
 ---
-title: Communication Abstraction (In-Process / Inter-Process)
+title: 通信抽象（进程内 / 进程间）
 ---
 
 
-# Communication Abstraction (In-Process / Inter-Process)
+# 通信抽象（进程内 / 进程间）
 
-The approach you mentioned is correct: encapsulate "in-process communication / inter-process communication" uniformly as a single `channel` (message queue), provide an Actor (single-threaded mailbox) model on top of it, so the upper layers only face `Tell/Publish`, thereby shielding the underlying details.
+你提到的思路是对的：把"进程内通信 / 进程间通信"统一封装为单一 `channel`（消息队列），在其上提供 Actor（单线程信箱）模型，让上层只面对 `Tell/Publish`，从而屏蔽底层细节。
 
-## Unified Abstraction
+## 统一抽象
 
-- **Channel (message delivery)**: responsible for delivering `Envelope` to some "destination"
-- **Actor (ordered processing)**: each `sessionId` corresponds to one actor, guaranteeing that messages of the same session are processed serially
-- **Router (routing)**: decides which actor/which process the messages of the same `sessionId` should land on
+- **Channel（消息投递）**：负责把 `Envelope` 投递到某个"目的地"
+- **Actor（有序处理）**：每个 `sessionId` 对应一个 actor，保证同一会话的消息被串行处理
+- **Router（路由）**：决定同一 `sessionId` 的消息应落到哪个 actor / 哪个进程
 
-## Semantic Differences (Must Be Handled Explicitly)
+## 语义差异（必须显式处理）
 
-Even though the abstraction is unified, inter-process communication brings unavoidable semantic differences:
+即便抽象统一，进程间通信仍带来无法回避的语义差异：
 
-- **Delivery semantics**: IPC/network is generally at-least-once (may duplicate) → must be idempotent/deduplicated
-- **Ordering**: rely on `orderingKey=sessionId` for partitioning/routing, otherwise messages will be out of order
-- **Backpressure**: when the queue backs up, there must be rate limiting/downsampling/snapshot catch-up strategies
+- **投递语义**：IPC/网络一般是 at-least-once（可能重复）→ 必须幂等/去重
+- **顺序**：依赖 `orderingKey=sessionId` 做分区/路由，否则消息会乱序
+- **背压**：队列积压时必须有限流/降采样/快照追赶策略
 
-## Transport Layer Priority (Localhost First)
+## 传输层优先级（localhost 优先）
 
-Layered by "implementation complexity vs performance gain" (the order you mentioned is also reasonable):
+按"实现复杂度 vs 性能收益"分层（你给的顺序也合理）：
 
-1. **In-process queue (Channel)**: fastest and most reliable (Monolith default)
-2. **Local IPC (Unix Domain Socket / NamedPipe)**: cross-process but still on the same machine, simple operations
-3. **localhost TCP**: more general for cross-process/cross-container (a transitional solution before splitting into containers/multiple hosts)
-4. **Remote TCP/message queue**: multi-machine deployment
-5. **Shared memory (MemoryMappedFile + RingBuffer + FlatBuffers)**: highest throughput, but the largest implementation and debugging cost (recommended only after a clear performance bottleneck; for detailed evaluation and trigger conditions see [Shared Memory IPC Transport Evaluation](./shared-memory-transport.md))
+1. **进程内队列（Channel）**：最快最可靠（Monolith 默认）
+2. **本机 IPC（Unix Domain Socket / NamedPipe）**：跨进程但同机，运维简单
+3. **localhost TCP**：更通用的跨进程/跨容器方案（拆容器/多机前的过渡方案）
+4. **远程 TCP/消息队列**：多机部署
+5. **共享内存（MemoryMappedFile + RingBuffer + FlatBuffers）**：吞吐最高，但实现与调试成本最大（仅在明确的性能瓶颈后引入；详细评估与触发条件见[共享内存 IPC 传输评估](./shared-memory-transport.md)）
 
-## Current Repository State
+## 仓库现状
 
-- The monolith (`InProc`) is still the default deployment form; split mode (Gateway + EngineHost) is implemented and usable (see [Split Mode](../guide/split-mode.md))
-- `Chorus.Messaging` is the channel abstraction and transport layer:
-  - `InProcMessageBus`: in-process queue
-  - `NamedPipeMessageBus`: local inter-process IPC (Windows friendly)
-  - `UnixDomainSocketMessageBus`: local inter-process IPC (Linux/macOS; newer Windows versions support AF_UNIX)
-  - `TcpMessageBus`: localhost TCP (cross-container/cross network namespace)
-  - `HttpMessageBus`: HTTP one-way delivery (behind a remote gateway layer / reverse proxy)
-  - `FanOutMessageBus`: publisher-side fanout wrapper, publishes to N child buses one by one, a single failure doesn't block the rest, failures are aggregated and thrown
+- 单体（`InProc`）仍是默认部署形态；分离模式（Gateway + EngineHost）已实现可用（见[分离模式](../guide/split-mode.md)）
+- `Chorus.Messaging` 是通道抽象与传输层：
+  - `InProcMessageBus`：进程内队列
+  - `NamedPipeMessageBus`：本机进程间 IPC（Windows 友好）
+  - `UnixDomainSocketMessageBus`：本机进程间 IPC（Linux/macOS；较新的 Windows 也支持 AF_UNIX）
+  - `TcpMessageBus`：localhost TCP（跨容器/跨网络命名空间）
+  - `HttpMessageBus`：HTTP 单向投递（远程网关层/反向代理之后）
+  - `FanOutMessageBus`：发布侧扇出包装，逐个发布到 N 个子总线，单个失败不阻塞其余，失败聚合后抛出
 
-### Channel Naming and Multiple Gateways
+### 通道命名与多 Gateway
 
-`IpcEndpointBuilder.Build` generates a pair of channels:
+`IpcEndpointBuilder.Build` 生成一对通道：
 
-- gw→eng (commands): `{prefix}_gw_to_eng.sock` (UDS) / `{prefix}.gw_to_eng` (NamedPipe), not distinguished per gateway (all gateways share one worker's channel, with a single server on the engine side as the sink), but distinguished per worker: EngineHost sets `Ipc:WorkerId` to suffix its own channel name (`{prefix}_gw_to_eng_{workerId}.sock` / `{prefix}.gw_to_eng.{workerId}`; empty keeps the legacy single-worker name), so one gateway can route rooms to several workers
-- eng→gw (snapshots/welcome/heartbeat): one per gateway. The Gateway configures its own channel with a `Gateway:Id` suffix (`{prefix}_eng_to_gw_{id}.sock` / `{prefix}.eng_to_gw.{id}`); if id is empty, use the old name (`{prefix}_eng_to_gw.sock`). EngineHost configures `Ipc:GatewayIds` to list all gateway ids, creating one client per id's channel and fanning out
-- eng→gw sharding (`Ipc:EngToGwShards > 1`, `ShardedMessageBus` / `FanInMessageBus`): each gateway's channel splits into `{prefix}_eng_to_gw_{id}_{k}.sock` / `{prefix}.eng_to_gw.{id}.{k}` for shard index `k` in `[0, EngToGwShards)`. The engine publishes every frame to exactly one shard, picked by a stable FNV-1a hash of the session id, so a session always travels the same socket and per-session order is untouched while different sessions stop queueing behind one socket's write. The gateway binds one server per shard and `FanInMessageBus` merges the K streams into its single dispatch loop, keeping today's single-consumer semantics. Count `1` (the default) produces the unsuffixed names above byte-for-byte; the shard index is an internal build parameter, not a config key, and a non-positive count or out-of-range index fails fast at endpoint construction
+- gw→eng（命令）：`{prefix}_gw_to_eng.sock`（UDS）/ `{prefix}.gw_to_eng`（NamedPipe），不按 gateway 区分（所有 gateway 共享一个 worker 的通道，引擎侧单服务器作为汇聚点），但按 worker 区分：EngineHost 设置 `Ipc:WorkerId` 给自己的通道名加后缀（`{prefix}_gw_to_eng_{workerId}.sock` / `{prefix}.gw_to_eng.{workerId}`；为空则保留旧的单 worker 名），这样一个 gateway 可以把房间路由到多个 worker
+- eng→gw（快照/welcome/心跳）：每个 gateway 一个。Gateway 用 `Gateway:Id` 后缀配置自己的通道（`{prefix}_eng_to_gw_{id}.sock` / `{prefix}.eng_to_gw.{id}`）；id 为空则用旧名（`{prefix}_eng_to_gw.sock`）。EngineHost 配置 `Ipc:GatewayIds` 列出所有 gateway id，为每个 id 的通道建一个客户端并扇出
+- eng→gw 分片（`Ipc:EngToGwShards > 1`，`ShardedMessageBus` / `FanInMessageBus`）：每个 gateway 的通道拆成 `{prefix}_eng_to_gw_{id}_{k}.sock` / `{prefix}.eng_to_gw.{id}.{k}`，分片索引 `k` 属于 `[0, EngToGwShards)`。引擎每帧恰好发布到一个分片，由 session id 的稳定 FNV-1a 哈希选出，因此一个会话始终走同一条 socket、会话内顺序不受影响，而不同会话不再在同一条 socket 的写入上排队。gateway 每个分片绑一个服务器，`FanInMessageBus` 把 K 路流合并进单个分发循环，保持今天的单消费者语义。计数为 `1`（默认）时逐字节产出上面无后缀的名字；分片索引是内部构建参数而非配置键，非正计数或越界索引在端点构造时即快速失败
 
-Legacy static IPC channels do not distinguish TCP/HTTP ports and URLs by gateway/worker id; multiple local gateways sharing a worker should use UDS/NamedPipe. In ControlHost mode, each Worker reports its advertised endpoint and Gateway builds the selected worker channel from the routing snapshot, including TCP/HTTP endpoints. This path is wired; independent-host network acceptance remains open (see [Process Topology](./process-topology.md) §4).
+遗留静态 IPC 通道不按 gateway/worker id 区分 TCP/HTTP 端口与 URL；多个本地 gateway 共享一个 worker 应使用 UDS/NamedPipe。在 ControlHost 模式下，每个 Worker 上报其通告端点，Gateway 从路由快照构建所选 worker 的通道，含 TCP/HTTP 端点。该路径已接通；独立主机网络验收仍 open（见[进程拓扑](./process-topology.md) §4）。
 
-### Socket File Lifecycle (2026-10-16 Decision)
+### Socket 文件生命周期（2026-10-16 决策）
 
-The UDS socket file is the path entry created by bind, and ownership of the right to delete it previously caused a race: since .NET 6, `Socket.Dispose` unconditionally unlinks the path bound with `UnixDomainSocketEndPoint` (dotnet/runtime#52103, no opt-out). During a rolling restart the new process deletes-binds first, snatching the same-named path, and the old process disposes afterwards — it unlinks by **path**, cutting off the file entry of the new process's socket: the kernel socket is not dead, but all subsequent connections get ENOENT (previously load tests worked around it with a manual `rm -f /tmp/chorus/*.sock`, and this was the root cause).
+UDS socket 文件是 bind 创建的路径项，此前其删除权归属引发竞态：自 .NET 6 起，`Socket.Dispose` 无条件 unlink 用 `UnixDomainSocketEndPoint` 绑定的路径（dotnet/runtime#52103，无关闭选项）。滚动重启时新进程先 delete-bind 抢占同名路径，旧进程随后 dispose——它按**路径** unlink，切断了新进程 socket 的文件项：内核 socket 没死，但后续所有连接都得 ENOENT（此前压测靠手工 `rm -f /tmp/chorus/*.sock` 规避，这就是根因）。
 
-Decision (proxy-decided): `UnixDomainSocketMessageBus` does server-side bind with a custom `RawUnixEndPoint` (self-managed sockaddr_un serialization, layout identical to `UnixDomainSocketEndPoint`). The BCL's deletion tracking only recognizes the `UnixDomainSocketEndPoint` type itself (sealed), so a custom endpoint doesn't enter the tracking, and the path deletion right returns to the bus itself; on close, delete under a **bind identity guard** — record the `CreationTimeUtc` of the file at the path at bind time (st_ctime on Unix, metadata no longer changes after bind), and only delete when the file is still the one this process bound; a same-named file re-bound by a new process must never be deleted by mistake. The deletion action is hooked to `DisposeAsync` (the tail of the accept loop is unreliable: a `Task.Run` task with a cancellation token may never be scheduled). Residual files from an abnormal exit are covered by the next `StartServer`'s delete-bind flow, and when the identity is unknown, conservatively don't delete. The client's `ConnectAsync` keeps the BCL endpoint (never binds, doesn't enter deletion tracking).
+决策（委托决策）：`UnixDomainSocketMessageBus` 用自定义 `RawUnixEndPoint` 做服务端 bind（自管 sockaddr_un 序列化，布局与 `UnixDomainSocketEndPoint` 完全一致）。BCL 的删除追踪只识别 `UnixDomainSocketEndPoint` 类型本身（sealed），自定义端点不进入追踪，路径删除权回到 bus 自身；关闭时在 **bind 身份守卫**下删除——bind 时记录路径上文件的 `CreationTimeUtc`（Unix 上为 s_ctime，bind 后元数据不再变化），仅当文件仍是本进程绑定的那个才删除；新进程重绑的同名文件绝不可被误删。删除动作挂在 `DisposeAsync` 上（accept 循环尾巴不可靠：带取消令牌的 `Task.Run` 任务可能永远得不到调度）。异常退出的残留文件由下一次 `StartServer` 的 delete-bind 流程兜住，身份未知时保守不删。客户端的 `ConnectAsync` 保留 BCL 端点（从不 bind，不进入删除追踪）。
 
-## Regarding Windows "Support for Unix Sockets"
+## 关于 Windows 的"Unix Socket 支持"
 
-Windows's AF_UNIX (Unix Domain Socket) support still varies by system version and runtime environment (e.g. containers, permissions, path rules); therefore at the framework level it is recommended:
+Windows 的 AF_UNIX（Unix Domain Socket）支持随系统版本与运行环境（如容器、权限、路径规则）而异；因此在框架层面建议：
 
-- Default strategy: **as long as the runtime environment supports UDS, use UDS**
-- Only downgrade in the following cases: the runtime environment doesn't support it, or UDS bind/connect fails (e.g. old systems, path/permission restrictions)
-  - Downgrade to: NamedPipe (native and mature on Windows)
+- 默认策略：**只要运行环境支持 UDS，就用 UDS**
+- 仅在以下情况降级：运行环境不支持，或 UDS bind/connect 失败（如旧系统、路径/权限限制）
+  - 降级到：NamedPipe（Windows 上原生成熟）
 
-## Transport Selection and Configuration
+## 传输选择与配置
 
-Manual selection is provided on `Ipc:Transport`, to be compatible with the different deployment forms of "single process / split process / split container":
+在 `Ipc:Transport` 上提供手动选择，以兼容"单进程/拆进程/拆容器"的不同部署形态：
 
-- `Auto`: prefer UDS (use it if available), downgrade to NamedPipe on failure/unsupported
-- `UnixDomainSocket`: force UDS
-- `NamedPipe`: force NamedPipe
-- `Tcp`: force localhost TCP (requires fixed port configuration, suitable for splitting into containers or scenarios needing explicit port mapping)
-- `Http`: force HTTP one-way delivery (better suited to remote gateway layers, reverse proxies, simple cross-host connectivity)
+- `Auto`：优先 UDS（可用则用），失败/不支持时降级到 NamedPipe
+- `UnixDomainSocket`：强制 UDS
+- `NamedPipe`：强制 NamedPipe
+- `Tcp`：强制 localhost TCP（需固定端口配置，适合拆容器或需要显式端口映射的场景）
+- `Http`：强制 HTTP 单向投递（更适合远程网关层、反向代理、简单的跨主机连通）
 
-New configuration items added for TCP mode (both ends must be consistent):
+TCP 模式新增配置项（两端必须一致）：
 
-- `Ipc:TcpHost`: default `127.0.0.1`
-- `Ipc:TcpGatewayToEnginePort`: Gateway -> Engine (command channel) listening port, default `27500`
-- `Ipc:TcpEngineToGatewayPort`: Engine -> Gateway (event/snapshot channel) listening port, default `27501`
+- `Ipc:TcpHost`：默认 `127.0.0.1`
+- `Ipc:TcpGatewayToEnginePort`：Gateway -> Engine（命令通道）监听端口，默认 `27500`
+- `Ipc:TcpEngineToGatewayPort`：Engine -> Gateway（事件/快照通道）监听端口，默认 `27501`
 
-New configuration items added for HTTP mode (both ends must be consistent):
+HTTP 模式新增配置项（两端必须一致）：
 
-- `Ipc:HttpGatewayToEngineUrl`: Gateway -> Engine (command channel) receiving address, default `http://127.0.0.1:27600/gw-to-eng/`
-- `Ipc:HttpEngineToGatewayUrl`: Engine -> Gateway (event/snapshot channel) receiving address, default `http://127.0.0.1:27601/eng-to-gw/`
+- `Ipc:HttpGatewayToEngineUrl`：Gateway -> Engine（命令通道）接收地址，默认 `http://127.0.0.1:27600/gw-to-eng/`
+- `Ipc:HttpEngineToGatewayUrl`：Engine -> Gateway（事件/快照通道）接收地址，默认 `http://127.0.0.1:27601/eng-to-gw/`
