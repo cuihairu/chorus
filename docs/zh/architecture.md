@@ -1,31 +1,28 @@
+# 架构：分层、决策与权衡
 
-# Architecture: Layers, Decisions and Trade-offs
+本页回答三个问题：Chorus 如何分层、**为何做这些选择**（放弃了哪些备选），以及这些选择在哪些约束下成立。各详情页各自负责一个领域；本页是地图加推理：
 
-This page answers three questions: how Chorus is layered, **why these choices were made** (and which
-alternatives were given up), and under which constraints the choices hold. Detail pages each own one
-area; this is the map plus the reasoning:
+- 进程拓扑与组件索引：[当前架构总览](./design/architecture-overview.md)
+- 组件图与深潜：[架构设计](./design/architecture.md)、
+  [帧同步设计](./design/frame-sync.md)、[IPC 设计](./design/ipc.md)、
+  [进程拓扑](./design/process-topology.md)
+- 逐条决策记录（供评审）：[决策日志](./decisions.md)
+- 能力用法：[对战](./guide/battle.md)、[匹配](./guide/matchmaking.md)、
+  [排行榜](./guide/leaderboard.md)
 
-- Process topology and component index: [current architecture overview](./design/architecture-overview.md)
-- Component diagrams and deep dives: [architecture design](./design/architecture.md),
-  [frame sync design](./design/frame-sync.md), [IPC design](./design/ipc.md),
-  [process topology](./design/process-topology.md)
-- Decision-by-decision records (for review): [decision log](./decisions.md)
-- Capability usage: [battle](./guide/battle.md), [matchmaking](./guide/matchmaking.md),
-  [leaderboard](./guide/leaderboard.md)
+## 分层与模块拆分
 
-## Layering and module split
+自底向上，13 个项目分属五层（依赖只允许向下）：
 
-Bottom-up, the 13 projects fall into five layers (dependencies may only point downward):
-
-| Layer | Projects | Responsibility |
+| 层 | 项目 | 职责 |
 |---|---|---|
-| Protocol | `Chorus.Protocol` | Message records (`ClientHello`/`ServerSnapshot`/…), JSON serialization, protocol version policy |
-| Engine | `Chorus.Engine` | Sessions and the tick loop (`SessionActor`), frame history (`FrameHistory`), matchmaking (`Matchmaking`), module contract (`Abstractions`) |
-| Data | `Chorus.Data` | Leaderboard storage (`LeaderboardStore`), data command model |
-| Ingest | `Chorus.Adapters.*` (platform adapters), `Chorus.Gateway.Core` (shared implementation of both faces + metrics/leaderboard HTTP) | Platform signature verification/mapping; the ingress and streamer-ws listener faces |
-| Hosts and consumers | `Chorus.Server` (single process), `Chorus.Gateway` + `Chorus.EngineHost` (split), `Chorus.Messaging` (IPC), `Chorus.SampleGame` (reference game), `Chorus.Client` (client SDK), `Chorus.LoadTool` (load tool) | Process assembly and external entry points |
+| 协议 | `Chorus.Protocol` | 消息记录（`ClientHello`/`ServerSnapshot`/…）、JSON 序列化、协议版本策略 |
+| 引擎 | `Chorus.Engine` | 会话与 tick 循环（`SessionActor`）、帧历史（`FrameHistory`）、匹配（`Matchmaking`）、模块契约（`Abstractions`） |
+| 数据 | `Chorus.Data` | 排行榜存储（`LeaderboardStore`）、数据命令模型 |
+| 摄取 | `Chorus.Adapters.*`（平台适配器）、`Chorus.Gateway.Core`（两面共享实现 + 指标/排行榜 HTTP） | 平台签名校验/映射；入口与主播 ws 监听面 |
+| 宿主与消费者 | `Chorus.Server`（单进程）、`Chorus.Gateway` + `Chorus.EngineHost`（分离）、`Chorus.Messaging`（IPC）、`Chorus.SampleGame`（参考游戏）、`Chorus.Client`（客户端 SDK）、`Chorus.LoadTool`（压测工具） | 进程装配与外部入口点 |
 
-The data flow of one audience interaction (the single-process shape saves one IPC hop):
+一次观众互动的数据流（单进程形态省一跳 IPC）：
 
 ```mermaid
 flowchart LR
@@ -39,188 +36,109 @@ flowchart LR
     H --> C
 ```
 
-## Two deployment shapes, one boundary
+## 两种部署形态，一条边界
 
-The same code, two assemblies: `Chorus.Server` single process; `Chorus.Gateway` + `Chorus.EngineHost`
-split. Both shapes **share the same pair of listener faces** (`PlatformIngressFace`,
-`StreamerWsFace`, in `Chorus.Gateway.Core`); session state always lives on the engine side
-(single-process `SessionManager`, split `EngineIpcService`) — the gateway holds no session state.
+同一套代码，两个装配：`Chorus.Server` 单进程；`Chorus.Gateway` + `Chorus.EngineHost` 分离。两种形态**共享同一对监听面**（`PlatformIngressFace`、`StreamerWsFace`，在 `Chorus.Gateway.Core`）；会话状态永远在引擎侧（单进程 `SessionManager`，分离 `EngineIpcService`）——网关不持有会话状态。
 
-> Why single-process first: the smallest operational surface (one process, no IPC), and load tests
-> show a single worker is enough at the several-hundred-rooms scale
-> (todo.md:156: 800 rooms + 30k rps signed events, `ingested==applied==45287`, peak CPU 27.6).
-> Split-mode trigger conditions and the roadmap: [process topology](./design/process-topology.md) §4.
+> 为何先单进程：最小的运维面（单进程、无 IPC），且压测显示单 worker 在数百房间规模足够
+> （todo.md:156：800 房间 + 30k rps 签名事件，`ingested==applied==45287`，峰值 CPU 27.6）。
+> 分离模式触发条件与路线图：[进程拓扑](./design/process-topology.md) §4。
 
-## Data flow (the life of one event)
+## 数据流（一个事件的一生）
 
-Split shape, with a source anchor for every step (written `file:line`, as of main):
+分离形态，每步带源码锚点（写成 `file:line`，以 main 为准）：
 
-1. A platform callback arrives at `POST /ingress/{platform}` (`src/Chorus.Gateway/Program.cs:148`,
-   gated by `Gateway:Roles`).
-2. `PlatformIngressFace` applies, in order: rate limiting (`:58` 429), body size cap (`:68` 413),
-   fail-closed signature verification (`:76` 401), platform mapping, unknown-event rejection
-   (`:93` 400), TTL dedup (`:101` 200 duplicated), faction assignment, session routing.
-3. The gateway wraps the event into an `Envelope` (`gw.audienceEvent`) and sends it to the engine
-   over the IPC bus (`src/Chorus.Gateway/GatewayIpcService.cs`; envelopes live in `src/Chorus.Messaging/`).
-4. The engine receive loop dispatches by type (`src/Chorus.EngineHost/EngineIpcService.cs:294`) and
-   writes into the target session's buffer (`SessionActor.TryIngestAudienceEventAsync`,
-   `src/Chorus.Engine/Session/SessionActor.cs:190`).
-5. The tick loop (`SessionActor.cs:518`) hands buffered events to the game rules every 66ms
-   (`SessionConfig.cs:4`): `IGameModule.ApplyEvents`
-   (`src/Chorus.Engine/Abstractions/IGameModule.cs:10`).
-6. The module produces new state; the engine encodes it as a `ServerSnapshot` (one frame per tick,
-   `SessionConfig.cs:6`); recent frames enter `FrameHistory` (byte cap `SessionConfig.cs:24`) for
-   resync replay.
-7. Snapshots travel back to the gateway over the eng→gw bus (`GatewayIpcService.cs:198`,
-   dispatch `:213`), then the WS face pushes them to clients.
-8. Clients ack after applying a frame; on detecting a gap they send `resync`, and the engine replays
-   a window from frame history (`src/Chorus.Engine/Session/FrameHistory.cs:79`) or pushes a forced
-   snapshot to realign (`SessionActor.cs:573`).
+1. 平台回调到达 `POST /ingress/{platform}`（`src/Chorus.Gateway/Program.cs:148`，由 `Gateway:Roles` 门控）。
+2. `PlatformIngressFace` 依序应用：限流（`:58` 429）、请求体上限（`:68` 413）、fail-closed 签名校验（`:76` 401）、平台映射、未知事件拒绝（`:93` 400）、TTL 去重（`:101` 200 duplicated）、阵营分配、会话路由。
+3. 网关把事件包成 `Envelope`（`gw.audienceEvent`），经 IPC 总线发往引擎（`src/Chorus.Gateway/GatewayIpcService.cs`；信封在 `src/Chorus.Messaging/`）。
+4. 引擎接收循环按类型分发（`src/Chorus.EngineHost/EngineIpcService.cs:294`），写入目标会话的缓冲（`SessionActor.TryIngestAudienceEventAsync`，`src/Chorus.Engine/Session/SessionActor.cs:190`）。
+5. tick 循环（`SessionActor.cs:518`）每 66ms 把缓冲事件交给玩法规则（`SessionConfig.cs:4`）：`IGameModule.ApplyEvents`（`src/Chorus.Engine/Abstractions/IGameModule.cs:10`）。
+6. 模块产出新状态；引擎编码为 `ServerSnapshot`（每 tick 一帧，`SessionConfig.cs:6`）；近期帧进 `FrameHistory`（字节上限 `SessionConfig.cs:24`）供重同步回放。
+7. 快照经 eng→gw 总线回网关（`GatewayIpcService.cs:198`，分发 `:213`），然后 WS 面推给客户端。
+8. 客户端应用一帧后 ack；检测到缺口时发 `resync`，引擎从帧历史回放窗口（`src/Chorus.Engine/Session/FrameHistory.cs:79`）或推强制快照重新对齐（`SessionActor.cs:573`）。
 
-## Key decisions and the alternatives that were rejected
+## 关键决策与被拒备选
 
-Each decision gets four things: the decision, the reason, the rejected alternative, the constraints
-under which it holds.
+每条决策给四件事：决策、理由、被拒备选、成立约束。
 
-### 1. Server-authoritative tick + snapshots, not lockstep
+### 1. 服务端权威 tick + 快照，而非锁步
 
-- **Decision**: the engine advances logic frames at a fixed cadence (default 66ms); clients do not
-  advance game logic — they render server snapshots and align to them.
-- **Reason**: audience interaction (danmaku/gifts) is a low-frequency, reorderable, droppable social
-  signal, not competitive input. Lockstep (waiting for the slowest peer) lets one laggy viewer's
-  client slow the whole room, while live streaming already tolerates seconds of interaction latency.
-- **Rejected alternative**: lockstep (input-frequency sensitive, requires everyone-online
-  semantics); client authority + server relay (cannot make authoritative calls such as leaderboards
-  or anti-cheat). See [frame sync design](./design/frame-sync.md).
-- **Constraints**: interaction latency must be tolerable at ≥ one tick + delivery time; a single
-  room does not have competitive-grade (millisecond) adjudication needs.
+- **决策**：引擎按固定节奏（默认 66ms）推进逻辑帧；客户端不推进玩法逻辑——它们渲染服务端快照并对齐。
+- **理由**：观众互动（弹幕/礼物）是低频、可重排、可丢弃的社交信号，不是竞技输入。锁步（等最慢对端）会让一个卡顿观众的客户端拖慢整个房间，而直播本就容忍秒级互动延迟。
+- **被拒备选**：锁步（对输入频率敏感、需要全员在线语义）；客户端权威 + 服务端中继（无法做权威判定如排行榜或反作弊）。见[帧同步设计](./design/frame-sync.md)。
+- **约束**：互动延迟须容忍在 ≥ 一个 tick + 投递时间；单个房间无竞技级（毫秒）判定需求。
 
-### 2. Session state lives only in the engine; the gateway is stateless
+### 2. 会话状态只在引擎；网关无状态
 
-- **Decision**: in both the single-process and split shapes, session and client state live only in
-  the engine-side actor (`SessionActor`); the gateway only verifies, maps, dedups and forwards.
-- **Reason**: both deployment shapes stay semantically identical (the same face pair shared
-  byte-for-byte); when gateway replicas or multiple workers come later, there is exactly one
-  consistency boundary.
-- **Rejected alternative**: the gateway builds sessions locally and syncs to the engine — two
-  authoritative copies, and every rule written twice in the split shape.
-- **Constraints**: holds within a single worker's session capacity cap (`SessionConfig.cs:17`,
-  default 200, tunable). ControlHost mode routes rooms across workers; production multi-host validation remains open.
+- **决策**：单进程与分离两种形态下，会话与客户端状态只在引擎侧 actor（`SessionActor`）；网关只校验、映射、去重与转发。
+- **理由**：两种部署形态语义完全一致（共享同一对面，逐字节相同）；将来网关副本或多 worker 时，恰好一条一致性边界。
+- **被拒备选**：网关本地建会话再同步到引擎——两份权威拷贝，分离形态下每条规则写两遍。
+- **约束**：在单 worker 的会话容量上限内成立（`SessionConfig.cs:17`，默认 200，可调）。ControlHost 模式把房间跨 worker 路由；生产多主机验证仍 open。
 
-### 3. Single process first, faces split up front (not three processes from day one)
+### 3. 先单进程，面先行拆分（不是第一天就三进程）
 
-- **Decision**: listener code sinks into a shared library (faces); the process boundary is
-  deferred; both shapes are available today.
-- **Reason**: process splitting is an operational cost, not a feature; cut the logical boundary
-  (faces) first, and let physical splitting wait for load evidence. Trigger conditions and the
-  decision record: [process topology](./design/process-topology.md) §4, [decision log](./decisions.md) D5.
-- **Rejected alternative**: three processes on day one (two extra latency hops and operational
-  surface, no benefit before load testing); single process forever (single-point capacity ceiling,
-  the ingest face cannot scale horizontally).
+- **决策**：监听代码沉入共享库（面）；进程边界推迟；两种形态今天都可用。
+- **理由**：进程拆分是运维成本而非功能；先切逻辑边界（面），物理拆分等负载证据。触发条件与决策记录：[进程拓扑](./design/process-topology.md) §4、[决策日志](./decisions.md) D5。
+- **被拒备选**：第一天三进程（多两跳延迟与运维面，压测前无收益）；永远单进程（单点容量天花板，入口面无法横向扩展）。
 
-### 4. IPC: UDS-first length-prefixed JSON envelopes, not gRPC/shared memory
+### 4. IPC：UDS 优先的长度前缀 JSON 信封，而非 gRPC/共享内存
 
-- **Decision**: a self-managed `Envelope` message bus between engine and gateway;
-  `Ipc:Transport=Auto` defaults to UDS (`/tmp/chorus/*.sock`), falls back to named pipe, optional
-  TCP/HTTP; the frame format = 4-byte little-endian length + JSON payload.
-- **Reason**: UDS is the main path for same-machine splits (kernel-direct, no serialization
-  framework overhead); JSON envelopes let the protocol records be reused directly
-  (`Chorus.Protocol`'s one message set serves both WS and IPC); length prefixing is self-describing
-  with no framework dependency.
-- **Rejected alternative**: gRPC (an extra layer of code generation and version coupling, while
-  message bodies already have record contracts); shared-memory ring buffers (best latency but high
-  complexity; evaluated and deferred, see [shared memory evaluation](./design/shared-memory-transport.md)).
-- **Constraints**: single machine / same pod deployments; cross-machine deployments use TCP/HTTP
-  transports (latency and throughput budgets to be assessed by the deployer).
-  Channel details: [IPC design](./design/ipc.md).
+- **决策**：引擎与网关间自管 `Envelope` 消息总线；`Ipc:Transport=Auto` 默认 UDS（`/tmp/chorus/*.sock`），回退命名管道，可选 TCP/HTTP；帧格式 = 4 字节小端长度 + JSON 载荷。
+- **理由**：UDS 是同机拆分的主路径（内核直连，无序列化框架开销）；JSON 信封让协议记录直接复用（`Chorus.Protocol` 同一套消息同时服务 WS 与 IPC）；长度前缀自描述、无框架依赖。
+- **被拒备选**：gRPC（多一层代码生成与版本耦合，而消息体已有记录契约）；共享内存环形缓冲（延迟最好但复杂度高；已评估并推迟，见[共享内存评估](./design/shared-memory-transport.md)）。
+- **约束**：单机/同 pod 部署；跨机部署用 TCP/HTTP 传输（延迟与吞吐预算由部署方评估）。通道细节：[IPC 设计](./design/ipc.md)。
 
-### 5. ControlHost checkpoints for controlled rooms; standalone mode remains in memory
+### 5. 受控房间用 ControlHost 检查点；独立模式仍在内存
 
-- **Decision**: standalone `Chorus.Server` keeps runtime state in memory. With `Control:Url`,
-  EngineHost commits each room tick with an owner/epoch fence and ControlHost stores a durable
-  checkpoint; a replacement owner restores the latest committed checkpoint.
-- **Reason**: controlled multi-worker rooms need shared authority and recoverable state, while
-  standalone development retains a simple no-database path.
-- **Storage choice**: PostgreSQL 16+ primary with a synchronous standby is selected for production
-  multi-worker use; SQLite remains the development/single-host default. Provider capacity and
-  independent-host replication/failover remain open in `todo.md` ROOM-11/12.
-- **Constraints**: checkpoint persistence does not provide event replay or prove cross-host HA.
-  See [Room Control Storage](./architecture/room-control-storage.md) and
-  [Multi-Machine Rooms](./architecture/multi-machine-rooms.md).
+- **决策**：独立 `Chorus.Server` 把运行态留在内存。配 `Control:Url` 时，EngineHost 以 owner/epoch 围栏提交每房间 tick，ControlHost 存持久检查点；替换 owner 恢复最新已提交检查点。
+- **理由**：受控多 worker 房间需要共享权威与可恢复状态，而独立开发保留简单无数据库路径。
+- **存储选择**：生产多 worker 选用 PostgreSQL 16+ 主库 + 同步备库；SQLite 仍是开发/单主机默认。Provider 容量与独立主机复制/故障切换在 `todo.md` ROOM-11/12 仍 open。
+- **约束**：检查点持久化不提供事件回放，也不证明跨主机 HA。见[房间控制存储](./architecture/room-control-storage.md)与[多机房间](./architecture/multi-machine-rooms.md)。
 
-### 6. Platform ingest: fail-closed signature routing (not permissive ingest)
+### 6. 平台入口：fail-closed 签名路由（而非宽容入口）
 
-- **Decision**: one named verifier per platform (`Douyin`/`Kuaishou`/`Bilibili`); routing selects
-  by platform name; a missing verifier or missing key is always rejected (401) with no fallback
-  pass-through; `Ingress:AllowAll` is dev-only and logs loudly at startup.
-- **Reason**: ingest is a public callback surface; the cost of forged events (score/board farming)
-  lands directly on the game economy.
-- **Rejected alternative**: accept without verification (anyone can write events); unified gateway
-  verification (platform signature algorithms differ; forcing them together invites the
-  shared-secret anti-pattern). Decision records D2–D4.
-- **Constraints**: a new platform must bring its own verifier and mapper (template:
-  [platform adapter contract](./reference/adapter-contract.md)).
+- **决策**：每平台一个具名校验器（`Douyin`/`Kuaishou`/`Bilibili`）；路由按平台名选择；缺校验器或缺密钥一律拒绝（401），无放行回退；`Ingress:AllowAll` 仅开发，启动时响亮日志。
+- **理由**：入口是公开回调面；伪造事件（刷分/刷榜）的成本直接落在游戏经济上。
+- **被拒备选**：无校验接受（任何人可写事件）；统一网关校验（平台签名算法不同；强扭一起易入共享密钥反模式）。决策记录 D2–D4。
+- **约束**：新平台必须自带校验器与映射器（模板：[平台适配器契约](./reference/adapter-contract.md)）。
 
-### 7. Game rules converge into IGameModule (not hard-coded in the engine)
+### 7. 玩法规则收敛进 IGameModule（不硬编码进引擎）
 
-- **Decision**: the engine only understands frames and delivery; gameplay is a module registered
-  by the host (`IGameModuleFactory` → `IGameModule`, four members: `Name`/`ApplyEvents`/
-  `GetStateSnapshot`/`RestoreState`, `IGameModule.cs:6-24`).
-- **Reason**: gameplay iterates far faster than the engine; the module boundary doubles as the
-  snapshot-restore boundary and the test boundary (modules can be unit-tested without the engine;
-  see `Chorus.SampleGame`).
-- **Rejected alternative**: a gameplay switch inside the engine (every new game mode touches the
-  engine core); scripted gameplay (hot-reload flexibility, but loses compile-time contracts and
-  fail-closed restore semantics).
-- How to write one and where the boundaries are: [game module](./guide/game-module.md).
+- **决策**：引擎只懂帧与投递；玩法是宿主注册的模块（`IGameModuleFactory` → `IGameModule`，四个成员：`Name`/`ApplyEvents`/`GetStateSnapshot`/`RestoreState`，`IGameModule.cs:6-24`）。
+- **理由**：玩法迭代远快于引擎；模块边界兼作快照恢复边界与测试边界（模块可脱离引擎单测；见 `Chorus.SampleGame`）。
+- **被拒备选**：引擎内玩法开关（每个新玩法模式都碰引擎核心）；脚本化玩法（热更灵活，但丢编译期契约与 fail-closed 恢复语义）。
+- 如何写一个、边界在哪：[玩法模块](./guide/game-module.md)。
 
-### 8. Leaderboards: replace-style projection + separated queries (not live aggregation)
+### 8. 排行榜：替换式投影 + 查询分离（而非实时聚合）
 
-- **Decision**: room/match boards are projected by an engine-side module with **replace**
-  semantics (`UpsertScore`, idempotent by nature); global/periodic boards use **idempotent
-  deltas** (`AddDelta`, sourceId ledger dedup) and are left to an async aggregator; queries read
-  independent snapshots, and a frozen board is sealed. Storage in `src/Chorus.Data/Leaderboard.cs:40`;
-  read/write paths: [leaderboard](./guide/leaderboard.md).
-- **Reason**: live scores already live in authoritative session state, so re-projection never
-  double-counts; the delta ledger keeps replay safe.
-- **Rejected alternative**: a single accumulate API (room boards double on re-projection, delta
-  boards get no dedup); recomputing on every query (query cost grows linearly with participants,
-  and ranks jitter under concurrent events).
+- **决策**：房间/比赛榜由引擎侧模块以**替换**语义投影（`UpsertScore`，天然幂等）；全局/周期榜用**幂等增量**（`AddDelta`，sourceId 账本去重）交给异步聚合器；查询读独立快照，冻结榜被密封。存储在 `src/Chorus.Data/Leaderboard.cs:40`；读/写路径：[排行榜](./guide/leaderboard.md)。
+- **理由**：实时分数已在权威会话状态里，重投影绝不重复计数；增量账本保回放安全。
+- **被拒备选**：单一累加 API（房间榜重投影翻倍、增量榜无去重）；每次查询重算（查询成本随参与者线性增长，并发事件下名次抖动）。
 
-## Trade-offs under the constraints
+## 约束下的权衡
 
-| Constraint | This architecture | Cost / where it does not apply |
+| 约束 | 本架构 | 代价 / 不适用处 |
 |---|---|---|
-| Scale | A historical 800-room × 3-client run is functional evidence, not a production capacity claim | ControlHost multi-worker routing is wired; ROOM-07/09/11/12 production gates remain open |
-| Interaction latency | One tick (66ms) + delivery, one snapshot per tick | Not for millisecond-grade competitive adjudication (FPS/fighting) |
-| Consistency | Server-authoritative + fail-closed ingest + idempotent projection | ControlHost restores committed checkpoints; standalone Server has no durable restart recovery; neither mode provides replay |
-| Input surface | Platform callbacks + streamer WS rendering read-only; clients cannot write gameplay | Viewers cannot issue gameplay commands (a small abuse surface — both a benefit and a limit) |
+| 规模 | 历史 800 房间 × 3 客户端运行是功能证据，不是生产容量承诺 | ControlHost 多 worker 路由已接线；ROOM-07/09/11/12 生产门槛仍 open |
+| 互动延迟 | 一个 tick（66ms）+ 投递，每 tick 一个快照 | 不用于毫秒级竞技判定（FPS/格斗） |
+| 一致性 | 服务端权威 + fail-closed 入口 + 幂等投影 | ControlHost 恢复已提交检查点；独立 Server 无持久重启恢复；两模式都不提供回放 |
+| 输入面 | 平台回调 + 主播 WS 渲染只读；客户端不能写玩法 | 观众不能发玩法指令（小块滥用面——既是收益也是限制） |
 
-In one sentence: **Chorus trades competitive-grade latency and deterministic replay for strong authority and
-operability under massive, low-frequency audience input.** If product constraints change (durable
-replay or competitive input is needed), the corresponding decisions (5, 1) need to be reopened.
+一句话：**Chorus 用竞技级延迟与确定性回放，换来强权威与海量低频观众输入下的可运维性。** 若产品约束改变（需要持久回放或竞技输入），对应决策（5、1）需重开。
 
-## Known limits and follow-ups
+## 已知限制与后续
 
-An honest list of limits (detailed data and fix progress in `todo.md:156`):
+诚实的限制清单（详细数据与修复进度在 `todo.md:156`）：
 
-- **Production multi-host acceptance remains open**: ControlHost assignment, owner/epoch fencing,
-  durable checkpoints and routing snapshots are wired. Independent-machine partition/migration
-  tests and selected PostgreSQL capacity/replication gates remain open in `todo.md` ROOM-07/09/11/12.
-- **Concurrent snapshot fan-out at the gateway**: eng→gw is a single socket + single lock with
-  serial dispatch; at 2.65M snapshots, dropped frames are recovered by resync (architecture-level
-  backlog).
-- **Resync replay bounds**: total replay volume has no per-request cap and amplifies with the
-  snapshot flood (architecture-level backlog).
-- **Leaderboard `AddDelta` ledger is unbounded**: one dedup record per board per sourceId;
-  long-running high-rate sources grow memory. Live projection should always use `UpsertScore`
-  (see the [leaderboard](./guide/leaderboard.md) limits).
-- **The library Matchmaker has no host wiring**: ControlHost separately exposes streamer queue and
-  match APIs; it is distinct from the in-process library. See the [matchmaking](./guide/matchmaking.md) limits.
+- **生产多主机验收仍 open**：ControlHost 分配、owner/epoch 围栏、持久检查点与路由快照已接线。独立机器分区/迁移测试与所选 PostgreSQL 容量/复制门槛在 `todo.md` ROOM-07/09/11/12 仍 open。
+- **网关并发快照扇出**：eng→gw 是单 socket + 单锁串行分发；2.65M 快照时掉帧靠重同步恢复（架构级积压）。
+- **重同步回放边界**：总回放量无单请求上限，且随快照洪峰放大（架构级积压）。
+- **排行榜 `AddDelta` 账本无界**：每榜每 sourceId 一条去重记录；长期高频源增长内存。实时投影应始终用 `UpsertScore`（见[排行榜](./guide/leaderboard.md)限制）。
+- **库内 Matchmaker 无宿主接线**：ControlHost 单独暴露主播队列与比赛 API；它与进程内库不同。见[匹配](./guide/matchmaking.md)限制。
 
-## Related pages
+## 相关页面
 
-- [Current architecture overview](./design/architecture-overview.md) (process topology and component index)
-- [Architecture design](./design/architecture.md) / [frame sync design](./design/frame-sync.md) / [IPC design](./design/ipc.md)
-- [Battle](./guide/battle.md) / [matchmaking](./guide/matchmaking.md) / [leaderboard](./guide/leaderboard.md)
-- [Decision log](./decisions.md) / [API reference](./reference/api.md)
+- [当前架构总览](./design/architecture-overview.md)（进程拓扑与组件索引）
+- [架构设计](./design/architecture.md) / [帧同步设计](./design/frame-sync.md) / [IPC 设计](./design/ipc.md)
+- [对战](./guide/battle.md) / [匹配](./guide/matchmaking.md) / [排行榜](./guide/leaderboard.md)
+- [决策日志](./decisions.md) / [API 参考](./reference/api.md)
