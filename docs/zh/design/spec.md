@@ -1,163 +1,163 @@
 ---
-title: Specification Draft
+title: 规格草案
 ---
 
 
-# Specification Draft (v1)
+# 规格草案（v1）
 
-This specification is used to guide abstracting the legacy framework into an open-source "live-stream interactive danmaku game framework".
+本规格用于指导把旧框架抽象为开源的"直播互动弹幕游戏框架"。
 
-## 1. Goals and Non-Goals
+## 1. 目标与非目标
 
-### Goals
+### 目标
 
-- Support 1 or more streamer clients (streaming companion/PC client) connecting to the Chorus Server.
-- Ingest interaction events from platforms such as Douyin/Kuaishou (danmaku, gifts, likes, follows, etc.) and convert them into a unified `AudienceEvent` input stream.
-- Center on a "reusable frame sync/state sync architecture" to support:
-  - single-room (single streamer) gameplay
-  - multi-room confrontation (multi-streamer faction/PK)
-- Strong observability: being able to explain "why is it not in sync", and being able to self-heal automatically (snapshot catch-up, downsampling, etc.).
+- 支持 1 个或多个主播客户端（直播伴侣/PC 客户端）连接 Chorus Server。
+- 摄取抖音/快手等平台的互动事件（弹幕、礼物、点赞、关注等），转换为统一的 `AudienceEvent` 输入流。
+- 以"可复用的帧同步/状态同步架构"为中心，支持：
+  - 单房间（单主播）玩法
+  - 多房间对抗（多主播阵营/PK）
+- 强可观测性：能解释"为什么不同步"，并能自动自愈（快照追赶、降采样等）。
 
-### Non-Goals (not done in the open-source version)
+### 非目标（开源版不做）
 
-- Does not include any specific gameplay (stats, heroes, skills, art, config tables, etc.).
-- Does not include private packet-capture/reverse-engineering capabilities of the platforms; only provides an "adapter interface + example stub (or documentation)".
+- 不包含任何具体玩法（数值、英雄、技能、美术、配置表等）。
+- 不包含平台私有的抓包/逆向能力；只提供"适配器接口 + 示例桩（或文档）"。
 
-## 2. Overall Architecture
+## 2. 总体架构
 
-### 2.1 Components
+### 2.1 组件
 
-- **Client Gateway (WebSocket)**
-  - Streamer client connection entry
-  - Session management (authentication, reconnect, subscription)
-  - Sending down snapshot/state
-- **Platform Ingress (HTTP/Webhook)**
-  - Receives platform pushes (or pulled by the adapter)
-  - Signature verification/deduplication
-  - Conversion into the unified `AudienceEvent`
-- **Session Engine (Actor per Session)**
-  - One single-threaded actor (mailbox model) per Session/Match, guaranteeing ordering and reasonableness
-  - Input buffer, beat control, backpressure, snapshots
-- **Game Module (plugin interface)**
-  - Open source provides the interface and a minimal example (used to verify the "tick->state->snapshot" chain)
+- **客户端网关（WebSocket）**
+  - 主播客户端连接入口
+  - 会话管理（鉴权、重连、订阅）
+  - 下发快照/状态
+- **平台入口（HTTP/Webhook）**
+  - 接收平台推送（或由适配器拉取）
+  - 验签/去重
+  - 转换为统一的 `AudienceEvent`
+- **会话引擎（每 Session 一个 Actor）**
+  - 每个 Session/Match 一个单线程 actor（邮箱模型），保证顺序与合理性
+  - 输入缓冲、节拍控制、背压、快照
+- **游戏模块（插件接口）**
+  - 开源提供接口与最小示例（用于验证"tick->state->snapshot"链路）
 
-### 2.2 Data Model (Conceptual)
+### 2.2 数据模型（概念）
 
-- `Session`: the game session corresponding to one live stream (single streamer).
-- `Match`: a confrontation composed of multiple Sessions (e.g. a 2-streamer faction battle).
-- `Faction`: a faction (usually bound to a streamer).
-- `Audience`: audience players (platform userId).
+- `Session`：一场直播对应的游戏会话（单主播）。
+- `Match`：多个 Session 组成的对抗（如双主播阵营战）。
+- `Faction`：阵营（通常绑定一个主播）。
+- `Audience`：观众玩家（平台 userId）。
 
-The minimal landing approach in the current repository:
+本仓当前的最小落地方式：
 
-- `AudienceEvent` can carry `matchId` / `factionId`
-- Ingress can complete `factionId` through explicit fields or through the "danmaku passphrase/gift ID -> faction" rules in `Ingress:FactionRules`
-- The multiple session modules created by `SampleGameModuleFactory` share the same match-level state store, so sessions with the same `matchId` see the same in-match aggregated view
+- `AudienceEvent` 可携带 `matchId` / `factionId`
+- Ingress 可通过显式字段、或经 `Ingress:FactionRules` 的"弹幕口令/礼物 ID -> 阵营"规则补全 `factionId`
+- `SampleGameModuleFactory` 创建的多个会话模块共享同一个 match 级状态存储，因此同一 `matchId` 的会话看到同一对局内聚合视图
 
-### 2.3 Match Authoritative Semantics Qualification (review P0-8 conclusion)
+### 2.3 Match 权威语义限定（评审 P0-8 结论）
 
-**`MatchStateStore` is a display-level shared aggregation, not an authoritative confrontation state.**
+**`MatchStateStore` 是展示级的共享聚合，不是权威对抗状态。**
 
-- It is written concurrently by multiple `SessionActor`s as each ticks (the internal `lock` only guarantees that a single read/write is not torn, and does not provide a total order across Sessions). Within the same Match, the relative order of writes from two Sessions depends on the advancement timing of their respective ticks, and is unstable under replay/concurrency.
-- Therefore it is suitable for: **leaderboard display, big-screen aggregation, atmosphere-style gameplay** (scenarios like "combined contribution of both teams" that do not require precise adjudication).
-- It is not suitable for: **fair confrontation adjudication**——win/loss determination, threshold-reached determination ("who reaches 100 likes first"), reward settlement, anti-cheat auditing. These semantics require events to have a globally determined order.
+- 它由多个 `SessionActor` 随各自 tick 并发写入（内部 `lock` 只保证单次读写不撕裂，不提供跨 Session 的全序）。同一 Match 内两个 Session 写入的相对顺序取决于各自 tick 的推进时机，在重放/并发下不稳定。
+- 因此它适合：**排行榜展示、大屏聚合、氛围型玩法**（"两队合计贡献"这类不需要精确判定的场景）。
+- 它不适合：**公平对抗判定**——胜负裁定、达标判定（"谁先到 100 赞"）、奖励结算、反作弊审计。这些语义要求事件具有全局确定的顺序。
 
-**Authorization conditions (when upgrading is mandatory)**: when the gameplay requires fair cross-faction adjudication or settlement, that Match's events must be funneled to a **single authoritative ordering point**——introduce a MatchActor (queueing and settling all events of that Match), or funnel the whole confrontation into a single SessionActor to carry it. Until then, do not implement a MatchActor (see "Non-Goals": no distributed Match cluster; a single actor ordering on a single machine is sufficient for v1).
+**升级的授权条件（何时必须升级）**：当玩法需要跨阵营的公平判定或结算时，该 Match 的事件必须汇聚到**单一权威定序点**——引入 MatchActor（排队并结算该 Match 的全部事件），或把整场对抗收敛到单个 SessionActor 承载。在此之前不实现 MatchActor（见"非目标"：不做分布式 Match 集群；v1 单机单 actor 定序已够）。
 
-## 3. Frame Sync Design (v1: server-authoritative tick + snapshot)
+## 3. 帧同步设计（v1：服务端权威 tick + 快照）
 
-Key principle: **the server always advances and never pauses for a slow end; the slow end catches up with snapshots.**
+关键原则：**服务端永远推进，绝不为慢端暂停；慢端用快照追赶。**
 
-### 3.1 Tick Clock
+### 3.1 tick 时钟
 
-- Fixed tick: `tickDurationMs` (default 66ms, unified with the recommended range 50~66; the final value is determined by load testing).
-- The server maintains a monotonically increasing `tickId` per Session (starting from 0), driven by `PeriodicTimer` (monotonic clock).
-- All sent-down data carries `serverTimeMs` (used by the client to measure drift); `tickId` is sent down with the `snapshot` (not included in `welcome` / `pong`).
-- Timeout policy (phase two): when tick processing time exceeds `tickTimeoutMs` (default 250ms) it is counted into the `TotalTickOverruns` observability metric——detection only, no cancellation; GameModule throwing an exception is counted into `TotalTickErrors`, the tick is lost but the actor survives, and diagnostics continue advancing as normal.
+- 固定 tick：`tickDurationMs`（默认 66ms，与推荐区间 50~66 统一；最终值以压测为准）。
+- 服务端为每个 Session 维护单调递增的 `tickId`（从 0 起），由 `PeriodicTimer`（单调时钟）驱动。
+- 所有下发的数据带 `serverTimeMs`（供客户端测漂移）；`tickId` 随 `snapshot` 下发（不进 `welcome` / `pong`）。
+- 超时策略（阶段二）：tick 处理耗时超过 `tickTimeoutMs`（默认 250ms）计入 `TotalTickOverruns` 可观测指标——只检测不取消；GameModule 抛异常计入 `TotalTickErrors`，该 tick 丢失但 actor 存活，诊断照常推进。
 
-### 3.2 Input Buffer (Handling Platform Jitter/Out-of-Order)
+### 3.2 输入缓冲（应对平台抖动/乱序）
 
-- `inputDelayTicks`: platform events, once ingested, are scheduled to be settled together at `tickId + inputDelayTicks`.
-- The event ordering rule must be stable (recommended: `(ingestTimeMs, platformEventId)`).
+- `inputDelayTicks`：平台事件一经摄取，调度到 `tickId + inputDelayTicks` 一并结算。
+- 事件排序规则必须稳定（推荐：`(ingestTimeMs, platformEventId)`）。
 
-### 3.3 Downstream: Authoritative State Snapshots
+### 3.3 下行：权威状态快照
 
-- The server runs the Game Module (authoritative logic).
-- Periodically sends down `StateSnapshot` (currently implemented as `snapshot`):
-  - For simplicity, v1 is full-state JSON
-  - It can later be extended to incremental/compression
+- 服务端运行游戏模块（权威逻辑）。
+- 周期性下发 `StateSnapshot`（当前实现为 `snapshot`）：
+  - 为简单起见，v1 是全量 JSON 状态
+  - 后续可扩展为增量/压缩
 
-### 3.4 Per-Client ACK and Catch-Up
+### 3.4 按客户端 ACK 与追赶
 
-The client sends periodically:
+客户端周期性发送：
 
 - `ClientAck { sessionId, clientId, lastAppliedTickId }`
 
-Server side:
+服务端：
 
-- If `serverTick - lastAckTick > maxLagTicks`:
-  - Send down `snapshot(forced=true, reason="lag")` for forced alignment
-  - Avoid jitter/spammy resync through `resyncCooldownMs`
+- 若 `serverTick - lastAckTick > maxLagTicks`：
+  - 下发 `snapshot(forced=true, reason="lag")` 强制对齐
+  - 通过 `resyncCooldownMs` 避免抖动/刷屏式重同步
 
-**Snapshot Version and Size Cap (implemented)**:
+**快照版本与大小上限（已实现）**：
 
-- Each snapshot carries `v = 1` (schema version); a client encountering an unknown version must discard that snapshot and keep its existing ACK behavior (lag naturally grows, triggering a forced resync from the server, forming a loop).
-- When the serialized state exceeds `maxSnapshotBytes` (default 1MB), this tick's send is skipped and counted into `chorus_snapshots_oversize_total`; the client stops ACKing because it receives no snapshots -> lag exceeds the limit -> once the state shrinks back below the cap, forced resync aligns it.
+- 每个快照带 `v = 1`（schema 版本）；客户端遇到未知版本必须丢弃该快照并保持既有 ACK 行为（lag 自然增长，触发服务端强制重同步，形成闭环）。
+- 序列化后状态超过 `maxSnapshotBytes`（默认 1MB）时跳过该 tick 的发送并计入 `chorus_snapshots_oversize_total`；客户端因收不到快照而停止 ACK -> lag 超限 -> 状态缩回上限以内后由强制重同步对齐。
 
-### 3.5 Backpressure and Downsampling (Mandatory for the Live-Stream Danmaku Scenario)
+### 3.5 背压与降采样（直播弹幕场景的必答题）
 
-- Per-tick event cap: `maxEventsPerTick`
-- Over-limit policy (tradeoff by gameplay):
-  - Merge: merge same-type events of the same user (like merging, gift stacking)
-  - Layering: core events take priority, chat-type events can be moved to a "display-only channel"
+- 每 tick 事件上限：`maxEventsPerTick`
+- 超限策略（按玩法取舍）：
+  - 合并：同类同用户事件合并（点赞合并、礼物叠层）
+  - 分层：核心事件优先，聊天类事件可移入"仅展示通道"
 
-### 3.6 Event Lifecycle and the Four Delivery States
+### 3.6 事件生命周期与四种投递状态
 
-An event goes through six stages from entering the system to taking effect:
+一个事件从进入系统到生效经过六段：
 
 ```
 Received → Validated → Accepted → Scheduled → Applied → Published
  (入口)     (验签)      (映射+去重)  (调度到tick)  (引擎结算)  (快照下发)
 ```
 
-| Stage | Landing point | Failure semantics |
+| 阶段 | 落点 | 失败语义 |
 | --- | --- | --- |
-| Received | ingress receives the raw request | Request body/rate limit anomaly → reject (HTTP 4xx/413/429) |
-| Validated | `IPlatformEventVerifier` signature verification | Fails → 401, fail-closed (production default is reject) |
-| Accepted | mapper mapping + faction rules + deduplication reservation | Mapping failure → 400; duplicate → `duplicated=true` idempotent return |
-| Scheduled | SessionActor schedules to `tickId + inputDelayTicks` | In-memory queueing; over-limit goes through the 3.5 backpressure policy |
-| Applied | Tick settlement, after reducer merging enters the GameModule | Merging does not lose counts (grouping-key conservation); over-budget presentational events may be dropped |
-| Published | Snapshot sent down to the client | Publish failure is handled per the four-state `Failed` |
+| Received | ingress 收到原始请求 | 请求体/限流异常 → 拒绝（HTTP 4xx/413/429） |
+| Validated | `IPlatformEventVerifier` 验签 | 失败 → 401，fail-closed（生产默认拒绝） |
+| Accepted | mapper 映射 + 阵营规则 + 去重占位 | 映射失败 → 400；重复 → `duplicated=true` 幂等返回 |
+| Scheduled | SessionActor 调度到 `tickId + inputDelayTicks` | 内存排队；超限走 3.5 背压策略 |
+| Applied | tick 结算，经 reducer 合并后进入 GameModule | 合并不丢计数（按分组键守恒）；超预算的展示型事件可被丢 |
+| Published | 快照下发到客户端 | 发布失败按四态的 `Failed` 处理 |
 
-**The four delivery states** (describing the outcome of a single delivery, a term for observability/troubleshooting rather than a storage field):
+**四种投递状态**（描述一次投递的结局，是可观测/排障用语，不是存储字段）：
 
-- `Received`: received, signature not yet verified.
-- `Accepted`: passed signature verification + mapping + deduplication, and has entered scheduling (the meaning of an ingress returning 200).
-- `Applied`: settled into the authoritative state at some `tickId` (after which the client can confirm via ACK).
-- `Failed`: signature failure / mapping failure / IPC publish failure. **Key constraint: `Failed` must never be recorded as "seen"**——deduplication uses the reserve/commit/rollback protocol; a publish failure is immediately `Rollback`, and platform retries are accepted as a new delivery, rather than being judged as a duplicate and dropped.
+- `Received`：已收到，尚未验签。
+- `Accepted`：通过验签 + 映射 + 去重，已进入调度（ingress 返回 200 的含义）。
+- `Applied`：已在某个 `tickId` 结算进权威状态（此后客户端可经 ACK 确认）。
+- `Failed`：验签失败 / 映射失败 / IPC 发布失败。**关键约束：`Failed` 绝不能被记录为"已见"**——去重采用 reserve/commit/rollback 协议；发布失败立即 `Rollback`，平台重试被当作全新投递接受，而不是被误判为重复而丢弃。
 
-**Deduplication reserve/commit/rollback** (review P0-7): `EventDeduplicator.TryReserve` reserves atomically (exactly one winner among concurrent requests with the same id) → on successful publish `Commit` (Reserved→Delivered, suppressing duplicates within the TTL) → on publish failure `Rollback` (releasing the reservation, Failed is retryable). TTL defaults to 600s (`Ingress:DedupTtlSeconds`), with a capacity safety valve guaranteeing bounded memory.
+**去重 reserve/commit/rollback**（评审 P0-7）：`EventDeduplicator.TryReserve` 原子占位（同 id 并发请求恰有一个赢家）→ 发布成功 `Commit`（Reserved→Delivered，TTL 内抑制重复）→ 发布失败 `Rollback`（释放占位，Failed 可重试）。TTL 默认 600s（`Ingress:DedupTtlSeconds`），并带容量安全阀保证内存有界。
 
-**The four event categories** (determining the over-limit tradeoff strategy, see 3.5):
+**四类事件**（决定超限取舍策略，见 3.5）：
 
-| Category | Examples | Over-limit policy |
+| 类别 | 例子 | 超限策略 |
 | --- | --- | --- |
-| Accumulable | Likes, gifts | Merging preserves counts (grouping key `(S,M,F,U[,GiftId])`), never losing counts due to merging |
-| Non-droppable | Key gift triggers, passphrase commands | Retained with priority, silent dropping is forbidden |
-| Presentational | Ordinary danmaku, entry effects | May be dropped/moved to the display channel, drops counted into metrics |
-| Control | Admin/on-off commands | Separate channel, does not compete with audience events for the budget |
+| 可累积 | 点赞、礼物 | 合并保计数（分组键 `(S,M,F,U[,GiftId])`），绝不因合并丢计数 |
+| 不可丢 | 关键礼物触发、口令指令 | 优先保留，禁止静默丢弃 |
+| 展示型 | 普通弹幕、进场特效 | 可丢弃/移入展示通道，丢弃计入指标 |
+| 控制型 | 管理/开关指令 | 独立通道，不与观众事件抢预算 |
 
-## 4. Client Protocol (v1)
+## 4. 客户端协议（v1）
 
-See: `/reference/protocol.html`
+见：`/reference/protocol.html`
 
-## 5. Recommended Reading Order
+## 5. 推荐阅读顺序
 
-If you are working on problems such as "not in sync, unstable resync, difficult slow-end recovery", read in the following order:
+如果你在处理"不同步、重同步不稳定、慢端恢复困难"之类的问题，按以下顺序阅读：
 
-1. [Overall Architecture](./architecture.md)
-2. [Frame Sync Design](./frame-sync.md)
-3. [Frame Sync Best Practices](./frame-sync-best-practices.md)
-4. [Client Resync State Machine](./client-resync-state-machine.md)
-5. [Parameter Tuning](../reference/tuning.md)
-6. [Legacy Server Problem Analysis](./legacy-real-server-analysis.md)
+1. [总体架构](./architecture.md)
+2. [帧同步设计](./frame-sync.md)
+3. [帧同步最佳实践](./frame-sync-best-practices.md)
+4. [客户端重同步状态机](./client-resync-state-machine.md)
+5. [参数调优](../reference/tuning.md)
+6. [旧服务端问题分析](./legacy-real-server-analysis.md)

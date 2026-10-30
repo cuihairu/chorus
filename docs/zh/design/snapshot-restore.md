@@ -1,50 +1,49 @@
 
-# Module Snapshot Recovery Contract (Phase Three Recovery Half, Option A Proxy-Decided and Landed)
+# 模块快照恢复契约（阶段三恢复半侧，方案 A 已代理决策并落地）
 
-> Status: **Option A proxy-decided (2026-10-14) and landed** (`062cc68`, 11 tests). This document retains the options,
-> tradeoffs and recommendation as a decision record; the current implementation is in the "Current Implementation" section at the end, and acceptance is in §7.
-> The current ControlHost checkpoint wiring and storage boundary are described in [Multi-Machine Rooms](../architecture/multi-machine-rooms.md) and [Room Control Storage](../architecture/room-control-storage.md). Historical decision sections are labeled below.
+> 状态：**方案 A 已代理决策（2026-10-14）并落地**（`062cc68`，11 个测试）。本文保留当时的选项、
+> 权衡与推荐作为决策记录；当前实现见文末"当前实现"一节，验收见 §7。
+> 当前 ControlHost 检查点接线与存储边界见[多机房间](../architecture/multi-machine-rooms.md)与[房间控制存储](../architecture/room-control-storage.md)。历史决策章节在下面分别标注。
 
-## Conclusion First
+## 结论先行
 
-`IGameModule` currently only has read-out (`GetStateSnapshot()`), with no write-back entry to
-"rebuild module state from an authoritative snapshot"——this is the first contract gap to close before landing the recovery loop. This document gives three interface shape options + the four semantic points that must be
-proxy-decided together, **recommending Option A** (write-back entry goes into `IGameModule`, as a required member).
+`IGameModule` 目前只有读出（`GetStateSnapshot()`），没有
+"从权威快照重建模块状态"的写回入口——这是落地恢复闭环前要先关闭的第一条契约缺口。本文给出三种接口形态选项 + 四个必须一并代理决策的语义点，**推荐方案 A**（写回入口进 `IGameModule`，作为必选成员）。
 
-## Original State Inventory (2026-10-14 code facts)
+## 原始状态盘点（2026-10-14 代码事实）
 
-- `IGameModule` (`src/Chorus.Engine/Abstractions/IGameModule.cs`) has four members:
-  `Name` / `ApplyEvents(tickId, events)` / `GetStateSnapshot()` / `Dispose`.
-- There are two module birthpoints, both attached to `SessionActor` construction:
-  monolith `src/Chorus.Server/SessionManager.cs:34`, split `src/Chorus.EngineHost/EngineIpcService.cs:152`,
-  both going through `IGameModuleFactory.Create(sessionId)`.
-- The `object` returned by `GetStateSnapshot()` is serialized via `ProtocolJson` into the line protocol `state`
-  (`JsonElement`); the snapshot already carries schema version `v = 1` (line protocol `ServerSnapshot.v`, 2d157fa).
-- The size gate `Session:MaxSnapshotBytes` (default 1 MB) is in effect on the `SessionActor` encoding path
-  (`SessionActor.cs:457`); oversized snapshots are skipped and counted into `SessionDiagnostics`.
-- Original finding, now superseded: snapshots existed only in memory——**"where the authoritative snapshot comes from" (persistence medium and write-to-disk timing) was a separate
-  next decision, which this document neither chooses nor presupposes**. This document only defines "given an authoritative snapshot, how does the module rebuild".
-- Single-worker current state: a process restart empties everything, and reconnecting clients get a brand-new session. The recovery loop is
-  one of the two pre-split prerequisites listed in [process-topology.md §5](./process-topology.md).
+- `IGameModule`（`src/Chorus.Engine/Abstractions/IGameModule.cs`）有四个成员：
+  `Name` / `ApplyEvents(tickId, events)` / `GetStateSnapshot()` / `Dispose`。
+- 模块出生点有两个，都挂在 `SessionActor` 构造上：
+  单机 `src/Chorus.Server/SessionManager.cs:34`、拆分 `src/Chorus.EngineHost/EngineIpcService.cs:152`，
+  都走 `IGameModuleFactory.Create(sessionId)`。
+- `GetStateSnapshot()` 返回的 `object` 经 `ProtocolJson` 序列化为线协议 `state`
+  （`JsonElement`）；快照已携带 schema 版本 `v = 1`（线协议 `ServerSnapshot.v`，2d157fa）。
+- 大小闸门 `Session:MaxSnapshotBytes`（默认 1 MB）在 `SessionActor` 编码路径生效
+  （`SessionActor.cs:457`）；超限快照跳过并计入 `SessionDiagnostics`。
+- 原始发现，现已作废：快照只在内存里——**"权威快照从哪来"（持久介质与落盘时机）当时是另一个
+  后续决策，本文既不选择也不预设**。本文只定义"给定权威快照，模块如何重建"。
+- 单 worker 现状：进程重启即清空，重连客户端拿到全新会话。恢复闭环是
+  [process-topology.md §5](./process-topology.md) 列出的两个拆分前置之一。
 
-## Semantic Points That Must Be Proxy-Decided Together, Regardless of Which Option Is Chosen
+## 无论选哪个方案都必须一并代理决策的语义点
 
-1. **Recovery input shape**: line-protocol JSON shape (`JsonElement` + `v`) or live object.
-   In split mode the authoritative snapshot necessarily passes through IPC/line protocol, **a live object only holds within a single process**; and
-   `GetStateSnapshot()` already requires JSON-serializability, so taking the line-protocol shape as input is an honest contract
-   (recommended), while also elevating "module state must survive a JSON round trip" from an implicit convention to an explicit rule.
-2. **Timing relative to `ApplyEvents`**: no events may be delivered before recovery completes——both the tick loop and
-   the ingress path must be blocked (`SessionActor` before its first tick, `EngineIpcService`
-   before its first ingest).
-3. **Application failure handling**: fail-closed (recovery fails → the session refuses to start, the client gets a clear error)
-   or degradation (start with an empty state + log + metric). This repo's security side has consistently been fail-closed (deny by default);
-   "silently serving with a half-recovered state" is more dangerous than refusing, **so fail-closed is recommended**.
-4. **Version and size validation**: unknown `v` → reject (the server side applies the
-   unknown-version rejection semantics reserved in versioning.md §2 first); size over `MaxSnapshotBytes` → reject (reusing the existing gate).
+1. **恢复输入形态**：线协议 JSON 形态（`JsonElement` + `v`）还是活对象。
+   拆分模式下权威快照必然经过 IPC/线协议，**活对象只在单进程内成立**；且
+   `GetStateSnapshot()` 已要求 JSON 可序列化，因此以线协议形态为输入是诚实的契约
+   （推荐），同时把"模块状态必须能过 JSON 往返"从隐式约定升为显式规则。
+2. **与 `ApplyEvents` 的时序**：恢复完成前不得投递任何事件——tick 循环与
+   入口路径都要阻塞（`SessionActor` 在首个 tick 前、`EngineIpcService`
+   在首次 ingest 前）。
+3. **应用失败的处理**：fail-closed（恢复失败 → 会话拒绝启动，客户端得到明确错误）
+   还是降级（空状态启动 + 日志 + 指标）。本仓安全侧一贯 fail-closed（默认拒绝）；
+   "带着半恢复状态默默服务"比拒绝更危险，**故推荐 fail-closed**。
+4. **版本与大小校验**：未知 `v` → 拒绝（服务端先适用 versioning.md §2 预留的
+   未知版本拒绝语义）；超过 `MaxSnapshotBytes` → 拒绝（复用既有闸门）。
 
-## Three Interface Shape Options
+## 三种接口形态选项
 
-### A. Write-Back Entry Goes Into `IGameModule` (Required Member)
+### A. 写回入口进 `IGameModule`（必选成员）
 
 ```csharp
 public interface IGameModule
@@ -54,15 +53,15 @@ public interface IGameModule
 }
 ```
 
-- Benefit: recovery is **not an optional capability**——§5 lists recovery as a pre-split condition, and making the capability optional would turn "forgot to implement recovery"
-  into a deployment landmine that only surfaces at runtime; compile-time enforcement makes every module answer "how to rebuild".
-- Cost: a breaking change to `IGameModule` (cheapest within the 0.x window, and the current implementation surface is only in-repo:
-  `SampleGameModule` + test fakes); `JsonElement` entering `Chorus.Engine.Abstractions`
-  requires referencing `System.Text.Json` (already BCL, no new dependency).
-- Recovery call timing (the same at both birthpoints): after `Create(sessionId)`, before any
-  `ApplyEvents`/tick, with the authoritative snapshot passed in by `SessionManager` / `EngineIpcService`.
+- 收益：恢复**不是可选能力**——§5 把恢复列为拆分前置，能力可选会让"忘了实现恢复"
+  变成只在运行时才暴露的部署地雷；编译期强制让每个模块必须回答"如何重建"。
+- 成本：`IGameModule` 破坏性变更（0.x 窗口内最便宜，且当前实现面只在仓内：
+  `SampleGameModule` + 测试桩）；`JsonElement` 进 `Chorus.Engine.Abstractions`
+  需引用 `System.Text.Json`（已是 BCL，无新依赖）。
+- 恢复调用时机（两个出生点相同）：`Create(sessionId)` 之后、任何
+  `ApplyEvents`/tick 之前，权威快照由 `SessionManager` / `EngineIpcService` 传入。
 
-### B. Recovery Goes Through the Factory (Birth Parameter)
+### B. 恢复走工厂（出生参数）
 
 ```csharp
 public interface IGameModuleFactory
@@ -71,66 +70,66 @@ public interface IGameModuleFactory
 }
 ```
 
-- Benefit: `IGameModule` stays narrow (friendlier to module authors); recovery is one kind of "birth mode",
-  semantically fitting the factory.
-- Cost: factory signature change (a slightly smaller breaking surface, but breaking all the same); every factory must handle recovery
-  → the module state rebuild logic is pushed up to the factory layer, adding one implicit coupling between the module and the factory (the factory must understand how to build the module's
-  internal state).
+- 收益：`IGameModule` 保持窄（对模块作者更友好）；恢复是一种"出生模式"，
+  语义上契合工厂。
+- 成本：工厂签名变更（破坏面略小，但同样是破坏）；每个工厂都要处理恢复
+  → 模块状态重建逻辑被推到工厂层，给模块与工厂之间加了一层隐式耦合（工厂必须懂如何构建模块的
+  内部状态）。
 
-### C. Optional Capability Interface
+### C. 可选能力接口
 
 ```csharp
 public interface ISnapshotRestorable { void RestoreState(long version, JsonElement state); }
 // 引擎侧：module is ISnapshotRestorable restorable ? restore : 降级
 ```
 
-- Benefit: zero breakage, gradual adoption.
-- Cost: it creates two tiers of modules (recoverable / non-recoverable), and non-recoverable modules can only be covered in the restart scenario by
-  documentation conventions——exactly the "silent landmine" shape; the recovery loop is a pre-split condition and should not be opt-in.
+- 收益：零破坏、渐进采纳。
+- 成本：它制造出两级模块（可恢复 / 不可恢复），不可恢复模块在重启场景只能靠
+  文档约定兜底——恰是"静默地雷"形态；恢复闭环是拆分前置，不应 opt-in。
 
-## Recommendation
+## 推荐
 
-**Option A**. Reasons: recovery is a pre-split condition rather than an optional capability (A > C); module authors take direct responsibility for rebuilding
-their own state, and the state rebuild logic does not leak out to the factory (A > B); the 0.x breaking window + an in-repo-only implementation surface
-is the only cheap moment. The input shape is the line-protocol JSON (semantic point 1), and failure is fail-closed (semantic point 3).
+**方案 A**。理由：恢复是拆分前置而非可选能力（A > C）；模块作者直接负责重建
+自己的状态、状态重建逻辑不外泄到工厂（A > B）；0.x 破坏窗口 + 实现面只在仓内
+是唯一便宜的时刻。输入形态取线协议 JSON（语义点 1），失败取 fail-closed（语义点 3）。
 
-→ **2026-10-14 proxy decision: Option A**, fully landed per the §7 acceptance checklist (`062cc68`, 11 tests).
-Implementation is in the next section.
+→ **2026-10-14 代理决策：方案 A**，按 §7 验收清单全部落地（`062cc68`，11 个测试）。
+实现在下一节。
 
-## Current Implementation (2026-10-14, `062cc68`)
+## 当前实现（2026-10-14，`062cc68`）
 
-- **Contract member**: `IGameModule.RestoreState(long version, JsonElement state)` is a required member
-  (`src/Chorus.Engine/Abstractions/IGameModule.cs`)——compile-time enforcement makes every module answer "how to rebuild".
-- **Recovery input**: line-protocol JSON (round-tripping `GetStateSnapshot()`), with `version` being the line protocol `ServerSnapshot.v`.
-- **Single-point executor**: `GameModuleRestorer.Restore(module, sessionId, source, config)`
-  (`src/Chorus.Engine/Session/GameModuleRestorer.cs`). Both birthpoints (monolith `SessionManager.CreateActor`
-  / split `EngineIpcService.CreateActor`) call the same executor after `IGameModuleFactory.Create` and before `SessionActor`
-  construction → **parity by construction**; recovery happens inside the actor factory, structurally
-  guaranteeing "no tick/ingress events reach the module before recovery completes" and "a failure leaves no half-state actor".
-- **Fail-closed**: unknown `version` (< 1) / over `MaxSnapshotBytes` (reusing the same size gate as the tick side) /
-  module recovery throwing an exception——all throw `SnapshotRestoreException` (carrying the SessionId) → the session refuses to start,
-  counted into `SessionRegistry.StartFailures` for observability (a failed session has no actor diagnostics to read).
-- **No snapshot = fresh start**: `ISnapshotRecoverySource.TryGet` returning false means a fresh start, so today's default behavior is unchanged.
-- **Sample module**: `SampleGameModule.RestoreState` only restores session-private state (`tickId`/`matchId` +
-  the three kinds of per-user counters); the `match` section is a cross-session store projection and is not part of the module's private recovery contract (it is rebuilt as new events arrive after recovery).
-- **Original no-wiring conclusion is superseded**: ControlHost mode now restores EngineHost from RoomControlStore checkpoints; without ControlHost, sessions still start fresh. Independent-host takeover and fault injection remain open in ROOM-07/09/12.
+- **契约成员**：`IGameModule.RestoreState(long version, JsonElement state)` 为必选成员
+  （`src/Chorus.Engine/Abstractions/IGameModule.cs`）——编译期强制让每个模块回答"如何重建"。
+- **恢复输入**：线协议 JSON（与 `GetStateSnapshot()` 往返一致），`version` 即线协议 `ServerSnapshot.v`。
+- **单点执行器**：`GameModuleRestorer.Restore(module, sessionId, source, config)`
+  （`src/Chorus.Engine/Session/GameModuleRestorer.cs`）。两个出生点（单机 `SessionManager.CreateActor`
+  / 拆分 `EngineIpcService.CreateActor`）在 `IGameModuleFactory.Create` 之后、`SessionActor`
+  构造之前调用同一执行器 → **构造即对齐**；恢复发生在 actor 工厂内部，结构上保证
+  "恢复完成前没有 tick/入口事件到达模块"与"失败不留半状态 actor"。
+- **Fail-closed**：未知 `version`（< 1）/ 超过 `MaxSnapshotBytes`（与 tick 侧同一大小闸门）/
+  模块恢复抛异常——一律抛 `SnapshotRestoreException`（携带 SessionId）→ 会话拒绝启动，
+  计入 `SessionRegistry.StartFailures` 可观测（失败会话没有 actor 诊断可读）。
+- **无快照 = 全新开始**：`ISnapshotRecoverySource.TryGet` 返回 false 即全新开始，今天的默认行为不变。
+- **示例模块**：`SampleGameModule.RestoreState` 只恢复会话私有状态（`tickId`/`matchId` +
+  三类按用户计数）；`match` 段是跨会话存储投影，不属于模块私有恢复契约（恢复后随新事件到来重建）。
+- **原"无接线"结论作废**：ControlHost 模式下 EngineHost 现从 RoomControlStore 检查点恢复；无 ControlHost 时会话仍全新启动。独立宿主接管与故障注入仍是 ROOM-07/09/12 open。
 
-The §7 acceptance checklist items 1-6 are gold-covered by `ModuleRestoreTests` (11 tests); item 7 is
-recorded in the compatibility surface of [versioning.md](../reference/versioning.md) (the breaking change to `IGameModule` + recovery semantics).
+§7 验收清单第 1-6 项由 `ModuleRestoreTests`（11 个测试）金标覆盖；第 7 项
+记录在 [versioning.md](../reference/versioning.md) 的兼容性面（`IGameModule` 破坏性变更 + 恢复语义）。
 
-## Acceptance Test Checklist (all complete, `062cc68`)
+## 验收测试清单（全部完成，`062cc68`）
 
-1. The first `GetStateSnapshot()` after recovery is semantically consistent with the authoritative snapshot (including `v` pass-through).
-2. `ApplyEvents` is not called before recovery completes: holds even when tick and ingress arrive concurrently
-   (race guard, following the "poll and assert the property itself" discipline).
-3. Unknown `v` → the session refuses to start (fail-closed), and the error is observable.
-4. `state` over `MaxSnapshotBytes` → rejected, counted into diagnostics.
-5. Module recovery throws an exception → the session refuses to start, and no half-state `SessionActor` is left behind.
-6. The two birthpoints (monolith `SessionManager` / split `EngineIpcService`) behave consistently
-   (parity guard, following the seam-style divergence precedent).
-7. `versioning.md` compatibility surface update: the breaking change record for `IGameModule` + recovery semantics.
+1. 恢复后首次 `GetStateSnapshot()` 与权威快照语义一致（含 `v` 透传）。
+2. 恢复完成前不调用 `ApplyEvents`：tick 与入口并发到达也成立
+   （竞争守卫，遵循"轮询断言性质本身"纪律）。
+3. 未知 `v` → 会话拒绝启动（fail-closed），且错误可观测。
+4. `state` 超过 `MaxSnapshotBytes` → 拒绝，计入诊断。
+5. 模块恢复抛异常 → 会话拒绝启动，且不残留半状态 `SessionActor`。
+6. 两个出生点（单机 `SessionManager` / 拆分 `EngineIpcService`）行为一致
+   （对齐守卫，沿用缝式分歧先例）。
+7. `versioning.md` 兼容性面更新：`IGameModule` + 恢复语义的破坏性变更记录。
 
-## Explicitly Not Done (Against the Boundaries)
+## 显式不做（对照边界）
 
-Persistence medium selection and write-to-disk timing (the next decision), cross-machine snapshot replication, incremental snapshots/deterministic replay
-(spec "explicitly not done"), and snapshot compression (spec §2.3 "extendable later").
+持久介质选择与落盘时机（下一个决策）、跨机快照复制、增量快照/确定性回放
+（spec"显式不做"）、快照压缩（spec §2.3 "后续可扩展"）。

@@ -1,13 +1,13 @@
 ---
-title: Current Architecture Overview (Process Topology and Components)
+title: 当前架构总览（进程拓扑与组件）
 ---
 
 
-# Current Architecture Overview
+# 当前架构总览
 
-Code-verified topology (refreshed 2026-10-19). Standalone `Chorus.Server` runs without the control plane. Durable split mode uses `Chorus.ControlHost` as shared room authority alongside one or more `Chorus.Gateway` instances and `Chorus.EngineHost`; production multi-host failure and capacity gates remain open.
+经代码核实的拓扑（2026-10-19 刷新）。独立 `Chorus.Server` 无控制面即可运行。持久拆分模式以 `Chorus.ControlHost` 为共享房间权威，配一个或多个 `Chorus.Gateway` 实例与 `Chorus.EngineHost`；生产多机故障与容量门槛仍为 open。
 
-## Split Mode With ControlHost
+## 带控制面的拆分模式
 
 ```mermaid
 flowchart TB
@@ -55,42 +55,42 @@ flowchart TB
   LOADTOOL -.->|"HTTP 采样"| OPS
 ```
 
-Solid lines are realtime execution paths; dashed lines are control-plane RPCs and snapshot refreshes rather than per-message calls. Independent-machine failure acceptance remains open.
+实线是实时执行路径；虚线是控制面 RPC 与快照刷新，不是逐消息调用。跨独立机器的故障验收仍为 open。
 
-## Single-Process Form (Default)
+## 单进程形态（默认）
 
-`Chorus.Server` packs the Gateway side and the EngineHost side of the diagram above into the same process: `/ingress/{platform}`、`/ws`、`/faces`、`/metrics`、`/sessions`、`/matches` reach `SessionManager` directly via `InProc` routing within the same process, with no IPC hop. `/sessions` and `/matches` are exposed only in the single-process form.
+`Chorus.Server` 把上图的 Gateway 侧与 EngineHost 侧打包进同一进程：`/ingress/{platform}`、`/ws`、`/faces`、`/metrics`、`/sessions`、`/matches` 经同进程 `InProc` 路由直达 `SessionManager`，没有 IPC 跳数。`/sessions` 与 `/matches` 只在单进程形态暴露。
 
-## Component Index (file:line)
+## 组件索引（file:line）
 
-| Component | Location |
+| 组件 | 位置 |
 |---|---|
-| Gateway routing table (/ingress, /ws, /ready, etc.) | `src/Chorus.Gateway/Program.cs:100` |
-| EngineHost routing table (/health, /metrics) | `src/Chorus.EngineHost/Program.cs:34` |
-| Server routing table (including /sessions, /matches) | `src/Chorus.Server/Program.cs:102` |
-| `PlatformIngressFace` (rate limiting/size/timeout/verification/deduplication/Tell) | `src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs` |
-| Bilibili open-live bridge (wss → `/ingress/bilibili` signature forwarding, started only when credentials are complete) | `src/Chorus.Adapters.Platforms/Bilibili/BilibiliOpenLiveClient.cs` |
-| `StreamerWsFace` (authentication/version gate/ACK rate limiting) | `src/Chorus.Gateway.Core/Faces/StreamerWsFace.cs` |
-| `GatewayIpcService` (eng→gw server + gw→eng client) | `src/Chorus.Gateway/GatewayIpcService.cs:149` |
-| `EngineIpcService` (gw→eng server + fanout client) | `src/Chorus.EngineHost/EngineIpcService.cs:88` |
-| `FanOutMessageBus` (per-gateway publishing, failure aggregation) | `src/Chorus.Messaging/FanOutMessageBus.cs` |
-| IPC channel naming (Gateway:Id suffix) | `src/Chorus.Messaging/Ipc/IpcEndpointBuilder.cs:22` |
-| `SessionRegistry` (routing + lifecycle) | `src/Chorus.Engine/Session/SessionRegistry.cs:15` |
-| `SessionActor` (single-threaded mailbox + fixed tick) | `src/Chorus.Engine/Session/SessionActor.cs:8` |
-| `IGameModule` (authoritative gameplay contract) | `src/Chorus.Engine/Abstractions/IGameModule.cs:5` |
-| Room assignment / durable authority / routing snapshot | `src/Chorus.Control/RoomControlStore.cs`, `src/Chorus.Control/ControlRoutingSnapshot.cs` |
-| Historical `RoomAffinity` / `RoomRouteTable` prototype (not used by ControlHost mode) | `src/Chorus.Engine/Routing/RoomAffinity.cs:12`, same file `:53` |
-| Snapshot version V (wire protocol) | `src/Chorus.Protocol/Messages/ServerSnapshot.cs:20` |
-| `ProcessCpuGauge` (worker CPU water level) | `src/Chorus.EngineHost/ProcessCpuGauge.cs` |
-| `Chorus.LoadTool` (load testing and peak sampling) | `src/Chorus.LoadTool/Program.cs` |
+| Gateway 路由表（/ingress、/ws、/ready 等） | `src/Chorus.Gateway/Program.cs:100` |
+| EngineHost 路由表（/health、/metrics） | `src/Chorus.EngineHost/Program.cs:34` |
+| Server 路由表（含 /sessions、/matches） | `src/Chorus.Server/Program.cs:102` |
+| `PlatformIngressFace`（限流/大小/超时/验签/去重/Tell） | `src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs` |
+| B 站开放平台桥（wss → `/ingress/bilibili` 签名转发，凭据齐备才启动） | `src/Chorus.Adapters.Platforms/Bilibili/BilibiliOpenLiveClient.cs` |
+| `StreamerWsFace`（鉴权/版本门/ACK 限流） | `src/Chorus.Gateway.Core/Faces/StreamerWsFace.cs` |
+| `GatewayIpcService`（eng→gw server + gw→eng client） | `src/Chorus.Gateway/GatewayIpcService.cs:149` |
+| `EngineIpcService`（gw→eng server + 扇出 client） | `src/Chorus.EngineHost/EngineIpcService.cs:88` |
+| `FanOutMessageBus`（按网关发布、失败聚合） | `src/Chorus.Messaging/FanOutMessageBus.cs` |
+| IPC 通道命名（Gateway:Id 后缀） | `src/Chorus.Messaging/Ipc/IpcEndpointBuilder.cs:22` |
+| `SessionRegistry`（路由 + 生命周期） | `src/Chorus.Engine/Session/SessionRegistry.cs:15` |
+| `SessionActor`（单线程邮箱 + 固定 tick） | `src/Chorus.Engine/Session/SessionActor.cs:8` |
+| `IGameModule`（权威玩法契约） | `src/Chorus.Engine/Abstractions/IGameModule.cs:5` |
+| 房间分配 / 持久权威 / 路由快照 | `src/Chorus.Control/RoomControlStore.cs`、`src/Chorus.Control/ControlRoutingSnapshot.cs` |
+| 历史 `RoomAffinity` / `RoomRouteTable` 原型（ControlHost 模式不用） | `src/Chorus.Engine/Routing/RoomAffinity.cs:12`、同文件 `:53` |
+| 快照版本 V（线协议） | `src/Chorus.Protocol/Messages/ServerSnapshot.cs:20` |
+| `ProcessCpuGauge`（worker CPU 水位） | `src/Chorus.EngineHost/ProcessCpuGauge.cs` |
+| `Chorus.LoadTool`（压测与峰值采样） | `src/Chorus.LoadTool/Program.cs` |
 
-## Snapshot and Restore Contract
+## 快照与恢复契约
 
-The engine produces a wire snapshot every tick (full JSON, schema version `V=1`). In ControlHost mode, a committed tick is also stored as a fenced durable checkpoint and restored by EngineHost on assignment; standalone mode has no durable restart recovery. Independent-host failover remains an open rollout gate. See [multi-machine room architecture](../architecture/multi-machine-rooms.md) and [storage decision](../architecture/room-control-storage.md).
+引擎每 tick 产出一个线快照（全量 JSON，schema 版本 `V=1`）。ControlHost 模式下，已提交 tick 同时存为带围栏的持久检查点，由 EngineHost 在分配时恢复；独立模式没有持久重启恢复。独立宿主接管仍是 open 的上线门槛。见[多机房间架构](../architecture/multi-machine-rooms.md)与[存储决策](../architecture/room-control-storage.md)。
 
-## Related Pages
+## 相关页面
 
-- [Process Topology Design (Phases and Trigger Conditions)](./process-topology.md)
-- [Communication Abstraction and IPC Channel Naming](./ipc.md)
-- [Deployment and Security](../reference/deployment.md)
-- [Split Mode Guide](../guide/split-mode.md)
+- [进程拓扑设计（阶段与触发条件）](./process-topology.md)
+- [通信抽象与 IPC 通道命名](./ipc.md)
+- [部署与安全](../reference/deployment.md)
+- [拆分模式指南](../guide/split-mode.md)

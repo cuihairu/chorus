@@ -1,218 +1,218 @@
 ---
-title: Frame Sync (Authoritative Tick + Snapshot)
+title: 帧同步（权威 Tick + 快照）
 ---
 
 
-# Frame Sync (Authoritative Tick + Snapshot)
+# 帧同步（权威 Tick + 快照）
 
-This document gives chorus's **frame sync semantic plan**: where the frame number comes from, how it is delivered with messages, the client using the frame number as the basis for rendering/ordering, how out-of-order and dropped frames are backfilled, how reconnection and replay are aligned, and how the client's rhythm catches up.
+本文给出 chorus 的**帧同步语义方案**：帧号从哪来、如何随消息下发、客户端以帧号为渲染/排序依据、乱序与丢帧如何回填、重连与回放如何对齐、客户端节拍如何追赶。
 
-> Status: **plan documented first, no code written in this round**. Every claim in this document carries a `file:line` or source; parts not measured in this repo are explicitly marked `未实测`.
+> 状态：**方案先行成文，本轮未写代码**。文中每条论断都带 `file:line` 或来源；本仓未实测的部分显式标注 `未实测`。
 
 ---
 
-## 1. Industry Research (With Sources)
+## 1. 业界调研（带来源）
 
-Live danmaku systems generally **do not natively have a "frame number"** — danmaku messages carry a **timestamp** (milliseconds or ISO 8601), and the client sorts by timestamp. Frame number/tick is a **game-layer** concept, produced by the authoritative server. Sources are given item by item below.
+直播弹幕系统普遍**原生没有"帧号"**——弹幕消息携带的是**时间戳**（毫秒或 ISO 8601），客户端按时间戳排序。帧号/tick 是**游戏层**概念，由权威服务端产出。下面逐条给出来源。
 
-### 1.1 Bilibili
+### 1.1 B 站
 
-- **Web reverse-engineering channel** (unofficial, legal risk see §1.4): danmaku messages carry a **millisecond timestamp**. blivedm's `DanmakuMessage` has `timestamp: int`, with the docstring "timestamp (milliseconds)", taken from the protocol's `info[0][4]`.
-  Source: [blivedm models/web.py](https://raw.githubusercontent.com/xfgryujk/blivedm/dev/blivedm/models/web.py) (`DanmakuMessage` dataclass field table).
-- **Open platform channel** (official): [open-live.bilibili.com](https://open-live.bilibili.com/); blivedm's `open_live` interface connects to that platform's WebSocket (`wss://live-open.biliapi.com`), with events including `DANMU_MSG`/`SEND_GIFT`/`INTERACT_WORD_V2` etc.
-  Source: [blivedm README](https://github.com/xfgryujk/blivedm) (lists the two interfaces `web端` and `B站直播开放平台`).
-- **Ordering guarantee**: the Bilibili danmaku protocol itself **has no frame number/sequence number**, only timestamps; ordering is inferred by the client from timestamps + arrival order. This is exactly why chorus introduces the frame number at the game layer (see §2.1).
+- **Web 逆向通道**（非官方，法律风险见 §1.4）：弹幕消息携带**毫秒时间戳**。blivedm 的 `DanmakuMessage` 有 `timestamp: int`，docstring 为 "timestamp (milliseconds)"，取自协议的 `info[0][4]`。
+  来源：[blivedm models/web.py](https://raw.githubusercontent.com/xfgryujk/blivedm/dev/blivedm/models/web.py)（`DanmakuMessage` dataclass 字段表）。
+- **开放平台通道**（官方）：[open-live.bilibili.com](https://open-live.bilibili.com/)；blivedm 的 `open_live` 接口连该平台的 WebSocket（`wss://live-open.biliapi.com`），事件含 `DANMU_MSG`/`SEND_GIFT`/`INTERACT_WORD_V2` 等。
+  来源：[blivedm README](https://github.com/xfgryujk/blivedm)（列出 `web端` 与 `B站直播开放平台` 两个接口）。
+- **顺序保证**：B 站弹幕协议本身**没有帧号/序号**，只有时间戳；顺序由客户端按时间戳 + 到达顺序推断。这正是 chorus 在游戏层引入帧号的原因（见 §2.1）。
 
-### 1.2 YouTube Live Chat (Official API)
+### 1.2 YouTube Live Chat（官方 API）
 
-- Each message carries `snippet.publishedAt` (`datetime`, ISO 8601), described as "The date and time when the message was originally published".
-  Source: [YouTube liveChatMessages resource docs](https://developers.google.com/youtube/v3/live/docs/liveChatMessages).
-- The polling rhythm is controlled by `pollingIntervalMillis` (`unsigned integer`) in the `liveChatMessages.list` response, described as "how long your API client should wait before requesting additional results".
-  Source: [YouTube liveChatMessages/list method docs](https://developers.google.com/youtube/v3/live/docs/liveChatMessages/list).
-- **Ordering guarantee**: again only timestamps, no frame number; the official recommendation is to sort by `publishedAt` + control frequency by `pollingIntervalMillis`.
+- 每条消息携带 `snippet.publishedAt`（`datetime`，ISO 8601），描述为 "The date and time when the message was originally published"。
+  来源：[YouTube liveChatMessages 资源文档](https://developers.google.com/youtube/v3/live/docs/liveChatMessages)。
+- 轮询节奏由 `liveChatMessages.list` 响应中的 `pollingIntervalMillis`（`unsigned integer`）控制，描述为 "how long your API client should wait before requesting additional results"。
+  来源：[YouTube liveChatMessages/list 方法文档](https://developers.google.com/youtube/v3/live/docs/liveChatMessages/list)。
+- **顺序保证**：同样只有时间戳、没有帧号；官方建议按 `publishedAt` 排序 + 以 `pollingIntervalMillis` 控频。
 
-### 1.3 Twitch (Official EventSub WebSocket)
+### 1.3 Twitch（官方 EventSub WebSocket）
 
-- WebSocket message types: `session_welcome` / `session_keepalive` / `notification` / `session_reconnect` / `revocation`.
-  Source: [Twitch EventSub WebSocket reference](https://dev.twitch.tv/docs/eventsub/websocket-reference/).
-- **Reconnection**: `session_reconnect` is delivered 30 seconds before edge node failover, carrying `reconnect_url`; "Use this URL as is; do not modify it. The connection automatically includes the subscriptions from the old connection." The old connection keeps delivering events until the new connection receives `session_welcome`.
-  Source: [Twitch Handling WebSocket events](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/).
-- **Ordering guarantee**: Twitch messages have `metadata.message_id` and `metadata.message_timestamp` (UTC), but **no monotonic frame number**; after reconnection, resumption relies on `reconnect_url` + `message_id` deduplication.
+- WebSocket 消息类型：`session_welcome` / `session_keepalive` / `notification` / `session_reconnect` / `revocation`。
+  来源：[Twitch EventSub WebSocket reference](https://dev.twitch.tv/docs/eventsub/websocket-reference/)。
+- **重连**：边缘节点故障切换前 30 秒下发 `session_reconnect`，携带 `reconnect_url`；"Use this URL as is; do not modify it. The connection automatically includes the subscriptions from the old connection."。旧连接持续下发事件，直到新连接收到 `session_welcome`。
+  来源：[Twitch Handling WebSocket events](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/)。
+- **顺序保证**：Twitch 消息有 `metadata.message_id` 与 `metadata.message_timestamp`（UTC），但**没有单调帧号**；重连后的续传依赖 `reconnect_url` + `message_id` 去重。
 
-### 1.4 Open-Source Implementations
+### 1.4 开源实现
 
-- **blivedm** (Python, Bilibili danmaku/gift/enter): [github.com/xfgryujk/blivedm](https://github.com/xfgryujk/blivedm). Connects to both the web reverse-engineering and official open-live channels; event model see `blivedm/models/`.
-- **bilibili-API-collect** (reverse-engineering doc collection, 20.2k★): [github.com/SocialSisterYi/bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect) (`docs/live/message_stream.md` records wss `/sub`, auth packet sent within 5 seconds, heartbeat 30s/60s drop, 16-byte packet header, op 2/3/5/7/8). **Note**: that project received a lawyer's letter from Bilibili on 2026-01-28, and archived/deleted the repo on 2026-01-30 (verifiable in the original repo's README) → the web reverse-engineering channel has a real precedent of legal action.
-- **OpenDANMU**: a GitHub search only finds [zhengcai/opendanmu](https://github.com/zhengcai/opendanmu) (a C# "third-party danmaku tool", 0 stars, unmaintained since 2022-01), **not a frame sync solution**. As a frame sync reference implementation: **no public sources found**.
-- **Public articles on frame sync in danmaku games**: **no public sources found** (no public architecture article on "live danmaku + frame sync" was found; known competitors mostly do immediate mapping of "danmaku event → game input", without frame-level interpolation).
+- **blivedm**（Python，B 站弹幕/礼物/进场）：[github.com/xfgryujk/blivedm](https://github.com/xfgryujk/blivedm)。同时接 Web 逆向与官方开放平台两通道；事件模型见 `blivedm/models/`。
+- **bilibili-API-collect**（逆向文档集合，20.2k★）：[github.com/SocialSisterYi/bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect)（`docs/live/message_stream.md` 记录 wss `/sub`、5 秒内发鉴权包、心跳 30s/60s 掉线、16 字节包头、op 2/3/5/7/8）。**注意**：该项目 2026-01-28 收到 B 站律师函，2026-01-30 归档/删库（原仓库 README 可查）→ Web 逆向通道有真实的法律追责先例。
+- **OpenDANMU**：GitHub 搜索只有 [zhengcai/opendanmu](https://github.com/zhengcai/opendanmu)（C# "第三方弹幕工具"，0 star，2022-01 起失修），**不是帧同步方案**。作为帧同步参考实现：**未找到公开来源**。
+- **弹幕游戏帧同步的公开文章**：**未找到公开来源**（没有找到"直播弹幕 + 帧同步"的公开架构文章；已知竞品大多做"弹幕事件 → 游戏输入"的即时映射，没有帧级插值）。
 
-### 1.5 What the Research Implies for chorus
+### 1.5 调研对 chorus 的含义
 
-| Platform/Implementation | Ordering Basis | Packet-Loss Recovery | Reconnection | Implication for chorus |
+| 平台/实现 | 排序依据 | 丢包恢复 | 重连 | 对 chorus 的含义 |
 | --- | --- | --- | --- | --- |
-| Bilibili web reverse-engineering | Millisecond timestamp | None (UDP-like; lost is lost) | Re-authenticate on reconnect | Ordering must be rebuilt at the game layer |
-| YouTube | `publishedAt` + `pollingIntervalMillis` | Naturally covered within the polling window | Re-pull | The official channel has explicit rate control |
-| Twitch | `message_id` + `message_timestamp` | `reconnect_url` resumption | Official reconnect flow | The resumption semantics can be borrowed |
-| blivedm | Timestamp | None | Reconnect | Event normalization reference |
+| B 站 Web 逆向 | 毫秒时间戳 | 无（类 UDP；丢了就丢了） | 重连后重新鉴权 | 顺序必须在游戏层重建 |
+| YouTube | `publishedAt` + `pollingIntervalMillis` | 轮询窗口内天然覆盖 | 重新拉取 | 官方通道有明确控频 |
+| Twitch | `message_id` + `message_timestamp` | `reconnect_url` 续传 | 官方重连流程 | 续传语义可借鉴 |
+| blivedm | 时间戳 | 无 | 重连 | 事件归一化参考 |
 
-**Common ground**: upstream only provides timestamps; **the frame number is produced by chorus's own game layer**. This is consistent with the current state of this repo (`tickId` already increases monotonically within the engine, see §2.1).
+**共同点**：上游只给时间戳；**帧号由 chorus 自己的游戏层产出**。这与本仓现状一致（`tickId` 已在引擎内单调递增，见 §2.1）。
 
 ---
 
-## 2. Current State (Implemented, file:line)
+## 2. 现状（已实现，file:line）
 
-The frame sync **skeleton on the engine side is already in the code**; this section gives evidence item by item.
+帧同步的**引擎侧骨架已在代码里**；本节逐条给证据。
 
-| Capability | Evidence |
+| 能力 | 证据 |
 | --- | --- |
-| Frame number (tickId) monotonically increasing | `src/Chorus.Engine/Session/SessionActor.cs:52`(the `TickId` property)、`:391`（`TickId++`） |
-| Default tick period 66ms (≈15.15 tick/s) | `src/Chorus.Engine/Session/SessionConfig.cs:4`（`TickDurationMs = 66`） |
-| Input delay: events scheduled to `tickId + inputDelayTicks` | `SessionConfig.cs:5`（`InputDelayTicks = 2`）、`SessionActor.cs:379`（`targetTick = TickId + _config.InputDelayTicks`） |
-| Feed events to the game module every tick | `SessionActor.cs:444`（`_game.ApplyEvents(TickId, tickEvents)`） |
-| Periodic snapshot: once every `snapshotEveryTicks` | `SessionActor.cs:447`（`SnapshotEveryTicks > 0 && (TickId % SnapshotEveryTicks) == 0`） |
-| Snapshot carries the frame number `tickId` | `src/Chorus.Protocol/Messages/ServerSnapshot.cs:8`（`long TickId`）、`SessionActor.cs:478`/`:497`/`:526`(the three send paths) |
-| Snapshot schema version `V = 1` | `ServerSnapshot.cs:20`(`int V = 1`; the comment refers to versioning.md §2) |
-| ACK: the client reports `lastAppliedTickId` | `SessionActor.cs:156`(`AckAsync`)、`:346-371`(monotonicity guard)、`:371`(updates `LastAckTickId`) |
-| Forced resync: delivered when behind > `maxLagTicks` | `SessionConfig.cs:8`(`MaxLagTicks = 50`)、`SessionActor.cs:550-569`(lag check + cooldown)、`:500`/`:529`(`Forced=true`) |
-| resync rate limiting | `SessionConfig.cs:9`（`ResyncCooldownMs = 2000`）、`SessionActor.cs:564` |
-| Client connection baseline = current frame | `SessionActor.cs:314-315`（`ConnectedTickId = TickId`、`LastAckTickId = TickId`） |
-| Event deduplication | `src/Chorus.Server/Program.cs:73-77`(`EventDeduplicator`, `DedupTtlSeconds` default 600) |
-| Bounded event channel + bounded wait | `SessionActor.cs:75`（`MaxPendingEvents`）、`:175`（`EventEnqueueMaxWaitMs`） |
-| Per-tick event cap | `SessionConfig.cs:7`（`MaxEventsPerTick = 200`） |
-| Snapshot byte cap | `SessionConfig.cs:21`（`MaxSnapshotBytes = 1_048_576`） |
-| **Checkpoint persistence is not replay** | ControlHost stores committed room checkpoints, but does not retain/replay a deterministic event/frame log; snapshot history is not a recording stream |
+| 帧号（tickId）单调递增 | `src/Chorus.Engine/Session/SessionActor.cs:52`(the `TickId` property)、`:391`（`TickId++`） |
+| 默认 tick 周期 66ms（≈15.15 tick/s） | `src/Chorus.Engine/Session/SessionConfig.cs:4`（`TickDurationMs = 66`） |
+| 输入延迟：事件调度到 `tickId + inputDelayTicks` | `SessionConfig.cs:5`（`InputDelayTicks = 2`）、`SessionActor.cs:379`（`targetTick = TickId + _config.InputDelayTicks`） |
+| 每 tick 喂给游戏模块事件 | `SessionActor.cs:444`（`_game.ApplyEvents(TickId, tickEvents)`） |
+| 周期快照：每 `snapshotEveryTicks` 一次 | `SessionActor.cs:447`（`SnapshotEveryTicks > 0 && (TickId % SnapshotEveryTicks) == 0`） |
+| 快照携带帧号 `tickId` | `src/Chorus.Protocol/Messages/ServerSnapshot.cs:8`（`long TickId`）、`SessionActor.cs:478`/`:497`/`:526`(the three send paths) |
+| 快照 schema 版本 `V = 1` | `ServerSnapshot.cs:20`(`int V = 1`; 注释指向 versioning.md §2) |
+| ACK：客户端上报 `lastAppliedTickId` | `SessionActor.cs:156`(`AckAsync`)、`:346-371`(单调守卫)、`:371`(更新 `LastAckTickId`) |
+| 强制重同步：落后 > `maxLagTicks` 时下发 | `SessionConfig.cs:8`(`MaxLagTicks = 50`)、`SessionActor.cs:550-569`(lag 检查 + 冷却)、`:500`/`:529`(`Forced=true`) |
+| resync 限流 | `SessionConfig.cs:9`（`ResyncCooldownMs = 2000`）、`SessionActor.cs:564` |
+| 客户端连接基线 = 当前帧 | `SessionActor.cs:314-315`（`ConnectedTickId = TickId`、`LastAckTickId = TickId`） |
+| 事件去重 | `src/Chorus.Server/Program.cs:73-77`(`EventDeduplicator`, `DedupTtlSeconds` 默认 600) |
+| 有界事件通道 + 有界等待 | `SessionActor.cs:75`（`MaxPendingEvents`）、`:175`（`EventEnqueueMaxWaitMs`） |
+| 每 tick 事件上限 | `SessionConfig.cs:7`（`MaxEventsPerTick = 200`） |
+| 快照字节上限 | `SessionConfig.cs:21`（`MaxSnapshotBytes = 1_048_576`） |
+| **检查点持久化不是回放** | ControlHost 存已提交房间检查点，但不保留/重放确定性事件/帧日志；快照历史不是录制流 |
 
-**Conclusion**: frame number generation, delivery with snapshots, ACK, forced resync, backpressure, deduplication — **all implemented**. The gaps are in §3.
+**结论**：帧号生成、随快照下发、ACK、强制重同步、背压、去重——**都已实现**。缺口在 §3。
 
 ---
 
-## 3. Gaps (Planned / Not Implemented)
+## 3. 缺口（计划中 / 未实现）
 
-| # | Gap | Current-State Evidence | Status |
+| # | 缺口 | 现状证据 | 状态 |
 | --- | --- | --- | --- |
-| G1 | The client cannot get "which frame each event belongs to" | The snapshot only carries `tickId` (`ServerSnapshot.cs:8`), without per-event frame attribution; events are drained per tick and then deleted (`SessionActor.cs:413-415`) | **Implemented (P2)**: `frameEvents` envelope field (§4.2) |
-| G2 | No frame history buffer | The engine only keeps the current tick's events; no ring buffer | **Implemented (P2)**: `FrameHistory` byte-capped ring buffer (§4.3) |
-| G3 | No client-side "fetch a given frame" message | The wire protocol only has server→client `snapshot`; `ClientAck` only carries `lastAppliedTickId` as a progress field (plus `sessionId`/`clientId`/`clientTimeMs`, `src/Chorus.Protocol/Messages/ClientAck.cs:3-9`) | **Implemented (P2)**: `resync` message + full IPC chain (§4.3) |
-| G4 | No replay/recording alignment | Checkpoints restore current room state, but no durable frame/event log is stored | **Explicitly not doing it** |
-| G5 | No client SDK | Everything in src in this repo is server-side; no client library | **Implemented (P3)**: `Chorus.Client.ChorusClient` (minimal entry: handshake + callback + ACK sampling + resync cooldown; no auto-reconnect, see [Quickstart](../guide/quickstart-frame-sync.md)) |
-| G6 | Client rhythm/interpolation untested | No runnable client implementation | **Untested** |
+| G1 | 客户端拿不到"每个事件属于哪一帧" | 快照只带 `tickId`（`ServerSnapshot.cs:8`），没有逐事件帧归属；事件按 tick 排空后即删（`SessionActor.cs:413-415`） | **已实现（P2）**：`frameEvents` 信封字段（§4.2） |
+| G2 | 没有帧历史缓冲 | 引擎只保留当前 tick 的事件；无环形缓冲 | **已实现（P2）**：`FrameHistory` 按字节封顶的环形缓冲（§4.3） |
+| G3 | 没有客户端"按帧号取帧"消息 | 线协议只有服务端→客户端 `snapshot`；`ClientAck` 只把 `lastAppliedTickId` 作为进度字段（另有 `sessionId`/`clientId`/`clientTimeMs`，`src/Chorus.Protocol/Messages/ClientAck.cs:3-9`） | **已实现（P2）**：`resync` 消息 + 完整 IPC 链（§4.3） |
+| G4 | 没有回放/录像对齐 | 检查点恢复房间当前状态，但不存持久帧/事件日志 | **显式不做** |
+| G5 | 没有客户端 SDK | 本仓 src 全是服务端；没有客户端库 | **已实现（P3）**：`Chorus.Client.ChorusClient`（最小入口：握手 + 回调 + ACK 采样 + resync 冷却；无自动重连，见[快速上手](../guide/quickstart-frame-sync.md)） |
+| G6 | 客户端节拍/插值未实测 | 没有可运行的客户端实现 | **未实测** |
 
 ---
 
-## 4. Plan
+## 4. 方案
 
-### 4.1 Frame Number Semantics
+### 4.1 帧号语义
 
-**Frame number ≡ tickId** (server-monotonic `long`, +1 per tick, `SessionActor.cs:391`).
+**帧号 ≡ tickId**（服务端单调 `long`，每 tick +1，`SessionActor.cs:391`）。
 
-- **No separate frame id introduced**: avoid dual clocks (when frame id and tickId drift, the client would be at a loss). tickId is already authoritative, monotonic, and delivered with snapshots — reuse it directly.
-- **Frame = tick**: one frame is one tick beat. `tickId` is the frame number.
-- The client uses the frame number as the basis for rendering and ordering: receive `snapshot(tickId=F)` → render frame F; the authoritative state of frame F is that snapshot's `state`.
+- **不另设帧 id**：避免双时钟（帧 id 与 tickId 漂移时客户端无所适从）。tickId 已权威、单调、随快照下发——直接复用。
+- **帧 = tick**：一帧即一个 tick 节拍。`tickId` 就是帧号。
+- 客户端以帧号为渲染与排序依据：收到 `snapshot(tickId=F)` → 渲染第 F 帧；第 F 帧的权威状态就是该快照的 `state`。
 
-### 4.2 How the Frame Number Is Delivered with Messages
+### 4.2 帧号如何随消息下发
 
-The frame number **is already** delivered with snapshots (`ServerSnapshot.cs:8`). What needs to be added is **per-event frame attribution** (G1) and **client-side replay by frame number**.
+帧号**已经**随快照下发（`ServerSnapshot.cs:8`）。需要补的是**逐事件帧归属**（G1）与**客户端按帧号回放**。
 
-**P1 — Frame Number Semantics + Client Replay by Frame Number (Implemented)**
+**P1 —— 帧号语义 + 客户端按帧号回放（已实现）**
 
-- Frame number = `tickId`, delivered with snapshots; the client sorts and renders by frame number (§4.1).
-- Client replay state machine `src/Chorus.LoadTool/FramePlayer.cs`: frame number ≤ applied frame → drop (idempotent; the replayed window will not render twice); frame number > applied frame + 1 → apply and report the first gap frame number for `resync` to fetch. Unit tests `FramePlayerTests` (7); `ClientSimulation` is wired (`LoadTool` outputs the `resyncs=` count).
-- The `state.frameEvents` convention is **deprecated**: the original plan stuffed frame attribution into `state` (zero protocol changes); P2's envelope field is the better solution (a first-class protocol field, so the client need not know the `state` convention), and G1 was closed directly with P2.
+- 帧号 = `tickId`，随快照下发；客户端按帧号排序渲染（§4.1）。
+- 客户端回放状态机 `src/Chorus.LoadTool/FramePlayer.cs`：帧号 ≤ 已应用帧 → 丢弃（幂等；重放窗口不会渲染两遍）；帧号 > 已应用帧 + 1 → 应用并上报首个缺口帧号供 `resync` 拉取。单元测试 `FramePlayerTests`（7 例）；`ClientSimulation` 已接线（`LoadTool` 输出 `resyncs=` 计数）。
+- `state.frameEvents` 约定**已废弃**：原计划把帧归属塞进 `state`（零协议改动）；P2 的信封字段是更优解（一等协议字段，客户端无需知晓 `state` 约定），G1 直接由 P2 关闭。
 
-**P2 — Protocol Extension (Additive Optional, Implemented)**
+**P2 —— 协议扩展（增量可选，已实现）**
 
-- Add an **optional** `frameEvents` envelope field to `ServerSnapshot` (`List<FrameEvent>?`, default null → omitted on the wire).
-- Per `versioning.md:60-65`: adding an optional field to the wire protocol = allowed (allowed for both 0.x and 1.0+).
-- **Do not bump `v`**: additive optional does not change field semantics; `v` is only bumped when a field's **semantics change** (`versioning.md:42-43`: rejecting unknown v + forced resync to be decided when the first v2 is designed).
-- Needs re-check per `versioning.md:43`: this field is additive and does not trigger the "reject unknown v" semantics.
-- **Implementation**: `src/Chorus.Protocol/Messages/FrameEvent.cs` (`FrameId` / `EventId` / `Kind` / `UserId`); `SessionSnapshot.FrameEvents`; `WireSnapshot.cs` carries it to the wire (null → omit). `SessionActor.DrainFrameEvents` drains the accumulator once per snapshot beat (accumulated per tick, dropping the oldest beats when capped at `MaxPendingFrameEvents = 4096`). Unit tests: `WireSnapshotFrameEventsTests` (omission / camelCase / old-JSON compatibility).
+- 为 `ServerSnapshot` 新增**可选** `frameEvents` 信封字段（`List<FrameEvent>?`，默认 null → 线上省略）。
+- 依 `versioning.md:60-65`：线协议新增可选字段 = 允许（0.x 与 1.0+ 均允许）。
+- **不抬升 `v`**：增量可选不改变字段语义；`v` 只在字段**语义变化**时抬升（`versioning.md:42-43`：拒绝未知 v + 强制重同步留待首个 v2 设计时定）。
+- 需按 `versioning.md:43` 复核：该字段是增量的，不触发"拒绝未知 v"语义。
+- **实现**：`src/Chorus.Protocol/Messages/FrameEvent.cs`（`FrameId` / `EventId` / `Kind` / `UserId`）；`SessionSnapshot.FrameEvents`；`WireSnapshot.cs` 带到线上（null → 省略）。`SessionActor.DrainFrameEvents` 每个快照节拍排空一次累计器（按 tick 累计，封顶 `MaxPendingFrameEvents = 4096` 时丢最旧节拍）。单元测试：`WireSnapshotFrameEventsTests`（省略 / camelCase / 旧 JSON 兼容）。
 
-### 4.3 Out-of-Order / Dropped Frames
+### 4.3 乱序 / 丢帧
 
-**Client-side gap detection**: track `lastAppliedFrameId`; a received snapshot's `tickId` not matching expectations (`tickId > lastAppliedFrameId + 1`) → frames were dropped in between. Implementation see `Chorus.LoadTool.FramePlayer` (`FramePlayerTests` covers: consecutive/duplicate/replay drop/gap reporting).
+**客户端缺口检测**：跟踪 `lastAppliedFrameId`；收到快照的 `tickId` 与预期不符（`tickId > lastAppliedFrameId + 1`）→ 中间有丢帧。实现见 `Chorus.LoadTool.FramePlayer`（`FramePlayerTests` 覆盖：连续/重复/重放丢弃/缺口上报）。
 
-**Frame backfill strategy**:
+**帧回填策略**：
 
-| Phase | Strategy | Notes |
+| 阶段 | 策略 | 说明 |
 | --- | --- | --- |
-| P1 (no history) | Wait for the next periodic snapshot / trigger forced resync | **Cannot backfill historical frames** — the engine has no history (G2). Existing mechanisms: periodic snapshot (`SessionActor.cs:447`) + forced resync (`:550-569`). Honest marking: dropped frame = skipped frame; the client aligns directly to the latest frame. |
-| P2 (implemented) | Engine frame history ring buffer + client fetch | See below. Unit + e2e coverage (`FrameHistoryTests` / `SessionActorFrameHistoryTests` / `WireSnapshotFrameEventsTests`). |
+| P1（无历史） | 等下一个周期快照 / 触发强制重同步 | **无法回填历史帧**——引擎没有历史（G2）。既有机制：周期快照（`SessionActor.cs:447`）+ 强制重同步（`:550-569`）。诚实标注：丢帧即跳帧；客户端直接对齐到最新帧。 |
+| P2（已实现） | 引擎帧历史环形缓冲 + 客户端拉取 | 见下。单元 + e2e 覆盖（`FrameHistoryTests` / `SessionActorFrameHistoryTests` / `WireSnapshotFrameEventsTests`）。 |
 
-**P2 backfill implementation (landed)**:
+**P2 回填实现（已落地）**：
 
-- Engine side: per-session frame history ring buffer (in memory), `src/Chorus.Engine/Session/FrameHistory.cs`.
-- **Capped by bytes, not by frame count**: N beats × average snapshot bytes is uncontrolled; in the worst case `MaxSnapshotBytes` (1 MiB, `SessionConfig.cs:21`) × N would blow up memory, so it is byte-capped — `Session:FrameHistoryBytes` (default 8 MiB/session), evicting the oldest beyond the cap, **but not evicting the just-added frame** (the eviction condition in `Add` excludes the newest item); when a single frame exceeds the entire capacity, it is kept as the session's only frame.
-  - Memory estimate (untested): 8 MiB/session × `MaxSessions` (200, `SessionConfig.cs:17`) = worst case 1.6 GiB. **The cap needs to be set after measuring the average snapshot byte count**; `FrameHistoryBytes = 0` disables it entirely (window queries always miss).
-- Client side: a new `resync` message type (client→server) carrying `fromFrameId`; `ProtocolTypes.Resync = "resync"` and the `ClientResync` model.
-  - Per `versioning.md:60-65`: adding a message type to the wire protocol = allowed.
-  - The engine replays back the snapshot sequence within the `[fromFrameId, current tickId]` window; the window query rejects **partial replay** (`fromFrameId` older than the oldest frame → miss, because replaying from the retained tail would hide gaps).
-  - Gaps outside the window (already evicted / history disabled) → replay the latest snapshot + `forced=true` + `reason="resync-gap"`, and the client aligns to the latest.
-- **Replay goes through the direct-send channel**: `OutboundClientQueue.SendReplayAsync` bypasses the capacity-1 latest-wins slot (DropOldest would squeeze out the replayed frames leaving only the last one); it serializes frame-by-frame with periodic sends via `_sendGate`, and the whole batch is mutually exclusive via `_replayGate`; replay executes detached, so slow transport does not drag the tick. Periodic snapshots can still be dropped — **replayed frames cannot**.
-- Diagnostic counters: `TotalResyncRequests` / `TotalResyncReplays` / `TotalResyncWindowMisses` / `TotalResyncThrottled` / `TotalResyncSnapshotsSent`、`FrameHistoryBytes`.
-- **Full transport chain**: `StreamerWsFace` (`resync` branch + fixed-window rate limiting) → `IStreamerSessionBinding.ResyncAsync` → monolith `MonolithSessionRouter` (direct call to `SessionActor`) / gateway `IpcSessionRouter` (`GatewayIpcService.PublishResyncAsync` → `gw.resync` → `GatewayResyncCmd` → `EngineIpcService` → `SessionActor.ResyncAsync`).
+- 引擎侧：每会话帧历史环形缓冲（内存），`src/Chorus.Engine/Session/FrameHistory.cs`。
+- **按字节封顶，而非按帧数**：N 拍 × 平均快照字节数不可控；最坏 `MaxSnapshotBytes`（1 MiB，`SessionConfig.cs:21`）× N 会打爆内存，故按字节封顶——`Session:FrameHistoryBytes`（默认 8 MiB/会话），超限逐出最旧，**但不逐出刚加入的帧**（`Add` 的逐出条件排除最新一项）；单帧超过整个容量时，该帧作为会话唯一帧保留。
+  - 内存估算（未实测）：8 MiB/会话 × `MaxSessions`（200，`SessionConfig.cs:17`）= 最坏 1.6 GiB。**上限需在实测平均快照字节数后设定**；`FrameHistoryBytes = 0` 完全关闭（窗口查询恒未命中）。
+- 客户端侧：新增 `resync` 消息类型（客户端→服务端）携带 `fromFrameId`；`ProtocolTypes.Resync = "resync"` 与 `ClientResync` 模型。
+  - 依 `versioning.md:60-65`：线协议新增消息类型 = 允许。
+  - 引擎回放 `[fromFrameId, 当前 tickId]` 窗口内的快照序列；窗口查询拒绝**部分重放**（`fromFrameId` 早于最旧帧 → 未命中，因为从保留尾部起重放会掩盖缺口）。
+  - 窗口外缺口（已被逐出 / 历史关闭）→ 回放最新快照 + `forced=true` + `reason="resync-gap"`，客户端对齐到最新。
+- **重放走直发通道**：`OutboundClientQueue.SendReplayAsync` 绕过容量 1 的 latest-wins 槽（DropOldest 会把重放帧挤得只剩最后一帧）；它与周期发送经 `_sendGate` 逐帧串行，整批经 `_replayGate` 互斥；重放以 detached 方式执行，传输慢不拖 tick。周期快照仍可被丢——**重放帧不可**。
+- 诊断计数器：`TotalResyncRequests` / `TotalResyncReplays` / `TotalResyncWindowMisses` / `TotalResyncThrottled` / `TotalResyncSnapshotsSent`、`FrameHistoryBytes`。
+- **完整传输链**：`StreamerWsFace`（`resync` 分支 + 固定窗口限流）→ `IStreamerSessionBinding.ResyncAsync` → 单机 `MonolithSessionRouter`（直调 `SessionActor`）/ 网关 `IpcSessionRouter`（`GatewayIpcService.PublishResyncAsync` → `gw.resync` → `GatewayResyncCmd` → `EngineIpcService` → `SessionActor.ResyncAsync`）。
 
-**Idempotency and deduplication**:
+**幂等与去重**：
 
-- Event-level deduplication already exists: `EventDeduplicator` (`Program.cs:73-77`, `DedupTtlSeconds` default 600).
-- Snapshot-level idempotency: the client deduplicates by `lastAppliedFrameId` — snapshots with a frame number ≤ the applied one are dropped directly (`protocol.md:121` already defines `lastAppliedTickId` as "the authoritative tick that has truly been applied").
-- Duplicate snapshots within the backfill window: the same `tickId` is applied only once (idempotent by frame number).
+- 事件级去重已存在：`EventDeduplicator`（`Program.cs:73-77`，`DedupTtlSeconds` 默认 600）。
+- 快照级幂等：客户端按 `lastAppliedFrameId` 去重——帧号 ≤ 已应用帧的快照直接丢弃（`protocol.md:121` 已定义 `lastAppliedTickId` 为"真正应用完成的权威 tick"）。
+- 回填窗口内的重复快照：同一 `tickId` 只应用一次（按帧号幂等）。
 
-**Backpressure strategy (implemented)**:
+**背压策略（已实现）**：
 
-- Bounded event channel: `MaxPendingEvents` (`SessionConfig.cs:11`, default 8000).
-- Bounded wait: must-not-lose events such as gifts additionally wait `EventEnqueueMaxWaitMs` when the channel is full (`SessionConfig.cs:13`, default 50ms); only dropped on timeout.
-- Per-tick event cap: `MaxEventsPerTick` (`SessionConfig.cs:7`, default 200).
-- Backpressure for backfill requests (P2, implemented, two layers):
-  - Transport-layer fixed window: `Faces:StreamerWs:ResyncPerMinute` (default 30/min); over the limit, dropped directly and counted in `WsResyncDropped`.
-  - Engine-layer per-client cooldown: `Session:ResyncRequestCooldownMs` (default 1000ms); repeated requests within the cooldown are counted in `TotalResyncThrottled` and return immediately. **It is not shared with the `ResyncCooldownMs` (2000ms) for server-pushed lag resync** — the former is the client pulling proactively, the latter is the engine pushing based on ACK judgment.
+- 有界事件通道：`MaxPendingEvents`（`SessionConfig.cs:11`，默认 8000）。
+- 有界等待：礼物等不可丢事件在通道满时额外等待 `EventEnqueueMaxWaitMs`（`SessionConfig.cs:13`，默认 50ms）；仍超时才丢弃。
+- 每 tick 事件上限：`MaxEventsPerTick`（`SessionConfig.cs:7`，默认 200）。
+- 回填请求的背压（P2，已实现，两层）：
+  - 传输层固定窗口：`Faces:StreamerWs:ResyncPerMinute`（默认 30/分钟）；超限直接丢弃并计入 `WsResyncDropped`。
+  - 引擎层按客户端冷却：`Session:ResyncRequestCooldownMs`（默认 1000ms）；冷却内重复请求计入 `TotalResyncThrottled` 后立即返回。**与服务端推送 lag 重同步的 `ResyncCooldownMs`（2000ms）不共用**——前者是客户端主动拉，后者是引擎按 ACK 判断推送。
 
-### 4.4 Reconnection / Replay
+### 4.4 重连 / 回放
 
-**Reconnection (resumption by frame number)**:
+**重连（按帧号续传）**：
 
-- Client reconnects → sends `hello` → the engine takes the **current tickId** as the baseline (`SessionActor.cs:314-315`: `ConnectedTickId = TickId`, `LastAckTickId = TickId`).
-- **Resumption = starting from the latest frame**, no historical backfill (there is no history to backfill, G2). This is consistent with the Twitch `reconnect_url` semantics of "old subscriptions keep delivering, the new connection resumes" ([Twitch docs](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/)), but chorus has no cross-connection subscription state — reconnecting is a new baseline.
-- **P2 landed**: after reconnecting, the client can directly send `resync { fromFrameId }` to fetch historical frames within the window; outside the window (already evicted), the latest snapshot + `forced=true`/`reason="resync-gap"` is replayed to align to the latest. Reconnection still takes the **current tickId** as the baseline; resync is optional frame backfill and does not change the baseline semantics.
+- 客户端重连 → 发 `hello` → 引擎取**当前 tickId** 作基线（`SessionActor.cs:314-315`：`ConnectedTickId = TickId`、`LastAckTickId = TickId`）。
+- **续传 = 从最新帧开始**，不回填历史（没有历史可回填，G2）。这与 Twitch `reconnect_url` 的"旧订阅持续下发、新连接续接"语义一致（[Twitch 文档](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/)），但 chorus 没有跨连接订阅状态——重连即新基线。
+- **P2 已落地**：重连后客户端可直接发 `resync { fromFrameId }` 拉取窗口内历史帧；窗口外（已被逐出）则回放最新快照 + `forced=true`/`reason="resync-gap"` 对齐到最新。重连仍取**当前 tickId**作基线；resync 是可选的帧回填，不改变基线语义。
 
-**Replay / recording alignment**:
+**回放 / 录像对齐**：
 
-- **Explicitly not doing it**. No persistence (`versioning.md:72-74`); snapshots are not persisted to disk, so there is no frame sequence to align with.
-- If replay is wanted in the future, the prerequisite is: land the snapshot-restore contract first (`docs/design/snapshot-restore.md`), then talk about frame-based alignment.
-- The industry approaches to replay alignment (Twitch `reconnect_url`, YouTube polling windows) are all **live resumption**, not **recording alignment**; for recording alignment in danmaku games, **no public sources found**.
+- **显式不做**。没有持久化（`versioning.md:72-74`）；快照不落盘，没有可对齐的帧序列。
+- 未来若要做回放，前提是：先落地快照恢复契约（`docs/design/snapshot-restore.md`），再谈按帧对齐。
+- 业界的回放对齐做法（Twitch `reconnect_url`、YouTube 轮询窗口）都是**直播续传**，不是**录像对齐**；弹幕游戏的录像对齐**未找到公开来源**。
 
-### 4.5 Client Rhythm
+### 4.5 客户端节拍
 
-**Render frame rate vs tick period**:
+**渲染帧率与 tick 周期**：
 
-- Rendering at 60fps (16.67ms/frame) vs tick 66ms (≈15.15 tick/s) → **1 tick ≈ 3.96 render frames**.
-- The render layer interpolates between frames F-1 and F (untested; no client SDK in this repo, G5/G6).
+- 60fps 渲染（16.67ms/帧）对 tick 66ms（≈15.15 tick/s）→ **1 tick ≈ 3.96 渲染帧**。
+- 渲染层在 F-1 与 F 帧之间插值（未实测；本仓没有客户端 SDK，G5/G6）。
 
-**Catch-up strategy**:
+**追赶策略**：
 
-| Situation | Strategy | Basis |
+| 情形 | 策略 | 依据 |
 | --- | --- | --- |
-| Behind by ≤ `maxLagTicks` (50) | Controlled catch-up: speed up the rendering/interpolation rhythm | `protocol.md:135` "under light lag, controlled catch-up may be done" |
-| Behind by > `maxLagTicks` | Wait for the forced resync snapshot and align immediately | `SessionActor.cs:550-569` + `protocol.md:104-105` "after receiving a forced snapshot, one should not continue backfilling historical frames for a long time" |
-| Ahead | Do not render beyond the last two frames | `protocol.md:136` "under heavy lag, one should wait for or request the latest snapshot" |
+| 落后 ≤ `maxLagTicks`（50） | 有控制的追赶：加快渲染/插值节奏 | `protocol.md:135` "轻微落后时可接受有控制的追赶" |
+| 落后 > `maxLagTicks` | 等强制重同步快照并立即对齐 | `SessionActor.cs:550-569` + `protocol.md:104-105` "收到强制快照后，不应再长时间回填历史帧" |
+| 领先 | 不渲染超出最新两帧 | `protocol.md:136` "严重落后时应等待或请求最新快照" |
 
-**Untested**: the strategies above **have no client implementation in this repo to verify** (G5/G6). After the SDK lands in P3, the actual deviation between the tick period and the render frame rate needs to be measured.
+**未实测**：上述策略**在本仓没有客户端实现可验证**（G5/G6）。P3 SDK 落地后需实测 tick 周期与渲染帧率的实际偏差。
 
 ---
 
-## 5. Phasing and Acceptance Criteria
+## 5. 分期与验收标准
 
-| Phase | Content | Acceptance Criteria |
+| 阶段 | 内容 | 验收标准 |
 | --- | --- | --- |
-| **P1** | Frame number semantics documented + client replay-by-frame-number state machine | **Completed**: frame number = tickId documented (§4.1); the client replay state machine `FramePlayer` landed and used by `LoadTool`, `FramePlayerTests` 7 cases (consecutive/duplicate/replay drop/gap reporting); real /ws e2e end-to-end smoke passed. The `state.frameEvents` convention is deprecated (replaced by the P2 envelope field) |
-| **P2** | Frame history ring buffer + `resync` fetch message + snapshot `frameEvents` envelope field | **Completed**: unit tests `FrameHistoryTests` (7: backfill window / byte-by-byte eviction / oversized frame retention / zero-capacity disable) + `SessionActorFrameHistoryTests` (6: window-hit replay / window miss → `resync-gap` / cooldown throttling / unknown client / `frameEvents` carries the applied frame number / omitted when no events) + `WireSnapshotFrameEventsTests` (5: wire omission / camelCase / old-JSON compatibility / `ClientResync` deserialization / real /ws resync backfill e2e); full suite 260 green |
-| **P3** | Client SDK (entry + one callback) | **Completed**: `Chorus.Client` three-line integration (`ChorusClient.ConnectAsync` + one callback); the callback receives a state strictly increasing by frame number; `ChorusClientTests` 3 cases (real /ws render+ACK, idempotent replay under callback blocking, handshake failure throws) + `FramePlayerTests` 7 cases; full suite 270 green |
+| **P1** | 帧号语义成文 + 客户端按帧号回放状态机 | **已完成**：帧号 = tickId 成文（§4.1）；客户端回放状态机 `FramePlayer` 落地并被 `LoadTool` 使用，`FramePlayerTests` 7 例（连续/重复/重放丢弃/缺口上报）；真 /ws e2e 端到端冒烟通过。`state.frameEvents` 约定废弃（由 P2 信封字段取代） |
+| **P2** | 帧历史环形缓冲 + `resync` 拉取消息 + 快照 `frameEvents` 信封字段 | **已完成**：单元测试 `FrameHistoryTests`（7 例：回填窗口 / 按字节逐出 / 超大帧保留 / 零容量关闭）+ `SessionActorFrameHistoryTests`（6 例：窗口命中重放 / 窗口未命中 → `resync-gap` / 冷却节流 / 未知客户端 / `frameEvents` 携带已应用帧号 / 无事件时省略）+ `WireSnapshotFrameEventsTests`（5 例：线上省略 / camelCase / 旧 JSON 兼容 / `ClientResync` 反序列化 / 真 /ws resync 回填 e2e）；全量套件 260 绿 |
+| **P3** | 客户端 SDK（入口 + 一个回调） | **已完成**：`Chorus.Client` 三行接入（`ChorusClient.ConnectAsync` + 一个回调）；回调收到按帧号严格递增的状态；`ChorusClientTests` 3 例（真 /ws 渲染+ACK、回调阻塞下的幂等重放、握手失败抛出）+ `FramePlayerTests` 7 例；全量套件 270 绿 |
 
 ---
 
-## 6. Related Pages
+## 6. 相关页面
 
-- [Protocol Reference](../reference/protocol.md) — `snapshot` / `ack` / `hello` / `welcome` messages
-- [Versioning Policy](../reference/versioning.md) — the `state` schema version `v`, compatibility rules
-- [Config Reference](../reference/config.md) — `Session:*` parameters (`tickDurationMs` / `maxLagTicks`, etc.)
-- [Quickstart Frame Sync](../guide/quickstart-frame-sync.md) — N-line integration
-- [API Reference](../reference/api.md) — backend/admin endpoints
+- [协议参考](../reference/protocol.md) —— `snapshot` / `ack` / `hello` / `welcome` 消息
+- [版本策略](../reference/versioning.md) —— `state` schema 版本 `v`、兼容性规则
+- [配置参考](../reference/config.md) —— `Session:*` 参数（`tickDurationMs` / `maxLagTicks` 等）
+- [帧同步快速上手](../guide/quickstart-frame-sync.md) —— N 行接入
+- [API 参考](../reference/api.md) —— 后端/管理端点

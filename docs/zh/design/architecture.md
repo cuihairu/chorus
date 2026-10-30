@@ -1,11 +1,11 @@
 ---
-title: Architecture Design
+title: 架构设计
 ---
 
 
-# Architecture Design
+# 架构设计
 
-## Overall Components
+## 总体组件
 
 ```mermaid
 flowchart LR
@@ -33,8 +33,8 @@ flowchart LR
   GM --> SA
 ```
 
-## Core Principles (v1)
+## 核心原则（v1）
 
-- Server-authoritative: the state advances on the server; the client only "aligns + renders"
-- The server never pauses: slow endpoints catch up via forced snapshots, without holding back fast endpoints
-- Backpressure: a cap on the number of events per tick + merging/downsampling, to avoid "frame explosions"
+- 服务端权威：状态在服务端推进；客户端只做"对齐 + 渲染"
+- 服务端永不停顿：慢端靠强制快照追赶，不拖累快端
+- 背压：每 tick 事件数上限 + 合并/降采样，避免"单帧爆炸"
