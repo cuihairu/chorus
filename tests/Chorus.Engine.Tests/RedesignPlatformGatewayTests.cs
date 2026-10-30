@@ -1,5 +1,5 @@
 using System.Security.Cryptography;
-using Chorus.Redesign.Platform;
+using Chorus.Platform;
 
 namespace Chorus.Engine.Tests;
 

@@ -1,9 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
 using Chorus.ControlServer;
-using Chorus.Data.Redesign;
+using Chorus.Data;
 using Chorus.DataServer;
-using Chorus.Protocol.Redesign;
+using Chorus.Protocol;
 using Npgsql;
 
 namespace Chorus.Engine.Tests;

@@ -24,15 +24,15 @@
     <ProjectReference Include="..\..\src\Chorus.SampleGame\Chorus.SampleGame.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Server\Chorus.Server.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Messaging\Chorus.Messaging.csproj" />
-    <ProjectReference Include="..\..\src\Chorus.Redesign.Rpc\Chorus.Redesign.Rpc.csproj" />
-    <ProjectReference Include="..\..\src\Chorus.Redesign.ExampleGame\Chorus.Redesign.ExampleGame.csproj" />
-    <ProjectReference Include="..\..\src\Chorus.Redesign.Platform\Chorus.Redesign.Platform.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.Rpc\Chorus.Rpc.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.ExampleGame\Chorus.ExampleGame.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.Platform\Chorus.Platform.csproj" />
     <ProjectReference Include="..\..\src\Chorus.RoundDemo\Chorus.RoundDemo.csproj" />
     <ProjectReference Include="..\..\src\Chorus.StreamerServer\Chorus.StreamerServer.csproj" />
     <ProjectReference Include="..\..\src\Chorus.DataServer\Chorus.DataServer.csproj" />
     <ProjectReference Include="..\..\src\Chorus.ControlServer\Chorus.ControlServer.csproj" />
-    <ProjectReference Include="..\..\src\Chorus.Redesign.StreamerGateway\Chorus.Redesign.StreamerGateway.csproj" />
-    <ProjectReference Include="..\..\src\Chorus.Redesign.PlatformGateway\Chorus.Redesign.PlatformGateway.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.StreamerGateway\Chorus.StreamerGateway.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.PlatformGateway\Chorus.PlatformGateway.csproj" />
     <ProjectReference Include="..\..\src\Chorus.GameServer\Chorus.GameServer.csproj" />
   </ItemGroup>
 

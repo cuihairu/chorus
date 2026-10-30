@@ -6,7 +6,7 @@ M4 目标（redesign-contracts §3 + architecture §3.3 + operations §1.3）：
 
 ## M4-1 已落地：边缘传输地基与角色打通（56633f8）
 
-**新宿主 `src/Chorus.Redesign.StreamerGateway`**（旧引擎 `Chorus.StreamerGateway` 名字占用，重设计宿主照 M3-8 `Chorus.Redesign.PlatformGateway` 骨架）：
+**新宿主 `src/Chorus.StreamerGateway`**（旧引擎 `Chorus.StreamerGateway` 名字占用，重设计宿主照 M3-8 `Chorus.PlatformGateway` 骨架）：
 
 - **双 Kestrel 监听（operations §1.3 端口模型的配置层表达）**：内部 `CHORUS_PORT`(默认 7530) = Http2 + mTLS（RequireCertificate + TrustedProcessCertificates.ValidateAndRemember），挂 `StreamerGatewayFace.Ready`/`NotifySessionReplaced`；公网 `CHORUS_WSS_PORT`(默认 7443) = **Http1** + `UseHttps`（仅服务器证书，玩家无客户端证书）+ `UseWebSockets()` + `Map("/ws")`。同一张服务器证书服务两侧；公网固定 Http1（ClientWebSocket 走 HTTP/1.1，禁 RFC8441 extended-connect 防协商漂移）。
 - **消息面（contracts §3.1/§3.2 名录逐字对齐）**：`Messages/EdgeTypes.cs` 双向 25 个类型常量 + `EdgeProtocolVersion.Current=1` + 错误码（protocol_mismatch/message_too_large/rate_limited/no_session/invalid_message/gateway_full）；`EdgeJson`（Web 默认 camelCase + bytes→base64）；`EdgeHello/EdgePing/EdgePong/EdgeError` DTO（下行带 `type` 判别字段）。封闭类型集：未定义类型 = 协议违规可见拒后关（1008 PolicyViolation），不是跳过的"未来消息"。
@@ -17,7 +17,7 @@ M4 目标（redesign-contracts §3 + architecture §3.3 + operations §1.3）：
 - **`EdgeSessionRegistry`**：connectionId 内存索引 + `MaxConnections` 预算（`CHORUS_MAX_CONNECTIONS` 默认 10000，满则可见拒 gateway_full）；网关零持久状态——崩溃只丢连接，权威全在 store。
 - **自报（架构 4.4）**：`CHORUS_CONTROL_ENDPOINT` 可选 → `ProcessSelfReporter` 报告**内部 gRPC 端点**（路由消费者是集群进程，公网 WSS 口不进路由）；不 claim 任何 ownership。
 
-**m4.proto**（package chorus.redesign.m4）：`StreamerGatewayFace{Ready; NotifySessionReplaced(SessionReplacedNotice{session_id,connection_id,connection_generation,streamer_id,reason})→SessionReplacedReply{delivered}}`——通知携旧 generation，旧网关只关点名连接（M4-2 接会话事实；当前 registry 命中即 delivered）。
+**m4.proto**（package chorus.m4）：`StreamerGatewayFace{Ready; NotifySessionReplaced(SessionReplacedNotice{session_id,connection_id,connection_generation,streamer_id,reason})→SessionReplacedReply{delivered}}`——通知携旧 generation，旧网关只关点名连接（M4-2 接会话事实；当前 registry 命中即 delivered）。
 
 **角色 `streamer-gateway` 全处打通**：HostEnvironment 节点授权角色表 + Ready 探测分支（`StreamerGatewayFace.Ready`，node-agent 证书探测）；ControlGrpcService.ReportProcess 自报角色枚举与 RequireAsync 表；RoutingGrpcService 三处（Ready/GetRoutingSnapshot/WatchRouting——M4-3 WatchRouting 前置）；RoundDemo DemoCluster 授权表。NodeAgent/DeploymentPlan 不动（网关走自报，同 M3-8 先例；监管形态台账 open）。
 

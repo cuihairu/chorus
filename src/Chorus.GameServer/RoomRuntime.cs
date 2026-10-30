@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
-using Chorus.Redesign.ExampleGame;
-using Chorus.Redesign.Rpc;
+using Chorus.ExampleGame;
+using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
 
@@ -985,8 +985,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// instead of answering every offer with a refusal.</summary>
     internal string AdmissionState =>
         _admission.WouldRefuse(DegradedRoomCount())
-            ? Chorus.Redesign.Rpc.ProcessAdmission.Full
-            : Chorus.Redesign.Rpc.ProcessAdmission.Accepting;
+            ? Chorus.Rpc.ProcessAdmission.Full
+            : Chorus.Rpc.ProcessAdmission.Accepting;
 
     private static void Require(string? value, string name)
     {

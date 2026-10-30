@@ -12,7 +12,7 @@ namespace Chorus.DataServer;
 /// </summary>
 public static class MetricsConsoleDump
 {
-    /// <summary>The meter every storage phase instrument lives on (<see cref="Chorus.Data.Redesign.DataMetrics"/>).</summary>
+    /// <summary>The meter every storage phase instrument lives on (<see cref="Chorus.Data.DataMetrics"/>).</summary>
     private const string MeterPrefix = "Chorus.Data";
 
     private static readonly object Gate = new();

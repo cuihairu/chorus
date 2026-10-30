@@ -1,5 +1,5 @@
 using Chorus.DataServer;
-using Chorus.Protocol.Redesign;
+using Chorus.Protocol;
 using Xunit.Abstractions;
 
 namespace Chorus.Engine.Tests;

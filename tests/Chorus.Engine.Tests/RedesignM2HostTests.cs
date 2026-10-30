@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.Rpc;
+using Chorus.Platform;
+using Chorus.Rpc;
 using Grpc.Core;
 using Npgsql;
 

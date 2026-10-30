@@ -3,8 +3,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.Rpc;
+using Chorus.Platform;
+using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
 using Npgsql;
@@ -89,7 +89,7 @@ public sealed class RedesignM3PlatformTaskHostTests
         environment.Kill("gateway-a");
         platform.Release("op-exec");
         platform.Release("op-drop");
-        await environment.StartAsync("Chorus.Redesign.PlatformGateway",
+        await environment.StartAsync("Chorus.PlatformGateway",
             RedesignM0HostTests.HostEnvironment.FreePort(), "platform-gateway",
             GatewayEnvironment(environment.DataPort, platform.Url), instanceId: "gateway-b");
 
@@ -132,7 +132,7 @@ public sealed class RedesignM3PlatformTaskHostTests
                 ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
                 ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
             });
-        await environment.StartAsync("Chorus.Redesign.PlatformGateway",
+        await environment.StartAsync("Chorus.PlatformGateway",
             RedesignM0HostTests.HostEnvironment.FreePort(), "platform-gateway",
             GatewayEnvironment(environment.DataPort, platformUrl), instanceId: "gateway-a");
         return simulatorKey;

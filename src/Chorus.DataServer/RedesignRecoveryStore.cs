@@ -1,8 +1,8 @@
 using System.Data;
 using System.Security.Cryptography;
 using System.Text.Json;
-using Chorus.Data.Redesign;
-using Chorus.Protocol.Redesign;
+using Chorus.Data;
+using Chorus.Protocol;
 using Npgsql;
 
 namespace Chorus.DataServer;
@@ -56,15 +56,15 @@ public sealed record RecoveryReadStats(
 /// must stay invisible to the plan it is loading.
 /// </param>
 public sealed class RedesignRecoveryStore(string connectionString, Action? crashAfterSnapshotInsert = null,
-    Action? afterHeadRead = null, Chorus.Data.Redesign.DataMetrics? metrics = null)
+    Action? afterHeadRead = null, Chorus.Data.DataMetrics? metrics = null)
 {
     /// <summary>How many newest snapshot candidates a normal recovery read loads (FIX-READ-02):
     /// the fallback pair — the same two anchors retention keeps for a settled round.</summary>
     public const int CandidateDepth = 2;
 
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
-    private readonly Chorus.Data.Redesign.DataMetrics _metrics =
-        metrics ?? Chorus.Data.Redesign.DataMetrics.Default;
+    private readonly Chorus.Data.DataMetrics _metrics =
+        metrics ?? Chorus.Data.DataMetrics.Default;
 
     /// <summary>
     /// Persists a full snapshot of the state at the room's current head tick. The store

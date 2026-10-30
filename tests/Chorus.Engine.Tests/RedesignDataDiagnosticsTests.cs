@@ -1,8 +1,8 @@
 using System.Text.Json;
 using Chorus.ControlServer;
-using Chorus.Data.Redesign;
+using Chorus.Data;
 using Chorus.DataServer;
-using Chorus.Protocol.Redesign;
+using Chorus.Protocol;
 using Npgsql;
 using Xunit.Abstractions;
 

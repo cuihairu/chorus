@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.Rpc;
+using Chorus.Platform;
+using Chorus.Rpc;
 using Google.Protobuf;
 
 namespace Chorus.RoundDemo;

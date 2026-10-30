@@ -6,6 +6,6 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../Chorus.Redesign.Rpc/Chorus.Redesign.Rpc.csproj" />
+    <ProjectReference Include="../Chorus.Rpc/Chorus.Rpc.csproj" />
   </ItemGroup>
 </Project>

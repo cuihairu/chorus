@@ -1,8 +1,8 @@
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
-using Chorus.Data.Redesign;
+using Chorus.Data;
 using Chorus.DataServer;
-using Chorus.Redesign.Rpc;
+using Chorus.Rpc;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Npgsql;

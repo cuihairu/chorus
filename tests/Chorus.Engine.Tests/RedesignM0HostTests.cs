@@ -5,10 +5,10 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Chorus.ControlServer;
-using Chorus.Data.Redesign;
+using Chorus.Data;
 using Chorus.DataServer;
-using Chorus.Protocol.Redesign;
-using Chorus.Redesign.Rpc;
+using Chorus.Protocol;
+using Chorus.Rpc;
 using Grpc.Core;
 using Npgsql;
 

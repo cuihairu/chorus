@@ -5,8 +5,8 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using Chorus.Adapters.Platforms;
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.PlatformGateway;
+using Chorus.Platform;
+using Chorus.PlatformGateway;
 using Npgsql;
 
 namespace Chorus.Engine.Tests;
@@ -37,7 +37,7 @@ public sealed class RedesignPlatformIngressHostTests
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
         var ingressPort = RedesignM0HostTests.HostEnvironment.FreePort();
         var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
-        await environment.StartAsync("Chorus.Redesign.PlatformGateway", gatewayPort, "platform-gateway",
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
             GatewayEnvironment(environment.DataPort, ingressPort, allowAll: false,
                 "douyin,kuaishou,bilibili",
                 ["Ingress:Douyin:AppSecret", DouyinSecret],
@@ -131,7 +131,7 @@ public sealed class RedesignPlatformIngressHostTests
         var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
         // One real platform keeps the verifier router mounted; AllowAll adds the development
         // verifier plus the simulator mapper — the leg a development fleet can drive home.
-        await environment.StartAsync("Chorus.Redesign.PlatformGateway", gatewayPort, "platform-gateway",
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
             GatewayEnvironment(environment.DataPort, ingressPort, allowAll: true,
                 "douyin",
                 ["Ingress:Douyin:AppSecret", DouyinSecret]),
@@ -142,21 +142,21 @@ public sealed class RedesignPlatformIngressHostTests
 
         using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-parity");
         using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
-        var control = new Chorus.Redesign.Rpc.ControlService.ControlServiceClient(controlChannel);
-        var owner = await control.ClaimOwnershipAsync(new Chorus.Redesign.Rpc.OwnershipRequest
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        var owner = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
         {
             TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-parity-1",
             OwnerInstanceId = "game-1", LeaseSeconds = 15
         });
         using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-parity");
         using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
-        var rounds = new Chorus.Redesign.Rpc.RoundStore.RoundStoreClient(gameChannel);
-        var roundRequest = new Chorus.Redesign.Rpc.StartRoundRequest
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(gameChannel);
+        var roundRequest = new Chorus.Rpc.StartRoundRequest
         {
             RoomId = "room-parity-1", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
             ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "parity-round-1"
         };
-        roundRequest.Participants.Add(new Chorus.Redesign.Rpc.RoundParticipantProto
+        roundRequest.Participants.Add(new Chorus.Rpc.RoundParticipantProto
         {
             BindingId = bindingId, ParticipantId = login.StreamerId, Role = "Host"
         });
@@ -183,8 +183,8 @@ public sealed class RedesignPlatformIngressHostTests
         Assert.Equal(bindingId, duplicate.GetProperty("bindingId").GetString());
 
         // The room's driver pulls the attributed batch: one delivery into the round.
-        var routed = await new Chorus.Redesign.Rpc.RoundInput.RoundInputClient(gameChannel)
-            .RouteEventsAsync(new Chorus.Redesign.Rpc.RouteEventsRequest
+        var routed = await new Chorus.Rpc.RoundInput.RoundInputClient(gameChannel)
+            .RouteEventsAsync(new Chorus.Rpc.RouteEventsRequest
             {
                 Platform = "simulator", AppId = "app-1", OperationId = "parity-route-1", MaxEvents = 10
             });
@@ -307,7 +307,7 @@ public sealed class RedesignPlatformIngressHostTests
         });
     }
 
-    private static async Task<(Chorus.Redesign.Rpc.LoginReadyReply Login, string BindingId)> MountAsync(
+    private static async Task<(Chorus.Rpc.LoginReadyReply Login, string BindingId)> MountAsync(
         RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator,
         string openId, string liveKey)
     {
@@ -315,15 +315,15 @@ public sealed class RedesignPlatformIngressHostTests
         using var certificate = environment.Certificate("tenant-a", "streamer-server",
             "streamer-" + openId);
         using var channel = environment.Channel(environment.StreamerPort, certificate, "streamer-server");
-        var session = new Chorus.Redesign.Rpc.StreamerSession.StreamerSessionClient(channel);
-        var login = await session.LoginAsync(new Chorus.Redesign.Rpc.LoginRequest
+        var session = new Chorus.Rpc.StreamerSession.StreamerSessionClient(channel);
+        var login = await session.LoginAsync(new Chorus.Rpc.LoginRequest
         {
             Platform = "simulator", AppId = "app-1", LaunchCredential = credential,
             LoginAttemptId = "attempt-" + openId,
             NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
             GatewayInstanceId = "gateway-1", ConnectionId = "connection-" + openId
         });
-        var mounted = await session.StartGameplayAsync(new Chorus.Redesign.Rpc.StartGameplayRequest
+        var mounted = await session.StartGameplayAsync(new Chorus.Rpc.StartGameplayRequest
         {
             AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "mount-" + openId
         });

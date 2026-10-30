@@ -1,6 +1,6 @@
 using System.Security.Cryptography.X509Certificates;
 using Chorus.ControlServer;
-using Chorus.Redesign.Rpc;
+using Chorus.Rpc;
 
 namespace Chorus.Engine.Tests;
 

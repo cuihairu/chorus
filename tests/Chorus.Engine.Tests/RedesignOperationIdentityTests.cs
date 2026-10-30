@@ -1,5 +1,5 @@
 using System.Text;
-using Chorus.Protocol.Redesign;
+using Chorus.Protocol;
 
 namespace Chorus.Engine.Tests;
 

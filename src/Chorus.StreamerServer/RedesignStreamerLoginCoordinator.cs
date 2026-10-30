@@ -1,5 +1,5 @@
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.Rpc;
+using Chorus.Platform;
+using Chorus.Rpc;
 
 namespace Chorus.StreamerServer;
 

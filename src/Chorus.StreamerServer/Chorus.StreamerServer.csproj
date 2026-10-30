@@ -6,8 +6,8 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
-    <ProjectReference Include="../Chorus.Redesign.Rpc/Chorus.Redesign.Rpc.csproj" />
-    <ProjectReference Include="../Chorus.Redesign.Platform/Chorus.Redesign.Platform.csproj" />
+    <ProjectReference Include="../Chorus.Rpc/Chorus.Rpc.csproj" />
+    <ProjectReference Include="../Chorus.Platform/Chorus.Platform.csproj" />
     <ProjectReference Include="../Chorus.Protocol/Chorus.Protocol.csproj" />
   </ItemGroup>
 </Project>

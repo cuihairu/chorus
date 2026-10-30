@@ -1,8 +1,8 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.Rpc;
+using Chorus.Platform;
+using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
 using Npgsql;

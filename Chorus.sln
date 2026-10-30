@@ -41,7 +41,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.Gateway.Runtime", "s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.SchemaTool", "src\Chorus.SchemaTool\Chorus.SchemaTool.csproj", "{807587C6-2169-41B3-901E-8DF1E77FE207}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.Redesign.Rpc", "src\Chorus.Redesign.Rpc\Chorus.Redesign.Rpc.csproj", "{E44B6510-BB78-4B27-9E49-A5B2A2D69949}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.Rpc", "src\Chorus.Rpc\Chorus.Rpc.csproj", "{E44B6510-BB78-4B27-9E49-A5B2A2D69949}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.DataServer", "src\Chorus.DataServer\Chorus.DataServer.csproj", "{153AAE4F-0A04-40E4-84BF-DEBBE03B487B}"
 EndProject
@@ -51,19 +51,19 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.NodeAgent", "src\Cho
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.BootstrapTool", "src\Chorus.BootstrapTool\Chorus.BootstrapTool.csproj", "{C140D816-A7EB-4AF1-A9A6-DE225960B32D}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.Redesign.Platform", "src\Chorus.Redesign.Platform\Chorus.Redesign.Platform.csproj", "{49E93EC7-3103-4C9C-9156-9383B1D758BA}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.Platform", "src\Chorus.Platform\Chorus.Platform.csproj", "{49E93EC7-3103-4C9C-9156-9383B1D758BA}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.StreamerServer", "src\Chorus.StreamerServer\Chorus.StreamerServer.csproj", "{1FB21DA1-61DC-46DC-82BE-8E5DFE8A7990}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.Redesign.ExampleGame", "src\Chorus.Redesign.ExampleGame\Chorus.Redesign.ExampleGame.csproj", "{AA62D907-61B4-49CD-A08B-556F1A34AAC0}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.ExampleGame", "src\Chorus.ExampleGame\Chorus.ExampleGame.csproj", "{AA62D907-61B4-49CD-A08B-556F1A34AAC0}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.GameServer", "src\Chorus.GameServer\Chorus.GameServer.csproj", "{ABB37405-1B62-4723-B2E9-727838BBB61E}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.RoundDemo", "src\Chorus.RoundDemo\Chorus.RoundDemo.csproj", "{DA0F8A96-C46F-415E-9B1D-41727B3393A0}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.Redesign.PlatformGateway", "src\Chorus.Redesign.PlatformGateway\Chorus.Redesign.PlatformGateway.csproj", "{5A15560F-B228-4D92-B3EB-402EE8B6EF49}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.PlatformGateway", "src\Chorus.PlatformGateway\Chorus.PlatformGateway.csproj", "{5A15560F-B228-4D92-B3EB-402EE8B6EF49}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.Redesign.StreamerGateway", "src\Chorus.Redesign.StreamerGateway\Chorus.Redesign.StreamerGateway.csproj", "{6492A3B4-15A4-402B-BA1E-8D194425AFE0}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.StreamerGateway", "src\Chorus.StreamerGateway\Chorus.StreamerGateway.csproj", "{6492A3B4-15A4-402B-BA1E-8D194425AFE0}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

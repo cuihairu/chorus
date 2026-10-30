@@ -8,6 +8,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
-    <ProjectReference Include="../Chorus.Redesign.Rpc/Chorus.Redesign.Rpc.csproj" />
+    <ProjectReference Include="../Chorus.Rpc/Chorus.Rpc.csproj" />
   </ItemGroup>
 </Project>

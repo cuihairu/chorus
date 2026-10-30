@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
+    <ProjectReference Include="../Chorus.Rpc/Chorus.Rpc.csproj" />
+    <ProjectReference Include="../Chorus.Platform/Chorus.Platform.csproj" />
+    <ProjectReference Include="../Chorus.Engine/Chorus.Engine.csproj" />
+    <ProjectReference Include="../Chorus.Adapters.Platforms/Chorus.Adapters.Platforms.csproj" />
+  </ItemGroup>
+</Project>

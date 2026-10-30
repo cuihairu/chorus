@@ -1,4 +1,4 @@
-using Chorus.Data.Redesign;
+using Chorus.Data;
 using Npgsql;
 
 var connectionString = Environment.GetEnvironmentVariable("CHORUS_DATABASE_CONNECTION_STRING");

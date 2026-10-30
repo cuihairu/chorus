@@ -1,6 +1,6 @@
-using Chorus.Data.Redesign;
+using Chorus.Data;
 using Chorus.DataServer;
-using Chorus.Redesign.Rpc;
+using Chorus.Rpc;
 using Grpc.Core;
 
 namespace Chorus.DataServer;

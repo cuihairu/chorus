@@ -184,7 +184,7 @@ public sealed class RedesignGameHostDirectoryStoreTests
             ConnectionString = builder.ConnectionString;
             await using var migrate = new NpgsqlConnection(builder.ConnectionString);
             await migrate.OpenAsync();
-            await Chorus.Data.Redesign.RedesignSchemaMigrator.ApplyAsync(migrate);
+            await Chorus.Data.RedesignSchemaMigrator.ApplyAsync(migrate);
         }
 
         public async ValueTask DisposeAsync()

@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using Chorus.GameServer;
-using Chorus.Redesign.ExampleGame;
-using Chorus.Redesign.Rpc;
+using Chorus.ExampleGame;
+using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
 using Xunit;

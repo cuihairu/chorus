@@ -1,11 +1,11 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.Rpc;
+using Chorus.Platform;
+using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
-using RoutingService = Chorus.Redesign.Rpc.Routing;
+using RoutingService = Chorus.Rpc.Routing;
 using Xunit;
 
 namespace Chorus.Engine.Tests;

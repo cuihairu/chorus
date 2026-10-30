@@ -2,8 +2,8 @@ using System.Net.WebSockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
-using Chorus.Redesign.StreamerGateway;
-using Chorus.Redesign.StreamerGateway.Messages;
+using Chorus.StreamerGateway;
+using Chorus.StreamerGateway.Messages;
 
 namespace Chorus.Engine.Tests;
 

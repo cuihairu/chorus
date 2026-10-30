@@ -1,5 +1,5 @@
 using System.Text.Json;
-using Chorus.Redesign.ExampleGame;
+using Chorus.ExampleGame;
 
 namespace Chorus.Engine.Tests;
 

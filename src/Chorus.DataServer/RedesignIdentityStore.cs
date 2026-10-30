@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
-using Chorus.Redesign.Rpc;
+using Chorus.Rpc;
 using Npgsql;
 
 namespace Chorus.DataServer;

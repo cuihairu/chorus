@@ -1,5 +1,5 @@
 using System.Security.Cryptography.X509Certificates;
-using Chorus.Redesign.Rpc;
+using Chorus.Rpc;
 using Grpc.Core;
 using GrpcChannel = Grpc.Net.Client.GrpcChannel;
 

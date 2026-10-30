@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 
-namespace Chorus.Protocol.Redesign;
+namespace Chorus.Protocol;
 
 /// <summary>The durable receipt key for one logical operation.</summary>
 public sealed record OperationIdentity

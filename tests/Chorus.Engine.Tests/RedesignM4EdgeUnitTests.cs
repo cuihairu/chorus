@@ -1,6 +1,6 @@
 using System.Text.Json;
-using Chorus.Redesign.StreamerGateway;
-using Chorus.Redesign.StreamerGateway.Messages;
+using Chorus.StreamerGateway;
+using Chorus.StreamerGateway.Messages;
 using Xunit;
 
 namespace Chorus.Engine.Tests;
@@ -332,12 +332,12 @@ public sealed class RedesignM4EdgeUnitTests
             room => { notices.Add(("connection-2", room)); return Task.CompletedTask; });
 
         // First apply: both subscribers learn the room as it is — including "no room yet".
-        await monitor.ApplySnapshotAsync(new Chorus.Redesign.Rpc.RoutingSnapshotReply
+        await monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
         {
             Streamers =
             {
-                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "" },
-                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
+                new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "" },
+                new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
             }
         });
         Assert.Equal([("connection-1", ""), ("connection-2", "room-9")], notices);
@@ -345,22 +345,22 @@ public sealed class RedesignM4EdgeUnitTests
         // An unrelated change re-notifies only the streamer whose room moved; a repeat of the
         // same snapshot notifies nobody.
         notices.Clear();
-        await monitor.ApplySnapshotAsync(new Chorus.Redesign.Rpc.RoutingSnapshotReply
+        await monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
         {
             Streamers =
             {
-                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "room-1" },
-                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
+                new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "room-1" },
+                new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
             }
         });
         Assert.Equal([("connection-1", "room-1")], notices);
         notices.Clear();
-        await monitor.ApplySnapshotAsync(new Chorus.Redesign.Rpc.RoutingSnapshotReply
+        await monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
         {
             Streamers =
             {
-                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "room-1" },
-                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
+                new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "room-1" },
+                new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
             }
         });
         Assert.Empty(notices);
@@ -370,11 +370,11 @@ public sealed class RedesignM4EdgeUnitTests
         // Unsubscribed connections stop hearing about rooms.
         monitor.Unsubscribe("connection-1");
         notices.Clear();
-        await monitor.ApplySnapshotAsync(new Chorus.Redesign.Rpc.RoutingSnapshotReply
+        await monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
         {
             Streamers =
             {
-                new Chorus.Redesign.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "" }
+                new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "" }
             }
         });
         Assert.Empty(notices);

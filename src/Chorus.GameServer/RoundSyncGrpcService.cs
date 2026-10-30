@@ -1,4 +1,4 @@
-using Chorus.Redesign.Rpc;
+using Chorus.Rpc;
 using Grpc.Core;
 
 namespace Chorus.GameServer;

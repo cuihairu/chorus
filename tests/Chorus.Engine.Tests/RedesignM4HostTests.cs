@@ -2,9 +2,9 @@ using System.Globalization;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text.Json;
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.Rpc;
-using Chorus.Redesign.StreamerGateway.Messages;
+using Chorus.Platform;
+using Chorus.Rpc;
+using Chorus.StreamerGateway.Messages;
 using Xunit;
 
 namespace Chorus.Engine.Tests;
@@ -584,7 +584,7 @@ public sealed class RedesignM4HostTests
                 clientTenant: "tenant-a");
         }
         var wssPort = RedesignM0HostTests.HostEnvironment.FreePort();
-        await environment.StartAsync("Chorus.Redesign.StreamerGateway",
+        await environment.StartAsync("Chorus.StreamerGateway",
             RedesignM0HostTests.HostEnvironment.FreePort(), "streamer-gateway",
             new Dictionary<string, string>
             {
@@ -612,7 +612,7 @@ public sealed class RedesignM4HostTests
         };
         if (preAuthSeconds is { } seconds)
             extra["CHORUS_PREAUTH_TIMEOUT_SECONDS"] = seconds.ToString(CultureInfo.InvariantCulture);
-        await environment.StartAsync("Chorus.Redesign.StreamerGateway",
+        await environment.StartAsync("Chorus.StreamerGateway",
             RedesignM0HostTests.HostEnvironment.FreePort(), "streamer-gateway", extra);
         return wssPort;
     }

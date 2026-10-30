@@ -1,5 +1,5 @@
 using Chorus.GameServer;
-using Chorus.Redesign.Rpc;
+using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
 using Xunit.Abstractions;

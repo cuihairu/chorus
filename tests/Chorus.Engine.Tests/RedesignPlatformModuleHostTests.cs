@@ -21,7 +21,7 @@ public sealed class RedesignPlatformModuleHostTests
 
         // StartAsync probes the gateway's Ready face to completion: removing three of the
         // four platforms from the configuration leaves a gateway that starts and serves.
-        await environment.StartAsync("Chorus.Redesign.PlatformGateway", port, "platform-gateway",
+        await environment.StartAsync("Chorus.PlatformGateway", port, "platform-gateway",
             GatewayEnvironment(environment.DataPort, new Dictionary<string, string>
             {
                 ["Ingress__Platforms__0"] = "bilibili",
@@ -45,7 +45,7 @@ public sealed class RedesignPlatformModuleHostTests
         // Ingress:Douyin:AppSecret is deliberately absent: the refusal happens during
         // composition, before the gateway listens, and the process output names the key.
         var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => environment.StartAsync(
-            "Chorus.Redesign.PlatformGateway", port, "platform-gateway",
+            "Chorus.PlatformGateway", port, "platform-gateway",
             GatewayEnvironment(environment.DataPort, new Dictionary<string, string>
             {
                 ["Ingress__Platforms__0"] = "douyin",

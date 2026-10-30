@@ -3,8 +3,8 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.Rpc;
+using Chorus.Platform;
+using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
 using Npgsql;
@@ -431,7 +431,7 @@ public sealed class RedesignRecoveryCapacityBenchmarkTests(ITestOutputHelper out
         await new ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
             new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-" + openPrefix });
         using var routingChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
-        var routing = new Chorus.Redesign.Rpc.Routing.RoutingClient(routingChannel);
+        var routing = new Chorus.Rpc.Routing.RoutingClient(routingChannel);
         var registered = await WaitForAsync(async () =>
         {
             var snapshot = await routing.GetRoutingSnapshotAsync(new Empty());

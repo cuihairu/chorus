@@ -1,5 +1,5 @@
 using System.Security.Cryptography;
-using Chorus.Data.Redesign;
+using Chorus.Data;
 using Chorus.DataServer;
 using Npgsql;
 

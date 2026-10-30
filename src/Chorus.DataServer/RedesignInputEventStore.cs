@@ -1,8 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Chorus.Data.Redesign;
-using Chorus.Protocol.Redesign;
+using Chorus.Data;
+using Chorus.Protocol;
 using Npgsql;
 
 namespace Chorus.DataServer;

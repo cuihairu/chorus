@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
-using Chorus.Data.Redesign;
+using Chorus.Data;
 using Chorus.DataServer;
-using Chorus.Redesign.Rpc;
+using Chorus.Rpc;
 using Npgsql;
 
 namespace Chorus.Engine.Tests;

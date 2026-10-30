@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
-using Chorus.Redesign.Rpc;
+using Chorus.Rpc;
 
 if (args.Length != 5)
 {

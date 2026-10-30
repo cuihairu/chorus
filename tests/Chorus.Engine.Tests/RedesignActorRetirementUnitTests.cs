@@ -1,6 +1,6 @@
 using Chorus.GameServer;
-using Chorus.Redesign.ExampleGame;
-using Chorus.Redesign.Rpc;
+using Chorus.ExampleGame;
+using Chorus.Rpc;
 using Grpc.Core;
 using Xunit;
 

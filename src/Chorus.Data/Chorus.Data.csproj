@@ -9,27 +9,27 @@
   <ItemGroup>
     <PackageReference Include="Npgsql" Version="10.0.0" />
     <ProjectReference Include="../Chorus.Protocol/Chorus.Protocol.csproj" />
-    <EmbeddedResource Include="Redesign/0001_operation_receipt.sql" />
-    <EmbeddedResource Include="Redesign/0002_core_schema.sql" />
-    <EmbeddedResource Include="Redesign/0003_ledger_target_scope.sql" />
-    <EmbeddedResource Include="Redesign/0004_ownership_scope.sql" />
-    <EmbeddedResource Include="Redesign/0005_session_connection.sql" />
-    <EmbeddedResource Include="Redesign/0006_live_session_key.sql" />
-    <EmbeddedResource Include="Redesign/0007_input_event_attribution.sql" />
-    <EmbeddedResource Include="Redesign/0008_platform_task_coordination.sql" />
-    <EmbeddedResource Include="Redesign/0009_round_generation.sql" />
-    <EmbeddedResource Include="Redesign/0010_settlement_manifest_leaderboard.sql" />
-    <EmbeddedResource Include="Redesign/0011_retention_capacity.sql" />
-    <EmbeddedResource Include="Redesign/0012_match_ticket_audit.sql" />
-    <EmbeddedResource Include="Redesign/0013_match_reservation_scope.sql" />
-    <EmbeddedResource Include="Redesign/0014_match_ticket_streamer.sql" />
-    <EmbeddedResource Include="Redesign/0015_process_endpoint.sql" />
-    <EmbeddedResource Include="Redesign/0016_deployment_plan.sql" />
-    <EmbeddedResource Include="Redesign/0017_admin_gate.sql" />
-    <EmbeddedResource Include="Redesign/0018_recovery_operation.sql" />
-    <EmbeddedResource Include="Redesign/0019_room_progress.sql" />
-    <EmbeddedResource Include="Redesign/0020_room_cadence.sql" />
-    <EmbeddedResource Include="Redesign/0021_room_recovery_identity.sql" />
+    <EmbeddedResource Include="Schema/0001_operation_receipt.sql" />
+    <EmbeddedResource Include="Schema/0002_core_schema.sql" />
+    <EmbeddedResource Include="Schema/0003_ledger_target_scope.sql" />
+    <EmbeddedResource Include="Schema/0004_ownership_scope.sql" />
+    <EmbeddedResource Include="Schema/0005_session_connection.sql" />
+    <EmbeddedResource Include="Schema/0006_live_session_key.sql" />
+    <EmbeddedResource Include="Schema/0007_input_event_attribution.sql" />
+    <EmbeddedResource Include="Schema/0008_platform_task_coordination.sql" />
+    <EmbeddedResource Include="Schema/0009_round_generation.sql" />
+    <EmbeddedResource Include="Schema/0010_settlement_manifest_leaderboard.sql" />
+    <EmbeddedResource Include="Schema/0011_retention_capacity.sql" />
+    <EmbeddedResource Include="Schema/0012_match_ticket_audit.sql" />
+    <EmbeddedResource Include="Schema/0013_match_reservation_scope.sql" />
+    <EmbeddedResource Include="Schema/0014_match_ticket_streamer.sql" />
+    <EmbeddedResource Include="Schema/0015_process_endpoint.sql" />
+    <EmbeddedResource Include="Schema/0016_deployment_plan.sql" />
+    <EmbeddedResource Include="Schema/0017_admin_gate.sql" />
+    <EmbeddedResource Include="Schema/0018_recovery_operation.sql" />
+    <EmbeddedResource Include="Schema/0019_room_progress.sql" />
+    <EmbeddedResource Include="Schema/0020_room_cadence.sql" />
+    <EmbeddedResource Include="Schema/0021_room_recovery_identity.sql" />
   </ItemGroup>
 
 </Project>

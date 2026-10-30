@@ -1,5 +1,5 @@
 using Chorus.ControlServer;
-using Chorus.Data.Redesign;
+using Chorus.Data;
 using Npgsql;
 
 namespace Chorus.Engine.Tests;

@@ -440,7 +440,7 @@ public sealed class RedesignRetentionStoreTests
             ConnectionString = target.ConnectionString;
             await using var connection = new NpgsqlConnection(ConnectionString);
             await connection.OpenAsync();
-            await Chorus.Data.Redesign.RedesignSchemaMigrator.ApplyAsync(connection);
+            await Chorus.Data.RedesignSchemaMigrator.ApplyAsync(connection);
         }
 
         public async ValueTask DisposeAsync()

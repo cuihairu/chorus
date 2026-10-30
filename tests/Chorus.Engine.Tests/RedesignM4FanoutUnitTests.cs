@@ -1,8 +1,8 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
-using Chorus.Redesign.Rpc;
-using Chorus.Redesign.StreamerGateway;
-using Chorus.Redesign.StreamerGateway.Messages;
+using Chorus.Rpc;
+using Chorus.StreamerGateway;
+using Chorus.StreamerGateway.Messages;
 using Xunit;
 
 namespace Chorus.Engine.Tests;

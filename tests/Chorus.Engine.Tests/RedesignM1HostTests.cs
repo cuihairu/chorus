@@ -1,8 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
-using Chorus.Redesign.Platform;
-using Chorus.Redesign.Rpc;
+using Chorus.Platform;
+using Chorus.Rpc;
 using Grpc.Core;
 using Npgsql;
 
@@ -132,11 +132,11 @@ public sealed class RedesignM1HostTests
         Assert.Equal(StatusCode.PermissionDenied, crossTenant.StatusCode);
 
         // The access credential validates against the issuing key and carries the live session.
-        var validated = Chorus.Redesign.Rpc.ChorusAccessCredential.Validate(accessKey, login.AccessCredential);
+        var validated = Chorus.Rpc.ChorusAccessCredential.Validate(accessKey, login.AccessCredential);
         Assert.NotNull(validated);
         Assert.Equal(identity, validated.Value.StreamerId);
         Assert.Equal(login.SessionId, validated.Value.SessionId);
-        Assert.Null(Chorus.Redesign.Rpc.ChorusAccessCredential.Validate(
+        Assert.Null(Chorus.Rpc.ChorusAccessCredential.Validate(
             RandomNumberGenerator.GetBytes(32), login.AccessCredential));
     }
 
