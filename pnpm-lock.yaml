@@ -8,7 +8,7 @@ overrides:
   '@braintree/sanitize-url': ^6.0.4
   '@vue/compiler-sfc>postcss': ^8.5.23
   braces: ^3.0.3
-  decode-uri-component: 0.5.0
+  decode-uri-component: 0.5.1
   dompurify: ^3.4.17
   esbuild: 0.28.2
   got: ^11.8.5
@@ -24,7 +24,7 @@ overrides:
   toml: ^4.1.2
   tough-cookie: ^4.1.3
   uuid: ^11.1.1
-  vite: 6.4.4
+  vite: 6.4.5
   vuepress-html-webpack-plugin>loader-utils: ^1.4.1
   webpack-log: ^3.0.2
 
@@ -664,7 +664,7 @@ packages:
     resolution: {integrity: sha512-7Yx/SXSOcQq5HiiV3orevHUFn+pmMB4cgbEkDYgnkUWb0WfeQ/wa2yFv6D5ICiCQOVpjA7vYDXrC7AGO8yjDHA==}
     engines: {node: ^18.0.0 || >=20.0.0}
     peerDependencies:
-      vite: 6.4.4
+      vite: 6.4.5
       vue: ^3.2.25
 
   '@vue/compiler-core@3.5.44':
@@ -984,8 +984,8 @@ packages:
       supports-color:
         optional: true
 
-  decode-uri-component@0.5.0:
-    resolution: {integrity: sha512-1BiQVoK8C9gUbQU6NzAtO/tkz2qOFpEObMWpcFvhx4fYnj4Oc5yzaJN/LD36ihkVUdXyh5ZekzX+yM+ty/SrPg==}
+  decode-uri-component@0.5.1:
+    resolution: {integrity: sha512-vWHQkXgg2cE3BB4rR0c+PYw9BCQzLoNIRMI7AunIkZst74tw/vpPp7VLoYtsR/cy1f55g3XDWUslfeCZjiZJyA==}
     engines: {node: '>=14.16'}
 
   delaunator@5.1.0:
@@ -1431,8 +1431,8 @@ packages:
   vfile@6.0.3:
     resolution: {integrity: sha512-KzIbH/9tXat2u30jf+smMwFCsno4wHVdNmzFyL+T/L3UGqqk6JKfVqOFOZEpZSHADH1k40ab6NUIXZq422ov3Q==}
 
-  vite@6.4.4:
-    resolution: {integrity: sha512-xGjU/SyjeNyb0E4KxXBvYz/1C+3JXuujvf2hXNOtnlcE+58o5ajd9N2/n2VhkiJvpCP2qQasnUpx5PXNeI+p1Q==}
+  vite@6.4.5:
+    resolution: {integrity: sha512-4enwjFfi4IwtEh0w+jPzpLVOFQiPHmmzPxcHXQOyEur47o6u0jE573DmGpjA+7irXoMLYRZD5ZaFUEneS3abPg==}
     engines: {node: ^18.0.0 || ^20.0.0 || >=22.0.0}
     hasBin: true
     peerDependencies:
@@ -2059,9 +2059,9 @@ snapshots:
       d3-selection: 3.0.0
       d3-transition: 3.0.1(d3-selection@3.0.0)
 
-  '@vitejs/plugin-vue@5.2.4(vite@6.4.4(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8))(vue@3.5.44)':
+  '@vitejs/plugin-vue@5.2.4(vite@6.4.5(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8))(vue@3.5.44)':
     dependencies:
-      vite: 6.4.4(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8)
+      vite: 6.4.5(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8)
       vue: 3.5.44
 
   '@vue/compiler-core@3.5.44':
@@ -2434,7 +2434,7 @@ snapshots:
       ms: 2.0.0
     optional: true
 
-  decode-uri-component@0.5.0:
+  decode-uri-component@0.5.1:
     optional: true
 
   delaunator@5.1.0:
@@ -2839,7 +2839,7 @@ snapshots:
   source-map-resolve@0.5.3:
     dependencies:
       atob: 2.1.2
-      decode-uri-component: 0.5.0
+      decode-uri-component: 0.5.1
       resolve-url: 0.2.1
       source-map-url: 0.4.1
       urix: 0.1.0
@@ -2937,7 +2937,7 @@ snapshots:
       '@types/unist': 3.0.3
       vfile-message: 4.0.3
 
-  vite@6.4.4(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8):
+  vite@6.4.5(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8):
     dependencies:
       esbuild: 0.28.2
       fdir: 6.5.0(picomatch@4.0.7)
@@ -2967,7 +2967,7 @@ snapshots:
       '@shikijs/transformers': 2.5.0
       '@shikijs/types': 2.5.0
       '@types/markdown-it': 14.2.0
-      '@vitejs/plugin-vue': 5.2.4(vite@6.4.4(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8))(vue@3.5.44)
+      '@vitejs/plugin-vue': 5.2.4(vite@6.4.5(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8))(vue@3.5.44)
       '@vue/devtools-api': 7.7.10
       '@vue/shared': 3.5.44
       '@vueuse/core': 12.8.2
@@ -2976,7 +2976,7 @@ snapshots:
       mark.js: 8.11.1
       minisearch: 7.2.0
       shiki: 2.5.0
-      vite: 6.4.4(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8)
+      vite: 6.4.5(@types/node@26.6.5)(lightningcss@1.33.0)(stylus@0.54.8)
       vue: 3.5.44
     optionalDependencies:
       postcss: 8.5.30
