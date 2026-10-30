@@ -1,30 +1,27 @@
 ---
-title: Overall architecture and code agent implementation spec
+title: 总体架构与代码代理实施规格
 ---
 
 
-# Overall architecture and code agent implementation spec
+# 总体架构与代码代理实施规格
 
-> **This document has no English translation yet.** The Chinese original is 1,478 lines
-> (architecture design, code-audit baseline, 80 audit items, dated 2026-10-13); a
-> low-quality machine translation would be worse than none, so it is left untranslated on purpose.
-> The authoritative version is the
-This historical design document is currently available in Chinese only.
+> 本页仅为导航用途。完整文档是一份 1,478 行的中文原件
+> （架构设计、代码审计基线、80 项审计条目，日期 2026-10-13），是权威版本；
+> 低质量的机器翻译比没有更糟，故有意保持未翻译。
+> 本页仅列出其中文章节结构，便于导航。
 
-For navigation only, the Chinese document's section structure (translated headings):
-
-1. Project positioning and architecture goals
-2. Overall logical architecture diagram — including implementation-status constraints on the modules in the diagram
-3. Core domain objects and relationship diagram — including object semantics
-4. Platform account unique binding and dual-entry routing
-5. Room lifecycle and Worker scheduling
-6. Matchmaking, real participants and bot architecture — including bot rules
-7. Frame sync and authoritative Tick architecture — Tick semantics, state sync, relationship to the current `SessionActor`
-8. Async player data and persistence architecture — reliability levels, suggested `DataCommand` contract, key constraints
-9. Leaderboard subsystem — leaderboard types to be defined, authoritative data rules, query/update separation
-10. Dual adapter architecture for live-stream and mini-game platforms — live adapter, mini-game adapter, candidate platforms and priorities
-11. Room migration and failure recovery — guarantees, relationship to existing code
-12. Process deployment topology
-13. Observability and operations management
-14. Existing code that must be audited
-15. Phased implementation order — phase 0: architecture audit; phase 1: unify room semantics and routing; …
+1. 项目定位与架构目标
+2. 总体逻辑架构图 —— 含图中各模块的实现状态约束
+3. 核心领域对象与关系图 —— 含对象语义
+4. 平台账号唯一绑定与双入口路由
+5. 房间生命周期与 Worker 调度
+6. 匹配、真实参与者与机器人架构 —— 含机器人规则
+7. 帧同步与权威 Tick 架构 —— Tick 语义、状态同步、与当前 `SessionActor` 的关系
+8. 异步玩家数据与持久化架构 —— 可靠性等级、建议的 `DataCommand` 契约、关键约束
+9. 排行榜子系统 —— 待定义的排行榜类型、权威数据规则、查询与更新分离
+10. 直播与小游戏平台的双适配器架构 —— 直播适配器、小游戏适配器、候选平台与优先级
+11. 房间迁移与故障恢复 —— 保证、与现有代码的关系
+12. 进程部署拓扑
+13. 可观测性与运维管理
+14. 需要审计的现有代码
+15. 分阶段实施顺序 —— 阶段 0：架构审计；阶段 1：统一房间语义与路由；……

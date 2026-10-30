@@ -1,7 +1,7 @@
-# Control audit retention
+# 控制审计留存
 
-The control audit is append-only. The service does not delete or rewrite audit rows, because the repository has no approved legal or business retention period. This is the initial retention decision (`已代决`): keep records in the configured control database until an explicit retention and archive requirement is approved.
+控制审计是仅追加的（append-only）。服务不会删除或重写审计行，因为仓库尚未批准任何法律或业务留存期限。这是初始留存决策（`已代决`）：记录保留在已配置的控制数据库中，直到明确的留存与归档需求被批准为止。
 
-The admin audit page exposes row count, oldest/newest record timestamps, and an estimated payload size. The estimate uses four bytes per stored text character plus 32 bytes per row; it is intentionally conservative for UTF-8 text, but excludes database pages, indexes, WAL, and backups. At 256 MiB the UI raises a capacity warning. This is an operator warning only; it does not page or delete data.
+管理员审计页会暴露行数、最早/最晚记录时间戳以及估算的载荷大小。估算方式为每个存储的文本字符 4 字节加每行 32 字节；这是针对 UTF-8 文本刻意保守的估算，但不包含数据库页、索引、WAL 与备份。达到 256 MiB 时界面会提升容量告警。这仅是运维告警；不会向外寻呼，也不会删除数据。
 
-No archive destination or automated archival job is configured. Operators must provision database capacity and backups before the warning threshold is approached. If policy later requires finite retention, implement a separately reviewed export/verification process before any deletion path; do not add silent cleanup to maintenance.
+未配置归档目的地或自动归档任务。运维人员必须在逼近告警阈值前预备好数据库容量与备份。若日后策略要求有限期留存，须先实现单独评审过的导出/校验流程，再考虑任何删除路径；不要在维护流程中加入静默清理。

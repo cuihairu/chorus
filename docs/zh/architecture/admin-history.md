@@ -1,15 +1,15 @@
-# Admin history dimensions
+# 管理总览历史维度
 
-## Decision
+## 决策
 
-Admin overview history supports one bounded dimension: platform. Supported buckets are `douyin`, `kuaishou`, `bilibili`, `test`, and `other`; values outside the canonical set, including missing platform names, are folded into `other`. Mode and region are intentionally excluded from historical aggregation because their values are deployment-controlled and can grow without bound.
+管理总览历史支持一个有界维度：平台。支持的分桶为 `douyin`、`kuaishou`、`bilibili`、`test` 与 `other`；规范集合之外的取值（包括缺失的平台名）一律并入 `other`。模式（mode）与地区（region）被有意排除在历史聚合之外，因为它们的取值由部署控制且可能无限增长。
 
-History keeps the existing 720 samples at the five-second sampling interval, for a one-hour window. Each sample stores the existing global totals plus per-platform room and distinct online-user counts. The admin API accepts `GET /api/history?platform=<bucket>`; omitted platform returns the global series. Legacy samples without per-platform fields are omitted from filtered responses rather than shown as zero-valued observations.
+历史沿用每 5 秒采样间隔的 720 个样本，构成一小时窗口。每个样本存储既有的全局合计值，加上按平台的房间数与去重在线用户数。管理 API 接受 `GET /api/history?platform=<bucket>`；省略 platform 时返回全局序列。缺少按平台字段的旧样本在过滤响应中被省略，而不是作为零值观测显示。
 
-This bounds each sample to at most five platform buckets and avoids multiplying storage by arbitrary mode/region values. The overview trend selector exposes the same buckets. Room and user counts are operational summaries; this history does not claim platform audience or engagement totals.
+这样每个样本最多被限定为五个平台分桶，避免按任意的模式/地区取值成倍增加存储。总览趋势选择器暴露相同的分桶。房间数与用户数是运维汇总；本历史不代表平台受众或互动总量。
 
-## Accepted event heat
+## 已接受的事件热度
 
-Reliable event heat is counted in the same transaction that stores the event receipt and pending event. Duplicate deliveries do not increment it, and consuming the pending event does not erase the aggregate. Storage uses one-minute buckets by room, canonical platform, and event kind to avoid a single platform-wide write lock; reads roll those rows up by platform and kind. The aggregate stores event count plus raw gift units and is pruned to a rolling 60-minute window. Gift value is deliberately excluded because platform value units are not comparable. The admin hotspot view labels these as accepted ingress events, not applied game actions or total platform audience.
+可靠事件热度在存储事件回执与待处理事件的同一事务中计数。重复投递不会使计数增加，消费待处理事件也不会清除该聚合。存储采用按房间、规范平台与事件种类划分的一分钟分桶，以避免单一的全平台写锁；读取时按平台与种类汇总这些行。该聚合存储事件计数以及原始礼物数量，并裁剪为 60 分钟滚动窗口。礼物价值被有意排除，因为平台的价值单位不可比。管理热点视图将其标注为已接受的入站事件，而非已应用的游戏动作或平台总受众。
 
-The initial attention rule is 300 accepted events for one platform in one UTC minute. This is an informational console alert, not an external page. Operators with the `operate` permission can acknowledge an alert; acknowledgement state is retained for the same 60-minute window and each first acknowledgement is written to the existing audit log. Acknowledging an expired or sub-threshold bucket is rejected.
+初始关注规则为单个平台在一个 UTC 分钟内被接受事件达到 300 条。这是控制台的信息型提醒，不是外部寻呼。拥有 `operate` 权限的运维可以确认该提醒；确认状态在同样的 60 分钟窗口内保留，且每次首次确认都会写入既有审计日志。确认已过期或未达阈值的分桶会被拒绝。
