@@ -64,7 +64,24 @@ if (controlEndpoint is { Length: > 0 })
 }
 builder.Services.AddGrpc();
 
+// Platform modules (2026-10-30 pluginization): deployments face different platforms, so the
+// gateway mounts only what Ingress:Platforms lists — an enabled module with missing
+// credentials refuses to start naming the key, and an unlisted platform contributes zero
+// registrations and zero credential reads.
+var enabledPlatforms = PlatformModuleAssembly.AddPlatformModules(builder.Services, builder.Configuration);
+
 var app = builder.Build();
+// Host-visible startup evidence goes to the console channel the test harness captures —
+// the same channel as the metrics dump, not the logger pipeline.
+if (enabledPlatforms.Count > 0)
+{
+    Console.WriteLine($"platform modules enabled: {string.Join(", ", enabledPlatforms.Select(module => module.Name))}");
+}
+if (builder.Configuration.GetValue(PlatformModuleAssembly.AllowAllConfigurationKey, false))
+{
+    Console.Error.WriteLine(
+        $"{PlatformModuleAssembly.AllowAllConfigurationKey} is enabled; platform signatures are not required. Development only.");
+}
 app.MapGrpcService<GatewayGrpcService>();
 await app.RunAsync();
 
