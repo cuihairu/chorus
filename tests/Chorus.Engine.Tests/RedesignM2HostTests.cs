@@ -723,16 +723,11 @@ public sealed class RedesignM2HostTests
                 new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
             }
         })).Status);
-        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
-        {
-            RoomId = "room-m2-6", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
-            OperationId = "run-op-6", DurationTicks = 200, RandomSeed = 777, TickMs = 25,
-            Participants =
-            {
-                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
-                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
-            }
-        })).Status);
+        // The gifts are routed while the room is still Preparing so the crash loop below can
+        // begin sampling the tick the instant the room starts. Routing before Prepare keeps the
+        // starved setup (Ingest+Route) from outliving the room's whole 5s run on a loaded CI
+        // runner — which would let the room finish to tick 200 before the loop ever sampled a
+        // kill point in [130,199] (the acceptance window for a live mid-battle crash).
         var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-6" };
         batch.Events.Add(new IngestEvent
         {
@@ -749,6 +744,16 @@ public sealed class RedesignM2HostTests
         {
             Platform = "simulator", AppId = "app-1", OperationId = "route-6", MaxEvents = 50
         });
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-6", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-6", DurationTicks = 200, RandomSeed = 777, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
 
         // Crash the game host mid-battle, past the tick-100 checkpoint (AT19 kill point).
         // The patience carries the pacing (2026-10-29: the full gate's shared Postgres sagged
@@ -810,16 +815,8 @@ public sealed class RedesignM2HostTests
                 new RoundParticipantProto { BindingId = twinGuestBinding, ParticipantId = twinGuest.StreamerId, Role = "Guest" }
             }
         })).Status);
-        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
-        {
-            RoomId = "room-m2-7", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = twinOwner.Epoch,
-            OperationId = "run-op-7", DurationTicks = 200, RandomSeed = 777, TickMs = 25,
-            Participants =
-            {
-                new GameParticipantProto { BindingId = twinHostBinding, ParticipantId = twinHost.StreamerId, Faction = "red" },
-                new GameParticipantProto { BindingId = twinGuestBinding, ParticipantId = twinGuest.StreamerId, Faction = "blue" }
-            }
-        })).Status);
+        // Same input ordering as the victim: the gifts land in the twin's inbox while it is
+        // still Preparing, so both rooms run the identical script from the first tick.
         var twinBatch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-7" };
         twinBatch.Events.Add(new IngestEvent
         {
@@ -836,6 +833,16 @@ public sealed class RedesignM2HostTests
         {
             Platform = "simulator", AppId = "app-1", OperationId = "route-7", MaxEvents = 50
         });
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-7", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = twinOwner.Epoch,
+            OperationId = "run-op-7", DurationTicks = 200, RandomSeed = 777, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = twinHostBinding, ParticipantId = twinHost.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = twinGuestBinding, ParticipantId = twinGuest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
 
         var finishDeadline = DateTime.UtcNow.AddSeconds(30);
         string victim = "", twin = "";
@@ -968,16 +975,9 @@ public sealed class RedesignM2HostTests
                 new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
             }
         })).Status);
-        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
-        {
-            RoomId = "room-m2-8", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
-            OperationId = "run-op-8", DurationTicks = 200, RandomSeed = 555, TickMs = 25,
-            Participants =
-            {
-                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
-                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
-            }
-        })).Status);
+        // Same ordering as the AT19 crash test: the gifts are routed into the Preparing
+        // room's inbox so the kill-point polls below start sampling the instant the room
+        // starts, without a starved Ingest+Route stretch in which the room could finish.
         var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-8" };
         batch.Events.Add(new IngestEvent
         {
@@ -994,6 +994,16 @@ public sealed class RedesignM2HostTests
         {
             Platform = "simulator", AppId = "app-1", OperationId = "route-8", MaxEvents = 50
         });
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-8", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-8", DurationTicks = 200, RandomSeed = 555, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
         await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
         {
             await connection.OpenAsync();
