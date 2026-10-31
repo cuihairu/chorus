@@ -22,11 +22,25 @@ namespace Chorus.PlatformGateway;
 public sealed class PlatformIngressEndpoint(
     IPlatformEventVerifier? verifier,
     IEnumerable<IPlatformEventMapper> mappers,
-    PlatformIngest.PlatformIngestClient ingest)
+    PlatformIngest.PlatformIngestClient ingest,
+    GatewayRoutingMonitor? routing = null,
+    Func<string, Grpc.Net.Client.GrpcChannel>? gameChannelFactory = null)
 {
     /// <summary>The platform application the callback belongs to; per-app callbacks are how
     /// every platform console routes webhooks, so the face asks for it explicitly.</summary>
     public const string AppIdHeader = "X-Chorus-App-Id";
+
+    /// <summary>The pushed-event disposition contract (FIX-INPUT-01): the five answers a
+    /// <c>RoomEvents.DeliverEvent</c> can give. The face only distinguishes the durable
+    /// outcomes from the retryable refusals — the strings themselves are the wire contract.</summary>
+    public static class PushDisposition
+    {
+        public const string DurableAccepted = "DurableAccepted";
+        public const string Duplicate = "Duplicate";
+        public const string StaleOwner = "StaleOwner";
+        public const string Overloaded = "Overloaded";
+        public const string OutcomeUnknown = "OutcomeUnknown";
+    }
 
     /// <summary>The body cap of the old line's guard: one webhook is one event envelope,
     /// never a bulk feed.</summary>
@@ -108,6 +122,71 @@ public sealed class PlatformIngressEndpoint(
             return Results.BadRequest(new { error = "unmapped_event", platform });
         }
 
+        var payload = JsonSerializer.Serialize(mapped, PayloadOptions);
+
+        // The routed push (FIX-INPUT-02): when the control plane's routing snapshot names the
+        // room this live key belongs to — and that room's owner serves an endpoint — the face
+        // pushes the event straight at the owning game host. The push is the durable accept:
+        // DurableAccepted and Duplicate answer a committed event, everything else is a refusal
+        // the caller retries, and a malformed attribution is a 4xx that retrying cannot fix.
+        if (routing is not null && gameChannelFactory is not null
+            && routing.TryResolve(platform, mapped.SessionId, out var route))
+        {
+            var push = new DeliverRoomEventRequest
+            {
+                TenantId = route.TenantId,
+                GameId = route.GameId,
+                RoomId = route.RoomId,
+                OwnerInstanceId = route.OwnerInstanceId,
+                Epoch = route.Epoch,
+                EventId = mapped.EventId,
+                Platform = platform,
+                AppId = appId,
+                BindingId = route.BindingId,
+                PayloadJson = payload
+            };
+            DeliverRoomEventReply delivered;
+            try
+            {
+                using var channel = gameChannelFactory(route.Endpoint);
+                delivered = await new RoomEvents.RoomEventsClient(channel).DeliverEventAsync(push,
+                    deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: context.RequestAborted);
+            }
+            catch (RpcException error) when (error.StatusCode == StatusCode.InvalidArgument)
+            {
+                return Results.BadRequest(new { error = "rejected_push", platform, detail = error.Status.Detail });
+            }
+            catch (RpcException)
+            {
+                // Not committed and the host is unreachable: retry the same event id.
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+            if (delivered.Disposition is not (PushDisposition.DurableAccepted or PushDisposition.Duplicate))
+            {
+                // StaleOwner, Overloaded, OutcomeUnknown: nothing committed — a retry of the
+                // same event id is the contract, and a 503 says so without acking the loss.
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+            return Results.Ok(new
+            {
+                ok = true,
+                platform,
+                receipts = new[]
+                {
+                    new
+                    {
+                        eventId = mapped.EventId,
+                        disposition = delivered.Disposition,
+                        bindingId = route.BindingId,
+                        duplicate = delivered.Disposition == PushDisposition.Duplicate
+                    }
+                }
+            });
+        }
+
+        // No valid attribution: the callback's live key names no routed room, so the event
+        // waits durably in the persistent inbox — an explicit pending, never a drop. The
+        // durable attribution leg is the migration baseline and answers this case.
         var request = new IngestBatchRequest
         {
             Platform = platform,
@@ -122,7 +201,7 @@ public sealed class PlatformIngressEndpoint(
             SourceDedupKey = mapped.EventId,
             Durability = "Durable",
             CanonicalRoomKey = mapped.SessionId,
-            PayloadJson = JsonSerializer.Serialize(mapped, PayloadOptions)
+            PayloadJson = payload
         });
 
         IngestBatchReply committed;

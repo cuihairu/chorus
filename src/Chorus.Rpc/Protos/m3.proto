@@ -264,6 +264,11 @@ message StreamerRouteProto {
   // no holder is on record — e.g. a host outside the control plane.
   string owner_instance_id = 5;
   int64 epoch = 6;
+  // The live session key naming this binding's platform room (additive for the gateway's
+  // event→room resolution: the routing layer only holds the canonical live key of the
+  // callback, and must not re-derive the binding from the data plane).
+  string platform = 7;
+  string canonical_live_session_key = 8;
 }
 
 message InstanceRouteProto {

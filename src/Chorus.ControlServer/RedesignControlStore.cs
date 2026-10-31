@@ -15,7 +15,7 @@ public sealed record RoomRecoveryOperation(
 public sealed record RoomRoute(string RoomId, string TenantId, string GameId, string OwnerInstanceId,
     long Epoch, string? Endpoint, string Status);
 public sealed record StreamerRoute(string StreamerId, string BindingId, string RoomId, string State,
-    string? OwnerInstanceId, long Epoch);
+    string? OwnerInstanceId, long Epoch, string Platform, string CanonicalLiveSessionKey);
 public sealed record InstanceRoute(string ProcessInstanceId, string Role, string NodeId, string SlotId,
     string? Endpoint, string Readiness, string Admission);
 public sealed record RoutingSnapshot(long Version, IReadOnlyList<RoomRoute> Rooms,
@@ -621,7 +621,8 @@ public sealed class RedesignControlStore(string connectionString)
         var streamers = new List<StreamerRoute>();
         await using (var command = new NpgsqlCommand("""
             SELECT s.streamer_id,b.binding_id,b.current_room_id,b.state,
-                o.owner_process_instance_id,COALESCE(o.epoch,0)
+                o.owner_process_instance_id,COALESCE(o.epoch,0),
+                s.platform,s.canonical_live_session_key
             FROM live.binding b
             JOIN live.session s ON s.live_session_id=b.live_session_id
             LEFT JOIN control.ownership o ON o.kind='streamer' AND o.tenant_id=b.tenant_id
@@ -634,7 +635,8 @@ public sealed class RedesignControlStore(string connectionString)
             while (await reader.ReadAsync(cancellationToken))
                 streamers.Add(new StreamerRoute(reader.GetString(0), reader.GetString(1),
                     reader.IsDBNull(2) ? "" : reader.GetString(2), reader.GetString(3),
-                    reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5)));
+                    reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5),
+                    reader.GetString(6), reader.GetString(7)));
         }
 
         var instances = new List<InstanceRoute>();
@@ -655,7 +657,7 @@ public sealed class RedesignControlStore(string connectionString)
         var version = ContentHash(rooms.Select(r =>
             $"room|{r.RoomId}|{r.TenantId}|{r.GameId}|{r.OwnerInstanceId}|{r.Epoch}|{r.Endpoint ?? ""}|{r.Status}")
             .Concat(streamers.Select(s =>
-                $"streamer|{s.StreamerId}|{s.BindingId}|{s.RoomId}|{s.State}|{s.OwnerInstanceId ?? ""}|{s.Epoch}"))
+                $"streamer|{s.StreamerId}|{s.BindingId}|{s.RoomId}|{s.State}|{s.OwnerInstanceId ?? ""}|{s.Epoch}|{s.Platform}|{s.CanonicalLiveSessionKey}"))
             .Concat(instances.Select(i =>
                 $"instance|{i.ProcessInstanceId}|{i.Role}|{i.NodeId}|{i.SlotId}|{i.Endpoint ?? ""}|{i.Readiness}|{i.Admission}")));
         return new RoutingSnapshot(version, rooms, streamers, instances);

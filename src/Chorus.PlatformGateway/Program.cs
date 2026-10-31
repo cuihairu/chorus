@@ -84,6 +84,18 @@ if (controlEndpoint is { Length: > 0 })
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
 }
+// The routing watch (FIX-INPUT-02): the webhook face resolves each callback's live key to the
+// room it belongs to, and pushes straight at the owning game host. Without the control plane
+// there is no routing to resolve, so the face keeps the durable attribution leg instead.
+GatewayRoutingMonitor? routingMonitor = null;
+if (controlEndpoint is { Length: > 0 })
+{
+    routingMonitor = new GatewayRoutingMonitor(
+        () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate,
+            root, nodeAuthority, clusterId, "control-server"));
+    builder.Services.AddSingleton(routingMonitor);
+    builder.Services.AddHostedService(_ => new RoutingMonitorHost(routingMonitor));
+}
 builder.Services.AddGrpc();
 
 // Platform modules (2026-10-30 pluginization): deployments face different platforms, so the
@@ -93,10 +105,14 @@ builder.Services.AddGrpc();
 var enabledPlatforms = PlatformModuleAssembly.AddPlatformModules(builder.Services, builder.Configuration);
 if (ingressPort > 0)
 {
+    Func<string, Grpc.Net.Client.GrpcChannel> gameChannelFactory = endpoint =>
+        ProcessGrpcClientFactory.Create(new Uri(endpoint), serverCertificate,
+            root, nodeAuthority, clusterId, "game-server");
     builder.Services.AddSingleton(sp => new PlatformIngressEndpoint(
         sp.GetService<IPlatformEventVerifier>(),
         sp.GetServices<IPlatformEventMapper>(),
-        new PlatformIngest.PlatformIngestClient(DataChannel())));
+        new PlatformIngest.PlatformIngestClient(DataChannel()),
+        sp.GetService<GatewayRoutingMonitor>(), gameChannelFactory));
 }
 
 var app = builder.Build();
@@ -123,3 +139,10 @@ await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
     ? value : throw new InvalidOperationException($"Set {name} before starting the gateway.");
+
+/// <summary>Owns the routing watch's lifetime (the StreamerGateway host's same pattern).</summary>
+internal sealed class RoutingMonitorHost(GatewayRoutingMonitor monitor)
+    : Microsoft.Extensions.Hosting.BackgroundService
+{
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) => monitor.RunAsync(stoppingToken);
+}

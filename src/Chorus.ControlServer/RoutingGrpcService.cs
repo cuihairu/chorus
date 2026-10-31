@@ -18,14 +18,14 @@ public sealed class RoutingGrpcService(
     public override async Task<ReadyReply> Ready(Empty request, ServerCallContext context)
     {
         await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server",
-            "streamer-gateway", "control-server");
+            "streamer-gateway", "platform-gateway", "control-server");
         return new ReadyReply { Ready = true, SchemaVersion = "4" };
     }
 
     public override async Task<RoutingSnapshotReply> GetRoutingSnapshot(Empty request, ServerCallContext context)
     {
         await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server",
-            "streamer-gateway", "control-server");
+            "streamer-gateway", "platform-gateway", "control-server");
         var snapshot = await store.ReadRoutingSnapshotAsync(context.CancellationToken);
         return new RoutingSnapshotReply
         {
@@ -40,7 +40,8 @@ public sealed class RoutingGrpcService(
             {
                 StreamerId = streamer.StreamerId, BindingId = streamer.BindingId,
                 RoomId = streamer.RoomId, State = streamer.State,
-                OwnerInstanceId = streamer.OwnerInstanceId ?? "", Epoch = streamer.Epoch
+                OwnerInstanceId = streamer.OwnerInstanceId ?? "", Epoch = streamer.Epoch,
+                Platform = streamer.Platform, CanonicalLiveSessionKey = streamer.CanonicalLiveSessionKey
             }) },
             Instances = { snapshot.Instances.Select(instance => new InstanceRouteProto
             {
@@ -56,7 +57,7 @@ public sealed class RoutingGrpcService(
         IServerStreamWriter<RoutingNotice> responseStream, ServerCallContext context)
     {
         await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server",
-            "streamer-gateway", "control-server");
+            "streamer-gateway", "platform-gateway", "control-server");
         var lastVersion = request.KnownVersion;
         while (!context.CancellationToken.IsCancellationRequested)
         {
