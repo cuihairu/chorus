@@ -191,6 +191,156 @@ public sealed class RedesignPlatformGatewayRoutingHostTests
         }
     }
 
+    [Fact]
+    public async Task AMigratedRoomStillReceivesOnePushAndRetriesNeverDouble()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var gamePortA = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gamePortB = RedesignM0HostTests.HostEnvironment.FreePort();
+        var ingressPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] =
+                    $"game-a=https://localhost:{gamePortA},game-b=https://localhost:{gamePortB}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "6",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "3"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(CultureInfo.InvariantCulture),
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+            });
+        await environment.StartAsync("Chorus.GameServer", gamePortA, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, gamePortA, "node-a/game-server"),
+            clientTenant: "tenant-a", instanceId: "game-a");
+        await environment.StartAsync("Chorus.GameServer", gamePortB, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, gamePortB, "node-a/game-server#3"),
+            clientTenant: "tenant-a", instanceId: "game-b");
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            GatewayEnvironment(environment.DataPort, ingressPort, controlEndpoint, gatewayPort),
+            instanceId: "gateway-route");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-mig");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        var routing = new RoutingService.RoutingClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "rounds-mig");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(gameChannel);
+
+        await RegisterHostsAsync(environment, routing);
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "mig-open-a", "mig-host-a");
+        var guest = await MountAsync(environment, simulator, "mig-open-guest-a", "mig-guest-a");
+
+        // One room on host A; the face's route is warm before the first push, as ever.
+        const string room = "room-mig-a";
+        var (epoch, _) = await StartRoomAsync(environment, control, rounds, room,
+            "game-a", gamePortA, controlCertificate, host, guest, "mig-start-a", durationTicks: 400);
+        var warm = await WaitForAsync(async () =>
+        {
+            var snapshot = await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty());
+            return snapshot.Streamers.Any(streamer => streamer.Platform == "simulator"
+                && streamer.CanonicalLiveSessionKey == "mig-host-a")
+                && snapshot.Rooms.Any(r => r.RoomId == room && r.OwnerInstanceId == "game-a"
+                && r.Endpoint.Length > 0);
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(warm, "The room's route never became visible.");
+        // The face's cache lags the snapshot by one watch round-trip; hold the version still
+        // so the first push resolves a route instead of falling to the durable leg.
+        for (var stable = 0; stable < 2; stable++)
+        {
+            var before = (await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty())).Version;
+            await Task.Delay(600);
+            var after = (await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty())).Version;
+            Assert.Equal(before, after);
+        }
+
+        using var http = await HttpClientAsync(environment);
+        var pushed = await PostAsync(http, ingressPort, "simulator", "app-1",
+            """{"sessionId":"mig-host-a","eventId":"mig-gift-1","kind":"Gift","giftId":"g1","giftCount":1,"giftValue":10}""");
+        Assert.Equal(HttpStatusCode.OK, pushed.StatusCode);
+        var receipt = Assert.Single(ReadReceipts(await pushed.Content.ReadAsStringAsync()));
+        Assert.Equal("DurableAccepted", receipt.GetProperty("disposition").GetString());
+        Assert.False(receipt.GetProperty("duplicate").GetBoolean());
+        Assert.Equal(room, await RoomForAsync(environment, "mig-gift-1"));
+
+        // The room's authority moves to host B — a claim under a different instance, one
+        // epoch ahead, with an endpoint the directory can resolve. Host B holds no such
+        // room, so its runtime refuses every push for the new epoch, and the store's fence
+        // refuses the old epoch inside host A: neither instance accepts the event durably,
+        // whatever the face's cache still says.
+        var moved = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = room,
+            OwnerInstanceId = "game-b", LeaseSeconds = 30
+        });
+        Assert.Equal(epoch + 1, moved.Epoch);
+        var observed = await WaitForAsync(async () =>
+        {
+            var snapshot = await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty());
+            return snapshot.Rooms.Any(r => r.RoomId == room && r.OwnerInstanceId == "game-b"
+                && r.Epoch == epoch + 1 && r.Endpoint.Length > 0);
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(observed, "The control plane did not publish the moved-on owner.");
+
+        // The face retries its bounded budget — StaleOwner answers refresh the directory and
+        // re-push the same event id — and when no instance can accept the event durably, the
+        // webhook still ends in the persistent inbox: one attributed row under the platform's
+        // dedup key, never a drop.
+        var refused = await PostAsync(http, ingressPort, "simulator", "app-1",
+            """{"sessionId":"mig-host-a","eventId":"mig-gift-2","kind":"Gift","giftId":"g2","giftCount":1,"giftValue":20}""");
+        Assert.Equal(HttpStatusCode.OK, refused.StatusCode);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand("""
+                SELECT count(*),count(*) FILTER (WHERE disposition='Attributed')
+                FROM input.event WHERE source_dedup_key='mig-gift-2'
+                """, connection);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(1L, reader.GetInt64(0));
+            Assert.Equal(1L, reader.GetInt64(1));
+        }
+
+        // The platform's own retry of the first callback — the lost-success-reply posture —
+        // replays the stored outcome as a duplicate wherever it lands: still one row, one
+        // room, one effect, and the new authority never takes a second write.
+        var retried = await PostAsync(http, ingressPort, "simulator", "app-1",
+            """{"sessionId":"mig-host-a","eventId":"mig-gift-1","kind":"Gift","giftId":"g1","giftCount":1,"giftValue":10}""");
+        Assert.Equal(HttpStatusCode.OK, retried.StatusCode);
+        var replay = Assert.Single(ReadReceipts(await retried.Content.ReadAsStringAsync()));
+        Assert.True(replay.GetProperty("duplicate").GetBoolean());
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand("""
+                SELECT count(*),count(distinct attributed_room_id) FROM input.event
+                WHERE event_id='mig-gift-1' OR source_dedup_key='mig-gift-1'
+                """, connection);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(1L, reader.GetInt64(0));
+            Assert.Equal(1L, reader.GetInt64(1));
+        }
+    }
+
     private static void AssertDurable(HttpResponseMessage response, string eventId)
     {
         Assert.True(response.StatusCode == HttpStatusCode.OK,

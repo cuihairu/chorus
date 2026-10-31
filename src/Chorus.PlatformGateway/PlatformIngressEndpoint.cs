@@ -11,20 +11,23 @@ namespace Chorus.PlatformGateway;
 
 /// <summary>
 /// The public webhook face (architecture 6.1's gateway half): one platform callback becomes
-/// one durable data-plane batch. Verification and mapping are the mounted modules' work
+/// one durable data-plane fact. Verification and mapping are the mounted modules' work
 /// (FIX-INPUT-08 assembly) — the face never parses a platform payload itself, it only moves
-/// the verified bytes to the mapper and the mapped event to
-/// <see cref="PlatformIngest.IngestBatch"/>, whose reply is the face's reply: every receipt
-/// the caller sees reflects a committed batch, never an in-memory acceptance. Attribution is
-/// the data plane's (canonical live session key, platform-strict): an event for a platform
-/// no deployment can mount yet waits in the persistent inbox instead of being dropped.
+/// the verified bytes to the mapper and the mapped event to the routed push
+/// (FIX-INPUT-02/05) or, when no route serves the event or the push cannot land durably, to
+/// <see cref="PlatformIngest.IngestBatch"/>. Whichever leg answers, every receipt the caller
+/// sees reflects a committed fact, never an in-memory acceptance. Attribution is the data
+/// plane's (canonical live session key, platform-strict): an event for a platform no
+/// deployment can mount yet waits in the persistent inbox instead of being dropped.
 /// </summary>
 public sealed class PlatformIngressEndpoint(
     IPlatformEventVerifier? verifier,
     IEnumerable<IPlatformEventMapper> mappers,
     PlatformIngest.PlatformIngestClient ingest,
-    GatewayRoutingMonitor? routing = null,
-    Func<string, Grpc.Net.Client.GrpcChannel>? gameChannelFactory = null)
+    IRoomRoutingDirectory? routing = null,
+    Func<string, Grpc.Net.Client.GrpcChannel>? gameChannelFactory = null,
+    Func<Grpc.Net.Client.GrpcChannel, RoomEvents.RoomEventsClient>? roomEventsFactory = null,
+    TimeSpan[]? pushRetryBackoffs = null)
 {
     /// <summary>The platform application the callback belongs to; per-app callbacks are how
     /// every platform console routes webhooks, so the face asks for it explicitly.</summary>
@@ -45,6 +48,18 @@ public sealed class PlatformIngressEndpoint(
     /// <summary>The body cap of the old line's guard: one webhook is one event envelope,
     /// never a bulk feed.</summary>
     public const int MaxBodyBytes = 64 * 1024;
+
+    /// <summary>The per-attempt deadline of a routed push (FIX-INPUT-05). Attempts are bounded
+    /// and the schedule below fits inside one webhook's lifetime, so the caller's own retry of
+    /// the callback replays the same event id against a durable answer.</summary>
+    internal static readonly TimeSpan PushAttemptDeadline = TimeSpan.FromSeconds(5);
+
+    /// <summary>The backoff between push attempts: three attempts total, a quarter second then
+    /// a second apart. StaleOwner and an unreachable owner each refresh the directory before
+    /// the next attempt; Overloaded and OutcomeUnknown only back off — the retry of the same
+    /// event id is the query that decides between a duplicate and a fresh accept.</summary>
+    internal static readonly TimeSpan[] DefaultPushRetryBackoffs =
+        [TimeSpan.FromMilliseconds(250), TimeSpan.FromSeconds(1)];
 
     // The stored payload must be a pure function of the verified platform body: the data
     // plane answers a platform retry as a duplicate by comparing payload hashes, so the
@@ -124,69 +139,100 @@ public sealed class PlatformIngressEndpoint(
 
         var payload = JsonSerializer.Serialize(mapped, PayloadOptions);
 
-        // The routed push (FIX-INPUT-02): when the control plane's routing snapshot names the
-        // room this live key belongs to — and that room's owner serves an endpoint — the face
-        // pushes the event straight at the owning game host. The push is the durable accept:
-        // DurableAccepted and Duplicate answer a committed event, everything else is a refusal
-        // the caller retries, and a malformed attribution is a 4xx that retrying cannot fix.
-        if (routing is not null && gameChannelFactory is not null
-            && routing.TryResolve(platform, mapped.SessionId, out var route))
+        // The routed push (FIX-INPUT-02) with its retry posture (FIX-INPUT-05): when the
+        // control plane's routing snapshot names the room this live key belongs to — and that
+        // room's owner serves an endpoint — the face pushes the event straight at the owning
+        // game host. The push is the durable accept: DurableAccepted and Duplicate answer a
+        // committed event, a malformed attribution is a 4xx that retrying cannot fix, and
+        // every other answer retries the same event id a bounded number of times — StaleOwner
+        // and an unreachable owner refresh the directory first, because the room may have
+        // moved to an owner the cache has not seen. A retry that cannot land durably falls to
+        // the persistent inbox below: an explicit pending record, never a drop, and the same
+        // event id makes the two legs idempotent across each other.
+        if (routing is not null && gameChannelFactory is not null)
         {
-            var push = new DeliverRoomEventRequest
+            var backoffs = pushRetryBackoffs ?? DefaultPushRetryBackoffs;
+            for (var attempt = 0; ; attempt++)
             {
-                TenantId = route.TenantId,
-                GameId = route.GameId,
-                RoomId = route.RoomId,
-                OwnerInstanceId = route.OwnerInstanceId,
-                Epoch = route.Epoch,
-                EventId = mapped.EventId,
-                Platform = platform,
-                AppId = appId,
-                BindingId = route.BindingId,
-                PayloadJson = payload
-            };
-            DeliverRoomEventReply delivered;
-            try
-            {
-                using var channel = gameChannelFactory(route.Endpoint);
-                delivered = await new RoomEvents.RoomEventsClient(channel).DeliverEventAsync(push,
-                    deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: context.RequestAborted);
-            }
-            catch (RpcException error) when (error.StatusCode == StatusCode.InvalidArgument)
-            {
-                return Results.BadRequest(new { error = "rejected_push", platform, detail = error.Status.Detail });
-            }
-            catch (RpcException)
-            {
-                // Not committed and the host is unreachable: retry the same event id.
-                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-            }
-            if (delivered.Disposition is not (PushDisposition.DurableAccepted or PushDisposition.Duplicate))
-            {
-                // StaleOwner, Overloaded, OutcomeUnknown: nothing committed — a retry of the
-                // same event id is the contract, and a 503 says so without acking the loss.
-                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-            }
-            return Results.Ok(new
-            {
-                ok = true,
-                platform,
-                receipts = new[]
+                if (!routing.TryResolve(platform, mapped.SessionId, out var route))
+                    break;
+                var push = new DeliverRoomEventRequest
                 {
-                    new
-                    {
-                        eventId = mapped.EventId,
-                        disposition = delivered.Disposition,
-                        bindingId = route.BindingId,
-                        duplicate = delivered.Disposition == PushDisposition.Duplicate
-                    }
+                    TenantId = route.TenantId,
+                    GameId = route.GameId,
+                    RoomId = route.RoomId,
+                    OwnerInstanceId = route.OwnerInstanceId,
+                    Epoch = route.Epoch,
+                    EventId = mapped.EventId,
+                    Platform = platform,
+                    AppId = appId,
+                    BindingId = route.BindingId,
+                    PayloadJson = payload
+                };
+                DeliverRoomEventReply? delivered = null;
+                var staleDirectory = false;
+                try
+                {
+                    using var channel = gameChannelFactory(route.Endpoint);
+                    var client = roomEventsFactory is not null
+                        ? roomEventsFactory(channel)
+                        : new RoomEvents.RoomEventsClient(channel);
+                    delivered = await client.DeliverEventAsync(push,
+                        deadline: DateTime.UtcNow.Add(PushAttemptDeadline),
+                        cancellationToken: context.RequestAborted);
                 }
-            });
+                catch (RpcException error) when (error.StatusCode == StatusCode.InvalidArgument)
+                {
+                    return Results.BadRequest(new { error = "rejected_push", platform, detail = error.Status.Detail });
+                }
+                catch (RpcException)
+                {
+                    // Not committed and the owner is unreachable: the directory may name a
+                    // dead owner, so the next attempt asks the directory again.
+                    staleDirectory = true;
+                }
+                if (delivered is not null)
+                {
+                    if (delivered.Disposition is PushDisposition.DurableAccepted
+                        or PushDisposition.Duplicate)
+                    {
+                        return Results.Ok(new
+                        {
+                            ok = true,
+                            platform,
+                            receipts = new[]
+                            {
+                                new
+                                {
+                                    eventId = mapped.EventId,
+                                    disposition = delivered.Disposition,
+                                    bindingId = route.BindingId,
+                                    duplicate = delivered.Disposition == PushDisposition.Duplicate
+                                }
+                            }
+                        });
+                    }
+                    if (delivered.Disposition == PushDisposition.StaleOwner)
+                    {
+                        // The room's authority moved on: refresh and re-resolve so the next
+                        // attempt names the new owner, not the refused one.
+                        staleDirectory = true;
+                    }
+                    // Overloaded and OutcomeUnknown committed nothing — a bounded retry of
+                    // the same event id is the query that decides duplicate versus accept.
+                }
+                if (attempt >= backoffs.Length)
+                    break;
+                if (staleDirectory)
+                    await routing.RefreshAsync(context.RequestAborted);
+                await Task.Delay(backoffs[attempt], context.RequestAborted);
+            }
         }
 
-        // No valid attribution: the callback's live key names no routed room, so the event
-        // waits durably in the persistent inbox — an explicit pending, never a drop. The
-        // durable attribution leg is the migration baseline and answers this case.
+        // No valid attribution, or the push could not land durably in bounded retries: the
+        // event waits durably in the persistent inbox — an explicit pending, never a drop.
+        // The routed leg writes the same source dedup key, so a platform retry of this
+        // callback replays as a duplicate of whatever the push leg already committed.
         var request = new IngestBatchRequest
         {
             Platform = platform,

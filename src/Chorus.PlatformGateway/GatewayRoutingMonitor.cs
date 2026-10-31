@@ -5,6 +5,24 @@ using GrpcChannel = Grpc.Net.Client.GrpcChannel;
 namespace Chorus.PlatformGateway;
 
 /// <summary>
+/// The routing facts the webhook face needs from the directory: resolve a callback's live key
+/// to its room's push target, and refresh the directory on demand (FIX-INPUT-05) — a refusal
+/// that names a stale owner picture is answered with one direct snapshot pull, not by waiting
+/// for the watch's next notice.
+/// </summary>
+public interface IRoomRoutingDirectory
+{
+    /// <summary>The room a platform callback's live key currently belongs to, or false when the
+    /// callback has no valid attribution — no live mount, no room, or an owner that serves no
+    /// endpoint yet.</summary>
+    bool TryResolve(string platform, string canonicalLiveKey, out GatewayRoutingMonitor.RoomRouteTarget target);
+
+    /// <summary>One direct snapshot pull, applied to the cache. False when the control plane
+    /// could not be reached — the caller keeps its previous picture.</summary>
+    Task<bool> RefreshAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// The routing watch (architecture 4.4) as the webhook face consumes it: a notice stream that
 /// says "the routed world changed", answered by a full snapshot pull — the same contract the
 /// streamer gateway's edge monitor keeps. The cache resolves a platform callback's canonical
@@ -15,7 +33,7 @@ namespace Chorus.PlatformGateway;
 /// push that the ownership fence refuses, and the rebuild from the last known version makes
 /// the resolve exact again.
 /// </summary>
-public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactory)
+public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactory) : IRoomRoutingDirectory
 {
     private readonly object _gate = new();
     private readonly Dictionary<(string Platform, string Key), StreamerFacts> _streamsByLiveKey =
@@ -66,6 +84,31 @@ public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactor
                 if (streamer.CanonicalLiveSessionKey.Length > 0)
                     _streamsByLiveKey[(streamer.Platform, streamer.CanonicalLiveSessionKey)] =
                         new StreamerFacts(streamer.BindingId, streamer.RoomId);
+        }
+    }
+
+    /// <summary>One direct snapshot pull applied to the cache (FIX-INPUT-05): a push that a
+    /// stale owner picture refused must not wait for the watch's next notice — the face asks
+    /// for the directory itself, and a pull that cannot reach the control plane leaves the
+    /// previous picture in place rather than an empty one.</summary>
+    public async Task<bool> RefreshAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var channel = controlChannelFactory();
+            var routing = new Routing.RoutingClient(channel);
+            var snapshot = await routing.GetRoutingSnapshotAsync(new Empty(),
+                deadline: DateTime.UtcNow.AddSeconds(5), cancellationToken: cancellationToken);
+            ApplySnapshot(snapshot);
+            return true;
+        }
+        catch (RpcException)
+        {
+            return false;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
         }
     }
 
