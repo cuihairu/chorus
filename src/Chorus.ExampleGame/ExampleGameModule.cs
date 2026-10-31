@@ -6,7 +6,10 @@ namespace Chorus.ExampleGame;
 /// <summary>
 /// A game module manifest (architecture 8.1): the tick cadence and checkpoint policy are
 /// module facts, fixed by the module, not by the host. DeterministicReplay is the default
-/// checkpoint mode; a module that cannot guarantee determinism must declare FullCheckpoint.
+/// checkpoint mode; a module that cannot guarantee determinism must declare FullCheckpoint —
+/// the host then checkpoints every committed tick (FIX-MODULE-03) and recovers by restoring
+/// the head checkpoint directly, never by replay: <see cref="SnapshotEveryTicks"/> is the
+/// cadence only a DeterministicReplay module runs at.
 /// </summary>
 public sealed record RedesignGameModuleManifest(
     string Name, string ModuleVersion, int TickMs, int SnapshotEveryTicks, string CheckpointMode)

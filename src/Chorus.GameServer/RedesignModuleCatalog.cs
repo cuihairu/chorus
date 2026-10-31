@@ -48,9 +48,18 @@ public static class RedesignModuleCatalog
         RedesignGameModuleManifest.FastTest.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
         static manifest => new DuelGameModule(manifest));
 
+    /// <summary>The live package (FIX-MODULE-03's evidence): an honestly
+    /// non-deterministic module (clock jitter in every boost) under FullCheckpoint — its
+    /// rooms checkpoint every committed frame and recover without replay.</summary>
+    public static RedesignModulePackage Live { get; } = new(
+        "example-live", "0.9.0", "cfg-live-1", "pkg-live-1",
+        RedesignGameModuleManifest.FullCheckpoint,
+        RedesignGameModuleManifest.FastTest.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+        static manifest => new LiveGameModule(manifest));
+
     /// <summary>Every package this host ships, in stable order; the hashes are what a
     /// missing-package refusal lists back to the caller.</summary>
-    public static IReadOnlyList<RedesignModulePackage> Shipped { get; } = [Default, Duel];
+    public static IReadOnlyList<RedesignModulePackage> Shipped { get; } = [Default, Duel, Live];
 
     private static readonly IReadOnlyDictionary<string, RedesignModulePackage> ByPackageHash =
         BuildIndex();

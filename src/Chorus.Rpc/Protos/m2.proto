@@ -572,6 +572,10 @@ message RecoverRoomReply {
   string status = 4;
   int64 last_tick = 5;
   int64 snapshot_tick = 6;
+  // Recovery follows the package's mode (FIX-MODULE-03): a DeterministicReplay room
+  // replays frames from its newest consistent snapshot (replayed_frames > 0), while a
+  // FullCheckpoint room restored the head checkpoint directly and never replays
+  // (replayed_frames = 0) — its non-determinism makes replay impossible by construction.
   int32 replayed_frames = 7;
 }
 

@@ -89,6 +89,10 @@ internal sealed class RoomActor : IAsyncDisposable
     private readonly Dictionary<Guid, RoomSubscriber> _subscribers = new();
     private Task _run = Task.CompletedTask;
     private ExampleGameState _state;
+    // FIX-MODULE-03: the recovery mode decides the checkpoint cadence — a FullCheckpoint
+    // module carries the complete state in every committed frame's transaction; a
+    // DeterministicReplay module checkpoints on its manifest cadence instead.
+    private readonly int _checkpointEveryTicks;
     private long _lastTick;
     private long _stateVersion;
     private string? _finalResultJson;
@@ -133,6 +137,10 @@ internal sealed class RoomActor : IAsyncDisposable
         _configHash = configHash;
         _state = initialState;
         _participantByBinding = participantByBinding;
+        _checkpointEveryTicks =
+            _module.Manifest.CheckpointMode == RedesignGameModuleManifest.FullCheckpoint
+                ? 1
+                : _module.Manifest.SnapshotEveryTicks;
         // Fresh rooms start at the activation head (tick 0, state version 1); a recovered
         // room resumes from the head its frames already committed.
         _lastTick = lastTick;
@@ -388,10 +396,12 @@ internal sealed class RoomActor : IAsyncDisposable
         {
             Kind = effect.Kind, PayloadJson = effect.PayloadJson
         }));
-        if (tick % _module.Manifest.SnapshotEveryTicks == 0)
+        if (tick % _checkpointEveryTicks == 0)
         {
-            // FullCheckpoint on the module's cadence: the candidate state joins the frame
-            // transaction (architecture 8.2) — a failed checkpoint rolls the tick back.
+            // The checkpoint joins the frame transaction (architecture 8.2) — a failed
+            // checkpoint rolls the tick back. FIX-MODULE-03: for a FullCheckpoint module
+            // this is every tick, so recovery never needs the replay the module cannot
+            // provide; a deterministic module still checkpoints on its cadence.
             var serializeStart = _metrics.Start();
             var payload = _module.Serialize(outcome.State);
             _metrics.Record(_metrics.Serialize, serializeStart);

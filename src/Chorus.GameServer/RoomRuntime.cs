@@ -162,12 +162,16 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
 
                 // Data-plane receipts under deterministic operation ids: a retry after a lost
                 // reply replays the stored receipts instead of re-deriving anything.
+                // FIX-MODULE-03: the room persists the package's recovery mode here — the
+                // mode decides the checkpoint cadence, and a later recovery validates the
+                // room against exactly this fact.
                 await _rounds.PrepareRoundAsync(new PrepareRoundRequest
                 {
                     RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
                     GameId = request.GameId, SnapshotPayload = ByteString.CopyFrom(payload),
                     SnapshotHash = ByteString.CopyFrom(hash), SnapshotSchemaVersion = initial.SchemaVersion,
-                    OperationId = request.OperationId + "/prepare", TickMs = request.TickMs
+                    OperationId = request.OperationId + "/prepare", TickMs = request.TickMs,
+                    RecoveryMode = package.RecoveryMode
                 }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
                 // A deferred prepare holds the room — round Preparing, actor not ticking — for
                 // ActivateRoom to release across a common start line (FIX-PERF-03).
@@ -575,6 +579,38 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 .GroupBy(delivery => delivery.EventId, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
 
+            // FIX-MODULE-03: a FullCheckpoint room recovers from its head checkpoint
+            // directly — every committed frame carried the complete state, so there is
+            // nothing to replay even when the module is non-deterministic by design. A
+            // missing, unreadable or corrupt head checkpoint cannot be repaired by
+            // replay: the room is refused by name and parked visibly.
+            if (package.RecoveryMode == RedesignGameModuleManifest.FullCheckpoint)
+            {
+                var head = plan.Snapshots.Where(candidate => candidate.Tick <= plan.LastTick)
+                    .OrderByDescending(candidate => candidate.Tick).FirstOrDefault();
+                if (head is null || head.Tick != plan.LastTick)
+                    return await RefuseAndSuspendAsync(request, plan,
+                        "The room's newest checkpoint is at tick " + (head?.Tick.ToString() ?? "none")
+                        + $", not the head tick {plan.LastTick}; a FullCheckpoint room cannot replay to the head",
+                        cancellationToken);
+                ExampleGameState checkpointed;
+                try { checkpointed = module.Restore(head.Payload.ToByteArray(), head.SchemaVersion); }
+                catch (Exception)
+                {
+                    return await RefuseAndSuspendAsync(request, plan,
+                        "The room's head checkpoint is unreadable; a FullCheckpoint room cannot replay to the head",
+                        cancellationToken);
+                }
+                if (!module.ComputeStateHash(checkpointed).AsSpan().SequenceEqual(head.PayloadHash.Span))
+                    return await RefuseAndSuspendAsync(request, plan,
+                        "The room's head checkpoint failed its hash check; a FullCheckpoint room cannot replay to the head",
+                        cancellationToken);
+                return await AdoptRecoveredStateAsync(request, plan, module, checkpointed,
+                    participantByBinding, head.Tick, replayed: 0,
+                    $"Restored the tick-{head.Tick} checkpoint; a FullCheckpoint room resumes without replay.",
+                    cancellationToken, pinHead: false);
+            }
+
             // Newest first, and only candidates this window newly surfaced: everything at
             // or above the previous window's oldest was already refuted there.
             foreach (var candidate in plan.Snapshots.Where(candidate => candidate.Tick < refutedAbove))
@@ -613,69 +649,10 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 _metrics.Record(_metrics.RecoveryReplay, replayStart);
                 if (!consistent || state.Tick != plan.LastTick) continue;
 
-                // The snapshot replays to the head with matching hashes: persist a fresh
-                // store-verified snapshot at the head so the next recovery starts here.
-                // FIX-TAKE-02/03: while the ownership is Recovering the pin travels the
-                // constrained recovery entry — exactly the takeover-named owner at this
-                // epoch passes — and once that entry closed (the activation already
-                // happened, say a retry after a lost reply) the normal snapshot entry
-                // carries the same payload.
-                byte[] headPayload;
-                try
-                {
-                    headPayload = module.Serialize(state);
-                    await PinHeadAsync(request, plan.LastTick, headPayload, state.SchemaVersion,
-                        cancellationToken);
-                }
-                catch (RpcException error)
-                {
-                    return new RecoverRoomReply
-                    {
-                        RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                        LastTick = plan.LastTick,
-                        Note = $"The head snapshot was rejected: {error.Status.Detail}"
-                    };
-                }
-                // FIX-TAKE-03: the pinned head is the activation credential — the fenced
-                // confirm flips the ownership Active for exactly this owner and epoch
-                // before the loop starts, so a recovery that cannot activate neither
-                // ticks nor reports success.
-                var activated = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
-                if (activated is not null) return activated;
-                var configHash = plan.Frames.Count > 0
-                    ? plan.Frames.Max(frame => frame.Tick) == plan.LastTick
-                        ? plan.Frames.First(frame => frame.Tick == plan.LastTick).ConfigHash
-                        : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant()
-                    : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant();
-                var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
-                    request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
-                    plan.LastTick, plan.StateVersion, metrics: _metrics,
-                    overBudgetFactor: _overBudgetFactorOverride,
-                    overBudgetWindow: _overBudgetWindowOverride);
-                actor.LoopEnded = Retire;
-                // FIX-PERF-07: a recovered room is real load this host must run — a recovery
-                // is never refused (the scheduler assigned it here) — but it still reserves a
-                // slot, so a host full of recovered rooms stops accepting new allocations.
-                _admission.Reserve();
-                if (!_actors.TryAdd(request.RoomId, actor))
-                {
-                    _admission.Release();
-                    await actor.DisposeAsync();
-                    return new RecoverRoomReply
-                    {
-                        RoomId = request.RoomId, Recovered = true, Status = "Running",
-                        Note = "The room is already running on this host."
-                    };
-                }
-                actor.Start();
-                _activated.TryAdd(request.RoomId, 0);
-                return new RecoverRoomReply
-                {
-                    RoomId = request.RoomId, Recovered = true, Status = "Running",
-                    LastTick = plan.LastTick, SnapshotTick = candidate.Tick,
-                    ReplayedFrames = replayed,
-                    Note = $"Replayed {replayed} frames from the tick-{candidate.Tick} snapshot."
-                };
+                return await AdoptRecoveredStateAsync(request, plan, module, state,
+                    participantByBinding, candidate.Tick, replayed,
+                    $"Replayed {replayed} frames from the tick-{candidate.Tick} snapshot.",
+                    cancellationToken);
             }
 
             // This window is refuted down to its oldest loaded candidate.
@@ -686,39 +663,134 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             depth *= 2;
         }
 
-        // No snapshot survived replay: park the room visibly (architecture 10.3.6). Under a
-        // Recovering ownership the fence refuses the suspension too — the reply then says
-        // so instead of claiming a suspension that never landed (FIX-TAKE-03).
-        var suspended = false;
+        // No snapshot survived replay: park the room visibly (architecture 10.3.6).
+        return await RefuseAndSuspendAsync(request, plan,
+            "No snapshot replays to the head with matching frame hashes", cancellationToken);
+    }
+
+    /// <summary>
+    /// Adopts a recovered state as this host's running room (FIX-MODULE-03 hoisted the
+    /// adoption tail here so the replay path and the FullCheckpoint restore path share
+    /// one activation story): pin the head snapshot, activate under the fenced confirm,
+    /// and start the actor from the recovered tick. Returns the reply the caller hands
+    /// back — including the not-recovered replies an activation or a pin rejection
+    /// produced.
+    /// </summary>
+    /// <param name="pinHead">A replayed state persists a fresh store-verified snapshot
+    /// at the head; a FullCheckpoint restore passes false — its head checkpoint is
+    /// already persisted, every committed frame carried it, so there is nothing to
+    /// pin.</param>
+    private async Task<RecoverRoomReply> AdoptRecoveredStateAsync(RecoverRoomRequest request,
+        LoadRecoveryReply plan, IRedesignGameModule module, ExampleGameState state,
+        Dictionary<string, string> participantByBinding, long snapshotTick, int replayed,
+        string note, CancellationToken cancellationToken, bool pinHead = true)
+    {
+        byte[] headPayload;
+        if (pinHead)
+        {
+            // Persist a fresh store-verified snapshot at the head so the next recovery
+            // starts here. FIX-TAKE-02/03: while the ownership is Recovering the pin
+            // travels the constrained recovery entry — exactly the takeover-named
+            // owner at this epoch passes — and once that entry closed (the activation
+            // already happened, say a retry after a lost reply) the normal snapshot
+            // entry carries the same payload.
+            try
+            {
+                headPayload = module.Serialize(state);
+                await PinHeadAsync(request, plan.LastTick, headPayload, state.SchemaVersion,
+                    cancellationToken);
+            }
+            catch (RpcException error)
+            {
+                return new RecoverRoomReply
+                {
+                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
+                    LastTick = plan.LastTick,
+                    Note = $"The head snapshot was rejected: {error.Status.Detail}"
+                };
+            }
+        }
+        else
+        {
+            headPayload = module.Serialize(state); // still the config fallback below
+        }
+        // FIX-TAKE-03: the pinned head is the activation credential — the fenced
+        // confirm flips the ownership Active for exactly this owner and epoch before
+        // the loop starts, so a recovery that cannot activate neither ticks nor
+        // reports success.
+        var activated = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
+        if (activated is not null) return activated;
+        var configHash = plan.Frames.Count > 0
+            ? plan.Frames.Max(frame => frame.Tick) == plan.LastTick
+                ? plan.Frames.First(frame => frame.Tick == plan.LastTick).ConfigHash
+                : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant()
+            : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant();
+        var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
+            request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
+            plan.LastTick, plan.StateVersion, metrics: _metrics,
+            overBudgetFactor: _overBudgetFactorOverride,
+            overBudgetWindow: _overBudgetWindowOverride);
+        actor.LoopEnded = Retire;
+        // FIX-PERF-07: a recovered room is real load this host must run — a recovery
+        // is never refused (the scheduler assigned it here) — but it still reserves a
+        // slot, so a host full of recovered rooms stops accepting new allocations.
+        _admission.Reserve();
+        if (!_actors.TryAdd(request.RoomId, actor))
+        {
+            _admission.Release();
+            await actor.DisposeAsync();
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = true, Status = "Running",
+                Note = "The room is already running on this host."
+            };
+        }
+        actor.Start();
+        _activated.TryAdd(request.RoomId, 0);
+        return new RecoverRoomReply
+        {
+            RoomId = request.RoomId, Recovered = true, Status = "Running",
+            LastTick = plan.LastTick, SnapshotTick = snapshotTick,
+            ReplayedFrames = replayed,
+            Note = note
+        };
+    }
+
+    /// <summary>
+    /// Refuses a recovery by name and parks the room visibly (architecture 10.3.6):
+    /// a suspension is attempted best-effort, and when the fence refuses it — a
+    /// Recovering ownership does (FIX-TAKE-03) — the reply says so instead of claiming
+    /// a suspension that never landed.
+    /// </summary>
+    private async Task<RecoverRoomReply> RefuseAndSuspendAsync(RecoverRoomRequest request,
+        LoadRecoveryReply plan, string reason, CancellationToken cancellationToken)
+    {
         try
         {
             await _rounds.SuspendRoundAsync(new SuspendRoundRequest
             {
                 RoomId = request.RoomId, GameId = request.GameId,
                 OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
-                Reason = "recovery failed: no consistent snapshot replays to the head",
+                Reason = $"recovery failed: {reason}",
                 OperationId = $"{request.OwnerInstanceId}/suspend/{request.RoomId}"
             }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
-            suspended = true;
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = false, Status = "Suspended",
+                Note = $"{reason}; the room is suspended."
+            };
         }
         catch (RpcException)
         {
             // Best-effort from inside a failing recovery; the room stays inspectable on
             // the data plane either way.
-        }
-        return suspended
-            ? new RecoverRoomReply
-            {
-                RoomId = request.RoomId, Recovered = false, Status = "Suspended",
-                Note = "No snapshot replays to the head with matching frame hashes; the room is suspended."
-            }
-            : new RecoverRoomReply
+            return new RecoverRoomReply
             {
                 RoomId = request.RoomId, Recovered = false, Status = plan.Status,
                 LastTick = plan.LastTick,
-                Note = "No snapshot replays to the head with matching frame hashes; " +
-                       "the suspension was refused and the ownership stays Recovering."
+                Note = $"{reason}; the suspension was refused and the ownership stays Recovering."
             };
+        }
     }
 
     /// <summary>

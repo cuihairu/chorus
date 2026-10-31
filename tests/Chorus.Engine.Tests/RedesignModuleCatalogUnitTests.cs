@@ -79,4 +79,50 @@ public sealed class RedesignModuleCatalogUnitTests
             Convert.ToHexString(duel.ComputeStateHash(duelGift.State)),
             Convert.ToHexString(duel.ComputeStateHash(restored)));
     }
+
+    [Fact]
+    public void TheLivePackageShipsFullCheckpointAndHonestNonDeterminism()
+    {
+        // FIX-MODULE-03: the third shipped package declares FullCheckpoint — the mode
+        // that checkpoints every committed tick — and the module it loads is honestly
+        // non-deterministic, which the clock seam proves without a flaky wall-clock
+        // assertion: under one fixed clock value the same inputs rebuild the same
+        // state, across clock values they never do, so deterministic replay of a live
+        // room is impossible by construction and only the checkpoint can recover it.
+        Assert.True(RedesignModuleCatalog.TryGet("pkg-live-1", out var live));
+        Assert.Equal("example-live", live.Name);
+        Assert.Equal("0.9.0", live.ModuleVersion);
+        Assert.Equal("cfg-live-1", live.ConfigHash);
+        Assert.Equal(RedesignGameModuleManifest.FullCheckpoint, live.RecoveryMode);
+        Assert.Equal(RedesignGameModuleManifest.FastTest.TickMs, live.TickMs);
+        Assert.Contains("pkg-live-1", RedesignModuleCatalog.ShippedList());
+
+        var config = new GameStartConfig(200, 777,
+            [new GameParticipant("host-live", GameStartConfig.RedFaction),
+             new GameParticipant("guest-live", GameStartConfig.BlueFaction)], 0);
+        var boost = new[] { new NormalizedInput("host-live", """{"action":"boost","level":3}""") };
+        var atFour = new LiveGameModule(live.ManifestAt(25), clock: () => 4L); // jitter 1
+        var atFive = new LiveGameModule(live.ManifestAt(25), clock: () => 5L); // jitter 2
+
+        // Same clock value: the tick is reproducible (two runs hash identically).
+        var first = atFour.ApplyTick(atFour.CreateInitialState(config), 1, boost);
+        var again = atFour.ApplyTick(atFour.CreateInitialState(config), 1, boost);
+        Assert.Equal(
+            Convert.ToHexString(atFour.ComputeStateHash(first.State)),
+            Convert.ToHexString(atFour.ComputeStateHash(again.State)));
+        Assert.Equal(31L, first.State.ScoreByFaction[GameStartConfig.RedFaction]); // 30 + jitter 1
+
+        // Different clock values: the same inputs never rebuild the same state — the
+        // hash chain a replay depends on cannot exist across wall-clock time.
+        var later = atFive.ApplyTick(atFive.CreateInitialState(config), 1, boost);
+        Assert.Equal(32L, later.State.ScoreByFaction[GameStartConfig.RedFaction]); // 30 + jitter 2
+        Assert.NotEqual(
+            Convert.ToHexString(atFour.ComputeStateHash(first.State)),
+            Convert.ToHexString(atFive.ComputeStateHash(later.State)));
+
+        // The manifest the package builds a room at carries the mode through, so the
+        // host derives its checkpoint cadence from the package, not a global default.
+        Assert.Equal(RedesignGameModuleManifest.FullCheckpoint,
+            live.ManifestAt(25).CheckpointMode);
+    }
 }
