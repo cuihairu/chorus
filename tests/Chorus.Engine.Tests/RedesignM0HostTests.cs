@@ -336,6 +336,22 @@ public sealed class RedesignM0HostTests
             }
         }
 
+        /// <summary>
+        /// Kills without the process-tree walk: the tree enumeration spends hundreds of
+        /// milliseconds before any signal leaves, and a race that must land inside the
+        /// window between a host's durable accept and its consuming commit cannot afford
+        /// that delay. The started hosts are single processes — nothing is left walking.
+        /// </summary>
+        public void KillAtOnce(string instance)
+        {
+            foreach (var process in _projectByProcess.Where(pair => pair.Value == instance).Select(pair => pair.Key).ToList())
+            {
+                if (process.HasExited) continue;
+                process.Kill();
+                process.WaitForExit(TimeSpan.FromSeconds(10));
+            }
+        }
+
         public async Task<Process> StartBootstrapAgentAsync(string? gameProject = null, int? gamePort = null,
             IReadOnlyDictionary<string, string>? toolEnvironment = null,
             IReadOnlyDictionary<string, string>? agentEnvironment = null, bool joinCluster = false)
