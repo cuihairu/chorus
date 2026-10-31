@@ -30,7 +30,8 @@ public static class RedesignSchemaMigrator
         (19, "Chorus.Data.Schema.0019_room_progress.sql"),
         (20, "Chorus.Data.Schema.0020_room_cadence.sql"),
         (21, "Chorus.Data.Schema.0021_room_recovery_identity.sql"),
-        (22, "Chorus.Data.Schema.0022_end_operation.sql")
+        (22, "Chorus.Data.Schema.0022_end_operation.sql"),
+        (23, "Chorus.Data.Schema.0023_route_source.sql")
     ];
 
     public static async Task ApplyAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)

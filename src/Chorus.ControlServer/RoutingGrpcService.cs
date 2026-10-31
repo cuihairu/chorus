@@ -41,7 +41,8 @@ public sealed class RoutingGrpcService(
                 StreamerId = streamer.StreamerId, BindingId = streamer.BindingId,
                 RoomId = streamer.RoomId, State = streamer.State,
                 OwnerInstanceId = streamer.OwnerInstanceId ?? "", Epoch = streamer.Epoch,
-                Platform = streamer.Platform, CanonicalLiveSessionKey = streamer.CanonicalLiveSessionKey
+                Platform = streamer.Platform, CanonicalLiveSessionKey = streamer.CanonicalLiveSessionKey,
+                BindingGeneration = streamer.BindingGeneration
             }) },
             Instances = { snapshot.Instances.Select(instance => new InstanceRouteProto
             {
@@ -51,6 +52,44 @@ public sealed class RoutingGrpcService(
                 Admission = instance.Admission
             }) }
         };
+    }
+
+    /// <summary>
+    /// The mount's route source (FIX-END-02): the StreamerServer reports each committed
+    /// mount by binding id and generation. The control plane derives the platform identity
+    /// from the mount's verified live session — an unverified identity establishes no route —
+    /// and a report naming an older generation than the recorded row never overwrites it.
+    /// </summary>
+    public override async Task<RegisterRouteSourceReply> RegisterRouteSource(
+        RegisterRouteSourceRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "streamer-server", "control-server");
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId) ||
+            string.IsNullOrWhiteSpace(request.StreamerId) || string.IsNullOrWhiteSpace(request.BindingId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The route-source report is incomplete."));
+        if (request.BindingGeneration <= 0)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The binding generation must be a positive fact."));
+        try
+        {
+            var (record, duplicate) = await store.RegisterRouteSourceAsync(
+                request.TenantId, request.GameId, request.StreamerId, request.BindingId,
+                request.BindingGeneration, context.CancellationToken);
+            return new RegisterRouteSourceReply
+            {
+                Platform = record.Platform, CanonicalLiveSessionKey = record.CanonicalLiveSessionKey,
+                BindingGeneration = record.BindingGeneration, Duplicate = duplicate
+            };
+        }
+        catch (RouteSourceUnverifiedException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (StaleBindingGenerationException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
     }
 
     public override async Task WatchRouting(WatchRoutingRequest request,

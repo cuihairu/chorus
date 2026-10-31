@@ -269,6 +269,9 @@ message StreamerRouteProto {
   // callback, and must not re-derive the binding from the data plane).
   string platform = 7;
   string canonical_live_session_key = 8;
+  // The binding's own generation (FIX-END-02): every mount on the live slot enters at a new
+  // generation, so a consumer can tell the current mount from a stale snapshot row.
+  int64 binding_generation = 9;
 }
 
 message InstanceRouteProto {
@@ -296,6 +299,29 @@ message WatchRoutingRequest {
 
 message RoutingNotice { int64 version = 1; }
 
+// The StreamerServer's route-source report (FIX-END-02), sent right after the mount commits.
+// The report names the binding and its generation only — the control plane derives the
+// platform identity from the mount's verified live session join, so an unverified identity
+// establishes no route no matter what a caller claims.
+message RegisterRouteSourceRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string streamer_id = 3;
+  string binding_id = 4;
+  int64 binding_generation = 5;
+}
+
+message RegisterRouteSourceReply {
+  // The identity the control plane derived and recorded — the verified session's own
+  // platform and canonical live key, echoed so the reporter can log what took effect.
+  string platform = 1;
+  string canonical_live_session_key = 2;
+  int64 binding_generation = 3;
+  // True when the recorded row already held exactly this binding at this generation: the
+  // duplicate report changed nothing.
+  bool duplicate = 4;
+}
+
 service Routing {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
   // The versioned full snapshot; re-pull whenever a watch notice, break or gap says so.
@@ -303,6 +329,10 @@ service Routing {
   // A notice stream: emits the new version whenever the routed content changes. The notice
   // carries no payload — the consumer answers it with a full snapshot pull.
   rpc WatchRouting(WatchRoutingRequest) returns (stream RoutingNotice);
+  // The mount's route source (FIX-END-02): the StreamerServer reports each committed mount;
+  // duplicates replay, older generations never overwrite newer registrations, and only the
+  // platform-verified identity of the live session is ever recorded.
+  rpc RegisterRouteSource(RegisterRouteSourceRequest) returns (RegisterRouteSourceReply);
 }
 
 // Deployment plans (architecture 10.2). The control plane owns DeploymentSpec; a plan names

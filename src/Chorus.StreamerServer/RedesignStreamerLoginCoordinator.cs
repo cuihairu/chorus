@@ -111,7 +111,8 @@ public sealed class RedesignStreamerLoginCoordinator(
     byte[] accessCredentialKey,
     Func<DateTimeOffset>? clock = null,
     StreamerOwnershipRegistrar? ownershipRegistrar = null,
-    SessionReplacedNotifier? sessionNotifier = null)
+    SessionReplacedNotifier? sessionNotifier = null,
+    StreamerRouteSourceRegistrar? routeSourceRegistrar = null)
 {
     public async Task<StreamerLoginReady> LoginAsync(string callerTenantId, LoginCommand command,
         CancellationToken cancellationToken = default)
@@ -279,6 +280,12 @@ public sealed class RedesignStreamerLoginCoordinator(
         if (ownershipRegistrar is not null)
             await ownershipRegistrar.ClaimAsync(callerTenantId, gameId, access.StreamerId,
                 access.SessionId, access.SessionVersion, cancellationToken);
+        // The committed mount is the routing source (FIX-END-02): report it by binding id and
+        // generation right away — the control plane derives the platform identity, and a lost
+        // report is re-sent by the next mount, never by failing this one.
+        if (routeSourceRegistrar is not null)
+            await routeSourceRegistrar.RegisterAsync(callerTenantId, gameId, access.StreamerId,
+                binding.BindingId, binding.Generation, cancellationToken);
         return binding;
     }
 

@@ -63,7 +63,8 @@ public sealed record RoomRecoveryOperation(
 public sealed record RoomRoute(string RoomId, string TenantId, string GameId, string OwnerInstanceId,
     long Epoch, string? Endpoint, string Status);
 public sealed record StreamerRoute(string StreamerId, string BindingId, string RoomId, string State,
-    string? OwnerInstanceId, long Epoch, string Platform, string CanonicalLiveSessionKey);
+    string? OwnerInstanceId, long Epoch, string Platform, string CanonicalLiveSessionKey,
+    long BindingGeneration);
 public sealed record InstanceRoute(string ProcessInstanceId, string Role, string NodeId, string SlotId,
     string? Endpoint, string Readiness, string Admission);
 public sealed record RoutingSnapshot(long Version, IReadOnlyList<RoomRoute> Rooms,
@@ -95,6 +96,25 @@ public sealed class StaleRoundGenerationException(string message) : Exception(me
 /// <summary>Thrown when a second, different business id wants to begin the end of a
 /// round that already has its one operation.</summary>
 public sealed class EndOperationConflictException(string message) : Exception(message);
+
+/// <summary>The mount's route source as the control plane recorded it (FIX-END-02): the
+/// binding the mounts entered, its generation, and the platform identity the login
+/// verified — the identity is derived from the live session join, never asserted by the
+/// reporter.</summary>
+public sealed record RouteSourceRecord(
+    string TenantId, string GameId, string StreamerId, string BindingId, string Platform,
+    string CanonicalLiveSessionKey, long BindingGeneration, string RoomId,
+    DateTime RegisteredAt, DateTime UpdatedAt);
+
+/// <summary>Thrown when a route-source report names a mount that does not exist, belongs
+/// to another streamer, tenant or game, or carries no platform-verified live session: an
+/// unverified platform identity establishes no route.</summary>
+public sealed class RouteSourceUnverifiedException(string message) : Exception(message);
+
+/// <summary>Thrown when a route-source report names a generation older than the recorded
+/// row (or not the mount's current one): late evidence never overwrites the newer
+/// registration.</summary>
+public sealed class StaleBindingGenerationException(string message) : Exception(message);
 
 /// <summary>M0 control writes. Database time and row locks decide ownership and report order.</summary>
 public sealed class RedesignControlStore(string connectionString)
@@ -694,7 +714,7 @@ public sealed class RedesignControlStore(string connectionString)
         await using (var command = new NpgsqlCommand("""
             SELECT s.streamer_id,b.binding_id,b.current_room_id,b.state,
                 o.owner_process_instance_id,COALESCE(o.epoch,0),
-                s.platform,s.canonical_live_session_key
+                s.platform,s.canonical_live_session_key,b.generation
             FROM live.binding b
             JOIN live.session s ON s.live_session_id=b.live_session_id
             LEFT JOIN control.ownership o ON o.kind='streamer' AND o.tenant_id=b.tenant_id
@@ -708,7 +728,7 @@ public sealed class RedesignControlStore(string connectionString)
                 streamers.Add(new StreamerRoute(reader.GetString(0), reader.GetString(1),
                     reader.IsDBNull(2) ? "" : reader.GetString(2), reader.GetString(3),
                     reader.IsDBNull(4) ? null : reader.GetString(4), reader.GetInt64(5),
-                    reader.GetString(6), reader.GetString(7)));
+                    reader.GetString(6), reader.GetString(7), reader.GetInt64(8)));
         }
 
         var instances = new List<InstanceRoute>();
@@ -729,7 +749,7 @@ public sealed class RedesignControlStore(string connectionString)
         var version = ContentHash(rooms.Select(r =>
             $"room|{r.RoomId}|{r.TenantId}|{r.GameId}|{r.OwnerInstanceId}|{r.Epoch}|{r.Endpoint ?? ""}|{r.Status}")
             .Concat(streamers.Select(s =>
-                $"streamer|{s.StreamerId}|{s.BindingId}|{s.RoomId}|{s.State}|{s.OwnerInstanceId ?? ""}|{s.Epoch}|{s.Platform}|{s.CanonicalLiveSessionKey}"))
+                $"streamer|{s.StreamerId}|{s.BindingId}|{s.RoomId}|{s.State}|{s.OwnerInstanceId ?? ""}|{s.Epoch}|{s.Platform}|{s.CanonicalLiveSessionKey}|{s.BindingGeneration}"))
             .Concat(instances.Select(i =>
                 $"instance|{i.ProcessInstanceId}|{i.Role}|{i.NodeId}|{i.SlotId}|{i.Endpoint ?? ""}|{i.Readiness}|{i.Admission}")));
         return new RoutingSnapshot(version, rooms, streamers, instances);
@@ -1049,6 +1069,126 @@ public sealed class RedesignControlStore(string connectionString)
             open.Add((await ReadEndOperationAsync(
                 connection, null, tenant, game, id, cancellationToken))!);
         return open;
+    }
+
+    /// <summary>
+    /// Registers a mount's route source (FIX-END-02, architecture 6.4): the StreamerServer
+    /// reports the binding right after the mount commits, and the control plane derives the
+    /// platform identity from the mount's live session — a session row exists only because a
+    /// platform-verified login created it, so an unverified identity establishes no route.
+    /// The report must name the mount's current generation; the row is keyed per streamer and
+    /// game, and a report naming an older generation than the recorded row never overwrites
+    /// it — late evidence loses, always. A replay of the recorded generation answers the one
+    /// row as Duplicate.
+    /// </summary>
+    public async Task<(RouteSourceRecord Record, bool Duplicate)> RegisterRouteSourceAsync(
+        string tenantId, string gameId, string streamerId, string bindingId, long bindingGeneration,
+        CancellationToken cancellationToken = default)
+    {
+        if (bindingGeneration <= 0) throw new ArgumentOutOfRangeException(nameof(bindingGeneration));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        // The verified join is the whole fence: the binding must exist, belong to this
+        // streamer's tenant and game, and sit on a live session — whose platform identity is
+        // what gets recorded, never anything the report claims.
+        string platform, canonicalLiveSessionKey, roomId;
+        await using (var mount = new NpgsqlCommand("""
+            SELECT b.tenant_id,b.game_id,b.generation,b.current_room_id,
+                s.streamer_id,s.platform,s.canonical_live_session_key
+            FROM live.binding b
+            JOIN live.session s ON s.live_session_id=b.live_session_id
+            WHERE b.binding_id=@binding
+            """, connection))
+        {
+            mount.Parameters.AddWithValue("binding", bindingId);
+            await using var reader = await mount.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new RouteSourceUnverifiedException(
+                    $"The binding {bindingId} does not exist; no route source is established.");
+            if (reader.GetString(0) != tenantId || reader.GetString(1) != gameId ||
+                reader.GetString(4) != streamerId)
+                throw new RouteSourceUnverifiedException(
+                    $"The binding {bindingId} does not belong to {tenantId}/{gameId}/{streamerId}.");
+            if (reader.GetInt64(2) != bindingGeneration)
+                throw new StaleBindingGenerationException(
+                    $"The binding {bindingId} holds generation {reader.GetInt64(2)}, not " +
+                    $"{bindingGeneration}; the report is late or ahead of the mount.");
+            platform = reader.GetString(5);
+            canonicalLiveSessionKey = reader.GetString(6);
+            roomId = reader.IsDBNull(3) ? "" : reader.GetString(3);
+        }
+
+        // The recorded row first: the newer generation wins by refusing the older report,
+        // and the recorded generation replays as the one row.
+        var existingGeneration = -1L;
+        var existingBinding = "";
+        await using (var existing = new NpgsqlCommand("""
+            SELECT binding_id,binding_generation FROM control.route_source
+            WHERE tenant_id=@tenant AND game_id=@game AND streamer_id=@streamer
+            """, connection))
+        {
+            existing.Parameters.AddWithValue("tenant", tenantId);
+            existing.Parameters.AddWithValue("game", gameId);
+            existing.Parameters.AddWithValue("streamer", streamerId);
+            await using var reader = await existing.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                existingBinding = reader.GetString(0);
+                existingGeneration = reader.GetInt64(1);
+            }
+        }
+        if (existingGeneration > bindingGeneration)
+            throw new StaleBindingGenerationException(
+                $"The route source for {streamerId} already holds generation {existingGeneration}; " +
+                $"generation {bindingGeneration} does not overwrite it.");
+        var duplicate = existingGeneration == bindingGeneration && existingBinding == bindingId;
+        if (!duplicate)
+        {
+            // The upsert's WHERE keeps a concurrent older report from overwriting a newer
+            // registration between the checks above and this write.
+            await using var upsert = new NpgsqlCommand("""
+                INSERT INTO control.route_source(tenant_id,game_id,streamer_id,binding_id,
+                    platform,canonical_live_session_key,binding_generation,room_id)
+                VALUES (@tenant,@game,@streamer,@binding,@platform,@canonical,@generation,@room)
+                ON CONFLICT (tenant_id,game_id,streamer_id) DO UPDATE SET
+                    binding_id=@binding,platform=@platform,
+                    canonical_live_session_key=@canonical,binding_generation=@generation,
+                    room_id=@room,updated_at=clock_timestamp()
+                WHERE control.route_source.binding_generation < @generation
+                """, connection);
+            upsert.Parameters.AddWithValue("tenant", tenantId);
+            upsert.Parameters.AddWithValue("game", gameId);
+            upsert.Parameters.AddWithValue("streamer", streamerId);
+            upsert.Parameters.AddWithValue("binding", bindingId);
+            upsert.Parameters.AddWithValue("platform", platform);
+            upsert.Parameters.AddWithValue("canonical", canonicalLiveSessionKey);
+            upsert.Parameters.AddWithValue("generation", bindingGeneration);
+            upsert.Parameters.AddWithValue("room", roomId);
+            if (await upsert.ExecuteNonQueryAsync(cancellationToken) == 0)
+                throw new StaleBindingGenerationException(
+                    $"A newer route source for {streamerId} won the registration race.");
+        }
+
+        // The row as it stands now — replay and fresh write alike.
+        await using (var read = new NpgsqlCommand("""
+            SELECT binding_id,platform,canonical_live_session_key,binding_generation,room_id,
+                registered_at,updated_at
+            FROM control.route_source
+            WHERE tenant_id=@tenant AND game_id=@game AND streamer_id=@streamer
+            """, connection))
+        {
+            read.Parameters.AddWithValue("tenant", tenantId);
+            read.Parameters.AddWithValue("game", gameId);
+            read.Parameters.AddWithValue("streamer", streamerId);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new InvalidOperationException("The route source row vanished under registration.");
+            var record = new RouteSourceRecord(tenantId, gameId, streamerId, reader.GetString(0),
+                reader.GetString(1), reader.GetString(2), reader.GetInt64(3), reader.GetString(4),
+                reader.GetDateTime(5), reader.GetDateTime(6));
+            return (record, duplicate && record.BindingGeneration == bindingGeneration);
+        }
     }
 
     private static async Task<EndOperation?> ReadEndOperationAsync(NpgsqlConnection connection,
