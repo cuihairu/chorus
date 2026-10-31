@@ -92,6 +92,7 @@ app.MapGrpcService<RoutingGrpcService>();
 app.MapGrpcService<DeploymentGrpcService>();
 app.MapGrpcService<TakeoverGrpcService>();
 app.MapGrpcService<AdminGrpcService>();
+app.MapGrpcService<RoundEndGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

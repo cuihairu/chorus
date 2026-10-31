@@ -30,6 +30,7 @@
     <EmbeddedResource Include="Schema/0019_room_progress.sql" />
     <EmbeddedResource Include="Schema/0020_room_cadence.sql" />
     <EmbeddedResource Include="Schema/0021_room_recovery_identity.sql" />
+    <EmbeddedResource Include="Schema/0022_end_operation.sql" />
   </ItemGroup>
 
 </Project>

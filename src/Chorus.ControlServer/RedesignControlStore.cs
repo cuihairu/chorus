@@ -1,6 +1,54 @@
+using System.Text.Json;
 using Npgsql;
 
 namespace Chorus.ControlServer;
+
+/// <summary>The end sequence's phase ladder (architecture 6.4, FIX-END-01): one row walks
+/// these in order — the begin records the frozen result, every later step records its own
+/// completion, and Done is terminal. The names are the persisted contract the later end
+/// items drive; the row is progress, never authority.</summary>
+public static class EndOperationPhases
+{
+    /// <summary>Step 1: the final frame and result are committed and the actor stopped its
+    /// battle ticks — the begin's own evidence.</summary>
+    public const string ResultFrozen = "ResultFrozen";
+    /// <summary>Step 2: the closing input window — accepted inputs reach their terminal
+    /// disposition without changing the outcome.</summary>
+    public const string ClosingInput = "ClosingInput";
+    /// <summary>Step 3: the stop-delivery command is persisted and issued to the gateways.
+    /// </summary>
+    public const string StopDeliveryIssued = "StopDeliveryIssued";
+    /// <summary>Step 4: every authorized gateway confirmed DeliveryStopped.</summary>
+    public const string DeliveryStopped = "DeliveryStopped";
+    /// <summary>Step 5: the platform end task is authorized against the closed barrier.
+    /// </summary>
+    public const string PlatformTaskAuthorized = "PlatformTaskAuthorized";
+    /// <summary>Step 6: the platform close answered success or a grounded NotRequired.
+    /// </summary>
+    public const string PlatformClosed = "PlatformClosed";
+    /// <summary>Step 7: the finalize released the participations, pointers and capacity.
+    /// </summary>
+    public const string Released = "Released";
+    /// <summary>Step 8: the room's runtime entities are destroyed.</summary>
+    public const string Destroyed = "Destroyed";
+    /// <summary>The sequence is complete; the operation is history.</summary>
+    public const string Done = "Done";
+
+    private static readonly string[] Ladder =
+    [
+        ResultFrozen, ClosingInput, StopDeliveryIssued, DeliveryStopped,
+        PlatformTaskAuthorized, PlatformClosed, Released, Destroyed, Done
+    ];
+
+    /// <summary>The phase a begin starts at.</summary>
+    public const string First = ResultFrozen;
+
+    public static bool IsNext(string from, string to)
+    {
+        var fromIndex = Array.IndexOf(Ladder, from);
+        return fromIndex >= 0 && fromIndex + 1 < Ladder.Length && Ladder[fromIndex + 1] == to;
+    }
+}
 
 public sealed record NodeStatus(string AgentInstanceId, long ReportSequence);
 public sealed record ProcessStatus(bool Accepted, string Readiness, string EntityRecovery);
@@ -23,6 +71,30 @@ public sealed record RoutingSnapshot(long Version, IReadOnlyList<RoomRoute> Room
 public sealed record DeploymentPlan(string SlotId, string NodeId, string Role, string DesiredState,
     string DesiredVersion, string PackageHash, long PlanGeneration, string? CommandId,
     DateTime? CommandExpiresAtUtc);
+
+/// <summary>One participant mount's generations as the end operation recorded them at
+/// begin (FIX-END-01): the binding's own generation and the round generation it entered
+/// this round with.</summary>
+public sealed record EndMountGeneration(string BindingId, long Generation, long RoundGeneration);
+
+/// <summary>A persistent end operation (FIX-END-01, architecture 6.4): the business id
+/// every end step binds itself to, the room's round generation and the mount generations
+/// that entered it, the phase the sequence stands at, and the last error. The row is
+/// progress, never authority — ownership, routing and the settlement stores stay the
+/// fences.</summary>
+public sealed record EndOperation(
+    string TenantId, string GameId, string EndOperationId, string RoomId, long RoundGeneration,
+    IReadOnlyList<EndMountGeneration> BindingGenerations, long FinalTick, long ResultVersion,
+    string Phase, string? LastError, DateTime CreatedAt, DateTime UpdatedAt);
+
+/// <summary>Thrown when a begin names a generation the mounts have moved past (or no
+/// longer point at the room): a late request records nothing and cannot touch the newer
+/// round the mounts entered.</summary>
+public sealed class StaleRoundGenerationException(string message) : Exception(message);
+
+/// <summary>Thrown when a second, different business id wants to begin the end of a
+/// round that already has its one operation.</summary>
+public sealed class EndOperationConflictException(string message) : Exception(message);
 
 /// <summary>M0 control writes. Database time and row locks decide ownership and report order.</summary>
 public sealed class RedesignControlStore(string connectionString)
@@ -767,4 +839,243 @@ public sealed class RedesignControlStore(string connectionString)
         reader.GetString(4), reader.GetString(5), reader.GetInt64(6),
         reader.IsDBNull(7) ? null : reader.GetString(7),
         reader.IsDBNull(8) ? null : reader.GetDateTime(8));
+
+    /// <summary>
+    /// Begins the room's end operation (FIX-END-01). Creation is idempotent by request
+    /// identity: the same id with the same room and generations replays the recorded
+    /// operation, a second id for the same room refuses, and the same id naming another
+    /// room refuses. The generation fence runs before any write — a begin naming a round
+    /// generation that is not exactly what the room's participant bindings currently hold
+    /// is late evidence from a round the mounts have moved past, and it writes nothing.
+    /// </summary>
+    public async Task<(EndOperation Operation, bool Duplicate)> BeginEndOperationAsync(
+        string tenantId, string gameId, string roomId, string endOperationId, long roundGeneration,
+        long finalTick, long resultVersion, CancellationToken cancellationToken = default)
+    {
+        if (roundGeneration <= 0) throw new ArgumentOutOfRangeException(nameof(roundGeneration));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        // The replay path first: an existing row answers by identity without touching the
+        // fences, so a retry after a lost reply — or after the mounts released the round —
+        // still replays the one operation.
+        await using (var existing = new NpgsqlCommand("""
+            SELECT room_id,round_generation,final_tick,result_version
+            FROM control.end_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation
+            """, connection, transaction))
+        {
+            existing.Parameters.AddWithValue("tenant", tenantId);
+            existing.Parameters.AddWithValue("game", gameId);
+            existing.Parameters.AddWithValue("operation", endOperationId);
+            await using var reader = await existing.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var recordedRoom = reader.GetString(0);
+                if (recordedRoom != roomId)
+                    throw new EndOperationConflictException(
+                        $"The end operation {endOperationId} belongs to the room {recordedRoom}.");
+                await reader.DisposeAsync();
+                var replayed = await ReadEndOperationAsync(
+                    connection, transaction, tenantId, gameId, endOperationId, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return (replayed!, true);
+            }
+        }
+
+        // One operation per round: a second business id for the same room refuses visibly
+        // instead of racing two coordinators through the same steps.
+        await using (var room = new NpgsqlCommand(
+            "SELECT 1 FROM control.end_operation WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room",
+            connection, transaction))
+        {
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            room.Parameters.AddWithValue("room", roomId);
+            if (await room.ExecuteScalarAsync(cancellationToken) is not null)
+                throw new EndOperationConflictException(
+                    $"The room {roomId} already has its end operation.");
+        }
+
+        // The generation fence: the room's participant bindings must still hold exactly the
+        // named round generation. A binding that moved past it — or released its pointer —
+        // is evidence the mounts entered a newer round, and the late begin writes nothing.
+        var generations = new List<EndMountGeneration>();
+        await using (var participants = new NpgsqlCommand("""
+            SELECT b.binding_id,b.generation,b.round_generation,b.current_room_id
+            FROM game.participation p JOIN live.binding b ON b.binding_id=p.binding_id
+            WHERE p.room_id=@room
+            ORDER BY b.binding_id
+            """, connection, transaction))
+        {
+            participants.Parameters.AddWithValue("room", roomId);
+            await using var reader = await participants.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (reader.IsDBNull(3) || reader.GetString(3) != roomId ||
+                    reader.GetInt64(2) != roundGeneration)
+                    throw new StaleRoundGenerationException(
+                        $"The mount {reader.GetString(0)} does not hold round generation " +
+                        $"{roundGeneration} of the room {roomId}; the begin is late.");
+                generations.Add(new EndMountGeneration(
+                    reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2)));
+            }
+        }
+        if (generations.Count == 0)
+            throw new StaleRoundGenerationException(
+                $"The room {roomId} has no participant mounts holding round generation {roundGeneration}.");
+
+        await using (var insert = new NpgsqlCommand("""
+            INSERT INTO control.end_operation(tenant_id,game_id,end_operation_id,room_id,
+                round_generation,binding_generations,final_tick,result_version,phase)
+            VALUES (@tenant,@game,@operation,@room,@generation,@bindings::jsonb,@tick,@version,@phase)
+            """, connection, transaction))
+        {
+            insert.Parameters.AddWithValue("tenant", tenantId);
+            insert.Parameters.AddWithValue("game", gameId);
+            insert.Parameters.AddWithValue("operation", endOperationId);
+            insert.Parameters.AddWithValue("room", roomId);
+            insert.Parameters.AddWithValue("generation", roundGeneration);
+            insert.Parameters.AddWithValue("bindings", JsonSerializer.Serialize(
+                generations.Select(binding => new
+                {
+                    bindingId = binding.BindingId, generation = binding.Generation,
+                    roundGeneration = binding.RoundGeneration
+                })));
+            insert.Parameters.AddWithValue("tick", finalTick);
+            insert.Parameters.AddWithValue("version", resultVersion);
+            insert.Parameters.AddWithValue("phase", EndOperationPhases.First);
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+        var created = await ReadEndOperationAsync(
+            connection, transaction, tenantId, gameId, endOperationId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return (created!, false);
+    }
+
+    /// <summary>The room's end operation, whatever phase it stands at.</summary>
+    public async Task<EndOperation?> GetEndOperationAsync(string tenantId, string gameId,
+        string roomId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT end_operation_id FROM control.end_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room
+            """, connection);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("room", roomId);
+        var id = await command.ExecuteScalarAsync(cancellationToken) as string;
+        return id is null ? null : await ReadEndOperationAsync(
+            connection, null, tenantId, gameId, id, cancellationToken);
+    }
+
+    /// <summary>
+    /// Records the next phase of the end sequence on the operation row (FIX-END-01): the
+    /// ladder advances one step at a time under the recorded business id — a skip ahead, a
+    /// step back or a phase the operation never held refuses, so a late or reordered step
+    /// cannot rewrite a newer operation's progress. The error column records the last
+    /// failure the phase produced without leaving the phase.
+    /// </summary>
+    public async Task<EndOperation> AdvanceEndOperationPhaseAsync(string tenantId, string gameId,
+        string endOperationId, string fromPhase, string toPhase, string? lastError = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!EndOperationPhases.IsNext(fromPhase, toPhase))
+            throw new EndOperationConflictException(
+                $"The end sequence does not advance from {fromPhase} to {toPhase}.");
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            UPDATE control.end_operation
+            SET phase=@to, last_error=@error, updated_at=clock_timestamp()
+            WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation AND phase=@from
+            RETURNING room_id
+            """, connection);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("operation", endOperationId);
+        command.Parameters.AddWithValue("from", fromPhase);
+        command.Parameters.AddWithValue("to", toPhase);
+        command.Parameters.AddWithValue("error", lastError is null ? DBNull.Value : lastError);
+        if (await command.ExecuteScalarAsync(cancellationToken) is null)
+            throw new EndOperationConflictException(
+                $"The end operation {endOperationId} is not at the phase {fromPhase}.");
+        return (await ReadEndOperationAsync(
+            connection, null, tenantId, gameId, endOperationId, cancellationToken))!;
+    }
+
+    /// <summary>Records a failure on the operation row without leaving the phase — the
+    /// restart reads the phase and the reason and retries the same step.</summary>
+    public async Task RecordEndOperationErrorAsync(string tenantId, string gameId,
+        string endOperationId, string lastError, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            UPDATE control.end_operation
+            SET last_error=@error, updated_at=clock_timestamp()
+            WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation
+            """, connection);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("operation", endOperationId);
+        command.Parameters.AddWithValue("error", lastError);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>The open end operations a restarted control plane continues — every phase
+    /// the sequence has not finished, oldest first.</summary>
+    public async Task<List<EndOperation>> ListOpenEndOperationsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        var ids = new List<(string Tenant, string Game, string Id)>();
+        await using (var command = new NpgsqlCommand("""
+            SELECT tenant_id,game_id,end_operation_id FROM control.end_operation
+            WHERE phase<>@done ORDER BY created_at LIMIT 50
+            """, connection))
+        {
+            command.Parameters.AddWithValue("done", EndOperationPhases.Done);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+                ids.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+        }
+        var open = new List<EndOperation>();
+        foreach (var (tenant, game, id) in ids)
+            open.Add((await ReadEndOperationAsync(
+                connection, null, tenant, game, id, cancellationToken))!);
+        return open;
+    }
+
+    private static async Task<EndOperation?> ReadEndOperationAsync(NpgsqlConnection connection,
+        NpgsqlTransaction? transaction, string tenantId, string gameId, string endOperationId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT room_id,round_generation,binding_generations,final_tick,result_version,
+                phase,last_error,created_at,updated_at
+            FROM control.end_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation
+            """, connection, transaction);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("operation", endOperationId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        var generations = new List<EndMountGeneration>();
+        using (var document = JsonDocument.Parse(reader.GetString(2)))
+            foreach (var entry in document.RootElement.EnumerateArray())
+                generations.Add(new EndMountGeneration(
+                    entry.GetProperty("bindingId").GetString()!,
+                    entry.GetProperty("generation").GetInt64(),
+                    entry.GetProperty("roundGeneration").GetInt64()));
+        return new EndOperation(tenantId, gameId, endOperationId, reader.GetString(0),
+            reader.GetInt64(1), generations, reader.GetInt64(3), reader.GetInt64(4),
+            reader.GetString(5), reader.IsDBNull(6) ? null : reader.GetString(6),
+            reader.GetDateTime(7), reader.GetDateTime(8));
+    }
 }

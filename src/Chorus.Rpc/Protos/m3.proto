@@ -400,6 +400,69 @@ message TakeoverRoomReply {
   int64 last_tick = 5;
 }
 
+// The end operation boundary (architecture 6.4, FIX-END-01): the game host reports the
+// frozen result and the control plane persists one operation per round — the business id,
+// the room's round generation, the mount generations that entered it, the phase each later
+// step records, and the last error. Creation is idempotent by request identity: the same
+// begin replays the same operation, a second business id for the same room refuses, and a
+// late request naming a superseded generation cannot touch the round the mounts moved on
+// to. A restarted control plane reads the open phase and continues under the same id.
+service RoundEnd {
+  rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
+  // Step 1's notification: the final frame is committed and the actor stopped its battle
+  // ticks. Repeated with the same id and generations it replays the recorded operation.
+  rpc BeginEnd(BeginEndRequest) returns (BeginEndReply);
+  // The operation's own record — phase, progress and error — for the coordinators that
+  // resume after a restart and the surfaces that report blocking reasons.
+  rpc GetEndStatus(GetEndStatusRequest) returns (GetEndStatusReply);
+}
+
+message BeginEndRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  // The business id every later step of this round's end binds itself to.
+  string end_operation_id = 4;
+  // The round generation the participant mounts entered with this round; a request naming
+  // a generation the mounts have moved past is late and refuses.
+  int64 round_generation = 5;
+  int64 final_tick = 6;
+  int64 result_version = 7;
+}
+
+message BeginEndReply {
+  string end_operation_id = 1;
+  string phase = 2;
+  // True when the operation already existed and this begin replayed it — the same round
+  // never yields a second operation.
+  bool duplicate = 3;
+}
+
+message GetEndStatusRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+}
+
+// One participant mount's generations as the end operation recorded them at begin.
+message EndBindingGeneration {
+  string binding_id = 1;
+  int64 generation = 2;
+  int64 round_generation = 3;
+}
+
+message GetEndStatusReply {
+  bool found = 1;
+  string end_operation_id = 2;
+  string phase = 3;
+  int64 round_generation = 4;
+  int64 final_tick = 5;
+  int64 result_version = 6;
+  // The mount generations that entered the round, recorded at begin.
+  repeated EndBindingGeneration binding_generations = 7;
+  string last_error = 8;
+}
+
 // The PlatformGateway executor host (M3-8, architecture 6.3). The gateway is an executor, not a
 // data owner: its face carries readiness for supervisors and routing consumers, while the task
 // lease protocol it drives lives on the DataServer's PlatformTask service.
