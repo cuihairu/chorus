@@ -482,10 +482,19 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
         bindingId = string.IsNullOrEmpty(bindingId) ? null : bindingId;
         using (JsonDocument.Parse(payloadJson)) { }
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payloadJson));
-        var fingerprint = OperationFingerprint.FromCanonicalRequest(1, JsonSerializer.SerializeToUtf8Bytes(new
+        // FIX-INPUT-07: a pushed event's identity is what the platform retries — platform,
+        // app, room, binding and payload. The owner instance and epoch are the admission
+        // fence, not the event: a verbatim retry that arrives after a takeover names the
+        // new owner and generation, and it must meet its stored receipt as the same event
+        // (the receipt keeps the generation that admitted it) instead of a conflict the
+        // platform cannot fix by retrying. The fence itself still guards every fresh
+        // accept — a new event id at a stale owner or epoch writes nothing. The canonical
+        // version bumps because the shape changed: receipts written by the earlier
+        // contract conflict once across the deploy boundary, never after.
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(2, JsonSerializer.SerializeToUtf8Bytes(new
         {
-            Platform = platform, AppId = appId, RoomId = roomId, OwnerInstanceId = ownerInstanceId,
-            Epoch = epoch, BindingId = bindingId, PayloadJson = payloadJson
+            Platform = platform, AppId = appId, RoomId = roomId,
+            BindingId = bindingId, PayloadJson = payloadJson
         }));
         var receipt = await _receipts.ExecuteAsync(
             new OperationIdentity(tenantId, gameId, "input.push", roomId, eventId),
