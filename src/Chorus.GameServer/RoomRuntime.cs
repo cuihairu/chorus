@@ -1157,12 +1157,16 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     BindingId = request.BindingId, PayloadJson = request.PayloadJson
                 }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
             // FIX-INPUT-03: the handoff follows the durable verdict — an in-memory seat
-            // never confirms anything by itself. Both a fresh accept and a duplicate hand
-            // (seating is idempotent per event id, so a replay of an event whose first hand
-            // raced a full list still takes its seat); a hand that loses a capacity race
-            // costs nothing: the delivery row is the truth and the wake still fires.
-            actor.TryHand(request.EventId,
-                request.BindingId is { Length: > 0 } ? request.BindingId : null, request.PayloadJson);
+            // never confirms anything by itself. Only a fresh accept hands: a duplicate's
+            // event may already be consumed, and re-seating a drained id would send the
+            // tick at a delivery the frame commit must refuse. An accept whose hand loses
+            // a capacity race, or whose reply was lost (OutcomeUnknown), costs nothing —
+            // the delivery row is the truth and the cursor pull consumes it; the wake
+            // still fires either way.
+            if (!accepted.Duplicate)
+                actor.TryHand(request.EventId,
+                    request.BindingId is { Length: > 0 } ? request.BindingId : null,
+                    request.PayloadJson, request.Platform);
             actor.Wake();
             return new DeliverRoomEventReply
             {

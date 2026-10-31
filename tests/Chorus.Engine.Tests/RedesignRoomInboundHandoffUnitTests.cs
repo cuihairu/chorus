@@ -22,18 +22,18 @@ public sealed class RedesignRoomInboundHandoffUnitTests
         var actor = NewRoom(inboundBound: 2);
 
         // Two fresh events take the two seats; the depth says so.
-        Assert.True(actor.TryHand("gift-1", "binding-host-ib", """{"action":"boost"}"""));
-        Assert.True(actor.TryHand("gift-2", null, """{"action":"boost"}"""));
+        Assert.True(actor.TryHand("gift-1", "binding-host-ib", """{"action":"boost"}""", "simulator"));
+        Assert.True(actor.TryHand("gift-2", null, """{"action":"boost"}""", "simulator"));
         Assert.Equal(2, actor.InboundBacklog);
 
         // A third fresh event finds no seat — the edge's Overloaded condition.
-        Assert.False(actor.TryHand("gift-3", null, """{"action":"boost"}"""));
+        Assert.False(actor.TryHand("gift-3", null, """{"action":"boost"}""", "simulator"));
         Assert.Equal(2, actor.InboundBacklog);
 
         // Seating is idempotent per event id: the same id keeps its single seat, and an
         // already seated id always has capacity — an idempotent replay of a committed
         // event never blocks on a full list.
-        Assert.True(actor.TryHand("gift-1", "binding-host-ib", """{"action":"boost"}"""));
+        Assert.True(actor.TryHand("gift-1", "binding-host-ib", """{"action":"boost"}""", "simulator"));
         Assert.Equal(2, actor.InboundBacklog);
         Assert.True(actor.HasInboundSeat("gift-1"));
         Assert.True(actor.HasInboundSeat("gift-2"));
@@ -56,7 +56,7 @@ public sealed class RedesignRoomInboundHandoffUnitTests
         // Zero closes every room's seats the fail-closed way: no event takes a seat and
         // no event id passes the capacity check — every push answers Overloaded.
         Assert.False(actor.HasInboundSeat("gift-1"));
-        Assert.False(actor.TryHand("gift-1", null, """{"action":"boost"}"""));
+        Assert.False(actor.TryHand("gift-1", null, """{"action":"boost"}""", "simulator"));
         Assert.Equal(0, actor.InboundBacklog);
     }
 

@@ -306,6 +306,120 @@ public sealed class RedesignRoomEventPushHostTests
         }
     }
 
+    [Fact]
+    public async Task ASeatedPushIsConsumedByTheFrameCommitAtomically()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "6",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "3"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(CultureInfo.InvariantCulture),
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+            });
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, gamePort, "node-a/game-server"),
+            clientTenant: "tenant-a", instanceId: "game-a");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-sc");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        var routing = new RoutingService.RoutingClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "rounds-sc");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+
+        await RegisterHostsAsync(environment, routing, "game-a");
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+
+        using var pushCertificate = environment.Certificate("tenant-a", "platform-gateway", "push-sc");
+        var host = await MountAsync(environment, simulator, "seat-host-b");
+        var guest = await MountAsync(environment, simulator, "seat-guest-b");
+        const string roomSc = "room-seat-sc";
+        var (epoch, _) = await StartRoomAsync(environment, control, rounds, roomSc,
+            "game-a", gamePort, controlCertificate, host, guest, "seat-start-b", durationTicks: 400);
+
+        DeliverRoomEventRequest Request(string eventId) => new()
+        {
+            TenantId = "tenant-a", GameId = "game-a", RoomId = roomSc, OwnerInstanceId = "game-a",
+            Epoch = epoch, EventId = eventId, Platform = "simulator", AppId = "app-1",
+            BindingId = host.BindingId, PayloadJson = """{"action":"boost","level":3}"""
+        };
+        async Task<DeliverRoomEventReply> DeliverAsync(DeliverRoomEventRequest request)
+        {
+            using var channel = environment.Channel(gamePort, pushCertificate, "game-server");
+            return await new RoomEvents.RoomEventsClient(channel).DeliverEventAsync(request,
+                deadline: DateTime.UtcNow.AddSeconds(30));
+        }
+
+        // The push commits durably and takes its seat; the tick's frame commit consumes the
+        // delivery and records the input in the same transaction (FIX-INPUT-04).
+        var accepted = await DeliverAsync(Request("sc-gift-1"));
+        Assert.Equal(RoomRuntime.DurableAccepted, accepted.Disposition);
+        var consumed = await WaitForAsync(async () =>
+        {
+            await using var connection = new NpgsqlConnection(environment.DatabaseConnectionString);
+            await connection.OpenAsync();
+            await using var delivery = new NpgsqlCommand(
+                "SELECT state FROM input.delivery WHERE event_id='sc-gift-1'", connection);
+            if (await delivery.ExecuteScalarAsync() as string != "Consumed") return false;
+            await using var frame = new NpgsqlCommand(
+                "SELECT input_refs FROM game.frame WHERE room_id=@room ORDER BY tick_id", connection);
+            frame.Parameters.AddWithValue("room", roomSc);
+            await using var reader = await frame.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                if (reader.GetString(0).Contains("\"sc-gift-1\"")) return true;
+            return false;
+        }, TimeSpan.FromSeconds(60));
+        Assert.True(consumed, "The seated push was never consumed by a frame commit.");
+
+        // A retry of the same event id replays the stored outcome and changes nothing: the
+        // delivery stays a single consumed row, and the boost lands exactly once.
+        var replay = await DeliverAsync(Request("sc-gift-1"));
+        Assert.Equal(RoomRuntime.Duplicate, replay.Disposition);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var rows = new NpgsqlCommand("""
+                SELECT count(*),count(*) FILTER (WHERE state='Consumed') FROM input.delivery
+                WHERE event_id='sc-gift-1'
+                """, connection);
+            await using var reader = await rows.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(1L, reader.GetInt64(0));
+            Assert.Equal(1L, reader.GetInt64(1));
+        }
+
+        // The consumed boost really became a module input: the flat 12 × level arithmetic
+        // of the 1.1.0 package is the room's final score — once, not twice.
+        var resultJson = await WaitForResultAsync(environment, rounds, gamePort, roomSc, epoch,
+            controlCertificate, "seat-sync-b", TimeSpan.FromSeconds(90));
+        using (var result = JsonDocument.Parse(resultJson))
+        {
+            Assert.Equal(36L, ScoreOf(result, "red"));
+            Assert.Equal(0L, ScoreOf(result, "blue"));
+        }
+    }
+
     /// <summary>Claims the room for the named owner instance, starts it under the 1.1.0
     /// package identity (flat 12 × level arithmetic) and prepares it on that host.</summary>
     private static async Task<(long Epoch, string HostSession)> StartRoomAsync(

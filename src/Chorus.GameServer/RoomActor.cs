@@ -56,8 +56,15 @@ internal sealed class RoomActor : IAsyncDisposable
     /// to resend after an unknown outcome — never rebuilt from a re-read inbox — plus the
     /// candidate material one verdict publishes exactly once (FIX-FRAME-02).
     /// </summary>
-    private sealed record PendingFrame(long Tick, long BaseVersion, ReadInboxReply Inbox,
+    private sealed record PendingFrame(long Tick, long BaseVersion, IReadOnlyList<TickInputItem> Inputs,
         TickOutcome Outcome, CommitFrameRequest Request);
+
+    /// <summary>One input a tick consumes, wherever it arrived from (FIX-INPUT-04): a
+    /// pulled inbox delivery or a directly pushed event seated after its durable leg
+    /// committed. The frame commit consumes by event id — it does not care how the actor
+    /// learned the input, only that the id is a pending delivery of this room's inbox.</summary>
+    internal sealed record TickInputItem(string EventId, string? BindingId, string PayloadJson,
+        string Platform, string SourceDedupKey, long Sequence);
 
     private const int MaxInputsPerTick = 200;
     private const int MaxConsecutiveModuleFailures = 3;
@@ -118,7 +125,7 @@ internal sealed class RoomActor : IAsyncDisposable
     // wake is a notification only — the recoverable inbox cursor stays the consumption
     // authority, so a lost seat or a lost wake costs latency, never an event.
     private readonly object _inboundGate = new();
-    private readonly Queue<(string EventId, string? BindingId, string PayloadJson)> _inbound = new();
+    private readonly Queue<(string EventId, string? BindingId, string PayloadJson, string Platform)> _inbound = new();
     private readonly HashSet<string> _inboundIds = new(StringComparer.Ordinal);
     private readonly int _inboundBound;
     private readonly SemaphoreSlim _wake = new(0, 1);
@@ -252,24 +259,36 @@ internal sealed class RoomActor : IAsyncDisposable
         // same commit id, which the store would reject as a conflict.
         if (_pending is null)
         {
-            ReadInboxReply inbox;
-            try
+            // FIX-INPUT-04: the seated, durably accepted pushes are this tick's inputs, and
+            // a tick with seated work does not pull — the push path needs no inbox read. A
+            // tick with no seats pulls as before: the client-command leg still rides the
+            // inbox (FIX-LINK-09 moves it later), so a command-only room's behavior is
+            // exactly what it was.
+            IReadOnlyList<TickInputItem> items = DrainSeats();
+            if (items.Count == 0)
             {
-                var inboxStart = _metrics.Start();
-                inbox = await _frames.ReadInboxAsync(
-                    new ReadInboxRequest { RoomId = _roomId, GameId = _gameId, MaxEvents = MaxInputsPerTick },
-                    deadline: Deadline(), cancellationToken: cancellationToken);
-                _metrics.Record(_metrics.InboxPull, inboxStart);
+                ReadInboxReply inbox;
+                try
+                {
+                    var inboxStart = _metrics.Start();
+                    inbox = await _frames.ReadInboxAsync(
+                        new ReadInboxRequest { RoomId = _roomId, GameId = _gameId, MaxEvents = MaxInputsPerTick },
+                        deadline: Deadline(), cancellationToken: cancellationToken);
+                    _metrics.Record(_metrics.InboxPull, inboxStart);
+                }
+                catch (RpcException)
+                {
+                    return; // transient read failure: the next wake reads the same inbox
+                }
+                items = inbox.Items.Select(item => new TickInputItem(item.EventId,
+                    item.BindingId is { Length: > 0 } ? item.BindingId : null, item.PayloadJson,
+                    item.Platform, item.SourceDedupKey, item.Sequence)).ToList();
             }
-            catch (RpcException)
-            {
-                return; // transient read failure: the next wake reads the same inbox
-            }
-            // Everything in the inbox is consumed this tick; only bindings this host mapped at
+            // Everything acquired is consumed this tick; only bindings this host mapped at
             // prepare time become module inputs, so a foreign delivery is acknowledged into the
             // frame record without inventing a participant.
-            var inputs = new List<NormalizedInput>(inbox.Items.Count);
-            foreach (var item in inbox.Items)
+            var inputs = new List<NormalizedInput>(items.Count);
+            foreach (var item in items)
                 if (item.BindingId is { Length: > 0 } binding
                     && _participantByBinding.TryGetValue(binding, out var participant))
                     inputs.Add(new NormalizedInput(participant, item.PayloadJson));
@@ -311,8 +330,8 @@ internal sealed class RoomActor : IAsyncDisposable
                 return;
             }
             _consecutiveModuleFailures = 0;
-            _pending = new PendingFrame(tick, _stateVersion, inbox, outcome,
-                BuildCommitRequest(tick, inbox, outcome));
+            _pending = new PendingFrame(tick, _stateVersion, items, outcome,
+                BuildCommitRequest(tick, items, outcome));
         }
 
         var pendingFrame = _pending;
@@ -385,7 +404,7 @@ internal sealed class RoomActor : IAsyncDisposable
         // Publish under the gate also advances the actor head there, so subscribers only
         // ever observe a coherent committed triple (8.3). A committed and a duplicate
         // receipt are the same verdict: the frame takes a single step forward.
-        PublishCommittedFrame(pendingFrame.BaseVersion, pendingFrame.Inbox, pendingFrame.Outcome,
+        PublishCommittedFrame(pendingFrame.BaseVersion, pendingFrame.Inputs, pendingFrame.Outcome,
             receipt);
         if (pendingFrame.Outcome.Final)
         {
@@ -396,7 +415,8 @@ internal sealed class RoomActor : IAsyncDisposable
         }
     }
 
-    private CommitFrameRequest BuildCommitRequest(long tick, ReadInboxReply inbox, TickOutcome outcome)
+    private CommitFrameRequest BuildCommitRequest(long tick, IReadOnlyList<TickInputItem> items,
+        TickOutcome outcome)
     {
         var commit = new CommitFrameRequest
         {
@@ -405,7 +425,7 @@ internal sealed class RoomActor : IAsyncDisposable
             StateHash = ByteString.CopyFrom(_module.ComputeStateHash(outcome.State)),
             ModuleVersion = _module.Manifest.ModuleVersion, ConfigHash = _configHash
         };
-        commit.InputEventIds.AddRange(inbox.Items.Select(item => item.EventId));
+        commit.InputEventIds.AddRange(items.Select(item => item.EventId));
         commit.Effects.AddRange(outcome.Effects.Select(effect => new FrameEffectProto
         {
             Kind = effect.Kind, PayloadJson = effect.PayloadJson
@@ -491,8 +511,8 @@ internal sealed class RoomActor : IAsyncDisposable
     /// state — never a delta with a base it never applied. The final frame publishes the
     /// frozen result and ends every stream. Never blocks the tick loop.
     /// </summary>
-    private void PublishCommittedFrame(long baseVersion, ReadInboxReply inbox, TickOutcome outcome,
-        FrameReceiptReply receipt)
+    private void PublishCommittedFrame(long baseVersion, IReadOnlyList<TickInputItem> items,
+        TickOutcome outcome, FrameReceiptReply receipt)
     {
         lock (_publishGate)
         {
@@ -510,12 +530,12 @@ internal sealed class RoomActor : IAsyncDisposable
                 ConfigHash = _configHash,
                 StateHash = ByteString.CopyFrom(_module.ComputeStateHash(outcome.State))
             } };
-            delta.Delta.InputEventIds.AddRange(inbox.Items.Select(item => item.EventId));
+            delta.Delta.InputEventIds.AddRange(items.Select(item => item.EventId));
             delta.Delta.Effects.AddRange(outcome.Effects.Select(effect => new FrameEffectProto
             {
                 Kind = effect.Kind, PayloadJson = effect.PayloadJson
             }));
-            delta.Delta.Commands.AddRange(inbox.Items
+            delta.Delta.Commands.AddRange(items
                 .Where(item => item.Platform == ClientCommandPlatform)
                 .Select(item => new CommandReceiptProto
                 {
@@ -667,20 +687,44 @@ internal sealed class RoomActor : IAsyncDisposable
             return _inboundIds.Contains(eventId) || _inbound.Count < _inboundBound;
     }
 
-    /// <summary>FIX-INPUT-03: seats one durably accepted event. Idempotent per event id —
-    /// the same id handed again (a duplicate push) keeps its single seat; a full list
-    /// answers false, which costs nothing: the durable delivery row is the truth and the
-    /// wake still fires. Seating never confirms anything by itself — the caller only hands
+    /// <summary>FIX-INPUT-03: seats one durably accepted event. Idempotent per event id
+    /// while the event is unconsumed — the edge hands only fresh accepts (a duplicate's
+    /// event may already be consumed, and re-seating a drained id would point the tick at
+    /// a delivery the frame commit refuses); the idempotency here is the guard when two
+    /// hands race inside that window. A full list answers false, which costs nothing: the
+    /// durable delivery row is the truth, the cursor pull consumes the event, and the wake
+    /// still fires. Seating never confirms anything by itself — the caller only hands
     /// events whose durable leg already committed.</summary>
-    public bool TryHand(string eventId, string? bindingId, string payloadJson)
+    public bool TryHand(string eventId, string? bindingId, string payloadJson, string platform)
     {
         lock (_inboundGate)
         {
             if (_inboundIds.Contains(eventId)) return true;
             if (_inbound.Count >= _inboundBound) return false;
-            _inbound.Enqueue((eventId, bindingId, payloadJson));
+            _inbound.Enqueue((eventId, bindingId, payloadJson, platform));
             _inboundIds.Add(eventId);
             return true;
+        }
+    }
+
+    /// <summary>FIX-INPUT-04: takes every seated event for this tick to consume. The ids
+    /// leave the seat list only here — a tick whose frame is rejected or parked leaves the
+    /// events pending in the inbox cursor, and recovery's pull picks them up.</summary>
+    private List<TickInputItem> DrainSeats()
+    {
+        lock (_inboundGate)
+        {
+            var drained = new List<TickInputItem>(_inbound.Count);
+            while (_inbound.Count > 0)
+            {
+                var (eventId, bindingId, payloadJson, platform) = _inbound.Dequeue();
+                _inboundIds.Remove(eventId);
+                // A pushed event's dedup key is its event id (the durable leg stored it so);
+                // the sequence is the command receipt's concern, and a seat never holds a
+                // client command — the client leg still rides the pull.
+                drained.Add(new TickInputItem(eventId, bindingId, payloadJson, platform, eventId, 0));
+            }
+            return drained;
         }
     }
 
