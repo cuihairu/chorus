@@ -372,7 +372,7 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
         return new RoundInbox(watermark, items);
     }
 
-    private static async Task LockRoomOwnershipAsync(string tenantId, string gameId, string roomId,
+    internal static async Task LockRoomOwnershipAsync(string tenantId, string gameId, string roomId,
         string ownerInstanceId, long epoch, NpgsqlConnection connection, NpgsqlTransaction transaction,
         CancellationToken cancellationToken)
     {

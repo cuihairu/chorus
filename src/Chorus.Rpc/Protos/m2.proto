@@ -166,6 +166,65 @@ message ClientInputReply {
   bool duplicate = 5;
 }
 
+// FIX-INPUT-01: one directly pushed room event on its way to the durable store. The
+// event id is the business identity the producer keeps across retries; the store keys
+// both the operation receipt and the dedup unique on it. The binding is the mount the
+// producer attributed the event to — it must point at this room for the event to reach
+// a module seat; an empty binding is a room-scoped event with no seat.
+message AcceptRoomEventRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string owner_instance_id = 4;
+  int64 epoch = 5;
+  string event_id = 6;
+  string platform = 7;
+  string app_id = 8;
+  string binding_id = 9;
+  string payload_json = 10;
+}
+
+message AcceptRoomEventReply {
+  string event_id = 1;
+  string room_id = 2;
+  int64 sequence = 3;
+  int64 route_version = 4;
+  bool duplicate = 5;
+}
+
+// FIX-INPUT-01: the direct-push room-event contract the routing layer calls. The reply
+// disposition is one of these strings (no enum, per repo convention):
+//   DurableAccepted — the event, its inbox delivery and the cursor advance committed;
+//                     only a durable success confirms an important input.
+//   Duplicate       — the same event id arrived before; the stored outcome replays,
+//                     nothing is written twice.
+//   StaleOwner      — the caller's owner instance or epoch is not the room's current
+//                     authority; re-resolve routing, then retry the same event id.
+//   Overloaded      — the host's inbound bound refused the event before any durable
+//                     write; retry the same event id after backoff.
+//   OutcomeUnknown  — the durable leg timed out or the store became unreachable; the
+//                     transaction may or may not have committed. Retry the same event
+//                     id — the receipt decides between Duplicate and DurableAccepted.
+message DeliverRoomEventRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string owner_instance_id = 4;
+  int64 epoch = 5;
+  string event_id = 6;
+  string platform = 7;
+  string app_id = 8;
+  string binding_id = 9;
+  string payload_json = 10;
+}
+
+message DeliverRoomEventReply {
+  string disposition = 1;
+  string note = 2;
+  int64 sequence = 3;
+  int64 route_version = 4;
+}
+
 // One authoritative tick commit (architecture 8.2). The owner states the tick and state
 // version it derived the candidate from; the store validates the fence, the prev frame and
 // every input ref before anything is consumed.
@@ -369,6 +428,13 @@ service RoundInput {
   rpc RouteEvents(RouteEventsRequest) returns (RouteEventsReply);
   rpc AcceptClientInput(ClientInputRequest) returns (ClientInputReply);
   rpc WithdrawParticipation(WithdrawParticipationRequest) returns (ParticipationReply);
+  // FIX-INPUT-01: the durable leg of the direct-push contract. The game host forwards
+  // an attributed room event; the store fences it against the room ownership row
+  // (owner instance, epoch, live lease, Active) before the event, its inbox delivery
+  // and the cursor advance commit as one transaction. The reply means durably
+  // accepted — never applied. FailedPrecondition is a stale owner picture;
+  // InvalidArgument is an attribution error retrying cannot fix.
+  rpc AcceptRoomEvent(AcceptRoomEventRequest) returns (AcceptRoomEventReply);
 }
 
 // Settlement and round finalization (architecture 9.3). The final frame commits the
@@ -415,6 +481,16 @@ service GameHost {
   // Snapshot recovery (architecture 10.3): replay from the newest usable snapshot, resume
   // ticking; a Finishing room recovers its tail without restarting battle ticks.
   rpc RecoverRoom(RecoverRoomRequest) returns (RecoverRoomReply);
+}
+
+// FIX-INPUT-01: the direct-push room-event edge on the game host. The routing layer
+// pushes an attributed platform event straight at the host it believes owns the room,
+// naming the owner instance and epoch; the host refuses what it does not own, bounds
+// its inbound queue, then durably accepts through the data plane before confirming.
+// See DeliverRoomEventReply for the disposition contract.
+service RoomEvents {
+  rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
+  rpc DeliverEvent(DeliverRoomEventRequest) returns (DeliverRoomEventReply);
 }
 
 // Retention on the data plane (architecture 9 data retention, AT21). The control plane

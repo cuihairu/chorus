@@ -403,6 +403,45 @@ public sealed class RoundInputGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    /// <summary>
+    /// FIX-INPUT-01, durable leg: the game host forwards a directly pushed room event. The
+    /// stale-owner refusal is FailedPrecondition (retry after re-resolving routing); an
+    /// attribution error — the binding does not point at this room, the room will not take
+    /// input — is InvalidArgument, because retrying the same attribution cannot succeed.
+    /// </summary>
+    public override async Task<AcceptRoomEventReply> AcceptRoomEvent(AcceptRoomEventRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "game-server", "control-server");
+        try
+        {
+            var receipt = await inputStore.AcceptRoomEventAsync(TenantFor(caller, request.TenantId),
+                request.GameId, request.RoomId, request.OwnerInstanceId, request.Epoch,
+                request.EventId, request.Platform, request.AppId, request.BindingId,
+                request.PayloadJson, context.CancellationToken);
+            return new AcceptRoomEventReply
+            {
+                EventId = receipt.EventId, RoomId = receipt.RoomId, Sequence = receipt.Sequence,
+                RouteVersion = receipt.RouteVersion, Duplicate = receipt.Duplicate
+            };
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The room ownership fence rejected the caller."));
+        }
+        catch (RoundAdmissionException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The event id was reused for a different event."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
     private ProcessIdentity Require(ServerCallContext context, params string[] roles)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;

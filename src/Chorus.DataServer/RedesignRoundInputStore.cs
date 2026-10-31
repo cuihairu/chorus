@@ -15,6 +15,9 @@ public sealed record RouteEventsResult(IReadOnlyList<RouteEventsItem> Events, bo
 public sealed record ClientInputReceipt(
     string CommandId, string RoomId, long Sequence, long RouteVersion, bool Duplicate);
 
+public sealed record RoomEventReceipt(
+    string EventId, string RoomId, long Sequence, long RouteVersion, bool Duplicate);
+
 public sealed record ParticipationWithdrawn(string RoomId, string State, bool Duplicate);
 
 /// <summary>
@@ -454,6 +457,165 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
             await advance.ExecuteNonQueryAsync(cancellationToken);
         }
         return JsonSerializer.Serialize(new ClientInputReceipt(commandId, roomId, next, routeVersion,
+            Duplicate: false));
+    }
+
+    /// <summary>
+    /// Durable intake of a directly pushed room event (FIX-INPUT-01, architecture 6.3): the
+    /// room ownership row fences the push — the named owner instance and epoch must hold a
+    /// live, Active lease — then the event, its inbox delivery and the cursor advance commit
+    /// as one transaction. The receipt means durably accepted, not applied. The event id is
+    /// the idempotency key; an exact retry replays the stored outcome as Duplicate, the same
+    /// id under a different payload conflicts. The binding names the mount the producer
+    /// attributed the event to (it must point at this room); an empty binding is a
+    /// room-scoped event with no module seat.
+    /// </summary>
+    public async Task<RoomEventReceipt> AcceptRoomEventAsync(string tenantId, string gameId,
+        string roomId, string ownerInstanceId, long epoch, string eventId, string platform,
+        string appId, string? bindingId, string payloadJson, CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId));
+        Require(roomId, nameof(roomId)); Require(ownerInstanceId, nameof(ownerInstanceId));
+        Require(eventId, nameof(eventId)); Require(platform, nameof(platform)); Require(appId, nameof(appId));
+        Require(payloadJson, nameof(payloadJson));
+        if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
+        bindingId = string.IsNullOrEmpty(bindingId) ? null : bindingId;
+        using (JsonDocument.Parse(payloadJson)) { }
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payloadJson));
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1, JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Platform = platform, AppId = appId, RoomId = roomId, OwnerInstanceId = ownerInstanceId,
+            Epoch = epoch, BindingId = bindingId, PayloadJson = payloadJson
+        }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "input.push", roomId, eventId),
+            fingerprint,
+            (connection, transaction, token) => ApplyRoomEventAsync(tenantId, gameId, roomId,
+                ownerInstanceId, epoch, eventId, platform, appId, bindingId, payloadJson, hash,
+                connection, transaction, token),
+            cancellationToken);
+        var result = JsonSerializer.Deserialize<RoomEventReceipt>(receipt.ResultJson)
+            ?? throw new InvalidOperationException("The stored room event receipt is unreadable.");
+        return result with { Duplicate = receipt.Duplicate };
+    }
+
+    private async Task<string> ApplyRoomEventAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, string eventId, string platform, string appId,
+        string? bindingId, string payloadJson, byte[] hash,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        // Ownership fences the push before anything else: a caller whose owner instance or
+        // epoch is not the room's current authority writes nothing (frames' fence, shared).
+        await RedesignFrameStore.LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
+            connection, transaction, cancellationToken);
+
+        // Binding before room (unified lock order); the binding must point at this room for
+        // the event to reach a module seat. A binding-less push is room-scoped, routed by
+        // the epoch that admitted it.
+        string? liveSessionId = null; string? canonicalRoomKey = null; long routeVersion = epoch;
+        if (bindingId is not null)
+        {
+            await using (var binding = new NpgsqlCommand("""
+                SELECT live_session_id,tenant_id,game_id,current_room_id,round_generation
+                FROM live.binding WHERE binding_id=@binding FOR UPDATE
+                """, connection, transaction))
+            {
+                binding.Parameters.AddWithValue("binding", bindingId);
+                await using var reader = await binding.ExecuteReaderAsync(cancellationToken);
+                if (!await reader.ReadAsync(cancellationToken) || reader.GetString(1) != tenantId
+                    || reader.GetString(2) != gameId || reader.IsDBNull(3) || reader.GetString(3) != roomId)
+                    throw new RoundAdmissionException("The attributed binding does not point at this room.");
+                liveSessionId = reader.GetString(0);
+                routeVersion = reader.GetInt64(4);
+            }
+            await using (var live = new NpgsqlCommand(
+                "SELECT canonical_live_session_key FROM live.session WHERE live_session_id=@live",
+                connection, transaction))
+            {
+                live.Parameters.AddWithValue("live", liveSessionId!);
+                canonicalRoomKey = await live.ExecuteScalarAsync(cancellationToken) as string;
+            }
+        }
+        await using (var room = new NpgsqlCommand(
+            "SELECT status,epoch FROM game.room WHERE room_id=@room FOR UPDATE", connection, transaction))
+        {
+            room.Parameters.AddWithValue("room", roomId);
+            await using var reader = await room.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new RoundAdmissionException("The room does not exist.");
+            if (reader.GetInt64(1) != epoch)
+                throw new RedesignStaleOwnerException();
+            var status = reader.GetString(0);
+            if (status is not (RedesignRoomStore.Preparing or "Running"))
+                throw new RoundAdmissionException($"A room in status {status} does not accept input.");
+        }
+
+        await using (var insertEvent = new NpgsqlCommand("""
+            INSERT INTO input.event(event_id,platform,app_id,source_dedup_key,payload_hash,
+                disposition,binding_id,binding_generation,payload,canonical_room_key,durability,
+                attributed_room_id)
+            VALUES (@event,@platform,@app,@event,@hash,@disposition,@binding,@generation,
+                @payload::jsonb,@room,'Durable',@attributed)
+            """, connection, transaction))
+        {
+            insertEvent.Parameters.AddWithValue("event", eventId);
+            insertEvent.Parameters.AddWithValue("platform", platform);
+            insertEvent.Parameters.AddWithValue("app", appId);
+            insertEvent.Parameters.AddWithValue("hash", hash);
+            insertEvent.Parameters.AddWithValue("disposition", Routed);
+            insertEvent.Parameters.AddWithValue("binding", (object?)bindingId ?? DBNull.Value);
+            insertEvent.Parameters.AddWithValue("generation",
+                bindingId is null ? (object)DBNull.Value : routeVersion);
+            insertEvent.Parameters.AddWithValue("payload", payloadJson);
+            insertEvent.Parameters.AddWithValue("room", (object?)canonicalRoomKey ?? DBNull.Value);
+            insertEvent.Parameters.AddWithValue("attributed", roomId);
+            try
+            {
+                await insertEvent.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (PostgresException error) when (error.SqlState == "23505")
+            {
+                throw new IdempotencyConflictException();
+            }
+        }
+
+        var scope = "room:" + roomId;
+        await using (var ensure = new NpgsqlCommand(
+            "INSERT INTO input.cursor(consumer_scope) VALUES (@scope) ON CONFLICT DO NOTHING",
+            connection, transaction))
+        {
+            ensure.Parameters.AddWithValue("scope", scope);
+            await ensure.ExecuteNonQueryAsync(cancellationToken);
+        }
+        long next;
+        await using (var cursor = new NpgsqlCommand("""
+            SELECT next_delivery_sequence FROM input.cursor WHERE consumer_scope=@scope FOR UPDATE
+            """, connection, transaction))
+        {
+            cursor.Parameters.AddWithValue("scope", scope);
+            next = Convert.ToInt64(await cursor.ExecuteScalarAsync(cancellationToken));
+        }
+        await using (var delivery = new NpgsqlCommand("""
+            INSERT INTO input.delivery(event_id,consumer_scope,room_id,route_version,sequence,state)
+            VALUES (@event,@scope,@room,@version,@sequence,'Pending')
+            """, connection, transaction))
+        {
+            delivery.Parameters.AddWithValue("event", eventId);
+            delivery.Parameters.AddWithValue("scope", scope);
+            delivery.Parameters.AddWithValue("room", roomId);
+            delivery.Parameters.AddWithValue("version", routeVersion);
+            delivery.Parameters.AddWithValue("sequence", next);
+            await delivery.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var advance = new NpgsqlCommand(
+            "UPDATE input.cursor SET next_delivery_sequence=@next WHERE consumer_scope=@scope",
+            connection, transaction))
+        {
+            advance.Parameters.AddWithValue("scope", scope);
+            advance.Parameters.AddWithValue("next", next + 1);
+            await advance.ExecuteNonQueryAsync(cancellationToken);
+        }
+        return JsonSerializer.Serialize(new RoomEventReceipt(eventId, roomId, next, routeVersion,
             Duplicate: false));
     }
 

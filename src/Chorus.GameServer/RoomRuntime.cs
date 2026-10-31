@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Chorus.ExampleGame;
 using Chorus.Rpc;
 using Google.Protobuf;
@@ -46,6 +47,16 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// the persistent result on the data plane.</summary>
     internal int RetainedResults { get; set; } = 256;
 
+    // FIX-INPUT-01: the direct-push room-event dispositions (strings; the protos carry no
+    // enums by convention) and the host's inbound bound — a saturated or closed bound
+    // refuses before any durable write, so Overloaded never depends on store state.
+    public const string DurableAccepted = "DurableAccepted";
+    public const string Duplicate = "Duplicate";
+    public const string StaleOwner = "StaleOwner";
+    public const string Overloaded = "Overloaded";
+    public const string OutcomeUnknown = "OutcomeUnknown";
+    private readonly SemaphoreSlim? _roomEventGate;
+
     /// <summary>This host's shipped packages by hash, and the cluster default hash it must
     /// carry (FIX-MODULE-04): the registry keeps every version, a host's runtime set can
     /// drop the old package of an upgrade — an empty package hash then names the cluster
@@ -57,12 +68,14 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     public RoomRuntime(Grpc.Net.Client.GrpcChannel dataChannel,
         int? maxActiveRooms = null, int? maxDegradedRooms = null,
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
-        IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null)
+        IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
+        int roomEventInboundLimit = 256)
         : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
             new Settlement.SettlementClient(dataChannel), dataChannel,
             maxActiveRooms: maxActiveRooms, maxDegradedRooms: maxDegradedRooms,
             maxConcurrentRecoveries: maxConcurrentRecoveries,
-            maxQueuedRecoveries: maxQueuedRecoveries, shippedPackages: shippedPackages) { }
+            maxQueuedRecoveries: maxQueuedRecoveries, shippedPackages: shippedPackages,
+            roomEventInboundLimit: roomEventInboundLimit) { }
 
     /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
     internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
@@ -70,7 +83,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         RoomMetrics? metrics = null, int? maxActiveRooms = null, int? maxDegradedRooms = null,
         int overBudgetFactor = 0, int overBudgetWindow = 0,
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
-        IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null)
+        IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
+        int roomEventInboundLimit = 256)
     {
         _rounds = rounds;
         _frames = frames;
@@ -88,6 +102,9 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         _packages = RedesignModuleCatalog.Index(shippedPackages ?? RedesignModuleCatalog.Shipped);
         _shippedList = RedesignModuleCatalog.ListOf(shippedPackages ?? RedesignModuleCatalog.Shipped);
         _defaultPackageHash = RedesignModuleCatalog.Default.PackageHash;
+        // FIX-INPUT-01: a positive limit bounds concurrent inbound pushes; zero closes the
+        // edge (every DeliverEvent answers Overloaded) — a choice, not an accident.
+        _roomEventGate = roomEventInboundLimit > 0 ? new SemaphoreSlim(roomEventInboundLimit) : null;
     }
 
     /// <summary>Resolves a package against this host's shipped set. Empty names the
@@ -1063,6 +1080,85 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         {
             // The suspension itself is best-effort from inside a failing actor; the room's
             // state stays inspectable on the data plane either way.
+        }
+    }
+
+    /// <summary>
+    /// FIX-INPUT-01: the direct-push room-event edge (architecture 6.3). The caller names
+    /// the owner instance and epoch it believes current; a host that does not hold the room
+    /// at that exact picture answers StaleOwner without touching the data plane. The durable
+    /// leg runs on the data plane, where the ownership row fences the push again under the
+    /// store's lock — so DurableAccepted and Duplicate always mean committed, never applied.
+    /// A saturated or closed inbound bound answers Overloaded before any durable write; a
+    /// data-plane call whose outcome the host cannot know (deadline passed, store
+    /// unreachable) answers OutcomeUnknown — the caller retries the same event id and the
+    /// stored receipt decides between Duplicate and DurableAccepted.
+    /// </summary>
+    public async Task<DeliverRoomEventReply> DeliverEventAsync(DeliverRoomEventRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.TenantId.Length == 0 || request.GameId.Length == 0 || request.RoomId.Length == 0 ||
+            request.OwnerInstanceId.Length == 0 || request.EventId.Length == 0 ||
+            request.Platform.Length == 0 || request.AppId.Length == 0 || request.PayloadJson.Length == 0)
+            throw new ArgumentException(
+                "tenant_id, game_id, room_id, owner_instance_id, event_id, platform, app_id and payload_json are required.");
+        if (request.Epoch <= 0)
+            throw new ArgumentException("The room epoch must be positive.");
+        try { using (JsonDocument.Parse(request.PayloadJson)) { } }
+        catch (JsonException error) { throw new ArgumentException("The payload is not valid JSON.", error); }
+
+        var actor = FindRoom(request.RoomId);
+        if (actor is null || actor.OwnerInstanceId != request.OwnerInstanceId ||
+            actor.Epoch != request.Epoch || actor.GameId != request.GameId)
+            return new DeliverRoomEventReply
+            {
+                Disposition = StaleOwner,
+                Note = "This host does not own the room at the named owner instance and epoch."
+            };
+        if (_roomEventGate is null || !_roomEventGate.Wait(0))
+            return new DeliverRoomEventReply
+            {
+                Disposition = Overloaded,
+                Note = "The host's inbound room-event bound is closed or saturated."
+            };
+        if (_dataChannel is null)
+        {
+            _roomEventGate.Release();
+            throw new InvalidOperationException("The data-plane channel is not configured.");
+        }
+        try
+        {
+            var accepted = await new RoundInput.RoundInputClient(_dataChannel).AcceptRoomEventAsync(
+                new AcceptRoomEventRequest
+                {
+                    TenantId = request.TenantId, GameId = request.GameId, RoomId = request.RoomId,
+                    OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                    EventId = request.EventId, Platform = request.Platform, AppId = request.AppId,
+                    BindingId = request.BindingId, PayloadJson = request.PayloadJson
+                }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            return new DeliverRoomEventReply
+            {
+                Disposition = accepted.Duplicate ? Duplicate : DurableAccepted,
+                Sequence = accepted.Sequence, RouteVersion = accepted.RouteVersion
+            };
+        }
+        catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition)
+        {
+            return new DeliverRoomEventReply { Disposition = StaleOwner, Note = error.Status.Detail };
+        }
+        catch (RpcException error) when (error.StatusCode is StatusCode.DeadlineExceeded
+            or StatusCode.Unavailable)
+        {
+            return new DeliverRoomEventReply
+            {
+                Disposition = OutcomeUnknown,
+                Note = "The durable leg's outcome is unknown; retry the same event id."
+            };
+        }
+        finally
+        {
+            _roomEventGate.Release();
         }
     }
 

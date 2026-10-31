@@ -53,8 +53,12 @@ var maxDegradedRooms = OptionalPositiveInt("CHORUS_GAME_MAX_DEGRADED_ROOMS");
 // a mistyped bound fails closed like the admission budget above.
 var maxConcurrentRecoveries = OptionalPositiveInt("CHORUS_GAME_MAX_CONCURRENT_RECOVERIES");
 var maxQueuedRecoveries = OptionalNonNegativeInt("CHORUS_GAME_MAX_QUEUED_RECOVERIES");
+// FIX-INPUT-01: the direct-push inbound bound. A non-negative integer; zero closes the
+// room-event edge (every DeliverEvent answers Overloaded) — fail closed on a typo.
+var roomEventInboundLimit = OptionalNonNegativeInt("CHORUS_ROOM_EVENT_INBOUND") ?? 256;
 builder.Services.AddSingleton(new RoomRuntime(DataChannel(), maxActiveRooms, maxDegradedRooms,
-    maxConcurrentRecoveries, maxQueuedRecoveries, shippedPackages: ShippedPackages()));
+    maxConcurrentRecoveries, maxQueuedRecoveries, shippedPackages: ShippedPackages(),
+    roomEventInboundLimit));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
 // tells the control plane itself where it serves, so routing can reach it. The certificate
 // is the identity — the report claims exactly what it proves.
@@ -84,6 +88,7 @@ builder.Services.AddGrpc();
 var app = builder.Build();
 app.MapGrpcService<GameHostGrpcService>();
 app.MapGrpcService<RoundSyncGrpcService>();
+app.MapGrpcService<RoomEventsGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
