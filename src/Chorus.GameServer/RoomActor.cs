@@ -420,6 +420,12 @@ internal sealed class RoomActor : IAsyncDisposable
             // idempotent per grant, so a lost reply just means recovery retries it.
             _stopped = true;
             await _runtime.SettleRoomAsync(_gameId, _roomId, cancellationToken).ConfigureAwait(false);
+            // Step 1's notification (FIX-END-04): the result froze and the actor stopped its
+            // battle ticks. The report is best-effort with a bounded retry — the business id
+            // is the room's own, so the control plane's discovery sweep (or a recovering
+            // host) replays the one operation if this report never lands.
+            await _runtime.ReportEndAsync(_gameId, _roomId, receipt.Tick, receipt.StateVersion,
+                cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -825,4 +831,9 @@ internal interface IRoomLifecycle
         string reason, CancellationToken cancellationToken = default);
 
     Task SettleRoomAsync(string gameId, string roomId, CancellationToken cancellationToken = default);
+
+    /// <summary>Step 1's notification (FIX-END-04): the final frame and result committed —
+    /// the control plane's end operation is this host's to begin.</summary>
+    Task ReportEndAsync(string gameId, string roomId, long finalTick, long resultVersion,
+        CancellationToken cancellationToken = default);
 }

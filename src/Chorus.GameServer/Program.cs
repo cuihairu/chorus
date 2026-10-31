@@ -60,13 +60,29 @@ var roomEventInboundLimit = OptionalNonNegativeInt("CHORUS_ROOM_EVENT_INBOUND") 
 // actor may hold for the tick's serial processing. Zero closes every room's seats the same
 // fail-closed way; a full list answers Overloaded before any durable write.
 var roomInboundPerRoom = OptionalNonNegativeInt("CHORUS_ROOM_INBOUND_PER_ROOM") ?? 1024;
+// FIX-END-04: the step-1 end-operation report. A control plane is optional on this host,
+// but when one is provisioned every frozen result is begun there under the room's own
+// business id. The tenant is the host's data-plane identity — the certificate that proves
+// it on the data plane — never a request field.
+var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOINT");
+RoomEndReporter? endReporter = null;
+if (controlEndpoint is { Length: > 0 })
+{
+    var reporterIdentity = ProcessCertificateValidator.Validate(dataIdentity, root, clusterId,
+        [nodeAuthority]);
+    if (reporterIdentity is not null && reporterIdentity.TenantId is { Length: > 0 } tenant
+        && tenant != "@cluster")
+        endReporter = new RoomEndReporter(
+            () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate,
+                root, nodeAuthority, clusterId, "control-server"),
+            tenant);
+}
 builder.Services.AddSingleton(new RoomRuntime(DataChannel(), maxActiveRooms, maxDegradedRooms,
     maxConcurrentRecoveries, maxQueuedRecoveries, shippedPackages: ShippedPackages(),
-    roomEventInboundLimit, roomInboundPerRoom));
+    roomEventInboundLimit, roomInboundPerRoom, endReporter));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
 // tells the control plane itself where it serves, so routing can reach it. The certificate
 // is the identity — the report claims exactly what it proves.
-var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOINT");
 if (controlEndpoint is { Length: > 0 })
 {
     var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])

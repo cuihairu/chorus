@@ -63,6 +63,9 @@ builder.Services.AddHostedService<RoomRecoverySweepService>();
 // The stall governor (FIX-TAKE-07): acts on rooms whose head froze while their host's
 // heartbeat stayed fresh — migrating silent stalls, parking deterministic module faults.
 builder.Services.AddHostedService<RoomStallGovernanceService>();
+// The end-operation discovery net (FIX-END-04): a room whose result froze without its
+// operation — the host's report lost or the host dead — is begun from the room's receipt.
+builder.Services.AddHostedService<RoomEndDiscoveryService>();
 // The directory refresh loop (FIX-SCHED-01): the control plane's view of the game hosts
 // follows the process reports, not the startup configuration alone.
 builder.Services.AddHostedService(serviceProvider => new ClusterDirectoryRefreshService(

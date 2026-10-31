@@ -180,6 +180,13 @@ public sealed class RedesignFrameCommitUnitTests
         Assert.Equal(1, status.Epoch);
         Assert.Equal(3, status.LastCommittedTick);
         Assert.Null(status.StopReason);
+        // Step 1's notification (FIX-END-04): the frozen result's receipt — the tick and
+        // version the commit persisted — is the report to the control plane.
+        var report = Assert.Single(lifecycle.EndReports);
+        Assert.Equal("room-fc", report.RoomId);
+        Assert.Equal(3, report.FinalTick);
+        // A fresh room starts at state version 1, so the final frame (tick 3) is version 4.
+        Assert.Equal(4, report.ResultVersion);
         await actor.DisposeAsync();
         // Teardown after the result keeps the completed state.
         Assert.Equal(RoomRunState.Completed, actor.Status().State);
@@ -346,10 +353,12 @@ public sealed class RedesignFrameCommitUnitTests
         private readonly object _gate = new();
         private readonly List<string> _suspends = new();
         private readonly List<string> _settles = new();
+        private readonly List<(string RoomId, long FinalTick, long ResultVersion)> _reports = new();
 
         public int SuspendCount { get { lock (_gate) return _suspends.Count; } }
         public string[] SuspendReasons { get { lock (_gate) return _suspends.ToArray(); } }
         public string[] SettledRooms { get { lock (_gate) return _settles.ToArray(); } }
+        public (string RoomId, long FinalTick, long ResultVersion)[] EndReports { get { lock (_gate) return _reports.ToArray(); } }
 
         public string SingleReason() { lock (_gate) return _suspends[0]; }
 
@@ -364,6 +373,13 @@ public sealed class RedesignFrameCommitUnitTests
             CancellationToken cancellationToken = default)
         {
             lock (_gate) _settles.Add(roomId);
+            return Task.CompletedTask;
+        }
+
+        public Task ReportEndAsync(string gameId, string roomId, long finalTick, long resultVersion,
+            CancellationToken cancellationToken = default)
+        {
+            lock (_gate) _reports.Add((roomId, finalTick, resultVersion));
             return Task.CompletedTask;
         }
     }

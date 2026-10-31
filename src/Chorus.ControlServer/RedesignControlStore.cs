@@ -93,6 +93,12 @@ public sealed record EndOperation(
 /// round the mounts entered.</summary>
 public sealed class StaleRoundGenerationException(string message) : Exception(message);
 
+/// <summary>A room whose result froze without its end operation (FIX-END-04): the persisted
+/// receipt the discovery sweep turns into a begin — the evidence is the room's own last
+/// tick and state version, not a caller's claim.</summary>
+public sealed record UnreportedFinishingRoom(
+    string TenantId, string GameId, string RoomId, long LastTick, long StateVersion);
+
 /// <summary>Thrown when a second, different business id wants to begin the end of a
 /// round that already has its one operation.</summary>
 public sealed class EndOperationConflictException(string message) : Exception(message);
@@ -875,10 +881,9 @@ public sealed class RedesignControlStore(string connectionString)
     /// is late evidence from a round the mounts have moved past, and it writes nothing.
     /// </summary>
     public async Task<(EndOperation Operation, bool Duplicate)> BeginEndOperationAsync(
-        string tenantId, string gameId, string roomId, string endOperationId, long roundGeneration,
+        string tenantId, string gameId, string roomId, string endOperationId,
         long finalTick, long resultVersion, CancellationToken cancellationToken = default)
     {
-        if (roundGeneration <= 0) throw new ArgumentOutOfRangeException(nameof(roundGeneration));
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -924,9 +929,13 @@ public sealed class RedesignControlStore(string connectionString)
                     $"The room {roomId} already has its end operation.");
         }
 
-        // The generation fence: the room's participant bindings must still hold exactly the
-        // named round generation. A binding that moved past it — or released its pointer —
-        // is evidence the mounts entered a newer round, and the late begin writes nothing.
+        // The lateness fence (FIX-END-04): the room's participant bindings must still point at
+        // this room. A binding that moved on — its pointer moved to another room or was
+        // released — is evidence the mounts entered a newer round, and the late begin writes
+        // nothing. The generations are derived in this transaction from the mounts that still
+        // sit here: per-binding counters diverge as mounts carry round history into a room, so
+        // no caller can name one generation that satisfies every mount — the record takes the
+        // evidence the begin actually found, not what the caller claims.
         var generations = new List<EndMountGeneration>();
         await using (var participants = new NpgsqlCommand("""
             SELECT b.binding_id,b.generation,b.round_generation,b.current_room_id
@@ -939,18 +948,18 @@ public sealed class RedesignControlStore(string connectionString)
             await using var reader = await participants.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
-                if (reader.IsDBNull(3) || reader.GetString(3) != roomId ||
-                    reader.GetInt64(2) != roundGeneration)
+                if (reader.IsDBNull(3) || reader.GetString(3) != roomId)
                     throw new StaleRoundGenerationException(
-                        $"The mount {reader.GetString(0)} does not hold round generation " +
-                        $"{roundGeneration} of the room {roomId}; the begin is late.");
+                        $"The mount {reader.GetString(0)} no longer points at the room {roomId}; " +
+                        "the begin is late.");
                 generations.Add(new EndMountGeneration(
                     reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2)));
             }
         }
         if (generations.Count == 0)
             throw new StaleRoundGenerationException(
-                $"The room {roomId} has no participant mounts holding round generation {roundGeneration}.");
+                $"The room {roomId} has no participant mounts; the begin is late.");
+        var roundGeneration = generations.Max(mount => mount.RoundGeneration);
 
         await using (var insert = new NpgsqlCommand("""
             INSERT INTO control.end_operation(tenant_id,game_id,end_operation_id,room_id,
@@ -978,6 +987,39 @@ public sealed class RedesignControlStore(string connectionString)
             connection, transaction, tenantId, gameId, endOperationId, cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return (created!, false);
+    }
+
+    /// <summary>
+    /// Rooms whose result froze but whose end operation never landed (FIX-END-04): the game
+    /// host's step-1 report is the fast path, this query is the net — a host killed after the
+    /// final commit, or a report whose retries all failed, still yields the operation. The
+    /// evidence comes from the room's own persisted receipt (last tick and state version),
+    /// and the grace keeps the sweep behind the live host's own report: a racing begin on the
+    /// same business id replays one row either way.
+    /// </summary>
+    public async Task<List<UnreportedFinishingRoom>> ListUnreportedResultRoomsAsync(
+        int graceSeconds, CancellationToken cancellationToken = default)
+    {
+        if (graceSeconds < 0) throw new ArgumentOutOfRangeException(nameof(graceSeconds));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT g.tenant_id,g.game_id,g.room_id,g.last_tick,g.state_version
+            FROM game.room g
+            WHERE g.status IN ('Finishing','Settled','Closed')
+              AND g.updated_at < clock_timestamp() - @grace * interval '1 second'
+              AND NOT EXISTS (
+                  SELECT 1 FROM control.end_operation o
+                  WHERE o.tenant_id=g.tenant_id AND o.game_id=g.game_id AND o.room_id=g.room_id)
+            ORDER BY g.tenant_id,g.game_id,g.room_id
+            """, connection);
+        command.Parameters.AddWithValue("grace", graceSeconds);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rooms = new List<UnreportedFinishingRoom>();
+        while (await reader.ReadAsync(cancellationToken))
+            rooms.Add(new UnreportedFinishingRoom(reader.GetString(0), reader.GetString(1),
+                reader.GetString(2), reader.GetInt64(3), reader.GetInt64(4)));
+        return rooms;
     }
 
     /// <summary>The room's end operation, whatever phase it stands at.</summary>

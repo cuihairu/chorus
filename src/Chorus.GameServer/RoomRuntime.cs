@@ -58,6 +58,10 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     private readonly SemaphoreSlim? _roomEventGate;
     // FIX-INPUT-03: the per-room inbound seat bound every constructed actor carries.
     private readonly int _inboundBound;
+    // FIX-END-04: the step-1 report of a frozen result; absent (no control endpoint
+    // provisioned) the room's completion has no control-plane notification of its own —
+    // the control plane's discovery sweep is the only reporter then.
+    private readonly RoomEndReporter? _endReporter;
 
     /// <summary>This host's shipped packages by hash, and the cluster default hash it must
     /// carry (FIX-MODULE-04): the registry keeps every version, a host's runtime set can
@@ -71,13 +75,15 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         int? maxActiveRooms = null, int? maxDegradedRooms = null,
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
         IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
-        int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024)
+        int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024,
+        RoomEndReporter? endReporter = null)
         : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
             new Settlement.SettlementClient(dataChannel), dataChannel,
             maxActiveRooms: maxActiveRooms, maxDegradedRooms: maxDegradedRooms,
             maxConcurrentRecoveries: maxConcurrentRecoveries,
             maxQueuedRecoveries: maxQueuedRecoveries, shippedPackages: shippedPackages,
-            roomEventInboundLimit: roomEventInboundLimit, roomInboundPerRoom: roomInboundPerRoom) { }
+            roomEventInboundLimit: roomEventInboundLimit, roomInboundPerRoom: roomInboundPerRoom,
+            endReporter: endReporter) { }
 
     /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
     internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
@@ -86,7 +92,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         int overBudgetFactor = 0, int overBudgetWindow = 0,
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
         IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
-        int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024)
+        int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024,
+        RoomEndReporter? endReporter = null)
     {
         _rounds = rounds;
         _frames = frames;
@@ -110,6 +117,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         // FIX-INPUT-03: the per-room seat list every actor hands accepted events into; zero
         // closes every room's seats the same fail-closed way.
         _inboundBound = roomInboundPerRoom;
+        _endReporter = endReporter;
     }
 
     /// <summary>Resolves a package against this host's shipped set. Empty names the
@@ -608,6 +616,11 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 var activation = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
                 if (activation is not null) return activation;
                 await SettleRoomAsync(request.GameId, request.RoomId, cancellationToken);
+                // The recovery of a finished round is also the reliable report (FIX-END-04):
+                // the result that froze on the dead host is begun under the same business id —
+                // a report the dead host already landed replays one row.
+                await ReportEndAsync(request.GameId, request.RoomId, plan.LastTick,
+                    plan.StateVersion, cancellationToken).ConfigureAwait(false);
                 return new RecoverRoomReply
                 {
                     RoomId = request.RoomId, Recovered = true, Status = plan.Status,
@@ -1062,6 +1075,27 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         catch (RpcException)
         {
             // The manifest keeps its committed progress; the room stays inspectable.
+        }
+    }
+
+    /// <summary>
+    /// Step 1's notification (FIX-END-04): the frozen result and its stopped actor belong to
+    /// one end operation, begun under the room's own business id. A host without a control
+    /// endpoint has no reporter — the control plane's discovery sweep begins the operation
+    /// from the room's persisted receipt then.
+    /// </summary>
+    public async Task ReportEndAsync(string gameId, string roomId, long finalTick,
+        long resultVersion, CancellationToken cancellationToken = default)
+    {
+        if (_endReporter is null) return;
+        try
+        {
+            await _endReporter.ReportFinalAsync(gameId, roomId, finalTick, resultVersion,
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (RpcException)
+        {
+            // Best-effort within the bounded retry; the sweep owns what this report lost.
         }
     }
 

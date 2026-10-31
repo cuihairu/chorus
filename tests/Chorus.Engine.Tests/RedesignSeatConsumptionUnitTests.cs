@@ -234,5 +234,8 @@ public sealed class RedesignSeatConsumptionUnitTests
             string reason, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task SettleRoomAsync(string gameId, string roomId,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task ReportEndAsync(string gameId, string roomId, long finalTick, long resultVersion,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

@@ -81,6 +81,9 @@ public sealed class RedesignRoomInboundHandoffUnitTests
             string reason, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task SettleRoomAsync(string gameId, string roomId,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task ReportEndAsync(string gameId, string roomId, long finalTick, long resultVersion,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class ScriptedFrameStore : FrameStore.FrameStoreClient;

@@ -33,15 +33,14 @@ public sealed class RoundEndGrpcService(
             string.IsNullOrWhiteSpace(request.RoomId) || string.IsNullOrWhiteSpace(request.EndOperationId))
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 "The begin request is incomplete."));
-        if (request.RoundGeneration <= 0 || request.FinalTick < 0 || request.ResultVersion < 0)
+        if (request.FinalTick < 0 || request.ResultVersion < 0)
             throw new RpcException(new Status(StatusCode.InvalidArgument,
-                "The begin's generations and result versions must be positive facts."));
+                "The begin's result facts must be non-negative."));
         try
         {
             var (operation, duplicate) = await controlStore.BeginEndOperationAsync(
                 request.TenantId, request.GameId, request.RoomId, request.EndOperationId,
-                request.RoundGeneration, request.FinalTick, request.ResultVersion,
-                context.CancellationToken);
+                request.FinalTick, request.ResultVersion, context.CancellationToken);
             return new BeginEndReply
             {
                 EndOperationId = operation.EndOperationId, Phase = operation.Phase,

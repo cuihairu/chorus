@@ -467,8 +467,9 @@ message BeginEndRequest {
   string room_id = 3;
   // The business id every later step of this round's end binds itself to.
   string end_operation_id = 4;
-  // The round generation the participant mounts entered with this round; a request naming
-  // a generation the mounts have moved past is late and refuses.
+  // Advisory only (FIX-END-04): the recorded round generation is derived in the creating
+  // transaction from the mounts the begin still finds pointing at the room — per-binding
+  // counters diverge as mounts carry round history, so no caller name satisfies every mount.
   int64 round_generation = 5;
   int64 final_tick = 6;
   int64 result_version = 7;
