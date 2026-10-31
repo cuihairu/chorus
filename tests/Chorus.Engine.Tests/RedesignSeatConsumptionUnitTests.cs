@@ -87,6 +87,51 @@ public sealed class RedesignSeatConsumptionUnitTests
         subscriber.Dispose();
     }
 
+    [Fact]
+    public async Task APullThatRacesAHandConsumesTheEventExactlyOnce()
+    {
+        var store = new ScriptedFrameStore();
+        var actor = NewRoom(store, durationTicks: 2);
+        var subscriber = actor.Subscribe(0, 1);
+
+        // The overlap the CI runners exposed: a tick drains its seats empty, the pull is
+        // then in flight, and a push lands in that window — the durable accept commits, the
+        // edge hands the seat, and the pull returns the very same delivery. Whichever leg
+        // consumes the id, the other copy must not feed a later tick: the store refuses a
+        // commit that references an already-Consumed delivery and the room parks.
+        var gate = store.ArmPullGate();
+        actor.Start();
+        while (store.InboxReadCount == 0)
+            await Task.Delay(10); // the first tick is now parked inside its inbox pull
+        Assert.True(actor.TryHand("overlap-1", "binding-seat",
+            """{"action":"boost","level":3}""", "simulator"));
+        actor.Wake();
+        var raced = new ReadInboxReply();
+        raced.Items.Add(new InboxItemProto
+        {
+            EventId = "overlap-1", BindingId = "binding-seat",
+            PayloadJson = """{"action":"boost","level":3}""", Platform = "simulator",
+            SourceDedupKey = "overlap-1", Sequence = 1
+        });
+        gate.TrySetResult(raced);
+
+        var result = await ResultAsync(subscriber);
+        Assert.NotNull(result);
+        using (var document = JsonDocument.Parse(result.RoundResult.ResultJson))
+        {
+            Assert.Equal(36L, ScoreOf(document, "red")); // the raced boost applied once
+        }
+        // The pull consumed the id on the first tick; the eviction dropped its seat, so the
+        // final tick referenced nothing stale — one reference across the whole room, and
+        // the seat list is empty at the end rather than holding a consumed id.
+        var references = store.CommitsSnapshot()
+            .SelectMany(commit => commit.InputEventIds).Count(id => id == "overlap-1");
+        Assert.Equal(1, references);
+        Assert.Equal(0, actor.InboundBacklog);
+        await actor.DisposeAsync();
+        subscriber.Dispose();
+    }
+
     private static long ScoreOf(JsonDocument result, string faction) =>
         result.RootElement.GetProperty("ranking").EnumerateArray()
             .Single(entry => entry.GetProperty("faction").GetString() == faction)
@@ -124,23 +169,45 @@ public sealed class RedesignSeatConsumptionUnitTests
 
     /// <summary>The data plane as the actor sees it: every commit answers a receipt (the
     /// store's idempotency is not under test here), and the inbox read is counted — the
-    /// seat path must never trigger one.</summary>
+    /// seat path must never trigger one. A pull can be armed with a gate the test completes
+    /// while the tick is parked inside the read, which is how the pull/hand overlap is
+    /// staged deterministically.</summary>
     private sealed class ScriptedFrameStore : FrameStore.FrameStoreClient
     {
         private readonly object _gate = new();
         private int _inboxReads;
         private readonly List<CommitFrameRequest> _commits = new();
+        private TaskCompletionSource<ReadInboxReply>? _pullGate;
 
         public int InboxReadCount { get { lock (_gate) return _inboxReads; } }
         public CommitFrameRequest[] CommitsSnapshot() { lock (_gate) return _commits.ToArray(); }
+
+        /// <summary>The next inbox read blocks until the returned source completes — the
+        /// in-flight pull of the overlap race.</summary>
+        public TaskCompletionSource<ReadInboxReply> ArmPullGate()
+        {
+            var gate = new TaskCompletionSource<ReadInboxReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_gate) _pullGate = gate;
+            return gate;
+        }
 
         public override AsyncUnaryCall<ReadInboxReply> ReadInboxAsync(ReadInboxRequest request,
             Metadata? headers = null, DateTime? deadline = null,
             CancellationToken cancellationToken = default)
         {
-            lock (_gate) _inboxReads++;
-            var reply = new ReadInboxReply();
-            return new AsyncUnaryCall<ReadInboxReply>(Task.FromResult(reply),
+            Task<ReadInboxReply> reply;
+            lock (_gate)
+            {
+                _inboxReads++;
+                if (_pullGate is not null)
+                {
+                    reply = _pullGate.Task;
+                    _pullGate = null;
+                }
+                else
+                    reply = Task.FromResult(new ReadInboxReply());
+            }
+            return new AsyncUnaryCall<ReadInboxReply>(reply,
                 Task.FromResult(new Metadata()), () => Status.DefaultSuccess,
                 () => new Metadata(), () => { });
         }

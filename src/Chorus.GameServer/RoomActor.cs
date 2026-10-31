@@ -401,6 +401,14 @@ internal sealed class RoomActor : IAsyncDisposable
         _metrics.Record(_metrics.Commit, commitStart);
         AccountCommitBudget(commitStart, pendingFrame.Tick);
         _pending = null;
+        // FIX-INPUT-04: the pull leg and a concurrent hand can capture the same accepted
+        // event — a tick that drained its seats empty can still have the pull land after a
+        // push's durable accept and return that very delivery. Whichever leg's commit
+        // consumed the id, the other copy must not feed a later tick: the store refuses a
+        // commit that references an already-Consumed delivery and parks the room. A re-hand
+        // cannot revive it — the edge hands only fresh accepts, and an id consumed once
+        // answers Duplicate forever after.
+        ReleaseSeats([.. pendingFrame.Inputs.Select(item => item.EventId)]);
         // Publish under the gate also advances the actor head there, so subscribers only
         // ever observe a coherent committed triple (8.3). A committed and a duplicate
         // receipt are the same verdict: the frame takes a single step forward.
@@ -725,6 +733,29 @@ internal sealed class RoomActor : IAsyncDisposable
                 drained.Add(new TickInputItem(eventId, bindingId, payloadJson, platform, eventId, 0));
             }
             return drained;
+        }
+    }
+
+    /// <summary>Drops the seats of event ids a committed frame already consumed through the
+    /// inbox pull (FIX-INPUT-04): the pull and a concurrent hand can both capture one
+    /// accepted event across the tick's drain-then-pull window, and the losing copy must not
+    /// survive into a later tick — the store's frame commit refuses an id whose delivery is
+    /// already Consumed. A seat-drained tick's ids are out already, so this is a no-op
+    /// except in the overlap.</summary>
+    private void ReleaseSeats(HashSet<string> consumed)
+    {
+        lock (_inboundGate)
+        {
+            if (!_inboundIds.Overlaps(consumed)) return;
+            var kept = new List<(string EventId, string? BindingId, string PayloadJson, string Platform)>(
+                _inbound.Count);
+            while (_inbound.Count > 0)
+            {
+                var seat = _inbound.Dequeue();
+                if (!consumed.Contains(seat.EventId)) kept.Add(seat);
+            }
+            foreach (var seat in kept) _inbound.Enqueue(seat);
+            _inboundIds.RemoveWhere(consumed.Contains);
         }
     }
 
