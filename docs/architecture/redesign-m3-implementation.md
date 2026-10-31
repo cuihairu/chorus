@@ -361,3 +361,12 @@ FIX-AUTH-01 划定的边界在代码面闭合：路由归属的**声明**现在�
 - **证据**（+4：3 store + 1 host，1436→1440）：三验收面各就其位——重复创建只一行、每阶段重启续读、迟到旧代零影响（记录未动断言）。
 - **门禁**：定向族 4/4；全量 pin 门 **1440/1440** 9m52s（首跑 1439/1440，唯一失败为 schema 迁移计数基线 37/38 未随 0022 更新——已并项更新，二次全绿）；残留 0 进程 0 库。
 - **诚实边界**：同挂载两局同开不可达（StartRound 拒绝已指向房间的挂载，release 步 END-05/08 落地前无从布景）；阶段推进的各步执行器尚未接线——本项只钉存储与服务边界，八步的驱动（谁在何时调 Advance）归后续 END-02..08；schema 基线 37→38 / 21→22 随 0022 更新。
+
+## 挂载路由来源注册：验证身份服务端派生 + 代次栅栏（FIX-END-02，3990417）
+
+INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (BindingId, BindingGeneration) 上报给 ControlServer（新 `Routing.RegisterRouteSource`，schema 0023 `control.route_source` 每流每游一行）。身份**不由上报者声称**——控制面从挂载的 live.session 连查派生 platform/canonical key（会话行只可能来自平台验证过的登录），未验证或非本人挂载（错 streamer/租户/游戏、不存在的绑定）一律 FailedPrecondition 零写入。重复上报答 Duplicate 原行；旧代报告两层拒：既有行代次更高拒 + 挂载行代次与所报不符拒（迟到/超前证据皆废）；upsert 的 WHERE 子句守住并发下旧代不覆盖新代。快照 streamer 行补 `binding_generation`（代次语义——消费者可辨当前挂载与陈旧行）。StreamerServer 侧 `StreamerRouteSourceRegistrar` 镜像 ownership claim 形状：尽力而为、失败不拖挂载、下次挂载或恢复再报。
+
+- **测试形状**：store 3 fact（同一 live 槽两次挂载=代 1/2）：重复上报一行重放+换挂载行内前进；旧代不覆盖新代（先注册代 2 再迟报代 1 / 虚报代 99 皆拒且行不动）；未验证身份零写入（不存在绑定/外人流/错租户/错游戏四路拒后本人上报成功）。host 1 fact（control+data+streamer/simulator，CHORUS_CONTROL_ENDPOINT 接通注册器）：挂载后 route_source 行出现（代 1、身份=simulator/验证 key）；快照 streamer 行带同代次；RPC 重放 Duplicate；冒名（他人 streamerId 报本人挂载）FailedPrecondition；二次挂载行进代 2、旧挂载迟报 FailedPrecondition 且行不动。
+- **证据**（+4：3 store + 1 host，1440→1444）：三验收面各就其位——重复上报幂等、旧代不覆盖新代（行级断言）、未验证身份不能建立路由（四路拒+零行断言）。
+- **门禁**：定向族绿（route source 4/4、migration 1/1、snapshot/gateway 邻族 12/12、streamer/direct-push 17/17）；全量 pin 门 **1444/1444** 9m50s；残留 0 进程 0 库。schema 基线 38→39 / 22→23 随 0023 更新。
+- **诚实边界**：路由快照的 streamer 行仍由 live.binding 连查生成（快照真值在数据面）——route_source 行是控制面对「已报挂载」的记录面，供 END-05/08 的 CloseRouteVersion 绑定代次与失联判别消费，未反过来门控快照可见性（那会改所有既有挂载路径的可见性，留给需要它的 END-08 再评估）；注册失败只记 stderr 不重试队列（下次挂载再报），长期失联的清理归 END-08 屏障判别。
