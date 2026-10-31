@@ -56,6 +56,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     public const string Overloaded = "Overloaded";
     public const string OutcomeUnknown = "OutcomeUnknown";
     private readonly SemaphoreSlim? _roomEventGate;
+    // FIX-INPUT-03: the per-room inbound seat bound every constructed actor carries.
+    private readonly int _inboundBound;
 
     /// <summary>This host's shipped packages by hash, and the cluster default hash it must
     /// carry (FIX-MODULE-04): the registry keeps every version, a host's runtime set can
@@ -69,13 +71,13 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         int? maxActiveRooms = null, int? maxDegradedRooms = null,
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
         IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
-        int roomEventInboundLimit = 256)
+        int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024)
         : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
             new Settlement.SettlementClient(dataChannel), dataChannel,
             maxActiveRooms: maxActiveRooms, maxDegradedRooms: maxDegradedRooms,
             maxConcurrentRecoveries: maxConcurrentRecoveries,
             maxQueuedRecoveries: maxQueuedRecoveries, shippedPackages: shippedPackages,
-            roomEventInboundLimit: roomEventInboundLimit) { }
+            roomEventInboundLimit: roomEventInboundLimit, roomInboundPerRoom: roomInboundPerRoom) { }
 
     /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
     internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
@@ -84,7 +86,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         int overBudgetFactor = 0, int overBudgetWindow = 0,
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
         IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
-        int roomEventInboundLimit = 256)
+        int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024)
     {
         _rounds = rounds;
         _frames = frames;
@@ -105,6 +107,9 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         // FIX-INPUT-01: a positive limit bounds concurrent inbound pushes; zero closes the
         // edge (every DeliverEvent answers Overloaded) — a choice, not an accident.
         _roomEventGate = roomEventInboundLimit > 0 ? new SemaphoreSlim(roomEventInboundLimit) : null;
+        // FIX-INPUT-03: the per-room seat list every actor hands accepted events into; zero
+        // closes every room's seats the same fail-closed way.
+        _inboundBound = roomInboundPerRoom;
     }
 
     /// <summary>Resolves a package against this host's shipped set. Empty names the
@@ -232,7 +237,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     request.OwnerInstanceId, request.Epoch, configHash, initial, bindings,
                     hangAfterTick: request.HangAfterTick, hangMs: request.HangMs, metrics: _metrics,
                     overBudgetFactor: _overBudgetFactorOverride,
-                    overBudgetWindow: _overBudgetWindowOverride);
+                    overBudgetWindow: _overBudgetWindowOverride, inboundBound: _inboundBound);
                 actor.LoopEnded = Retire;
                 if (!_actors.TryAdd(request.RoomId, actor))
                 {
@@ -775,7 +780,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
             plan.LastTick, plan.StateVersion, metrics: _metrics,
             overBudgetFactor: _overBudgetFactorOverride,
-            overBudgetWindow: _overBudgetWindowOverride);
+            overBudgetWindow: _overBudgetWindowOverride, inboundBound: _inboundBound);
         actor.LoopEnded = Retire;
         // FIX-PERF-07: a recovered room is real load this host must run — a recovery
         // is never refused (the scheduler assigned it here) — but it still reserves a
@@ -1093,6 +1098,10 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// data-plane call whose outcome the host cannot know (deadline passed, store
     /// unreachable) answers OutcomeUnknown — the caller retries the same event id and the
     /// stored receipt decides between Duplicate and DurableAccepted.
+    /// FIX-INPUT-03: the room's own inbound seat list joins the capacity check, and a
+    /// committed event is handed to the owning actor and wakes it — the notification only
+    /// wakes, the recoverable inbox cursor stays the consumption authority, and a seat
+    /// taken in memory never confirms an event by itself.
     /// </summary>
     public async Task<DeliverRoomEventReply> DeliverEventAsync(DeliverRoomEventRequest request,
         CancellationToken cancellationToken = default)
@@ -1116,6 +1125,16 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 Disposition = StaleOwner,
                 Note = "This host does not own the room at the named owner instance and epoch."
             };
+        // FIX-INPUT-03: capacity precedes persistence (architecture 6.1 step 4) — a room
+        // whose seat list is full answers Overloaded before any durable write, so a refused
+        // push commits nothing. An event id that already holds a seat always passes: an
+        // idempotent replay never blocks on capacity.
+        if (!actor.HasInboundSeat(request.EventId))
+            return new DeliverRoomEventReply
+            {
+                Disposition = Overloaded,
+                Note = "The room's inbound seat list is full."
+            };
         if (_roomEventGate is null || !_roomEventGate.Wait(0))
             return new DeliverRoomEventReply
             {
@@ -1137,6 +1156,14 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     EventId = request.EventId, Platform = request.Platform, AppId = request.AppId,
                     BindingId = request.BindingId, PayloadJson = request.PayloadJson
                 }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            // FIX-INPUT-03: the handoff follows the durable verdict — an in-memory seat
+            // never confirms anything by itself. Both a fresh accept and a duplicate hand
+            // (seating is idempotent per event id, so a replay of an event whose first hand
+            // raced a full list still takes its seat); a hand that loses a capacity race
+            // costs nothing: the delivery row is the truth and the wake still fires.
+            actor.TryHand(request.EventId,
+                request.BindingId is { Length: > 0 } ? request.BindingId : null, request.PayloadJson);
+            actor.Wake();
             return new DeliverRoomEventReply
             {
                 Disposition = accepted.Duplicate ? Duplicate : DurableAccepted,

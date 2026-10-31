@@ -30,10 +30,11 @@ internal enum RoomRunState
 }
 
 /// <summary>An inspectable snapshot of one room actor: its state, the epoch it runs at,
-/// the last tick it committed, when the host saw that commit, and why it stopped
-/// (FIX-ROOM-01, FIX-TAKE-06).</summary>
+/// the last tick it committed, when the host saw that commit, why it stopped, and how many
+/// directly pushed events hold an in-memory seat (FIX-ROOM-01, FIX-TAKE-06, FIX-INPUT-03).
+/// </summary>
 internal sealed record RoomActorStatus(RoomRunState State, long Epoch, long LastCommittedTick,
-    string? StopReason, DateTimeOffset? LastCommittedAt = null);
+    string? StopReason, DateTimeOffset? LastCommittedAt = null, int InboundBacklog = 0);
 
 /// <summary>The frozen outcome of a finished round (FIX-ROOM-05): the head the result
 /// committed at, and the result itself — all that stays after the actor is released.</summary>
@@ -112,6 +113,15 @@ internal sealed class RoomActor : IAsyncDisposable
     private readonly TimeSpan? _commitRetryDelayOverride;
     private readonly int _overBudgetFactorOverride;
     private readonly int _overBudgetWindowOverride;
+    // FIX-INPUT-03: the directly pushed events that hold an in-memory seat, and the wake
+    // signal a delivery sets. The seat list is bounded and idempotent per event id; the
+    // wake is a notification only — the recoverable inbox cursor stays the consumption
+    // authority, so a lost seat or a lost wake costs latency, never an event.
+    private readonly object _inboundGate = new();
+    private readonly Queue<(string EventId, string? BindingId, string PayloadJson)> _inbound = new();
+    private readonly HashSet<string> _inboundIds = new(StringComparer.Ordinal);
+    private readonly int _inboundBound;
+    private readonly SemaphoreSlim _wake = new(0, 1);
     private volatile bool _stopped;
     private volatile bool _disposed;
     private volatile bool _finalCommitted;
@@ -124,7 +134,7 @@ internal sealed class RoomActor : IAsyncDisposable
         ExampleGameState initialState, IReadOnlyDictionary<string, string> participantByBinding,
         long lastTick = 0, long stateVersion = 1, int hangAfterTick = 0, int hangMs = 0,
         RoomMetrics? metrics = null, TimeSpan? commitRetryDelay = null,
-        int overBudgetFactor = 0, int overBudgetWindow = 0)
+        int overBudgetFactor = 0, int overBudgetWindow = 0, int inboundBound = 1024)
     {
         _runtime = runtime;
         _frames = frames;
@@ -150,6 +160,7 @@ internal sealed class RoomActor : IAsyncDisposable
         _commitRetryDelayOverride = commitRetryDelay;
         _overBudgetFactorOverride = overBudgetFactor;
         _overBudgetWindowOverride = overBudgetWindow;
+        _inboundBound = inboundBound;
     }
 
     public void Start() => _run = Task.Run(() => RunAsync(_cancellation.Token));
@@ -162,6 +173,9 @@ internal sealed class RoomActor : IAsyncDisposable
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
                 if (_stopped) break;
+                // FIX-INPUT-03: a delivery's wake is consumed here — the notification is
+                // bookkeeping until the loop learns to await it (FIX-INPUT-04).
+                _wake.Wait(0);
                 await TickOnceAsync(cancellationToken).ConfigureAwait(false);
             }
         }
@@ -635,13 +649,56 @@ internal sealed class RoomActor : IAsyncDisposable
     public RoomActorStatus Status()
     {
         lock (_publishGate) return new RoomActorStatus(_runState, _epoch, _lastTick, _stopReason,
-            _lastCommittedAt);
+            _lastCommittedAt, InboundBacklog);
     }
 
     /// <summary>The activation fence this actor was built under (FIX-PERF-03 release check;
     /// the epoch itself is the subscriber-facing property above).</summary>
     internal string GameId => _gameId;
     internal string OwnerInstanceId => _ownerInstanceId;
+
+    /// <summary>FIX-INPUT-03: whether a directly pushed event can take an in-memory seat —
+    /// an event id that already holds one always may (an idempotent replay never blocks on
+    /// capacity), a fresh event needs a free seat. The edge asks before any durable write,
+    /// so a full seat list answers Overloaded with nothing committed.</summary>
+    public bool HasInboundSeat(string eventId)
+    {
+        lock (_inboundGate)
+            return _inboundIds.Contains(eventId) || _inbound.Count < _inboundBound;
+    }
+
+    /// <summary>FIX-INPUT-03: seats one durably accepted event. Idempotent per event id —
+    /// the same id handed again (a duplicate push) keeps its single seat; a full list
+    /// answers false, which costs nothing: the durable delivery row is the truth and the
+    /// wake still fires. Seating never confirms anything by itself — the caller only hands
+    /// events whose durable leg already committed.</summary>
+    public bool TryHand(string eventId, string? bindingId, string payloadJson)
+    {
+        lock (_inboundGate)
+        {
+            if (_inboundIds.Contains(eventId)) return true;
+            if (_inbound.Count >= _inboundBound) return false;
+            _inbound.Enqueue((eventId, bindingId, payloadJson));
+            _inboundIds.Add(eventId);
+            return true;
+        }
+    }
+
+    /// <summary>How many directly pushed events hold a seat right now.</summary>
+    public int InboundBacklog
+    {
+        get { lock (_inboundGate) return _inbound.Count; }
+    }
+
+    /// <summary>FIX-INPUT-03: the wake half of the notification — the delivery tells the
+    /// room it has work; the loop consumes the signal at its next tick (FIX-INPUT-04 makes
+    /// the loop await it for prompt serial processing). Coalescing: one pending signal says
+    /// everything a burst could.</summary>
+    public void Wake()
+    {
+        try { _wake.Release(); }
+        catch (SemaphoreFullException) { /* one wake already pending */ }
+    }
 
     /// <summary>A prepared-but-unreleased room reports Preparing (FIX-PERF-03).</summary>
     internal void HoldForCommonStart()

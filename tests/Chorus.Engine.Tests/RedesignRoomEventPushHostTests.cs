@@ -200,6 +200,112 @@ public sealed class RedesignRoomEventPushHostTests
         Assert.Equal(RoomRuntime.OutcomeUnknown, unknown.Disposition);
     }
 
+    [Fact]
+    public async Task AFullRoomSeatListRefusesVisiblyAndNeverCommits()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "6",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "3"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(CultureInfo.InvariantCulture),
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+            });
+        // FIX-INPUT-03: one seat per room on this host — the second fresh event must find
+        // the list full and be refused before any durable write.
+        var seats = GameEnvironment(environment.DataPort, controlEndpoint, gamePort,
+            "node-a/game-server");
+        seats["CHORUS_ROOM_INBOUND_PER_ROOM"] = "1";
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server", seats,
+            clientTenant: "tenant-a", instanceId: "game-a");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-ib");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        var routing = new RoutingService.RoutingClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "rounds-ib");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+
+        await RegisterHostsAsync(environment, routing);
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+
+        using var pushCertificate = environment.Certificate("tenant-a", "platform-gateway", "push-ib");
+        var host = await MountAsync(environment, simulator, "seat-host-a");
+        var guest = await MountAsync(environment, simulator, "seat-guest-a");
+        const string roomIb = "room-seat-ib";
+        var (epoch, _) = await StartRoomAsync(environment, control, rounds, roomIb,
+            "game-a", gamePort, controlCertificate, host, guest, "seat-start-a", durationTicks: 400);
+
+        DeliverRoomEventRequest Request(string eventId, long requestEpoch, string bindingId) => new()
+        {
+            TenantId = "tenant-a", GameId = "game-a", RoomId = roomIb, OwnerInstanceId = "game-a",
+            Epoch = requestEpoch, EventId = eventId, Platform = "simulator", AppId = "app-1",
+            BindingId = bindingId, PayloadJson = """{"action":"boost","level":3}"""
+        };
+        async Task<DeliverRoomEventReply> DeliverAsync(DeliverRoomEventRequest request)
+        {
+            using var channel = environment.Channel(gamePort, pushCertificate, "game-server");
+            return await new RoomEvents.RoomEventsClient(channel).DeliverEventAsync(request,
+                deadline: DateTime.UtcNow.AddSeconds(30));
+        }
+
+        // The first event commits and takes the room's single seat.
+        var accepted = await DeliverAsync(Request("seat-gift-1", epoch, host.BindingId));
+        Assert.Equal(RoomRuntime.DurableAccepted, accepted.Disposition);
+
+        // The seat list is full: a second fresh event is refused visibly before any
+        // durable write — nothing of it reached the store.
+        var refused = await DeliverAsync(Request("seat-gift-2", epoch, host.BindingId));
+        Assert.Equal(RoomRuntime.Overloaded, refused.Disposition);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT count(*) FROM input.event WHERE event_id='seat-gift-2'", connection);
+            Assert.Equal(0L, Convert.ToInt64(await command.ExecuteScalarAsync()));
+        }
+
+        // An idempotent replay of the seated, committed event never blocks on the full
+        // list — the stored outcome replays as Duplicate.
+        var replay = await DeliverAsync(Request("seat-gift-1", epoch, host.BindingId));
+        Assert.Equal(RoomRuntime.Duplicate, replay.Disposition);
+
+        // A stale owner picture stays an ownership fact even with the list full — the
+        // fence runs before any capacity judgment.
+        var stale = await DeliverAsync(Request("seat-gift-3", epoch + 5, host.BindingId));
+        Assert.Equal(RoomRuntime.StaleOwner, stale.Disposition);
+
+        // Exactly one event was committed into the room.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT count(*) FROM input.event WHERE attributed_room_id=@room", connection);
+            command.Parameters.AddWithValue("room", roomIb);
+            Assert.Equal(1L, Convert.ToInt64(await command.ExecuteScalarAsync()));
+        }
+    }
+
     /// <summary>Claims the room for the named owner instance, starts it under the 1.1.0
     /// package identity (flat 12 × level arithmetic) and prepares it on that host.</summary>
     private static async Task<(long Epoch, string HostSession)> StartRoomAsync(
@@ -298,7 +404,8 @@ public sealed class RedesignRoomEventPushHostTests
     };
 
     private static async Task RegisterHostsAsync(
-        RedesignM0HostTests.HostEnvironment environment, RoutingService.RoutingClient routing)
+        RedesignM0HostTests.HostEnvironment environment, RoutingService.RoutingClient routing,
+        params string[] instanceIds)
     {
         using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-push"))
         using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
@@ -309,10 +416,8 @@ public sealed class RedesignRoomEventPushHostTests
         var registered = await WaitForAsync(async () =>
         {
             var snapshot = await routing.GetRoutingSnapshotAsync(new Empty());
-            return snapshot.Instances.Any(instance => instance.ProcessInstanceId == "game-a"
-                && instance.Endpoint.Length > 0)
-                && snapshot.Instances.Any(instance => instance.ProcessInstanceId == "game-b"
-                && instance.Endpoint.Length > 0);
+            return instanceIds.All(id => snapshot.Instances.Any(instance =>
+                instance.ProcessInstanceId == id && instance.Endpoint.Length > 0));
         }, TimeSpan.FromSeconds(30));
         Assert.True(registered, "The game hosts did not self-register into the routing snapshot.");
     }

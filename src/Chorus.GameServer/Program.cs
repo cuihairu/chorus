@@ -56,9 +56,13 @@ var maxQueuedRecoveries = OptionalNonNegativeInt("CHORUS_GAME_MAX_QUEUED_RECOVER
 // FIX-INPUT-01: the direct-push inbound bound. A non-negative integer; zero closes the
 // room-event edge (every DeliverEvent answers Overloaded) — fail closed on a typo.
 var roomEventInboundLimit = OptionalNonNegativeInt("CHORUS_ROOM_EVENT_INBOUND") ?? 256;
+// FIX-INPUT-03: the per-room inbound seat bound — how many directly pushed events a room's
+// actor may hold for the tick's serial processing. Zero closes every room's seats the same
+// fail-closed way; a full list answers Overloaded before any durable write.
+var roomInboundPerRoom = OptionalNonNegativeInt("CHORUS_ROOM_INBOUND_PER_ROOM") ?? 1024;
 builder.Services.AddSingleton(new RoomRuntime(DataChannel(), maxActiveRooms, maxDegradedRooms,
     maxConcurrentRecoveries, maxQueuedRecoveries, shippedPackages: ShippedPackages(),
-    roomEventInboundLimit));
+    roomEventInboundLimit, roomInboundPerRoom));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
 // tells the control plane itself where it serves, so routing can reach it. The certificate
 // is the identity — the report claims exactly what it proves.
