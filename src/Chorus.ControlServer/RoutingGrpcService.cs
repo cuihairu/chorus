@@ -42,7 +42,7 @@ public sealed class RoutingGrpcService(
                 RoomId = streamer.RoomId, State = streamer.State,
                 OwnerInstanceId = streamer.OwnerInstanceId ?? "", Epoch = streamer.Epoch,
                 Platform = streamer.Platform, CanonicalLiveSessionKey = streamer.CanonicalLiveSessionKey,
-                BindingGeneration = streamer.BindingGeneration
+                BindingGeneration = streamer.BindingGeneration, RoundGeneration = streamer.RoundGeneration
             }) },
             Instances = { snapshot.Instances.Select(instance => new InstanceRouteProto
             {

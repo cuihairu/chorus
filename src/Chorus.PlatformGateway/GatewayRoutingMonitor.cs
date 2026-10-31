@@ -48,8 +48,10 @@ public sealed class GatewayRoutingMonitor(
     private long _appliedVersion;
     private long _confirmedVersion;
 
-    /// <summary>Where a live streamer binding points: its binding id and the room it carries.</summary>
-    public sealed record StreamerFacts(string BindingId, string RoomId);
+    /// <summary>Where a live streamer binding points: its binding id, the room it carries, and
+    /// the round generation it entered that room at — the claim the face's pushes carry so the
+    /// receiver can refuse a stale snapshot's push for a closed round (FIX-END-06).</summary>
+    public sealed record StreamerFacts(string BindingId, string RoomId, long RoundGeneration);
 
     /// <summary>The routing facts a room's push needs: the tenant that owns it, the game it
     /// belongs to, the owner instance and epoch, and where that owner serves.</summary>
@@ -58,7 +60,7 @@ public sealed class GatewayRoutingMonitor(
 
     /// <summary>Everything the face needs to push one event into its room.</summary>
     public sealed record RoomRouteTarget(string RoomId, string TenantId, string GameId,
-        string BindingId, string OwnerInstanceId, long Epoch, string Endpoint);
+        string BindingId, string OwnerInstanceId, long Epoch, string Endpoint, long RoundGeneration);
 
     /// <summary>The room a platform callback's live key currently belongs to, or false — the
     /// callback has no valid attribution (the mount is not live, not in a room, or the owner
@@ -76,7 +78,8 @@ public sealed class GatewayRoutingMonitor(
             if (!_roomsById.TryGetValue(stream.RoomId, out var room) || room.Endpoint is not { Length: > 0 })
                 return false;
             target = new RoomRouteTarget(stream.RoomId, room.TenantId, room.GameId,
-                stream.BindingId, room.OwnerInstanceId, room.Epoch, room.Endpoint);
+                stream.BindingId, room.OwnerInstanceId, room.Epoch, room.Endpoint,
+                stream.RoundGeneration);
             return true;
         }
     }
@@ -94,7 +97,8 @@ public sealed class GatewayRoutingMonitor(
             foreach (var streamer in snapshot.Streamers)
                 if (streamer.CanonicalLiveSessionKey.Length > 0)
                     _streamsByLiveKey[(streamer.Platform, streamer.CanonicalLiveSessionKey)] =
-                        new StreamerFacts(streamer.BindingId, streamer.RoomId);
+                        new StreamerFacts(streamer.BindingId, streamer.RoomId,
+                            streamer.RoundGeneration);
             if (snapshot.Version != _appliedVersion)
             {
                 _appliedVersion = snapshot.Version;

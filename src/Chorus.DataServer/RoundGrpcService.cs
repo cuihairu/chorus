@@ -418,7 +418,7 @@ public sealed class RoundInputGrpcService(
             var receipt = await inputStore.AcceptRoomEventAsync(TenantFor(caller, request.TenantId),
                 request.GameId, request.RoomId, request.OwnerInstanceId, request.Epoch,
                 request.EventId, request.Platform, request.AppId, request.BindingId,
-                request.PayloadJson, context.CancellationToken);
+                request.RoundGeneration, request.PayloadJson, context.CancellationToken);
             return new AcceptRoomEventReply
             {
                 EventId = receipt.EventId, RoomId = receipt.RoomId, Sequence = receipt.Sequence,

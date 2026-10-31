@@ -167,6 +167,10 @@ public sealed class PlatformIngressEndpoint(
                     Platform = platform,
                     AppId = appId,
                     BindingId = route.BindingId,
+                    // FIX-END-06: the push states the round generation the installed snapshot
+                    // claims for the binding; the receiver checks the claim against the binding
+                    // row, so this route's own staleness is the first thing admission hears.
+                    RoundGeneration = route.RoundGeneration,
                     PayloadJson = payload
                 };
                 DeliverRoomEventReply? delivered = null;

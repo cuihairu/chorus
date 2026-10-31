@@ -272,6 +272,11 @@ message StreamerRouteProto {
   // The binding's own generation (FIX-END-02): every mount on the live slot enters at a new
   // generation, so a consumer can tell the current mount from a stale snapshot row.
   int64 binding_generation = 9;
+  // The round the binding currently sits in (FIX-END-06): live.binding.round_generation —
+  // distinct from the mount counter above, it bumps on every round the binding enters and is
+  // the claim a gateway's push carries so the receiver can refuse a stale snapshot's push
+  // for a closed round. Empty while the mount is in no room.
+  int64 round_generation = 10;
 }
 
 message InstanceRouteProto {

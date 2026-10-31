@@ -1148,6 +1148,12 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 "tenant_id, game_id, room_id, owner_instance_id, event_id, platform, app_id and payload_json are required.");
         if (request.Epoch <= 0)
             throw new ArgumentException("The room epoch must be positive.");
+        // FIX-END-06: an attributed push states the round generation its routing snapshot
+        // claimed for the binding; the data plane checks the claim against the binding row,
+        // so a stale snapshot's push for a closed round is refused at admission.
+        if (request.BindingId.Length > 0 && request.RoundGeneration <= 0)
+            throw new ArgumentException(
+                "An attributed push must name the round generation its route snapshot claimed.");
         try { using (JsonDocument.Parse(request.PayloadJson)) { } }
         catch (JsonException error) { throw new ArgumentException("The payload is not valid JSON.", error); }
 
@@ -1188,7 +1194,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     TenantId = request.TenantId, GameId = request.GameId, RoomId = request.RoomId,
                     OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
                     EventId = request.EventId, Platform = request.Platform, AppId = request.AppId,
-                    BindingId = request.BindingId, PayloadJson = request.PayloadJson
+                    BindingId = request.BindingId, RoundGeneration = request.RoundGeneration,
+                    PayloadJson = request.PayloadJson
                 }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
             // FIX-INPUT-03: the handoff follows the durable verdict — an in-memory seat
             // never confirms anything by itself. Only a fresh accept hands: a duplicate's

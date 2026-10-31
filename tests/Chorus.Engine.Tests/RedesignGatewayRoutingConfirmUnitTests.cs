@@ -30,6 +30,9 @@ public sealed class RedesignGatewayRoutingConfirmUnitTests
         Assert.True(monitor.TryResolve("simulator", "live-key-a", out var target));
         Assert.Equal("room-confirm-1", target.RoomId);
         Assert.Equal("https://localhost:5101", target.Endpoint);
+        // FIX-END-06: the resolve carries the binding's round generation from the same
+        // confirmed picture — the claim the face's pushes state at the receiver.
+        Assert.Equal(3L, target.RoundGeneration);
 
         // The world changes: the new version closes the gate until it is confirmed too —
         // the previously confirmed picture must not answer for a newer one.
@@ -78,7 +81,8 @@ public sealed class RedesignGatewayRoutingConfirmUnitTests
             {
                 StreamerId = "streamer-confirm", BindingId = "binding-confirm",
                 RoomId = "room-confirm-1", State = "Running", Epoch = 0,
-                Platform = "simulator", CanonicalLiveSessionKey = "live-key-a"
+                Platform = "simulator", CanonicalLiveSessionKey = "live-key-a",
+                RoundGeneration = 3
             }
         }
     };

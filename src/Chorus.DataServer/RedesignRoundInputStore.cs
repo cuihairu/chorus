@@ -173,6 +173,19 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
                 ?? throw new RoundAdmissionException($"The target room {target} does not exist.");
         }
 
+        // FIX-END-06: the standing end operations of the batch's targets, read after the room
+        // locks — an operation standing for a target closes that round's input generation and
+        // the items fall to the terminal out-of-round disposition, never a delivery.
+        var standingOperations = new Dictionary<string, (string OperationId, long Generation)>(
+            StringComparer.Ordinal);
+        foreach (var target in roomStatuses.Keys)
+        {
+            var standing = await StandingEndOperationAsync(target, connection, transaction,
+                cancellationToken);
+            if (standing is { } operation)
+                standingOperations[target] = operation;
+        }
+
         // Pass 4c: allocate sequences under the cursor lock and write delivery rows and
         // terminal dispositions.
         var results = new List<RouteEventsItem>();
@@ -193,6 +206,18 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
                 continue;
             }
             if (roomStatuses[target] is not (RedesignRoomStore.Preparing or "Running"))
+            {
+                await MarkEventAsync(connection, transaction, eventId, OutOfRound, target, cancellationToken);
+                results.Add(new RouteEventsItem(eventId, target, null, OutOfRound));
+                continue;
+            }
+            // FIX-END-06: a standing end operation closes the target's input generation
+            // regardless of the status column — the binding entered this room's only round, so
+            // its generation is at most the operation's (per-mount counters diverge; the begin
+            // records the max), which makes the comparison below exact membership in the
+            // closed round.
+            if (standingOperations.TryGetValue(target, out var closedOperation)
+                && bindingInfo.RoundGeneration <= closedOperation.Generation)
             {
                 await MarkEventAsync(connection, transaction, eventId, OutOfRound, target, cancellationToken);
                 results.Add(new RouteEventsItem(eventId, target, null, OutOfRound));
@@ -261,6 +286,46 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
         else mark.Parameters.AddWithValue("room", roomId);
         mark.Parameters.AddWithValue("event", eventId);
         await mark.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// FIX-END-06: the standing end operation for a room, if one has not finished. The row is
+    /// the persisted input-generation closure — the receiver-side fence reads it instead of
+    /// trusting the room's mutable status (a recovered room may show Running again while its
+    /// result is frozen and its operation stands). A plain read inside the caller's admission
+    /// transaction: the operation row is never locked before room or binding rows anywhere, so
+    /// this adds no lock-order surface, and a begin that lands mid-admission implies the room
+    /// was still Running until then — the admitted event predates the freeze. The room id is a
+    /// global primary key, so a room-only lookup (no tenant or game predicates) is exact.
+    /// </summary>
+    private static async Task<(string OperationId, long Generation)?> StandingEndOperationAsync(
+        string roomId, NpgsqlConnection connection, NpgsqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        await using var operation = new NpgsqlCommand("""
+            SELECT end_operation_id,round_generation FROM control.end_operation
+            WHERE room_id=@room AND phase<>'Done'
+            """, connection, transaction);
+        operation.Parameters.AddWithValue("room", roomId);
+        await using var reader = await operation.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+        return (reader.GetString(0), reader.GetInt64(1));
+    }
+
+    /// <summary>The generation of the round a room currently hosts: the highest round
+    /// generation among the bindings pointing at it — the same stateless join the end
+    /// operation's begin derives its generation from.</summary>
+    private static async Task<long> RoomGenerationAsync(string roomId, NpgsqlConnection connection,
+        NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var generation = new NpgsqlCommand("""
+            SELECT COALESCE(max(b.round_generation),0) FROM game.participation p
+            JOIN live.binding b ON b.binding_id=p.binding_id
+            WHERE p.room_id=@room
+            """, connection, transaction);
+        generation.Parameters.AddWithValue("room", roomId);
+        return Convert.ToInt64(await generation.ExecuteScalarAsync(cancellationToken));
     }
 
     /// <summary>
@@ -381,6 +446,15 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
             if (status is not (RedesignRoomStore.Preparing or "Running"))
                 throw new RoundAdmissionException($"A room in status {status} does not accept input.");
         }
+        // FIX-END-06: the standing end operation closes the round's input generation
+        // independently of the status column — the persisted row is the fence, so a recovered
+        // room that shows Running again still refuses new authoritative input. The binding
+        // entered this room's only round, so its generation is at most the operation's.
+        if (await StandingEndOperationAsync(roomId, connection, transaction, cancellationToken)
+            is { } closedClientOperation && routeVersion <= closedClientOperation.Generation)
+            throw new RoundAdmissionException(
+                $"The round generation {routeVersion} of room {roomId} is closed by the end operation " +
+                $"{closedClientOperation.OperationId}; it no longer accepts authoritative input.");
 
         string canonicalRoomKey;
         await using (var live = new NpgsqlCommand("""
@@ -472,7 +546,8 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
     /// </summary>
     public async Task<RoomEventReceipt> AcceptRoomEventAsync(string tenantId, string gameId,
         string roomId, string ownerInstanceId, long epoch, string eventId, string platform,
-        string appId, string? bindingId, string payloadJson, CancellationToken cancellationToken = default)
+        string appId, string? bindingId, long roundGeneration, string payloadJson,
+        CancellationToken cancellationToken = default)
     {
         Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId));
         Require(roomId, nameof(roomId)); Require(ownerInstanceId, nameof(ownerInstanceId));
@@ -480,6 +555,14 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
         Require(payloadJson, nameof(payloadJson));
         if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
         bindingId = string.IsNullOrEmpty(bindingId) ? null : bindingId;
+        // FIX-END-06: an attributed push states the round generation its routing snapshot
+        // claimed for the binding — the store checks the claim against the freshly read row,
+        // so a stale snapshot's push for a closed round is refused instead of silently
+        // landing in a newer one.
+        if (bindingId is not null && roundGeneration <= 0)
+            throw new ArgumentException(
+                "An attributed push must name the round generation its route snapshot claimed.",
+                nameof(roundGeneration));
         using (JsonDocument.Parse(payloadJson)) { }
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payloadJson));
         // FIX-INPUT-07: a pushed event's identity is what the platform retries — platform,
@@ -500,8 +583,8 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
             new OperationIdentity(tenantId, gameId, "input.push", roomId, eventId),
             fingerprint,
             (connection, transaction, token) => ApplyRoomEventAsync(tenantId, gameId, roomId,
-                ownerInstanceId, epoch, eventId, platform, appId, bindingId, payloadJson, hash,
-                connection, transaction, token),
+                ownerInstanceId, epoch, eventId, platform, appId, bindingId, roundGeneration,
+                payloadJson, hash, connection, transaction, token),
             cancellationToken);
         var result = JsonSerializer.Deserialize<RoomEventReceipt>(receipt.ResultJson)
             ?? throw new InvalidOperationException("The stored room event receipt is unreadable.");
@@ -510,7 +593,7 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
 
     private async Task<string> ApplyRoomEventAsync(string tenantId, string gameId, string roomId,
         string ownerInstanceId, long epoch, string eventId, string platform, string appId,
-        string? bindingId, string payloadJson, byte[] hash,
+        string? bindingId, long roundGeneration, string payloadJson, byte[] hash,
         NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
         // Ownership fences the push before anything else: a caller whose owner instance or
@@ -536,6 +619,14 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
                     throw new RoundAdmissionException("The attributed binding does not point at this room.");
                 liveSessionId = reader.GetString(0);
                 routeVersion = reader.GetInt64(4);
+                // FIX-END-06: the route fence — the push must name the round generation its
+                // snapshot claimed, and the claim must still be the row's current generation.
+                // A stale claim names a round that already closed; re-resolving routing and
+                // retrying the same event id is the caller's only honest next step.
+                if (roundGeneration != routeVersion)
+                    throw new RoundAdmissionException(
+                        $"The push claims round generation {roundGeneration} of binding {bindingId} " +
+                        $"but the binding holds {routeVersion}; re-resolve routing before retrying.");
             }
             await using (var live = new NpgsqlCommand(
                 "SELECT canonical_live_session_key FROM live.session WHERE live_session_id=@live",
@@ -557,6 +648,25 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
             var status = reader.GetString(0);
             if (status is not (RedesignRoomStore.Preparing or "Running"))
                 throw new RoundAdmissionException($"A room in status {status} does not accept input.");
+        }
+        // FIX-END-06: the input-generation fence — a standing end operation closes this
+        // round's input no matter what the status column says. Attributed pushes compare the
+        // binding's freshly read generation; a bindingless push has no claim, so the room's
+        // current generation (the same join the begin derives from) carries the rule. The
+        // comparison is <= because per-mount counters diverge while the operation records the
+        // max, and a binding pointing at this room entered its only round — anything above
+        // the operation's generation is unreachable. Ownership is never touched: the fence
+        // lives on the operation row so settlement writes keep their authority.
+        if (await StandingEndOperationAsync(roomId, connection, transaction, cancellationToken)
+            is { } closedOperation)
+        {
+            var fencedGeneration = bindingId is null
+                ? await RoomGenerationAsync(roomId, connection, transaction, cancellationToken)
+                : routeVersion;
+            if (fencedGeneration <= closedOperation.Generation)
+                throw new RoundAdmissionException(
+                    $"The round generation {fencedGeneration} of room {roomId} is closed by the end " +
+                    $"operation {closedOperation.OperationId}; it no longer accepts authoritative input.");
         }
 
         await using (var insertEvent = new NpgsqlCommand("""

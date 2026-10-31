@@ -108,7 +108,7 @@ public sealed class RedesignRoomEventPushHostTests
             TenantId = "tenant-a", GameId = "game-a", RoomId = roomId, OwnerInstanceId = roomId == roomB
                 ? "game-b" : "game-a",
             Epoch = epoch, EventId = eventId, Platform = "simulator", AppId = "app-1",
-            BindingId = bindingId, PayloadJson = payload
+            BindingId = bindingId, RoundGeneration = 1, PayloadJson = payload
         };
         async Task<DeliverRoomEventReply> DeliverAsync(int port, DeliverRoomEventRequest request)
         {
@@ -260,7 +260,7 @@ public sealed class RedesignRoomEventPushHostTests
         {
             TenantId = "tenant-a", GameId = "game-a", RoomId = roomIb, OwnerInstanceId = "game-a",
             Epoch = requestEpoch, EventId = eventId, Platform = "simulator", AppId = "app-1",
-            BindingId = bindingId, PayloadJson = """{"action":"boost","level":3}"""
+            BindingId = bindingId, RoundGeneration = 1, PayloadJson = """{"action":"boost","level":3}"""
         };
         async Task<DeliverRoomEventReply> DeliverAsync(DeliverRoomEventRequest request)
         {
@@ -366,7 +366,7 @@ public sealed class RedesignRoomEventPushHostTests
         {
             TenantId = "tenant-a", GameId = "game-a", RoomId = roomSc, OwnerInstanceId = "game-a",
             Epoch = epoch, EventId = eventId, Platform = "simulator", AppId = "app-1",
-            BindingId = host.BindingId, PayloadJson = """{"action":"boost","level":3}"""
+            BindingId = host.BindingId, RoundGeneration = 1, PayloadJson = """{"action":"boost","level":3}"""
         };
         async Task<DeliverRoomEventReply> DeliverAsync(DeliverRoomEventRequest request)
         {

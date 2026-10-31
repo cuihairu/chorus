@@ -36,7 +36,7 @@ public sealed class RedesignRoomEventPushStoreTests
             "1.0.0", "cfg-1", "pkg-1", "start-push-1");
 
         var accepted = await inputStore.AcceptRoomEventAsync("tenant-a", "game-a", "room-push-1",
-            "gs-1", claim.Epoch, "gift-1", "simulator", "app-1", binding.BindingId, Payload);
+            "gs-1", claim.Epoch, "gift-1", "simulator", "app-1", binding.BindingId, 1, Payload);
         Assert.Equal("gift-1", accepted.EventId);
         Assert.Equal("room-push-1", accepted.RoomId);
         Assert.Equal(1L, accepted.Sequence);
@@ -45,28 +45,28 @@ public sealed class RedesignRoomEventPushStoreTests
 
         // The exact retry replays the receipt: one event, one delivery, one sequence.
         var retry = await inputStore.AcceptRoomEventAsync("tenant-a", "game-a", "room-push-1",
-            "gs-1", claim.Epoch, "gift-1", "simulator", "app-1", binding.BindingId, Payload);
+            "gs-1", claim.Epoch, "gift-1", "simulator", "app-1", binding.BindingId, 1, Payload);
         Assert.True(retry.Duplicate);
         Assert.Equal(1L, retry.Sequence);
         // The same event id under a different payload is a reuse conflict, not a duplicate.
         await Assert.ThrowsAsync<IdempotencyConflictException>(() => inputStore.AcceptRoomEventAsync(
             "tenant-a", "game-a", "room-push-1", "gs-1", claim.Epoch, "gift-1", "simulator",
-            "app-1", binding.BindingId, """{"action":"boost","level":9}"""));
+            "app-1", binding.BindingId, 1, """{"action":"boost","level":9}"""));
 
         // The fence: a moved owner, epoch, tenant — or no ownership row at all — writes
         // nothing. Each refusal names a room this caller's picture no longer matches.
         await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => inputStore.AcceptRoomEventAsync(
             "tenant-a", "game-a", "room-push-1", "gs-2", claim.Epoch, "gift-2", "simulator",
-            "app-1", binding.BindingId, Payload));
+            "app-1", binding.BindingId, 1, Payload));
         await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => inputStore.AcceptRoomEventAsync(
             "tenant-a", "game-a", "room-push-1", "gs-1", claim.Epoch + 5, "gift-3", "simulator",
-            "app-1", binding.BindingId, Payload));
+            "app-1", binding.BindingId, 1, Payload));
         await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => inputStore.AcceptRoomEventAsync(
             "tenant-b", "game-a", "room-push-1", "gs-1", claim.Epoch, "gift-4", "simulator",
-            "app-1", binding.BindingId, Payload));
+            "app-1", binding.BindingId, 1, Payload));
         await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => inputStore.AcceptRoomEventAsync(
             "tenant-a", "game-a", "room-unknown", "gs-1", claim.Epoch, "gift-5", "simulator",
-            "app-1", binding.BindingId, Payload));
+            "app-1", binding.BindingId, 1, Payload));
         // A dead lease is as good as no owner: the row is no longer authoritative.
         await using (var connection = new NpgsqlConnection(database.ConnectionString))
         {
@@ -77,7 +77,7 @@ public sealed class RedesignRoomEventPushStoreTests
         }
         await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => inputStore.AcceptRoomEventAsync(
             "tenant-a", "game-a", "room-push-1", "gs-1", claim.Epoch, "gift-6", "simulator",
-            "app-1", binding.BindingId, Payload));
+            "app-1", binding.BindingId, 1, Payload));
 
         await using (var connection = new NpgsqlConnection(database.ConnectionString))
         {
@@ -113,7 +113,7 @@ public sealed class RedesignRoomEventPushStoreTests
         // input must stay idempotent across ownership changes, not flap with the lease.
         await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-push-1", "gs-9", 60);
         var afterMove = await inputStore.AcceptRoomEventAsync("tenant-a", "game-a", "room-push-1",
-            "gs-1", claim.Epoch, "gift-1", "simulator", "app-1", binding.BindingId, Payload);
+            "gs-1", claim.Epoch, "gift-1", "simulator", "app-1", binding.BindingId, 1, Payload);
         Assert.True(afterMove.Duplicate);
         Assert.Equal(1L, afterMove.Sequence);
     }
@@ -138,7 +138,7 @@ public sealed class RedesignRoomEventPushStoreTests
         // An empty binding is a room-scoped event: accepted durably, no module seat, and
         // the delivery names the epoch that admitted it.
         var scoped = await inputStore.AcceptRoomEventAsync("tenant-a", "game-a", "room-push-2",
-            "gs-1", claim.Epoch, "event-room", "simulator", "app-1", null, Payload);
+            "gs-1", claim.Epoch, "event-room", "simulator", "app-1", null, 0, Payload);
         Assert.False(scoped.Duplicate);
         Assert.Equal(claim.Epoch, scoped.RouteVersion);
         await using (var connection = new NpgsqlConnection(database.ConnectionString))
@@ -161,7 +161,7 @@ public sealed class RedesignRoomEventPushStoreTests
         // stale-owner picture: visible, and retrying the same attribution cannot fix it.
         await Assert.ThrowsAsync<RoundAdmissionException>(() => inputStore.AcceptRoomEventAsync(
             "tenant-a", "game-a", "room-push-2", "gs-1", claim.Epoch, "gift-x", "simulator", "app-1",
-            outsiderBinding.BindingId, Payload));
+            outsiderBinding.BindingId, 1, Payload));
         // A room the round left behind has no authoritative owner any more: the abort
         // withdrew the ownership row, so the fence answers stale before the room's own
         // status could even be consulted.
@@ -169,7 +169,7 @@ public sealed class RedesignRoomEventPushStoreTests
             "host-left", "abort-push-2");
         await Assert.ThrowsAsync<RedesignStaleOwnerException>(() => inputStore.AcceptRoomEventAsync(
             "tenant-a", "game-a", "room-push-2", "gs-1", claim.Epoch, "gift-late", "simulator",
-            "app-1", binding.BindingId, Payload));
+            "app-1", binding.BindingId, 1, Payload));
 
         await using (var connection = new NpgsqlConnection(database.ConnectionString))
         {

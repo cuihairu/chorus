@@ -46,6 +46,9 @@ public sealed class RedesignPushRetryUnitTests
         Assert.Equal("game-b", roomEvents.Seen[1].OwnerInstanceId);
         Assert.Equal(2L, roomEvents.Seen[1].Epoch);
         Assert.All(roomEvents.Seen, push => Assert.Equal("retry-1", push.EventId));
+        // The face forwards its snapshot's round-generation claim on every push (FIX-END-06)
+        // — the receiver-side fence hears the picture the resolve answered from.
+        Assert.All(roomEvents.Seen, push => Assert.Equal(7L, push.RoundGeneration));
         Assert.Equal(1, directory.Refreshes);
         var receipt = Assert.Single(response.Receipts);
         Assert.Equal("DurableAccepted", receipt.GetProperty("disposition").GetString());
@@ -124,7 +127,7 @@ public sealed class RedesignPushRetryUnitTests
 
     private static GatewayRoutingMonitor.RoomRouteTarget Target(
         string owner, long epoch, string endpoint) =>
-        new("room-retry", "tenant-a", "game-a", "binding-a", owner, epoch, endpoint);
+        new("room-retry", "tenant-a", "game-a", "binding-a", owner, epoch, endpoint, 7);
 
     private sealed record FaceResponse(int Status, List<JsonElement> Receipts);
 

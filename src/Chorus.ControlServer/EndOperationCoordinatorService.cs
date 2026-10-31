@@ -5,8 +5,10 @@ namespace Chorus.ControlServer;
 
 /// <summary>
 /// The end sequence's driver (architecture 6.4, FIX-END-05): walks each open operation's
-/// recorded phase forward. Step 2 (ClosingInput) is the marker — the room's own frozen state is
-/// the input gate FIX-END-04 landed, and FIX-END-06 widens it; step 3 persists the
+/// recorded phase forward. Step 2 (ClosingInput) is the marker — the receiver-side
+/// input-generation fence reads this standing row (FIX-END-06): every admission leg refuses
+/// new authoritative input while the operation stands, independent of the room's status
+/// column, without touching ownership; step 3 persists the
 /// stop-delivery command with its responder set and pushes it at every authorized gateway,
 /// then records StopDeliveryIssued: the persisted command and the pending set are the step's
 /// evidence, so the phase advances even when a push could not land — an offline gateway stays
@@ -46,7 +48,8 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
         try
         {
             var current = operation;
-            // Step 2 stands recorded; the mounts' frozen state is the actual gate (FIX-END-04).
+            // Step 2 stands recorded; the standing row itself is the receiver-side input fence
+            // (FIX-END-06) — the data plane refuses new authoritative input while it stands.
             if (current.Phase == EndOperationPhases.ResultFrozen)
                 current = await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
                     current.GameId, current.EndOperationId, EndOperationPhases.ResultFrozen,
