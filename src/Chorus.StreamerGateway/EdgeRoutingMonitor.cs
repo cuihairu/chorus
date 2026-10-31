@@ -87,6 +87,20 @@ public sealed class EdgeRoutingMonitor(Func<GrpcChannel> controlChannelFactory)
             await subscription.OnRoomChanged(room);
     }
 
+    /// <summary>Pulls the snapshot now and applies it. The watch beat is a delivery
+    /// optimization, not a freshness bound (architecture 4.4): a consumer that needs a fact
+    /// the cached world lacks — a room that just became deliverable (FIX-END-03: routes
+    /// publish only once the actor served, which is after the mount already points at the
+    /// room) — re-pulls instead of waiting out the next notice.</summary>
+    public async Task RefreshAsync(CancellationToken cancellationToken)
+    {
+        using var channel = controlChannelFactory();
+        var routing = new Routing.RoutingClient(channel);
+        var snapshot = await routing.GetRoutingSnapshotAsync(new Empty(),
+            cancellationToken: cancellationToken);
+        await ApplySnapshotAsync(snapshot);
+    }
+
     /// <summary>The watch loop: notices arrive versioned and carry no payload, so every notice
     /// is answered with a full snapshot pull. The host owns this loop's lifetime.</summary>
     public async Task RunAsync(CancellationToken cancellationToken)

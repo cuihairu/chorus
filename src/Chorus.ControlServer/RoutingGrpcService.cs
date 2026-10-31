@@ -92,6 +92,22 @@ public sealed class RoutingGrpcService(
         }
     }
 
+    /// <summary>
+    /// The gateway's installed-version confirmation (FIX-END-03): the version is the one the
+    /// gateway's own face answers resolves from, and the instance is the certificate's
+    /// process identity — no caller confirms on another gateway's behalf.
+    /// </summary>
+    public override async Task<ConfirmRoutingVersionReply> ConfirmRoutingVersion(
+        ConfirmRoutingVersionRequest request, ServerCallContext context)
+    {
+        await RequireAsync(context, "platform-gateway", "control-server");
+        var caller = trustedCertificates.Resolve(
+            context.GetHttpContext().Connection.ClientCertificate!);
+        await store.ConfirmRoutingVersionAsync(caller!.ProcessInstanceId, request.Version,
+            context.CancellationToken);
+        return new ConfirmRoutingVersionReply { Version = request.Version, Confirmed = true };
+    }
+
     public override async Task WatchRouting(WatchRoutingRequest request,
         IServerStreamWriter<RoutingNotice> responseStream, ServerCallContext context)
     {

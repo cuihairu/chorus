@@ -341,6 +341,191 @@ public sealed class RedesignPlatformGatewayRoutingHostTests
         }
     }
 
+    [Fact]
+    public async Task ARoomPublishesItsRouteWhenItsActorServesAndPushesNeedAConfirmedVersion()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var gamePortA = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gamePortB = RedesignM0HostTests.HostEnvironment.FreePort();
+        var ingressPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] =
+                    $"game-a=https://localhost:{gamePortA},game-b=https://localhost:{gamePortB}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(CultureInfo.InvariantCulture),
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+            });
+        await environment.StartAsync("Chorus.GameServer", gamePortA, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, gamePortA, "node-a/game-server"),
+            clientTenant: "tenant-a", instanceId: "game-a");
+        await environment.StartAsync("Chorus.GameServer", gamePortB, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, gamePortB, "node-a/game-server#2"),
+            clientTenant: "tenant-a", instanceId: "game-b");
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            GatewayEnvironment(environment.DataPort, ingressPort, controlEndpoint, gatewayPort),
+            instanceId: "gateway-route");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-act");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        var routing = new RoutingService.RoutingClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "rounds-act");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(gameChannel);
+
+        await RegisterHostsAsync(environment, routing);
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var hostA = await MountAsync(environment, simulator, "act-open-a", "act-host-a");
+        var guestA = await MountAsync(environment, simulator, "act-open-guest-a", "act-guest-a");
+        using var http = await HttpClientAsync(environment);
+
+        // The round starts but its actor never prepares: the claim exists, the mounts entered,
+        // and the deliverable snapshot still carries no room (FIX-END-03) — a room that cannot
+        // receive publishes no route.
+        const string roomC = "room-act-c";
+        var claimed = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = roomC,
+            OwnerInstanceId = "game-a", LeaseSeconds = 30
+        });
+        var started = await rounds.StartRoundAsync(new Chorus.Rpc.StartRoundRequest
+        {
+            RoomId = roomC, OwnerInstanceId = "game-a", Epoch = claimed.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            OperationId = "act-start-c", TenantId = "tenant-a",
+            Participants =
+            {
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = hostA.BindingId, ParticipantId = hostA.StreamerId, Role = "Host"
+                },
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = guestA.BindingId, ParticipantId = guestA.StreamerId, Role = "Guest"
+                }
+            }
+        });
+        Assert.Equal("Preparing", started.Status);
+        var unprepared = await WaitForAsync(async () =>
+        {
+            var snapshot = await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty());
+            return snapshot.Streamers.Any(streamer => streamer.RoomId == roomC)
+                && snapshot.Streamers.All(streamer => streamer.RoomId != roomC
+                    || streamer.CanonicalLiveSessionKey.Length > 0)
+                && snapshot.Rooms.All(room => room.RoomId != roomC);
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(unprepared, "The preparing room published a route, or its mounts never entered.");
+
+        // The platform's callback for that room waits durably: the routed leg never fires, so
+        // the receipt is the ingest leg's durable answer and the event is not a routed push.
+        var waiting = await PostAsync(http, ingressPort, "simulator", "app-1",
+            """{"sessionId":"act-host-a","eventId":"act-gift-wait","kind":"Gift","giftId":"g1","giftCount":1,"giftValue":100}""");
+        Assert.Equal(HttpStatusCode.OK, waiting.StatusCode);
+        var waitReceipt = Assert.Single(ReadReceipts(await waiting.Content.ReadAsStringAsync()));
+        Assert.NotEqual("DurableAccepted", waitReceipt.GetProperty("disposition").GetString());
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            // The ingest leg's row carries the platform id as its dedup key and attributes to
+            // the live mount — an attributed wait, never a routed push.
+            await using var command = new NpgsqlCommand(
+                "SELECT disposition FROM input.event WHERE source_dedup_key='act-gift-wait'", connection);
+            Assert.Equal("Attributed", (string?)await command.ExecuteScalarAsync());
+        }
+
+        // The actor serves: the route publishes, the gateway applies the new version and the
+        // control plane hears the confirm — the row keyed by the gateway's own identity.
+        using var hostChannel = environment.Channel(gamePortA, controlCertificate, "game-server");
+        var prepared = await new Chorus.Rpc.GameHost.GameHostClient(hostChannel).PrepareRoomAsync(
+            new Chorus.Rpc.PrepareRoomRequest
+            {
+                RoomId = roomC, GameId = "game-a", OwnerInstanceId = "game-a",
+                Epoch = claimed.Epoch, OperationId = "act-start-c-prepare",
+                DurationTicks = 400, RandomSeed = 777, TickMs = 25, PackageHash = "pkg-1",
+                Participants =
+                {
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = hostA.BindingId, ParticipantId = hostA.StreamerId, Faction = "red"
+                    },
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = guestA.BindingId, ParticipantId = guestA.StreamerId, Faction = "blue"
+                    }
+                }
+            });
+        Assert.Equal("Running", prepared.Status);
+        var confirmed = await WaitForAsync(async () =>
+        {
+            var snapshot = await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty());
+            if (!snapshot.Rooms.Any(room => room.RoomId == roomC && room.OwnerInstanceId == "game-a"
+                && room.Endpoint.Length > 0))
+                return false;
+            await using var connection = new NpgsqlConnection(environment.DatabaseConnectionString);
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT version FROM control.routing_confirm WHERE process_instance_id='gateway-route'",
+                connection);
+            return await command.ExecuteScalarAsync() is long version && version == snapshot.Version;
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(confirmed,
+            "The running room never published, or the gateway never confirmed the installed version.");
+
+        // The confirmed picture pushes: the routed leg answers DurableAccepted.
+        var pushed = await PostAsync(http, ingressPort, "simulator", "app-1",
+            """{"sessionId":"act-host-a","eventId":"act-gift-live","kind":"Gift","giftId":"g2","giftCount":1,"giftValue":100}""");
+        AssertDurable(pushed, "act-gift-live");
+        Assert.Equal(roomC, (await RoomForAsync(environment, "act-gift-live"))!);
+
+        // The gateway process dies and comes back on the same port: the reconnect syncs the
+        // snapshot first and confirms again before its face pushes from it.
+        DateTime confirmMarker;
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT confirmed_at FROM control.routing_confirm WHERE process_instance_id='gateway-route'",
+                connection);
+            confirmMarker = (DateTime)await command.ExecuteScalarAsync()!;
+        }
+        environment.Kill("gateway-route");
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            GatewayEnvironment(environment.DataPort, ingressPort, controlEndpoint, gatewayPort),
+            instanceId: "gateway-route");
+        var reconnected = await WaitForAsync(async () =>
+        {
+            await using var connection = new NpgsqlConnection(environment.DatabaseConnectionString);
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT confirmed_at FROM control.routing_confirm WHERE process_instance_id='gateway-route' " +
+                "AND confirmed_at > @marker", connection);
+            command.Parameters.AddWithValue("marker", confirmMarker);
+            return await command.ExecuteScalarAsync() is not null;
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(reconnected, "The restarted gateway never re-confirmed its installed version.");
+        var afterRestart = await PostAsync(http, ingressPort, "simulator", "app-1",
+            """{"sessionId":"act-host-a","eventId":"act-gift-after","kind":"Gift","giftId":"g3","giftCount":1,"giftValue":100}""");
+        AssertDurable(afterRestart, "act-gift-after");
+        Assert.Equal(roomC, (await RoomForAsync(environment, "act-gift-after"))!);
+    }
+
     private static void AssertDurable(HttpResponseMessage response, string eventId)
     {
         Assert.True(response.StatusCode == HttpStatusCode.OK,

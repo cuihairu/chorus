@@ -33,12 +33,20 @@ public interface IRoomRoutingDirectory
 /// push that the ownership fence refuses, and the rebuild from the last known version makes
 /// the resolve exact again.
 /// </summary>
-public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactory) : IRoomRoutingDirectory
+public sealed class GatewayRoutingMonitor(
+    Func<GrpcChannel> controlChannelFactory,
+    Func<long, CancellationToken, Task<bool>>? confirmVersion = null) : IRoomRoutingDirectory
 {
     private readonly object _gate = new();
     private readonly Dictionary<(string Platform, string Key), StreamerFacts> _streamsByLiveKey =
         new();
     private readonly Dictionary<string, RoomFacts> _roomsById = new(StringComparer.Ordinal);
+    // FIX-END-03: the version this monitor applied and the version the control plane heard it
+    // confirm. A resolve answers from the cache only while the two are the same number — an
+    // unconfirmed picture guesses no rooms, and a picture that changed underneath the
+    // confirmed one closes the gate until the new version is confirmed too.
+    private long _appliedVersion;
+    private long _confirmedVersion;
 
     /// <summary>Where a live streamer binding points: its binding id and the room it carries.</summary>
     public sealed record StreamerFacts(string BindingId, string RoomId);
@@ -61,6 +69,8 @@ public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactor
         lock (_gate)
         {
             target = null!;
+            if (_appliedVersion == 0 || _appliedVersion != _confirmedVersion)
+                return false;
             if (!_streamsByLiveKey.TryGetValue((platform, canonicalLiveKey), out var stream))
                 return false;
             if (!_roomsById.TryGetValue(stream.RoomId, out var room) || room.Endpoint is not { Length: > 0 })
@@ -72,7 +82,8 @@ public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactor
     }
 
     /// <summary>Applies one snapshot. Public so the diff logic is testable without a control
-    /// plane.</summary>
+    /// plane. A version change closes the confirm gate: the new picture answers no resolves
+    /// until <see cref="ConfirmAppliedAsync"/> lands the control plane's acknowledgment.</summary>
     public void ApplySnapshot(RoutingSnapshotReply snapshot)
     {
         lock (_gate)
@@ -84,6 +95,55 @@ public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactor
                 if (streamer.CanonicalLiveSessionKey.Length > 0)
                     _streamsByLiveKey[(streamer.Platform, streamer.CanonicalLiveSessionKey)] =
                         new StreamerFacts(streamer.BindingId, streamer.RoomId);
+            if (snapshot.Version != _appliedVersion)
+            {
+                _appliedVersion = snapshot.Version;
+                _confirmedVersion = 0;
+            }
+        }
+    }
+
+    /// <summary>The applied version, and whether the control plane has heard this gateway
+    /// confirm exactly it (FIX-END-03).</summary>
+    public (long Applied, long Confirmed) InstalledVersions
+    {
+        get { lock (_gate) return (_appliedVersion, _confirmedVersion); }
+    }
+
+    /// <summary>Confirms the applied version to the control plane and, on its acknowledgment,
+    /// opens the resolve gate. A confirm that cannot land leaves the gate closed — the next
+    /// refresh or watch round applies and confirms again.</summary>
+    public async Task ConfirmAppliedAsync(CancellationToken cancellationToken)
+    {
+        long applied;
+        lock (_gate) applied = _appliedVersion;
+        if (applied == 0) return;
+        var confirm = confirmVersion ?? ConfirmWithControlAsync;
+        if (!await confirm(applied, cancellationToken)) return;
+        lock (_gate)
+            if (_appliedVersion == applied)
+                _confirmedVersion = applied;
+    }
+
+    private async Task<bool> ConfirmWithControlAsync(long version, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var channel = controlChannelFactory();
+            var routing = new Routing.RoutingClient(channel);
+            var reply = await routing.ConfirmRoutingVersionAsync(new ConfirmRoutingVersionRequest
+            {
+                Version = version
+            }, deadline: DateTime.UtcNow.AddSeconds(5), cancellationToken: cancellationToken);
+            return reply.Confirmed && reply.Version == version;
+        }
+        catch (RpcException)
+        {
+            return false;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
         }
     }
 
@@ -100,6 +160,9 @@ public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactor
             var snapshot = await routing.GetRoutingSnapshotAsync(new Empty(),
                 deadline: DateTime.UtcNow.AddSeconds(5), cancellationToken: cancellationToken);
             ApplySnapshot(snapshot);
+            // FIX-END-03: the pull alone is not a route — the control plane must hear this
+            // gateway confirm the version before the face pushes from it.
+            await ConfirmAppliedAsync(cancellationToken);
             return true;
         }
         catch (RpcException)
@@ -123,6 +186,17 @@ public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactor
             {
                 using var channel = controlChannelFactory();
                 var routing = new Routing.RoutingClient(channel);
+                // A reconnect syncs first (FIX-END-03): the confirm from the previous
+                // connection is not evidence about this one, so the loop opens with a full
+                // snapshot pull — applied and confirmed — before any notice is trusted.
+                if (version != 0)
+                {
+                    var reopened = await routing.GetRoutingSnapshotAsync(new Empty(),
+                        cancellationToken: cancellationToken);
+                    ApplySnapshot(reopened);
+                    version = reopened.Version;
+                    await ConfirmAppliedAsync(cancellationToken);
+                }
                 await foreach (var notice in routing.WatchRouting(
                     new WatchRoutingRequest { KnownVersion = version },
                     cancellationToken: cancellationToken).ResponseStream.ReadAllAsync(cancellationToken))
@@ -135,6 +209,7 @@ public sealed class GatewayRoutingMonitor(Func<GrpcChannel> controlChannelFactor
                     var snapshot = await routing.GetRoutingSnapshotAsync(new Empty(),
                         cancellationToken: cancellationToken);
                     ApplySnapshot(snapshot);
+                    await ConfirmAppliedAsync(cancellationToken);
                 }
             }
             catch (RpcException)

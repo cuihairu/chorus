@@ -13,6 +13,9 @@ namespace Chorus.Engine.Tests;
 /// on the streamer rows), so the gateway can resolve a platform callback's live key to the room
 /// it belongs to, and that room's owner instance, epoch and serving endpoint — without ever
 /// re-deriving the binding from the data plane. The snapshot is the gateway's only route source.
+/// FIX-END-03 tightened the publication gate: a room enters the deliverable snapshot only once
+/// its round runs — the RoomActor confirmed it serves — and the gateways confirm the version
+/// they installed before their faces push from it.
 /// </summary>
 public sealed class RedesignRoutingSnapshotGatewayTests
 {
@@ -32,15 +35,24 @@ public sealed class RedesignRoutingSnapshotGatewayTests
             [new RoundParticipant(binding.BindingId, host.StreamerId, "Host")],
             "1.0.0", "cfg-1", "pkg-1", "start-gateway-1");
 
-        var snapshot = await control.ReadRoutingSnapshotAsync();
-
-        // The mount's route is the gateway's whole key: the live key names the room, the room
-        // names the owner instance and epoch — the facts a direct push must carry.
-        var streamer = Assert.Single(snapshot.Streamers);
+        // FIX-END-03: a started-but-unprepared round publishes no route — the room is absent
+        // from the deliverable snapshot while it stands in Preparing, so the platform's input
+        // waits in the durable attribution leg instead of being pushed at a room whose actor
+        // is not serving. The mount itself is visible: the live key names the room it entered.
+        var preparing = await control.ReadRoutingSnapshotAsync();
+        var streamer = Assert.Single(preparing.Streamers);
         Assert.Equal("simulator", streamer.Platform);
         Assert.Equal("live-key-gateway", streamer.CanonicalLiveSessionKey);
         Assert.Equal(binding.BindingId, streamer.BindingId);
         Assert.Equal("room-gateway-1", streamer.RoomId);
+        Assert.Empty(preparing.Rooms);
+
+        // The actor serves: the route publishes with the owner facts a direct push carries.
+        await roomStore.PrepareRoundAsync("tenant-a", "game-a", "room-gateway-1", "gs-route",
+            claim.Epoch, [1, 2, 3], [4, 5, 6], 1, "prepare-gateway-1");
+        await roomStore.ActivateRoundAsync("tenant-a", "game-a", "room-gateway-1", "gs-route",
+            claim.Epoch, "activate-gateway-1");
+        var snapshot = await control.ReadRoutingSnapshotAsync();
         var room = Assert.Single(snapshot.Rooms, route => route.RoomId == "room-gateway-1");
         Assert.Equal("tenant-a", room.TenantId);
         Assert.Equal("gs-route", room.OwnerInstanceId);
@@ -48,6 +60,23 @@ public sealed class RedesignRoutingSnapshotGatewayTests
         // A room whose owner never reports an endpoint has an empty endpoint — the gateway
         // cannot push to it and must answer the callback with a durable wait.
         Assert.Null(room.Endpoint);
+        Assert.Single(snapshot.Streamers);
+    }
+
+    [Fact]
+    public async Task ARoutingConfirmReplaysItsLatestVersion()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var control = new RedesignControlStore(database.ConnectionString);
+
+        // The confirm is keyed by the gateway's process identity; a re-confirm under the same
+        // id keeps one row with the newest version (FIX-END-03).
+        await control.ConfirmRoutingVersionAsync("gateway-confirm-a", 41);
+        await control.ConfirmRoutingVersionAsync("gateway-confirm-a", 42);
+        await control.ConfirmRoutingVersionAsync("gateway-confirm-b", 7);
+        Assert.Equal(42, await control.ReadRoutingConfirmAsync("gateway-confirm-a"));
+        Assert.Equal(7, await control.ReadRoutingConfirmAsync("gateway-confirm-b"));
+        Assert.Null(await control.ReadRoutingConfirmAsync("gateway-confirm-c"));
     }
 
     private static async Task<(ResolvedStreamer Streamer, BindingGrant Binding, SessionGrant Session)> MountAsync(

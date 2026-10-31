@@ -695,11 +695,17 @@ public sealed class RedesignControlStore(string connectionString)
         await connection.OpenAsync(cancellationToken);
 
         var rooms = new List<RoomRoute>();
+        // FIX-END-03: a room becomes deliverable only once its actor served — preparing and
+        // never-activated rooms publish no route, so the platform's input waits in the durable
+        // attribution leg instead of being pushed at a room that cannot receive. A completed
+        // round stays published (Finishing): late readers resolve the room until the end
+        // sequence retires its route — completion itself is not destruction.
         await using (var command = new NpgsqlCommand("""
             SELECT o.entity_id,o.tenant_id,o.game_id,o.owner_process_instance_id,o.epoch,o.status,p.endpoint
             FROM control.ownership o
+            JOIN game.room r ON r.room_id=o.entity_id AND r.tenant_id=o.tenant_id AND r.game_id=o.game_id
             LEFT JOIN control.process p ON p.process_instance_id=o.owner_process_instance_id
-            WHERE o.kind='room'
+            WHERE o.kind='room' AND r.status IN ('Running','Finishing')
             ORDER BY o.tenant_id,o.game_id,o.entity_id
             """, connection))
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
@@ -1189,6 +1195,42 @@ public sealed class RedesignControlStore(string connectionString)
                 reader.GetDateTime(5), reader.GetDateTime(6));
             return (record, duplicate && record.BindingGeneration == bindingGeneration);
         }
+    }
+
+    /// <summary>
+    /// Records a PlatformGateway's installed routing version (FIX-END-03): the gateway
+    /// confirms the exact version it answers resolves from, and until that confirm lands the
+    /// gateway's own face refuses to push — an unconfirmed picture guesses no rooms. The
+    /// confirm is keyed by the gateway's process identity from its certificate, so no caller
+    /// can confirm on another instance's behalf.
+    /// </summary>
+    public async Task ConfirmRoutingVersionAsync(string processInstanceId, long version,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            INSERT INTO control.routing_confirm(process_instance_id,version)
+            VALUES (@instance,@version)
+            ON CONFLICT (process_instance_id) DO UPDATE SET
+                version=@version,confirmed_at=clock_timestamp()
+            """, connection);
+        command.Parameters.AddWithValue("instance", processInstanceId);
+        command.Parameters.AddWithValue("version", version);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>The version a gateway last confirmed, or null when it never did.</summary>
+    public async Task<long?> ReadRoutingConfirmAsync(string processInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            "SELECT version FROM control.routing_confirm WHERE process_instance_id=@instance",
+            connection);
+        command.Parameters.AddWithValue("instance", processInstanceId);
+        return (long?)await command.ExecuteScalarAsync(cancellationToken);
     }
 
     private static async Task<EndOperation?> ReadEndOperationAsync(NpgsqlConnection connection,

@@ -333,6 +333,20 @@ service Routing {
   // duplicates replay, older generations never overwrite newer registrations, and only the
   // platform-verified identity of the live session is ever recorded.
   rpc RegisterRouteSource(RegisterRouteSourceRequest) returns (RegisterRouteSourceReply);
+  // The gateway's installed-version confirmation (FIX-END-03): after applying a snapshot the
+  // gateway confirms the exact version it answers resolves from. Until a version is confirmed
+  // the gateway's face refuses to push — an unconfirmed picture guesses no rooms. The gateway
+  // instance is the certificate's process identity, never a request field.
+  rpc ConfirmRoutingVersion(ConfirmRoutingVersionRequest) returns (ConfirmRoutingVersionReply);
+}
+
+message ConfirmRoutingVersionRequest {
+  int64 version = 1;
+}
+
+message ConfirmRoutingVersionReply {
+  int64 version = 1;
+  bool confirmed = 2;
 }
 
 // Deployment plans (architecture 10.2). The control plane owns DeploymentSpec; a plan names

@@ -632,7 +632,20 @@ public sealed class EdgeWs(
             var route = routingMonitor?.RoomRouteFor(roomId);
             if (route is null || route.Endpoint.Length == 0)
             {
-                // The owning host has not reported its endpoint yet — the next beat carries it.
+                // The room may be deliverable before this gateway's cached world knows it
+                // (FIX-END-03: a route publishes once the actor served — after the mount
+                // already named the room): the consumer contract answers a missing fact
+                // with a pull, not a wait for the next watch beat.
+                try
+                {
+                    if (routingMonitor is not null)
+                        await routingMonitor.RefreshAsync(CancellationToken.None);
+                }
+                catch (RpcException)
+                {
+                    // The pull is best-effort within the window; the watch beat still
+                    // carries the fact if the plane is briefly unreachable.
+                }
                 await Task.Delay(200, CancellationToken.None);
                 continue;
             }

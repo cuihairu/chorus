@@ -32,6 +32,7 @@
     <EmbeddedResource Include="Schema/0021_room_recovery_identity.sql" />
     <EmbeddedResource Include="Schema/0022_end_operation.sql" />
     <EmbeddedResource Include="Schema/0023_route_source.sql" />
+    <EmbeddedResource Include="Schema/0024_routing_confirm.sql" />
   </ItemGroup>
 
 </Project>
