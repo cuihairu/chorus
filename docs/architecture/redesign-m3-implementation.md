@@ -299,3 +299,14 @@ FIX-AUTH-01 划定的边界在代码面闭合：路由归属的**声明**现在�
 - **证据**（+2 fact，净 +2：1419→1421，全在 551f66d）：store `TheSnapshotCarriesLiveKeyToRoomToOwnerChain`——快照 streamer 行带 platform+canonical key+binding+room，房间行带 tenant/owner/epoch；owner 未上报 endpoint 时房间行 endpoint 为 null（网关不可推）；host `AGatewayRoutesEachEventToItsOwnRoomAndRefusesLateOnes`（控制+数据+StreamerServer+双 GameServer+网关，双房双宿主）——两房各事件 DurableAccepted 且 input.event 各归各房（Routed）、同 EventId 重试 duplicate=true 仍留原房、房间权威迁走（epoch+1、新 owner 无 endpoint）后迟到重试一行一房不误入新局、未挂载 live key 显式 PendingAttribution 持久行。宿主测试以「快照全链可见 + 版本两次稳定读」等网关缓存温车（watch 事件驱动、收敛毫秒级；稳定窗盖住断线 1s 重连），是测试确定性手段，非产品重试语义。
 - **门禁**：定向族绿（store 1/1、host 1/1）；全量 pin 门首跑 1420/1421（唯一败 ClusterDirectory 证书 notAfter 1 秒时钟边界，隔离重跑绿）；复跑 1419/1421（共租负载 62–67 高峰：MatchControl 并发与另一项皆隔离重跑绿，与负载 14 落定同步判环境性）；三跑 **1421/1421** 6m28s；残留 0 进程 0 库。
 - **诚实边界**：超时/OutcomeUnknown 重试退避与 StaleOwner 刷新目录重推归 FIX-INPUT-05；Actor 收件与唤醒归 FIX-INPUT-03；FIX-END-02 的挂载路由来源注册（StreamerServer 上报代次）仍 open——当前快照 streamer 行来自 live.binding 连查，代次语义留该线。
+
+## 目标房间持久接收落地：收件座 + 唤醒 + 满座可见（FIX-INPUT-03，5dc65d2）
+
+22.9 主链路的第三段闭合：接收边收口——交付顺序对齐 architecture 6.1 step 4（来源/归属/容量/epoch 校验 → DataServer 持久 → 确认后交给 Actor 并唤醒），消费仍走旧拉取腿（FIX-INPUT-04 替换）。通知只做唤醒，收件箱游标可恢复（redesign-decisions §「输入事务提交后向平台确认」）。
+
+- **RoomActor 收件座**：`TryHand(eventId, bindingId, payload)` / `HasInboundSeat(eventId)` / `InboundBacklog` / `Wake()`——`(EventId,BindingId,Payload)` 有界队列（`CHORUS_ROOM_INBOUND_PER_ROOM`，默认 1024；0=每房零座=fail-closed 全拒，对齐 `CHORUS_ROOM_EVENT_INBOUND` 语义）+ EventId 去重集合。幂等占座（同 id 再 hand=true 不重复占座）；满座拒新；**已坐 id 恒有容量**——幂等重放永不因满座被挡。`Wake()` = 合并信号量(0,1)，tick 头排掉陈旧信号（INPUT-04 将 await 它做即时串行处理）。丢座/丢唤醒只损延迟不丢事件：input.delivery 行是消费真相。
+- **DeliverEventAsync 顺序**（容量先于持久）：owner/epoch 栅栏（StaleOwner）→ `!HasInboundSeat` → **Overloaded（该房座满，零耐用写）** → 宿主信号量（Overloaded）→ DataServer 耐用腿 → 回执后 `TryHand` + `Wake()`。hand 严格在耐用回执之后——纯内存接收永不构成确认（6.1 step 4 后半句）；Duplicate 同样 hand（首次 hand 竞态满座时重试补座，INPUT-04 不断链）；hand 输给容量竞态无害（真相在 delivery 行，唤醒照发）。
+- **可见性**：`RoomActorStatus` += `InboundBacklog`（宿主状态面携带房间积压）；错租户（边租户栅栏 PermissionDenied）/错房间/旧 epoch（StaleOwner，先于容量判定）沿用 INPUT-01 边，本项经同一边重钉。
+- **证据**（+3 fact，净 +3：1421→1424，全在 5dc65d2）：unit `RedesignRoomInboundHandoffUnitTests` ×2——两座占满后第三新事件无座且深度不变、同 id 重 hand 幂等恒 true、已坐 id 恒过容量检查、Wake 连发不抛；0 座=零深零容量。host `AFullRoomSeatListRefusesVisiblyAndNeverCommits`（控制+数据+StreamerServer+单 GameServer `CHORUS_ROOM_INBOUND_PER_ROOM=1`）——首事件 DurableAccepted 占座、第二新事件 Overloaded 且 input.event 零行（容量先于持久）、已坐已提交 id 重放 Duplicate 不被满座挡、满座下错 epoch 仍 StaleOwner（栅栏先于容量）、房间恰好一行。
+- **门禁**：定向族绿（unit 2/2、host 2/2 含 INPUT-01 原 Fact）；全量 pin 门 **1424/1424** 首跑即绿 6m54s（负载 12–13）；残留 0 进程 0 库。
+- **诚实边界**：座在 INPUT-03 只入账不消费（tick 仍走 ReadInbox 拉取腿）——消费切换与「无需每 Tick 拉取」归 FIX-INPUT-04；OutcomeUnknown 重试退避归 FIX-INPUT-05；数据面 pending 积压深度未设上限（收件座是宿主侧容量面），积压监控留运维线。
