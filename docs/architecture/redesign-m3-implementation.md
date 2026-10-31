@@ -341,3 +341,14 @@ FIX-AUTH-01 划定的边界在代码面闭合：路由归属的**声明**现在�
 - **证据**（+2 host fact，净 +3 连同 3b4a2a7 的 unit 钉：1432→1435）：定向链 fact 断言四层一致（客户端 delta / delivery 单行 Consumed 且各归各房 / event 归属 / frame input_refs）+ 重放 Duplicate + 双房收尾；kill fact 断言确认输入在提交边界两侧均不丢（Pending 即 FIX-INPUT-07 的恢复输入）。
 - **门禁**：定向族绿（chain 2/2、push host 3/3、seat unit 3/3——含新竞态钉）；全量 pin 门 **1435/1435** 6m13s（共租负载尖峰 1min 64 中跑过，零负载性失败）；残留 0 进程 0 库。
 - **诚实边界**：simulator mapper 把 webhook 映射为 AudienceEvent（camelCase、kind 数字），示例模块不识别该形状——本项的客户端可见证据是 delta.InputEventIds 与消费/归属行，**不是分值**（平台事件形状→模块语义的映射是另一条线，未立项）；kill 前腿只证不丢（单行 durable），恢复后消费/补齐与重叠幂等归 FIX-INPUT-07（TAKE-08 已就绪）；kill 后未重启宿主——同实例重启再消费同属 INPUT-07 的恢复故事。
+
+## 推送恢复补齐：接管拉取消费 + 重试跨代幂等（FIX-INPUT-07，9d82de4+14ba4ed）
+
+22.9 主链路恢复段闭合：INPUT-06 留下的「kill 前腿只证不丢」在本项接到接管手里。场景是一条真实宿主链——房间在 game-a 上 ticking，webhook 推 X1（确认消费）→ 推 X2a/X2b 后立即击杀 game-a（击杀落在耐用受理与消费帧提交之间，落哪一侧由竞争决定）→ 冻结头触发 stall governor（FIX-TAKE-07 的既有机制，STALL 5s/FRESH 15s/扫 1s）迁移房间到 game-b 并就地恢复 → 恢复 actor 空座开局，首个 tick 的 ReadInbox 拉取把死主的 Pending 交付捞回消费（消费真相=游标，INPUT-04 的机制在接管面成立）。之后网关目录追上新 owner，同一条 webhook 面继续直推 X3 进新代；平台逐字重放 X1/X2b 全链答 Duplicate、零二次应用。
+
+- **发现并修复：重试跨代冲突（9d82de4）**——`AcceptRoomEventAsync` 的幂等指纹含 `OwnerInstanceId/Epoch`，接管后平台逐字重试同一 EventId 命中新 owner/新代 → 指纹不匹配 → `IdempotencyConflictException` → InvalidArgument "reused for a different event"，平台侧不可修复的 4xx 噪声（验收「旧已消费不重复」要求答 Duplicate）。修复：指纹只留事件身份（Platform/AppId/RoomId/BindingId/PayloadJson），owner/epoch 是准入栅栏不是事件身份——栅栏仍守每个新鲜 accept（新 id 陈旧 owner/epoch 照旧 FailedPrecondition 零写入），Duplicate 回执仍带原受理代的 Sequence/RouteVersion。canonical 版本 1→2（形态变了；跨部署边界旧回执冲突一次，此后不再）。
+- **测试形状**：`RedesignDirectPushRecoveryHostTests` ×1 fact（6 真实宿主：control+data+streamer/simulator+双 GameServer+PlatformGateway）。等价判据全在 SQL/回执：每 id delivery 恰 1 行 Consumed、frame input_refs 恰 1 次、按消费 tick 与死亡头的先后报告分支（kill 前 game-a 消费 vs 接管恢复 game-b 消费——X1/X3 方向确定断言，X2a/X2b 双侧皆可+逐事件报告）；积压=scope 内 Pending 计数（终局必 0）。受理/去重/消费/积压四数量随输出报告（验收「分别报告」）。
+- **kill 时序工程**：`Kill(entireProcessTree)` 的树枚举在信号发出前耗 600ms+，必输给 ~10ms 的受理→提交窗——`HostEnvironment.KillAtOnce`（无树枚举直接 Kill，宿主皆单进程无遗漏）把信号压到回复后即时；两连跑 X2b（最后一推）均落 Pending-由接管恢复消费（tick deathHead+1），X2a 均落 kill 前消费——两分支都被走到，断言按不变量（恰一次）+分支报告，不赌时序。
+- **证据**（+1 host fact，净 +1：1435→1436）：stall governor 自动迁移（owner game-b、epoch+1）+ 头越过死亡头（恢复自己的提交证明）；X3 落新代消费（tick > 死亡头断言）；X1/X2b 重放 Duplicate（9d82de4 的载荷测试）；终局 4 id 各 1 行 Consumed、各 1 帧引用、Pending 积压 0。
+- **门禁**：定向族绿（push store 2/2、push host 3/3、chain 2/2、seat unit 3/3）；全量 pin 门 **1436/1436** 7m54s；残留 0 进程 0 库。
+- **诚实边界**：击杀落窗仍是概率性的（KillAtOnce 使 Pending 分支配但不保证）——不变量断言两侧皆持，分支只报告不断言；Preparing 房不可恢复（仅 Running/Finishing），故无「hold 房持 Pending 再接管」的确定性布景；恢复期推送的网关重试落腿（IngestBatch 兜底）归 INPUT-05 既有覆盖，本项 X3 等目录 warm 后推；同实例重启再消费（非接管）与 Finishing 尾恢复的输入面未单独钉。
