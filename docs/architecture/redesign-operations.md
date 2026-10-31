@@ -86,14 +86,14 @@ bootstrap Control/Data seed 使用这条离线信任链，无需在线发证服�
 |---|---|---|---|---|
 | 主播网络断开 | Gateway | 当前局继续，个人实体离线保留，取消未提交排队默认策略 | resume 找回原局并快照同步 | 不重新匹配、不重复奖励 |
 | Gateway 进程崩溃 | Agent、客户端 | 连接断开；平台输入与游戏继续 | 连接其他 Gateway，SessionVersion 接管 | 旧连接无控制权 |
-| StreamerServer 崩溃 | Agent、Control | 个人命令暂不可用；GameServer 已运行对局继续 | 新 epoch 加载资料、挂载、会话和待办流程 | 不因实体恢复重开局 |
+| StreamerServer 崩溃 | Agent、Control | 个人命令暂不可用；GameServer 已运行对局继续 | 移交改路由（epoch+1，不撤会话）；主播经新实例 Resume 加载资料/挂载并轮换会话 | 不因实体恢复重开局 |
 | GameServer 崩溃 | Agent、Control | 房间暂停输出，可靠输入留存 | 新 owner 恢复快照和帧 | 已确认输入不丢、旧 owner 不写 |
 | 平台接入实例崩溃 | Agent、负载均衡 | callback 转其他实例；任务等待接管 | 从 Task/Outbox 恢复并查外部状态 | 不把结果未知等同调用失败 |
 | 单个 DataServer 崩溃 | 调用端、Agent | 保持 OperationId 改连其他实例 | 查询 receipt 后重试 | 不重复写入或结算 |
 | 所有 DataServer 不可用 | 调用端 | 暂停新确认和权威帧 | Agent/bootstrap 恢复，补查未知结果 | 不用本地内存假确认 |
 | 一个 ControlServer 崩溃 | 租约继任者 | 有效 owner 继续运行 | term 接管协调任务 | 不重复调度或提交匹配 |
 | 全部 ControlServer 不可用 | 各角色 | 租约有效期内继续；到期暂停；不新匹配 | bootstrap 拉起，恢复目录 | 不本地自选 owner |
-| 节点与控制面分区，但能访问 Data | Control / 角色 | 有效租约内提交，到期拒绝 | 新 epoch 接管后旧实例必须失效 | DB fencing 不依赖踢下线送达 |
+| 节点与控制面分区，但能访问 Data | Control / 角色 | 有效租约内提交，到期拒绝 | 新 epoch 接管后旧实例必须失效（房间=数据面拒旧 epoch；Streamer=待下次会话轮换拒旧 SessionVersion，转移本身不撤会话） | DB fencing 不依赖踢下线送达 |
 | 节点与 Data 分区，但可达客户端 | 角色 | 不发布未提交状态 | 恢复链路或异机恢复 | 不产生无日志胜负 |
 | Agent 崩溃 | OS 服务 | 按 OS 子进程策略运行或终止；不擅自判定全体业务死亡 | 重启 Agent、核对 incarnation | PID 重用不误杀 |
 | 机器失电 | Control | 所有本机房间待恢复，N+1 容量承接 | 其他机器分配新 epoch | 接管不等待原机回来 |

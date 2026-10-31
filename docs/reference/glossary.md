@@ -39,7 +39,7 @@ In this project a GameRoom represents one authoritative round, and its RoomId is
 | Participation | A streamer/player's seat, faction and withdrawal state in a round | A disconnect does not automatically erase it |
 | LoginSession | Chorus authentication and control context | Separate from a platform launch token and a socket |
 | Connection | One transport connection to a gateway | A stale disconnect must not revoke its replacement |
-| Owner / Ownership | Persistent authority for a particular process instance and entity generation | Liveness, cached routes and client claims cannot grant authority |
+| Owner / Ownership | Persistent authority for a particular process instance and entity generation; for rooms it fences writes, for streamers it is the routing picture — session writes are fenced by SessionVersion instead | Liveness, cached routes and client claims cannot grant authority |
 | NodeId / ProcessInstanceId | Managed machine identity / identity generated for each process start | Separate from deployment slots and OS PIDs |
 
 ## Versions, generations and identifiers
@@ -51,7 +51,7 @@ In this project a GameRoom represents one authoritative round, and its RoomId is
 | BaseVersion | State version required to apply a delta | A missing baseline cannot be skipped merely because a newer version arrived |
 | RoundGeneration | Successive rounds within a gameplay binding | Room ownership epoch |
 | BindingGeneration | Generation of a live gameplay attachment | Connection generation or Tick |
-| SessionVersion | Login control version checked during rotation and takeover | A new game round |
+| SessionVersion | Login control version; the streamer-domain write fence, checked during rotation (Login/Resume) and by every session consumer | A new game round — and it is not what the streamer ownership takeover checks; a takeover reroutes without revoking the session |
 | ConnectionGeneration | Current connection attachment, fencing stale connection notices | RoomEpoch is not bumped just because a socket reconnects |
 | RouteVersion | Version of ControlServer's routing projection, installation and acknowledgement | A route update need not change the room epoch |
 | CoordinatorTerm | Authority term for a coordinator lease/partition | Per-room tick or epoch counters |

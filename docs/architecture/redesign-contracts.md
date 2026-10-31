@@ -166,11 +166,11 @@ NormalizedEvent {
 | control.deployment | SlotId PK、DesiredVersion、PlanGeneration、DesiredState | ControlServer |
 | control.process | ProcessInstanceId PK、SlotId、NodeId、Lifecycle | ControlServer |
 | control.coordinator | PartitionKey PK、Holder、Term、LeaseUntil | 控制事务 |
-| control.ownership | Kind+EntityId PK、OwnerInstance、Epoch、LeaseUntil、Version | 控制事务；数据事务加锁验证 |
+| control.ownership | Kind+EntityId PK、OwnerInstance、Epoch、LeaseUntil、Version | 控制事务；房间数据事务加锁验证（Streamer 会话域不读此行——其写栅栏是 SessionVersion） |
 | auth.identity | UNIQUE(Platform, AppId, OpenId)、PlayerId | DataServer |
 | auth.session | SessionId、StreamerId、SessionVersion、RevokedAt、ResumeHash | DataServer |
 | auth.rotation | StreamerId+OperationId UNIQUE、PreviousSecretHash、RequestHash、ResultSessionVersion、RetryUntil | DataServer；仅精确重试可读 |
-| auth.streamer_state | StreamerId PK、CurrentSessionVersion、CurrentSessionId、EligibilityVersion、BanState | DataServer；匹配和接管共同校验 |
+| auth.streamer_state | StreamerId PK、CurrentSessionVersion、CurrentSessionId、EligibilityVersion、BanState | DataServer；匹配与会话轮换共同校验（接管转移不校验——它只改 ownership 行） |
 | live.session | LiveSessionId、PlatformRoomKey、StreamerId、StartedAt、EndedAt | DataServer |
 | live.slot | Platform+CanonicalLiveSessionKey UNIQUE、TenantId、ActiveBindingId、Generation | DataServer；跨 GameId 互斥 |
 | live.binding | BindingId、LiveSessionId、Generation、State、CurrentRoomId | DataServer；活跃挂载唯一索引 |
@@ -261,7 +261,7 @@ COMMIT
 
 ### 6.5 统一锁顺序
 
-跨域事务遵循：Coordinator（需要时）→ Ownership（按 kind/id）→ StreamerSession/资格 → LiveSlot/Binding（按 ID）→ Ticket/Reservation → Room/Participation → InputCursor/Input → PlayerAsset → Receipt/Outbox。只读初次去重可在事务前查；并发唯一键冲突回滚后查询原回执。
+跨域事务遵循：Coordinator（需要时）→ Ownership（按 kind/id）→ StreamerSession/资格 → LiveSlot/Binding（按 ID）→ Ticket/Reservation → Room/Participation → InputCursor/Input → PlayerAsset → Receipt/Outbox。Streamer 会话域事务例外：只锁 StreamerSession/资格，不取 Ownership 锁——会话权威不依赖 ownership 行（路由归属与会话轮换是两条边界），此为设计而非遗漏。只读初次去重可在事务前查；并发唯一键冲突回滚后查询原回执。
 
 需要同时改变主播活动资格与匹配状态的流程必须在同一存储契约中实施，不允许先修改内存资格再异步写库。控制库和业务库首期是同一 PostgreSQL 数据库，以上事务不跨数据库。
 

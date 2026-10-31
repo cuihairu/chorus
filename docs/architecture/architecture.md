@@ -168,9 +168,9 @@ DataServer 与 ControlServer 使用同一 PostgreSQL 集群的不同 schema 和�
 
 `Ownership(Kind, EntityId, OwnerProcessInstanceId, Epoch, LeaseUntil, Status, Version)` 是权威记录。租约与 CAS 使用数据库时间；ControlServer 负责授予和续租。初始租约 15 秒、续租间隔 5 秒，均为待压测配置。
 
-新实例总是新 ProcessInstanceId。主动迁移或租约到期后，ControlServer 在锁住 ownership 行的事务中递增 Epoch、分配新实例，并生成有版本路由事件。旧实例即使仍运行，也不能提交旧 epoch 的数据。
+新实例总是新 ProcessInstanceId。主动迁移或租约到期后，ControlServer 在锁住 ownership 行的事务中递增 Epoch、分配新实例，并生成有版本路由事件。房间类实体的旧实例即使仍运行，也不能提交旧 epoch 的数据；Streamer 类实体的写栅栏是会话轮换而非 ownership epoch——转移只改路由归属，不撤销旧实例在轮换前仍有效的会话（见 5.2 与 10.3）。
 
-所有写入均先锁定适用 ownership 行，再校验 epoch、实例、状态与租约，再改业务行；迁移事务遵循相同锁顺序。事务必须设置短 lock/statement/idle 超时，不能持锁执行网络调用。数据提交完成是权威操作生效点。
+房间等帧类写入均先锁定适用 ownership 行，再校验 epoch、实例、状态与租约，再改业务行；迁移事务遵循相同锁顺序。Streamer 会话域写入（Login/Resume/连接代/撤销）不读 ownership 行——它们锁定会话状态行并校验当前 SessionVersion（见 5.2）。事务必须设置短 lock/statement/idle 超时，不能持锁执行网络调用。数据提交完成是权威操作生效点。
 
 ### 4.3 ControlServer 高可用
 
@@ -217,9 +217,9 @@ ControlServer 的 GM 边界认证操作者、租户/游戏/房间范围并记录
 1. 客户端通过平台启动参数获得 token 或 roomCode，连接 StreamerGateway，发送 `LoginWithPlatformLaunch`；Gateway 校验大小、版本和限流。
 2. PlatformGateway 使用对应直播玩法适配器调用官方验证／绑定接口，得到带应用作用域的可信主播和直播上下文。若平台验证与绑定是一个外部操作，先持久化 LoginAttempt，再执行并记录结果，以便崩溃后核对。
 3. DataServer 幂等创建 PlatformIdentity 映射与 StreamerId，不接受客户端声称的主播身份作为证明。
-4. ControlServer 原子查找或激活 Streamer 所有者；并发登录只能有一条有效 ownership。
+4. StreamerServer 在会话授予后尽最大努力声明 Streamer 的路由 ownership（声明失败只告警，不影响会话）；并发登录由 DataServer 会话事务在会话状态行锁上串行化，不靠 ownership 行互斥。
 5. StreamerServer 加载资料、当前挂载、未结束对局与未完成操作；进入 EntityReady。恢复失败时不发送登录成功。
-6. DataServer 的 `CommitLogin` 事务校验 StreamerEpoch，增加 SessionVersion，撤销旧控制会话，绑定新 Gateway/Connection incarnation。
+6. DataServer 的 `CommitLogin` 事务锁定会话状态行、递增 SessionVersion，并在同一事务内撤销旧控制会话、绑定新 Gateway/Connection incarnation；该事务不校验 ownership epoch——路由归属与会话权威是两条边界。
 7. 返回 Chorus 短期 access 凭据和 resume 注册回执。resume secret 由客户端安全随机预生成并在登录请求中经 TLS 提交，服务端只保存其哈希，客户端在发送前安全保存；不依赖响应首次传回唯一的新秘密。平台启动 token 不作为永久重连凭据。
 8. StreamerActor 继续或创建当前玩法挂载，写入平台任务期望状态；PlatformGateway 执行并确认。登录可成功但挂载尚未就绪，客户端分别显示 `LoginReady`、`GameplayReady`。
 9. 只有实体可用、挂载有效、所需事件能力健康、未封禁、无冲突对局时允许匹配。
@@ -440,7 +440,7 @@ NodeAgent 幂等执行 EnsureRunning / Drain / Stop，先把命令写本机日�
 5. 旧实例恢复后提交被 DataServer 拒绝，主动卸载；未能卸载时 Agent 回收。无需等旧进程“确认死亡”才进行数据库 fencing。
 6. 快照损坏、包缺失、重放不一致，分别显示 RoomRecoveryFailed 原因，保留证据并尝试上一有效快照；连续失败进入 Suspended，按本局故障策略中止和补偿。
 
-Streamer 恢复同样先递增 epoch，再加载资料与持久未完成流程；Gateway 连接可以继续存在，但业务暂停直到实体恢复。匹配状态和平台任务都从持久状态恢复，而非向客户端询问“你刚才在哪”。
+Streamer 实体接管分两步、均由客户端驱动。第一步：控制面经 `Takeover.TransferOwnership(kind=streamer)` 递增 ownership epoch、把路由归属改到新实例并置 Recovering——这一步只改路由，不撤销任何会话、不清挂载；从转移到轮换之间旧实例的会话仍有效。第二步：主播经新实例 Resume，轮换事务在同一提交内撤销旧会话并授予新会话，旧实例的凭证随即在数据面失效，新实例的声明把 ownership 确认回 Active。不存在“仅转移 ownership 即撤销会话”的语义；无活跃挂载的实体甚至不进 ownership 体系（声明以挂载为 scope）。Gateway 连接可以继续存在。匹配状态和平台任务都从持久状态恢复，而非向客户端询问“你刚才在哪”。
 
 ### 10.4 数据库边界
 

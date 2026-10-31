@@ -344,11 +344,15 @@ service Deployment {
 }
 
 // Entity takeover (architecture 10.3): the control plane moves a live entity's authority to a
-// new instance after the current holder went silent — the handover fences the old epoch.
+// new instance after the current holder went silent. For rooms the handover fences the old
+// epoch at the data plane; for streamers it only reroutes — the old session stays valid until
+// the streamer's next Login/Resume rotates it (session rotation is the streamer write fence).
 service Takeover {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
-  // The authority handover itself: bumps both epochs, parks the entity Recovering. The reply
-  // carries the bumped epoch the new holder must recover with.
+  // The authority handover itself: bumps the ownership epoch (rooms also bump game.room),
+  // parks the entity Recovering. Transferring a streamer revokes no session and clears no
+  // binding; the new holder confirms by claiming, and the fence lands when a Resume through
+  // it rotates the session.
   rpc TransferOwnership(TransferOwnershipRequest) returns (TransferOwnershipReply);
   // The recovery completion for a room: confirms the transferred ownership and replays the
   // round on the new instance. Room-only today; other kinds refuse visibly.
@@ -609,7 +613,10 @@ message AdminTaskReconcileReply {
 
 service Admin {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
-  // Diagnostics: the streamer's whole footprint and the room's whole footprint.
+  // Diagnostics: the streamer's whole footprint and the room's whole footprint. In the
+  // streamer snapshot the owner/epoch columns are the routing picture (control.ownership);
+  // session authority is the session rows' current version — the two can legitimately differ
+  // between a takeover and the streamer's next rotation.
   rpc GetStreamerSnapshot(AdminStreamerSnapshotRequest) returns (AdminStreamerSnapshotReply);
   rpc GetRoomSnapshot(AdminRoomSnapshotRequest) returns (AdminRoomSnapshotReply);
   // The AT31 chain: gift to frame to reward, verifiable link by link.
