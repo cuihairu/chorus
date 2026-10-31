@@ -168,7 +168,7 @@
 
 2026-10-29 用户明确修订：正常事件主链路为 **PlatformGateway → 目标 GameServer → RoomRuntime → 对应 RoomActor**。DataServer 提供持久化、去重、帧提交和恢复服务。现有 ReadInbox 拉取实现保留为迁移基线，不能把它作为目标主动推送已完成的证据。本节和架构 §6.1 为当前实现入口；旧拉取实现仅作为迁移对照。
 
-- [ ] **FIX-INPUT-01 / P0：定义房间直接推送契约。** 依赖：无。交付：GameServer 房间事件 RPC，携带租户/游戏、RoomId、owner epoch、EventId、来源和 payload，明确 DurableAccepted、Duplicate、StaleOwner、Overloaded、OutcomeUnknown。验收：契约明确持久成功才确认重要输入，重试保持业务 ID；已有旧拉取接口不算交付。
+- [x] **FIX-INPUT-01 / P0：定义房间直接推送契约。** 依赖：无。交付：GameServer 房间事件 RPC，携带租户/游戏、RoomId、owner epoch、EventId、来源和 payload，明确 DurableAccepted、Duplicate、StaleOwner、Overloaded、OutcomeUnknown。验收：契约明确持久成功才确认重要输入，重试保持业务 ID；已有旧拉取接口不算交付。（0a54da3：m2.proto `service RoomEvents.DeliverEvent` 五态契约 + `RoundInput.AcceptRoomEvent` 耐用腿（receipt input.push、ownership 栅栏、binding/room 校验、event+delivery+cursor 同事务、EventId 幂等）；RoomRuntime.DeliverEventAsync 宿主校验/限流/未知态；edge 租户栅栏；store +2、host +1；全量 pin 门 1419/1419）
 - [ ] **FIX-INPUT-02 / P0：接通 PlatformGateway 房间路由。** 依赖：FIX-INPUT-01。交付：PlatformGateway 根据挂载/局边界固定 RoomId，通过 ControlServer 发布的有版本路由解析 owner 地址及 epoch 并直接调用目标 GameServer。验收：两个房间分布于不同实例时，各事件只推送到所属房间；迟到事件不随当前局变化误入新局；无有效归属显式待处理/拒绝。
 - [ ] **FIX-INPUT-03 / P0：实现目标房间的持久接收。** 依赖：FIX-INPUT-01。交付：RoomRuntime 校验目标并将事件交给对应 RoomActor；接收端经 DataServer 幂等持久接收后确认并唤醒房间。验收：错租户/错房间/旧 epoch 拒绝；相同事件仅入账一次；队列满和存储失败可见；内存接收但未持久化不得返回成功。
 - [ ] **FIX-INPUT-04 / P0：接通推送输入的 Tick 消费。** 依赖：FIX-INPUT-03、FIX-FRAME-04。交付：Actor 串行处理直接推送接受的事件，原子提交消费与帧。验收：正常业务无需每 Tick 从 DataServer 拉取新输入；重复推送只产生一次效果，客户端效果、帧和消费记录一致。
