@@ -352,3 +352,12 @@ FIX-AUTH-01 划定的边界在代码面闭合：路由归属的**声明**现在�
 - **证据**（+1 host fact，净 +1：1435→1436）：stall governor 自动迁移（owner game-b、epoch+1）+ 头越过死亡头（恢复自己的提交证明）；X3 落新代消费（tick > 死亡头断言）；X1/X2b 重放 Duplicate（9d82de4 的载荷测试）；终局 4 id 各 1 行 Consumed、各 1 帧引用、Pending 积压 0。
 - **门禁**：定向族绿（push store 2/2、push host 3/3、chain 2/2、seat unit 3/3）；全量 pin 门 **1436/1436** 7m54s；残留 0 进程 0 库。
 - **诚实边界**：击杀落窗仍是概率性的（KillAtOnce 使 Pending 分支配但不保证）——不变量断言两侧皆持，分支只报告不断言；Preparing 房不可恢复（仅 Running/Finishing），故无「hold 房持 Pending 再接管」的确定性布景；恢复期推送的网关重试落腿（IngestBatch 兜底）归 INPUT-05 既有覆盖，本项 X3 等目录 warm 后推；同实例重启再消费（非接管）与 Finishing 尾恢复的输入面未单独钉。
+
+## 持久结束操作：BeginEnd/GetEndStatus + 阶段梯子 + 重启续做（FIX-END-01，770f8d2）
+
+6.4 的八步严格结束序列落地第一步：ControlServer 持久化 EndOperationId、房间/挂载代、阶段、进度与错误（0022_end_operation.sql，control.end_operation 一房一操作唯一键）。BeginEnd 幂等按请求身份——同 id 同房重放一行（Duplicate），同房异 id 拒绝（FailedPrecondition，一房一协调者），同 id 异房拒绝；代际栅栏要求房间每个参与挂载的 current_room_id 指向本房且 round_generation 恰等于请求所述——迟到的 begin（指针已移或代已超前）零写入，不影响挂载已进入的新局。阶段梯子 ResultFrozen→…→Done 逐级推进（跳级/回退/越位一律冲突），错误列记最后一次失败而不离开阶段（重启读相位+原因重试同一步）；ListOpen 是重启续做清单。服务面 RoundEnd（BeginEnd/GetEndStatus；AckDeliveryStopped 留给 END-05/07）以 control-server/game-server 角色 mTLS 限权，stale/conflict 映射 FailedPrecondition。
+
+- **测试形状**：store 3 fact（TemporaryDatabase + 单参与挂载起局布景）：重复 begin 恰一行 / 异 id 同房与同 id 异房皆拒；阶段梯子全程 + 跳级回退拒 + 错误入列不离相位 + 收尾后 ListOpen 空；迟到代（挂载代被推移 + 命名超前代）零写入后当前代可建。host 1 fact（control+data+streamer/simulator，无 GameServer——Preparing 局已足栅栏）：BeginEnd 落相位、重放 Duplicate、异 id 拒、GetEndStatus 全字段（含挂载代）；Kill control 后同端口重启，GetEndStatus 读回同一行（id/代/挂载）、重放仍 Duplicate（一行跨重启）；迟到 begin（命名代 2、挂载持 1）FailedPrecondition 且记录不动。
+- **证据**（+4：3 store + 1 host，1436→1440）：三验收面各就其位——重复创建只一行、每阶段重启续读、迟到旧代零影响（记录未动断言）。
+- **门禁**：定向族 4/4；全量 pin 门 **1440/1440** 9m52s（首跑 1439/1440，唯一失败为 schema 迁移计数基线 37/38 未随 0022 更新——已并项更新，二次全绿）；残留 0 进程 0 库。
+- **诚实边界**：同挂载两局同开不可达（StartRound 拒绝已指向房间的挂载，release 步 END-05/08 落地前无从布景）；阶段推进的各步执行器尚未接线——本项只钉存储与服务边界，八步的驱动（谁在何时调 Advance）归后续 END-02..08；schema 基线 37→38 / 21→22 随 0022 更新。

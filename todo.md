@@ -184,7 +184,7 @@
 
 用户明确顺序：**通知 PlatformGateway 关闭旧局投递 → 确认生效 → 才通知直播平台 → 完成释放 → 销毁 RoomActor**。目标契约见架构 §6.4。下列业务流程由 ControlServer / StreamerServer / GameServer / PlatformGateway 各自负责，DataServer 只负责数据读写与事务约束。结算业务由 ControlServer 执行，DataServer 只保留幂等存储接口；存储测试不能替代业务收尾验收。
 
-- [ ] **FIX-END-01 / P0：持久结束操作。** 依赖：无。交付：ControlServer 保存 EndOperationId、房间/挂载代、阶段、进度与错误。验收：同一请求重复创建只得到一个操作；每阶段重启能继续，迟到旧代请求不能影响新局。
+- [x] **FIX-END-01 / P0：持久结束操作。** 依赖：无。交付：ControlServer 保存 EndOperationId、房间/挂载代、阶段、进度与错误。验收：同一请求重复创建只得到一个操作；每阶段重启能继续，迟到旧代请求不能影响新局。 `770f8d2` 实现（schema 0022 + RoundEnd 服务 + store 方法）；store 3 fact + host 1 fact；全量 1440/1440 9m52s，残留 0/0。
 - [ ] **FIX-END-02 / P0：注册挂载路由来源。** 依赖：FIX-INPUT-01。交付：StreamerServer 在挂载提交后向 ControlServer 注册已验证的平台场次和 BindingGeneration。验收：重复上报幂等，旧代不覆盖新代，未验证的平台身份不能建立路由。
 - [ ] **FIX-END-03 / P0：确认开局路由生效。** 依赖：FIX-END-02、FIX-INPUT-02。交付：入场提交且 RoomActor 准备好后发布路由，PlatformGateway 安装并确认版本才开放平台输入。验收：准备失败不产生可投递路由；PlatformGateway 重连先同步快照，未确认版本不能直接投递。
 - [ ] **FIX-END-04 / P0：提交终局后发起收尾。** 依赖：FIX-END-01。交付：GameServer 可靠上报最终帧回执并停止战斗 Tick。验收：最终提交后 kill 仍能发现并推进结束操作；通知重发不重复发奖；ClosingInput 事件不改变胜负。
