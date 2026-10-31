@@ -54,7 +54,7 @@ var maxDegradedRooms = OptionalPositiveInt("CHORUS_GAME_MAX_DEGRADED_ROOMS");
 var maxConcurrentRecoveries = OptionalPositiveInt("CHORUS_GAME_MAX_CONCURRENT_RECOVERIES");
 var maxQueuedRecoveries = OptionalNonNegativeInt("CHORUS_GAME_MAX_QUEUED_RECOVERIES");
 builder.Services.AddSingleton(new RoomRuntime(DataChannel(), maxActiveRooms, maxDegradedRooms,
-    maxConcurrentRecoveries, maxQueuedRecoveries));
+    maxConcurrentRecoveries, maxQueuedRecoveries, shippedPackages: ShippedPackages()));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
 // tells the control plane itself where it serves, so routing can reach it. The certificate
 // is the identity — the report claims exactly what it proves.
@@ -107,4 +107,32 @@ static int? OptionalNonNegativeInt(string name)
         throw new InvalidOperationException(
             $"{name} must be a non-negative integer when set, not '{raw}'.");
     return value;
+}
+
+// FIX-MODULE-04: the host's runtime package set. The registry ships every version, but a
+// host staging an upgrade can drop the old package from its own set
+// (CHORUS_MODULE_PACKAGES, comma-separated hashes) so an old room is refused by name
+// instead of re-derived under the new arithmetic. Unknown hashes fail closed — a host
+// that names a package it cannot load must not start — and the empty selection is refused
+// the same way, so a mistyped variable never silently becomes a full catalog.
+static IReadOnlyList<RedesignModulePackage> ShippedPackages()
+{
+    var raw = Environment.GetEnvironmentVariable("CHORUS_MODULE_PACKAGES");
+    if (raw is null) return RedesignModuleCatalog.Shipped;
+    var byHash = RedesignModuleCatalog.Index(RedesignModuleCatalog.Shipped);
+    var selected = new List<RedesignModulePackage>();
+    var seen = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var hash in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        if (!byHash.TryGetValue(hash, out var package))
+            throw new InvalidOperationException(
+                $"CHORUS_MODULE_PACKAGES names \"{hash}\", which this host does not ship (shipped: " +
+                $"{RedesignModuleCatalog.ShippedList()}).");
+        if (seen.Add(hash)) selected.Add(package);
+    }
+    if (selected.Count == 0)
+        throw new InvalidOperationException(
+            $"CHORUS_MODULE_PACKAGES selected no packages this host ships (shipped: " +
+            $"{RedesignModuleCatalog.ShippedList()}); set it to the hashes to load.");
+    return selected;
 }

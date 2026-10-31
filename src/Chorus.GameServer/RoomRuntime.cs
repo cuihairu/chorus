@@ -46,21 +46,31 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// the persistent result on the data plane.</summary>
     internal int RetainedResults { get; set; } = 256;
 
+    /// <summary>This host's shipped packages by hash, and the cluster default hash it must
+    /// carry (FIX-MODULE-04): the registry keeps every version, a host's runtime set can
+    /// drop the old package of an upgrade — an empty package hash then names the cluster
+    /// default only if this host still ships it.</summary>
+    private readonly IReadOnlyDictionary<string, RedesignModulePackage> _packages;
+    private readonly string _shippedList;
+    private readonly string _defaultPackageHash;
+
     public RoomRuntime(Grpc.Net.Client.GrpcChannel dataChannel,
         int? maxActiveRooms = null, int? maxDegradedRooms = null,
-        int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null)
+        int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
+        IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null)
         : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
             new Settlement.SettlementClient(dataChannel), dataChannel,
             maxActiveRooms: maxActiveRooms, maxDegradedRooms: maxDegradedRooms,
             maxConcurrentRecoveries: maxConcurrentRecoveries,
-            maxQueuedRecoveries: maxQueuedRecoveries) { }
+            maxQueuedRecoveries: maxQueuedRecoveries, shippedPackages: shippedPackages) { }
 
     /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
     internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
         Settlement.SettlementClient settlement, Grpc.Net.Client.GrpcChannel? dataChannel = null,
         RoomMetrics? metrics = null, int? maxActiveRooms = null, int? maxDegradedRooms = null,
         int overBudgetFactor = 0, int overBudgetWindow = 0,
-        int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null)
+        int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
+        IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null)
     {
         _rounds = rounds;
         _frames = frames;
@@ -75,7 +85,26 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         _recoveryGate = maxConcurrentRecoveries is { } concurrent
             ? new RecoveryConcurrencyGate(concurrent, maxQueuedRecoveries ?? 0)
             : null;
+        _packages = RedesignModuleCatalog.Index(shippedPackages ?? RedesignModuleCatalog.Shipped);
+        _shippedList = RedesignModuleCatalog.ListOf(shippedPackages ?? RedesignModuleCatalog.Shipped);
+        _defaultPackageHash = RedesignModuleCatalog.Default.PackageHash;
     }
+
+    /// <summary>Resolves a package against this host's shipped set. Empty names the
+    /// cluster default (the coordinator's pin); an empty hash on a host that no longer
+    /// ships the default answers false, so a prepare cannot fall through to a version the
+    /// host does not actually load.</summary>
+    private bool TryResolvePackage(string packageHash, out RedesignModulePackage package)
+    {
+        if (packageHash.Length > 0)
+            return _packages.TryGetValue(packageHash, out package!);
+        return _packages.TryGetValue(_defaultPackageHash, out package!);
+    }
+
+    /// <summary>How a refusal names the package it could not resolve: an empty hash is
+    /// the cluster default, so the refusal names that hash rather than an empty string.</summary>
+    private string PackageNameFor(string packageHash) =>
+        packageHash.Length > 0 ? packageHash : $"{_defaultPackageHash} (the cluster default)";
 
     /// <summary>
     /// Prepares, activates and runs an admitted room. A second call for a room this process
@@ -122,10 +151,10 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             // coordinator wrote at StartRound). A package this host does not ship is
             // refused by name before any capacity or data-plane work; the room is never
             // silently rebuilt under the default example module.
-            if (!RedesignModuleCatalog.TryGet(request.PackageHash, out var package))
+            if (!TryResolvePackage(request.PackageHash, out var package))
                 throw new ModulePackageException(
-                    $"The room names package \"{request.PackageHash}\", which this host does not " +
-                    $"ship (shipped: {RedesignModuleCatalog.ShippedList()}); the package is missing " +
+                    $"The room names package \"{PackageNameFor(request.PackageHash)}\", which this " +
+                    $"host does not ship (shipped: {_shippedList}); the package is missing " +
                     "or unknown.");
 
             // FIX-PERF-07: a new allocation reserves an admission slot before any data-plane
@@ -514,12 +543,12 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     Note = $"The recovery cadence {request.TickMs} ms does not match the room's " +
                            $"persisted cadence {plan.TickMs} ms; a recovery cannot change a room's tick."
                 };
-            if (!RedesignModuleCatalog.TryGet(plan.PackageHash, out var package))
+            if (!TryResolvePackage(plan.PackageHash, out var package))
                 return new RecoverRoomReply
                 {
                     RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The room's package \"{plan.PackageHash}\" is not a package this host " +
-                           $"ships (shipped: {RedesignModuleCatalog.ShippedList()}); the package is " +
+                    Note = $"The room's package \"{PackageNameFor(plan.PackageHash)}\" is not a " +
+                           $"package this host ships (shipped: {_shippedList}); the package is " +
                            "missing or unknown."
                 };
             if (plan.ModuleVersion != package.ModuleVersion)

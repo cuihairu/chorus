@@ -57,16 +57,32 @@ public static class RedesignModuleCatalog
         RedesignGameModuleManifest.FastTest.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
         static manifest => new LiveGameModule(manifest));
 
+    /// <summary>The 1.1.0 upgrade of the default package (FIX-MODULE-04's upgrade window):
+    /// same module name, new version, config and package hash — the next version of the
+    /// example factions module ships side by side with the 1.0.0 one, so rooms pinned to
+    /// the old hash keep recovering under the old rules while new rooms pin the new hash.
+    /// The boost formula diverges (flat 12 × level, no seed draw) so loading the wrong
+    /// version is detectable by replay, not by trust.</summary>
+    public static RedesignModulePackage DefaultNext { get; } = new(
+        "example-factions", "1.1.0", "cfg-1-v2", "pkg-1-v2",
+        RedesignGameModuleManifest.DeterministicReplay,
+        RedesignGameModuleManifest.Default.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+        static manifest => new ExampleGameModuleV2(manifest));
+
     /// <summary>Every package this host ships, in stable order; the hashes are what a
-    /// missing-package refusal lists back to the caller.</summary>
-    public static IReadOnlyList<RedesignModulePackage> Shipped { get; } = [Default, Duel, Live];
+    /// missing-package refusal lists back to the caller. A host that stages an upgrade
+    /// drops the old package from its own runtime set (CHORUS_MODULE_PACKAGES) while the
+    /// registry itself keeps both versions resolvable.</summary>
+    public static IReadOnlyList<RedesignModulePackage> Shipped { get; } =
+        [Default, DefaultNext, Duel, Live];
 
     private static readonly IReadOnlyDictionary<string, RedesignModulePackage> ByPackageHash =
-        BuildIndex();
+        Index(Shipped);
 
-    /// <summary>Resolves a package by its hash. Empty names the cluster's default package
-    /// (the same pin the coordinator writes); a hash this host does not ship answers
-    /// false — the caller must refuse by name, never fall back to the default package.</summary>
+    /// <summary>Resolves a package by its hash against the full registry. Empty names the
+    /// cluster's default package (the same pin the coordinator writes); a hash this host
+    /// does not ship answers false — the caller must refuse by name, never fall back to
+    /// the default package.</summary>
     public static bool TryGet(string packageHash, out RedesignModulePackage package)
     {
         if (packageHash.Length > 0)
@@ -77,13 +93,17 @@ public static class RedesignModuleCatalog
 
     /// <summary>The comma-joined shipped package hashes, for refusal notes that say what
     /// this host can load.</summary>
-    public static string ShippedList() => string.Join(", ",
-        Shipped.Select(package => package.PackageHash).Order(StringComparer.Ordinal));
+    public static string ShippedList() => ListOf(Shipped);
 
-    private static IReadOnlyDictionary<string, RedesignModulePackage> BuildIndex()
+    /// <summary>The package-hash index of one host's shipped set (FIX-MODULE-04): the
+    /// runtime instances hold their own filtered set so an upgrade can drop the old
+    /// package per host, while duplicate hashes remain a construction failure.</summary>
+    public static IReadOnlyDictionary<string, RedesignModulePackage> Index(
+        IReadOnlyCollection<RedesignModulePackage> shipped)
     {
+        ArgumentNullException.ThrowIfNull(shipped);
         var index = new Dictionary<string, RedesignModulePackage>(StringComparer.Ordinal);
-        foreach (var package in Shipped)
+        foreach (var package in shipped)
         {
             if (!index.TryAdd(package.PackageHash, package))
                 throw new InvalidOperationException(
@@ -92,4 +112,9 @@ public static class RedesignModuleCatalog
         }
         return index;
     }
+
+    /// <summary>The comma-joined hashes of one host's shipped set, sorted — the shape
+    /// refusal notes list back to the caller.</summary>
+    public static string ListOf(IReadOnlyCollection<RedesignModulePackage> shipped) =>
+        string.Join(", ", shipped.Select(package => package.PackageHash).Order(StringComparer.Ordinal));
 }
