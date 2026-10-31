@@ -249,3 +249,20 @@ M3-5 的 `ClusterDirectory` 只维护「可达性」：谁在报告、端点在�
 **共租门禁记录（方法学）**：本项定局跑遭遇本机持续共租尖峰（14 核 1min 负载 20-52 反复），unpinned 全量连跑三次各出 1-5 个失败且**失败集每跑不同**（RowLock 计时诊断 270.97<300ms、M4 join-queue 的 DataServer 15s 就绪超时、RoundDemo edge 重连等待超时），全部隔离复跑即绿、无一在本次改动波及面内。最终以 `taskset -c 0-7` 收束套件自身并行争用后 8m12s 全绿 1414/1414——与 M4 parked-room flake 的「2 核 pin 本地复现绿」同族结论：宿主就绪截止窗对调度器争用敏感，pin 核数是本机共租期跑全量的可行姿势。
 
 **诚实边界**：协调器仍固定为集群默认包发新局（「按版本分流新局」的选择面未做——pkg-1-v2 房间须显式点名包 hash）；双版本共享家族状态 schema 与结果文档形状；`CHORUS_MODULE_PACKAGES` 是宿主级开关，滚升时旧宿主下线前的旧局恢复窗口=仍载旧包的宿主存活期（无自动「包-宿主」亲和调度）；被拒房间的再指派依赖 sweep reassign（FIX-TAKE-05 路径，本项未动）；AT17 双 OS 重放仍硬件阻塞，本项只闭合其单节点软件面。
+
+## Streamer 所有权语义对齐落地：路由归属 ≠ 会话栅栏（FIX-AUTH-01，a3f3df7）
+
+纯文档/协议注释对齐项（零行为变更）：把 M3-7b 已在实现层钉死、但上游目标态文档仍混说的两条边界——**路由 ownership（control.ownership kind='streamer'）**与**会话轮换写栅栏（auth.streamer_state 的 current_session_version/current_session_id）**——在架构、协议和管理接口三处说明里掰开。todo 词汇「TransferStreamer」对应真实机制 `Takeover.TransferOwnership(kind=streamer)`（无同名 RPC，M3-7b 已注明）。
+
+**改了什么**（10 处过度/欠明声明，逐条核对代码后改写）：
+- `architecture.md` §4.2：旧句「旧实例即使仍运行，也不能提交旧 epoch 的数据」加实体域限定——房间=数据面拒旧 epoch；Streamer=写栅栏是会话轮换，转移只改路由归属、不撤销轮换前仍有效的旧会话。旧句「所有写入均先锁定适用 ownership 行」同限：帧类写入锁 ownership 行，会话域写入（Login/Resume/连接代/撤销）锁会话状态行、不读 ownership。
+- `architecture.md` §5.1 步 4/6：删两处幻觉——「ControlServer 原子查找或激活 Streamer 所有者；并发登录只能有一条有效 ownership」（实况：声明是会话授予后的 best-effort 路由画像，失败只告警；并发登录由会话状态行锁串行化）与「CommitLogin 事务校验 StreamerEpoch」（实况：该事务锁 streamer_state、递增 SessionVersion、同事务撤销旧会话，从不校验 ownership epoch）。
+- `architecture.md` §10.3 尾段：重写为两步客户端驱动语义——第一步 TransferOwnership(kind=streamer) 递增 epoch、改路由归属、置 Recovering（不撤会话不清挂载）；第二步经新实例 Resume，轮换事务同提交内撤旧会话+授新会话，新实例声明把 ownership 确认回 Active。明写「不存在仅转移 ownership 即撤销会话的语义」。
+- `redesign-contracts.md`：control.ownership 行写者注「数据事务加锁验证」限定为房间（Streamer 会话域不读此行）；auth.streamer_state 行「匹配和接管共同校验」改为「匹配与会话轮换共同校验（接管转移不校验）」；跨域锁序补注 Streamer 会话域事务例外（不取 Ownership 锁，设计而非遗漏）。
+- `redesign-operations.md`：故障表两行——StreamerServer 崩溃行的恢复动作改为「移交改路由（epoch+1，不撤会话）；经新实例 Resume 加载并轮换会话」；分区行的「新 epoch 接管后旧实例必须失效」按实体域拆开（房间=拒旧 epoch；Streamer=待下次轮换拒旧 SessionVersion）。
+- `glossary.md`：Owner/Ownership 词条加域限定（房间=fence 写入；Streamer=路由画像，会话写栅栏是 SessionVersion）；SessionVersion 词条的「checked during rotation and takeover」改为「rotation（Login/Resume）与每个会话消费者校验；streamer 接管不查它——接管只改路由不撤会话」。
+- `m3.proto`：Takeover 服务头注释「the handover fences the old epoch」按 kind 分域改写；TransferOwnership RPC 注释明写「bumps the ownership epoch（房间另 bump game.room）」「转移 streamer 不撤任何会话、不清挂载，栅栏落在经新实例的 Resume 轮换上」；Admin GetStreamerSnapshot 注释补管理面视角（快照 owner/epoch 列是路由画像，会话权威在 session 行的当前版本——两者在接管到下次轮换之间可合法不一致）。
+
+**证据**：全库（docs/ 源 + src/）残留过度声明模式扫描为空（`校验 StreamerEpoch`/`接管共同校验`/`只能有一条有效 ownership`/`checked during rotation and takeover` 等模式仅命中已改写后的限定句）；`dotnet build Chorus.sln -c Release` 0 error（proto 注释变更经代码生成验证）；定向 `RedesignM3StreamerTakeover`（store 2 + host 1）3/3 绿——含 host 测试本身钉死的两步语义（转移后 Resume 轮换，旧实例凭证经读路径即 PermissionDenied）。docs/.vitepress/dist 为构建产物，随下次文档站构建再生，不手工改。
+
+**诚实边界**：本项只对齐说明，不改行为——「迟到声明可再夺 epoch+1」是当前 ClaimOwnership 语义的可见真相（store 测试钉死），其防护是 FIX-AUTH-02 的代码交付（声明时校验对应当前 session/version）；AttachConnection 纯网关换腿不轮换、无挂载实体不进 ownership 体系（声明以挂载为 scope）两条现状已在 §10.3 新句中如实陈述。
