@@ -321,8 +321,12 @@ public sealed class RedesignRoomEventPushHostTests
                 ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
                 ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
                 ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
-                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "6",
-                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "3"
+                // Nothing in this fact waits for a lease to lapse, and the replay leg below
+                // must find the lease alive however starved the runner: a lapsed lease is a
+                // correct StaleOwner (the renewal gate stops seeing the owner's reports),
+                // not a consumption failure. The tight 6s/3s recipe starves on 2-core CI.
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "60",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "15"
             });
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
