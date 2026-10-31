@@ -151,7 +151,7 @@
 ### 22.8 权威语义与外部验收（P1/P2）
 
 - [x] **FIX-AUTH-01 / P1：明确 Streamer 所有权语义。** 依赖：无。交付：对齐架构、协议和管理接口说明，区分路由 ownership 与 session 轮换写栅栏。验收：明确 TransferStreamer 与 Resume 各自何时改变路由/撤销旧权限，不声称仅转移 ownership 即撤销会话。（a3f3df7：architecture.md 4.2/5.1/10.3、redesign-contracts.md 表+锁序、redesign-operations.md 两行、glossary.md 两词条、m3.proto Takeover/Admin 注释；全库残留过度声明扫描为空；build + RedesignM3StreamerTakeover 3/3 绿）
-- [ ] **FIX-AUTH-02 / P1：防止迟到声明污染 Streamer 路由。** 依赖：FIX-AUTH-01。交付：声明路由归属时校验其对应的当前 session/version，或采用同等有版本投影规则。验收：新会话在 B 生效后，A 的迟到 Claim 不把路由改回 A；合法的新登录仍可接管。
+- [x] **FIX-AUTH-02 / P1：防止迟到声明污染 Streamer 路由。** 依赖：FIX-AUTH-01。交付：声明路由归属时校验其对应的当前 session/version，或采用同等有版本投影规则。验收：新会话在 B 生效后，A 的迟到 Claim 不把路由改回 A；合法的新登录仍可接管。（bb1f040：OwnershipRequest 增 session_id/session_version；streamer 声明事务 FOR UPDATE 锁 streamer_state 校验当前会话，不同/缺席具名拒；迟到声明 FailedPrecondition；store +1 改 1、host +1；全量 pin 门 1416/1416）
 - [ ] **FIX-ENV-01 / P2：独立机器分区接管验收。** 依赖：FIX-TAKE-08、FIX-FRAME-04、FIX-ROOM-06。环境：至少两个独立故障域及可控网络。验收：旧 owner 仍能访问 Data/客户端、但无法访问 Control 时，新 owner 接管后旧 epoch 新写被拒；记录检测至恢复分布（AT24/25/28）。缺环境保持 NOT RUN，SIGSTOP 不替代此项。
 - [ ] **FIX-ENV-02 / P2：数据库主备故障验收。** 依赖：无；环境：独立同步备库及可隔离旧主的操作能力。验收：主库故障、同步备库失联、旧主恢复分别验证已确认事务保留与无双写；记录实际 RPO/RTO（AT26），复用 `docs/architecture/room-multihost-acceptance.md` 的环境准备证据，但必须按当前角色与 AT26 实测。
 - [ ] **FIX-ENV-03 / P2：Linux/Windows 双向重放验收。** 依赖：FIX-MODULE-02；环境：两个真实运行环境。验收：同一模块版本快照/日志双向重放哈希一致；不通过的模块明确限制恢复域或使用 FullCheckpoint，不能标为跨 OS 确定性通过（AT16）。

@@ -266,3 +266,13 @@ M3-5 的 `ClusterDirectory` 只维护「可达性」：谁在报告、端点在�
 **证据**：全库（docs/ 源 + src/）残留过度声明模式扫描为空（`校验 StreamerEpoch`/`接管共同校验`/`只能有一条有效 ownership`/`checked during rotation and takeover` 等模式仅命中已改写后的限定句）；`dotnet build Chorus.sln -c Release` 0 error（proto 注释变更经代码生成验证）；定向 `RedesignM3StreamerTakeover`（store 2 + host 1）3/3 绿——含 host 测试本身钉死的两步语义（转移后 Resume 轮换，旧实例凭证经读路径即 PermissionDenied）。docs/.vitepress/dist 为构建产物，随下次文档站构建再生，不手工改。
 
 **诚实边界**：本项只对齐说明，不改行为——「迟到声明可再夺 epoch+1」是当前 ClaimOwnership 语义的可见真相（store 测试钉死），其防护是 FIX-AUTH-02 的代码交付（声明时校验对应当前 session/version）；AttachConnection 纯网关换腿不轮换、无挂载实体不进 ownership 体系（声明以挂载为 scope）两条现状已在 §10.3 新句中如实陈述。
+
+## 迟到声明防护落地：streamer 声明校验当前会话（FIX-AUTH-02，bb1f040）
+
+FIX-AUTH-01 划定的边界在代码面闭合：路由归属的**声明**现在有版本——`ControlService.ClaimOwnership` 对 kind=streamer 要求携带 `session_id`/`session_version`（m0.proto additive 字段），控制面在声明事务内 `FOR UPDATE` 锁 `auth.streamer_state` 校验该会话恰为当前会话（同 id 同版本、租户相符、行在案），不符即具名拒（gRPC 层 FailedPrecondition；缺席/非正版本 InvalidArgument）。迟到声明不再能夺走路由：旧持有者重放的声明携带已被轮换退役的会话，校验拒之门外；合法新登录的声明携带轮换后的当前会话，照常接管（不同持有者 epoch+1 规则不变）。
+
+- **机制**：`RedesignControlStore.ClaimOwnershipAsync` streamer 分支——单事务：锁+读 streamer_state → 校验（无行/跨租户/无会话字段/版本 0/非当前会话各给具名拒文）→ 原 UPSERT（epoch 规则原样）→ 提交。会话行锁把校验与轮换串行化：轮换先提交则声明读到新版本必拒；声明先锁则其会话在声明提交前保持当前。房间 kind 路径零改动（可选参数默认缺席，全库既有调用不迁移）。
+- **接线**：`StreamerOwnershipRegistrar.ClaimAsync` 增会话参数；三处声明点（Login 后携 grant、Resume 后携 grant、StartGameplay 后携 access 校验结果）都带上自己的会话版本——声明失败仍只记 stderr，会话路径不受影响。
+- **证据**（+2 fact，净 +2：store 事实 2→3、host 事实 1→2，全在 bb1f040）：store `TransferBumpsEpochUnderTheNamedHolderAndTheNewClaimConfirms` 重写收尾——B 经轮换确认后，A 携退役会话（sess-a1/v1）迟到声明 → 可见拒且行纹丝不动（仍 B/epoch 2/Active），随后 A 合法新登录（sess-a2/v3）声明照常夺回（epoch 3，不同持有者规则保持）；新 store `AStreamerClaimWithoutTheCurrentSessionIsRefusedVisibly`——无 streamer_state 行/无会话字段/版本 0/同版本异会话 id/跨租户五路全拒且零行产生，当前会话照常声明成功；host 新 `ALateClaimCannotFlipRoutingOnceTheSessionMovedOnButANewLoginCan`（真双 StreamerServer，无 SIGSTOP 依赖）——A 登录+挂载声明在案（v1）→ B 二次登录接管（声明携 v2 当前会话，epoch+1）→ **以 A 自己的证书（streamer-server 角色/实例 streamer-a）直发其声明重放的精确形态**：携退役会话 → FailedPrecondition，无会话 → InvalidArgument，ownership 行与路由快照 streamer 行都仍是 B；→ A 第三次登录（v3）声明照常把记录合法取回。
+- **门禁**：定向族 35/35（takeover 5 + identity/M4/M3-takeover/M0 30）后全量 pin 门（taskset 0-7，共租尖峰负载 155 进行中）**1416/1416**（=1414 基线+2）11m49s；残留 0 进程 0 库。
+- **诚实边界**：`Takeover.TransferOwnership(kind=streamer)` 转移本身仍不查会话（控制面操作者动作，M3-7b 语义保留）；声明与轮换跨域的固有窗口仍在——声明提交与下一次轮换提交之间路由可能短暂指向刚被退役的持有者，收敛靠新持有者自己的声明（投影语义，非权威漂移）；旧 M3-7b 台账「迟到声明=可见再夺 epoch+1」自本项起作废，以本节为准。
