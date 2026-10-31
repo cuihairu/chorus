@@ -178,9 +178,71 @@ public sealed class RedesignControlStore(string connectionString)
 
     public async Task<OwnerStatus> ClaimOwnershipAsync(
         string tenantId, string gameId, string kind, string entityId,
-        string ownerInstanceId, int leaseSeconds, CancellationToken cancellationToken = default)
+        string ownerInstanceId, int leaseSeconds, CancellationToken cancellationToken = default,
+        string? sessionId = null, long sessionVersion = 0)
     {
         if (leaseSeconds is <= 0 or > 60) throw new ArgumentOutOfRangeException(nameof(leaseSeconds));
+        // A streamer claim is versioned (FIX-AUTH-02): it must name the acting session and is
+        // admitted only while that session is the streamer's current one, so a displaced
+        // holder's late claim cannot flip routing back once a rotation moved the session on.
+        if (StringComparer.Ordinal.Equals(kind, "streamer"))
+        {
+            await using var streamerConnection = new NpgsqlConnection(connectionString);
+            await streamerConnection.OpenAsync(cancellationToken);
+            await using var transaction =
+                await streamerConnection.BeginTransactionAsync(cancellationToken);
+            await using (var state = new NpgsqlCommand("""
+                SELECT tenant_id,current_session_id,current_session_version
+                FROM auth.streamer_state WHERE streamer_id=@entity FOR UPDATE
+                """, streamerConnection, transaction))
+            {
+                state.Parameters.AddWithValue("entity", entityId);
+                await using var stateReader = await state.ExecuteReaderAsync(cancellationToken);
+                if (!await stateReader.ReadAsync(cancellationToken))
+                    throw new InvalidOperationException(
+                        $"The streamer {entityId} has no session state; a routing claim names the current session.");
+                if (!StringComparer.Ordinal.Equals(stateReader.GetString(0), tenantId))
+                    throw new InvalidOperationException(
+                        "The streamer belongs to another tenant; the routing claim is out of scope.");
+                var currentSessionId = stateReader.IsDBNull(1) ? null : stateReader.GetString(1);
+                var currentSessionVersion = stateReader.GetInt64(2);
+                if (string.IsNullOrEmpty(sessionId) || sessionVersion <= 0)
+                    throw new InvalidOperationException(
+                        "A streamer routing claim names the acting session and its version; this claim carries none.");
+                if (!StringComparer.Ordinal.Equals(sessionId, currentSessionId) ||
+                    sessionVersion != currentSessionVersion)
+                    throw new InvalidOperationException(
+                        $"The claim names session {sessionId} (version {sessionVersion}), which is not the streamer's current session (version {currentSessionVersion}); routing stays with the current holder.");
+            }
+            await using var claimCommand = new NpgsqlCommand("""
+                INSERT INTO control.ownership(kind,entity_id,tenant_id,game_id,owner_process_instance_id,
+                    epoch,lease_until,status,version)
+                VALUES (@kind,@entity,@tenant,@game,@owner,1,
+                    clock_timestamp()+@lease*interval '1 second','Active',1)
+                ON CONFLICT(kind,entity_id) DO UPDATE
+                SET owner_process_instance_id=excluded.owner_process_instance_id,
+                    epoch=CASE WHEN control.ownership.owner_process_instance_id=excluded.owner_process_instance_id
+                        AND control.ownership.lease_until>clock_timestamp()
+                        THEN control.ownership.epoch ELSE control.ownership.epoch+1 END,
+                    lease_until=excluded.lease_until,status='Active',version=control.ownership.version+1
+                WHERE control.ownership.tenant_id=excluded.tenant_id
+                  AND control.ownership.game_id=excluded.game_id
+                RETURNING owner_process_instance_id,epoch,lease_until,status
+                """, streamerConnection, transaction);
+            BindOwner(claimCommand, tenantId, gameId, kind, entityId);
+            claimCommand.Parameters.AddWithValue("owner", ownerInstanceId);
+            claimCommand.Parameters.AddWithValue("lease", leaseSeconds);
+            OwnerStatus status;
+            await using (var claimReader = await claimCommand.ExecuteReaderAsync(cancellationToken))
+            {
+                if (!await claimReader.ReadAsync(cancellationToken))
+                    throw new InvalidOperationException("Ownership scope conflicts with an existing entity.");
+                status = new OwnerStatus(claimReader.GetString(0), claimReader.GetInt64(1),
+                    claimReader.GetDateTime(2), claimReader.GetString(3));
+            }
+            await transaction.CommitAsync(cancellationToken);
+            return status;
+        }
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""

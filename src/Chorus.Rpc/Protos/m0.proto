@@ -89,6 +89,12 @@ message OwnershipRequest {
   int32 lease_seconds = 4;
   string tenant_id = 5;
   string game_id = 6;
+  // A streamer-entity claim names its acting session (FIX-AUTH-02): the claim is admitted
+  // only while that session is the streamer's current one, so a displaced holder's late
+  // claim cannot flip routing back once a rotation moved the session on. Other kinds ignore
+  // these fields.
+  string session_id = 7;
+  int64 session_version = 8;
 }
 message OwnershipLookup { string kind = 1; string entity_id = 2; string tenant_id = 3; string game_id = 4; }
 message OwnershipReply {

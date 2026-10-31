@@ -209,6 +209,168 @@ public sealed class RedesignM3StreamerTakeoverHostTests
         }
     }
 
+    [Fact]
+    public async Task ALateClaimCannotFlipRoutingOnceTheSessionMovedOnButANewLoginCan()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var streamerPortA = RedesignM0HostTests.HostEnvironment.FreePort();
+        var streamerPortB = RedesignM0HostTests.HostEnvironment.FreePort();
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "6",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "3"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        StreamerEnvironment StreamerEnv(int port, string slotId) => new(
+            environment.DataPort, controlEndpoint, port, slotId);
+        await environment.StartAsync("Chorus.StreamerServer", streamerPortA, "streamer-server",
+            StreamerEnv(streamerPortA, "node-a/streamer-server").Environment(simulatorKey, accessKey),
+            instanceId: "streamer-a");
+        await environment.StartAsync("Chorus.StreamerServer", streamerPortB, "streamer-server",
+            StreamerEnv(streamerPortB, "node-a/streamer-server#2").Environment(simulatorKey, accessKey),
+            instanceId: "streamer-b");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-a02");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        var routing = new RoutingService.RoutingClient(controlChannel);
+
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-a02"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-a02" });
+        }
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        // The first login lands on A and mounts, so the entity is on A's record (version 1)
+        // and the routing snapshot carries a streamer row to follow.
+        LoginReadyReply first;
+        using (var certificate = environment.Certificate("tenant-a", "streamer-server", "login1-a02"))
+        using (var channel = environment.Channel(streamerPortA, certificate, "streamer-server"))
+        {
+            var session = new StreamerSession.StreamerSessionClient(channel);
+            first = await session.LoginAsync(new LoginRequest
+            {
+                Platform = "simulator", AppId = "app-1",
+                LaunchCredential = simulator.IssueCredential("app-1", "open-a02", "live-a02",
+                    TimeSpan.FromMinutes(10)),
+                LoginAttemptId = "attempt1-a02",
+                NextResumeSecret = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+                GatewayInstanceId = "gateway-1", ConnectionId = "connection-a02-a"
+            });
+            Assert.Equal(1L, first.SessionVersion);
+            await session.StartGameplayAsync(new StartGameplayRequest
+            {
+                AccessCredential = first.AccessCredential, GameId = "game-a", OperationId = "mount-a02"
+            });
+        }
+        var onA = await WaitForAsync(async () =>
+        {
+            var ownership = await control.GetOwnershipAsync(new OwnershipLookup
+            {
+                TenantId = "tenant-a", GameId = "game-a", Kind = "streamer", EntityId = first.StreamerId
+            });
+            return ownership.Found && ownership.OwnerInstanceId == "streamer-a" && ownership.Status == "Active";
+        }, TimeSpan.FromSeconds(15));
+        Assert.True(onA, "The first login host never claimed the streamer entity ownership.");
+
+        // A second login through B takes over by rotation: the grant there (version 2) is the
+        // current session, and B's claim naming it moves the record to B at a bumped epoch.
+        using (var certificate = environment.Certificate("tenant-a", "streamer-server", "login2-a02"))
+        using (var channel = environment.Channel(streamerPortB, certificate, "streamer-server"))
+        {
+            await new StreamerSession.StreamerSessionClient(channel).LoginAsync(new LoginRequest
+            {
+                Platform = "simulator", AppId = "app-1",
+                LaunchCredential = simulator.IssueCredential("app-1", "open-a02", "live-a02",
+                    TimeSpan.FromMinutes(10)),
+                LoginAttemptId = "attempt2-a02",
+                NextResumeSecret = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+                GatewayInstanceId = "gateway-1", ConnectionId = "connection-a02-b"
+            });
+        }
+        var onB = await WaitForAsync(async () =>
+        {
+            var ownership = await control.GetOwnershipAsync(new OwnershipLookup
+            {
+                TenantId = "tenant-a", GameId = "game-a", Kind = "streamer", EntityId = first.StreamerId
+            });
+            return ownership.Found && ownership.OwnerInstanceId == "streamer-b" && ownership.Status == "Active";
+        }, TimeSpan.FromSeconds(15));
+        Assert.True(onB, "The takeover login host never claimed the streamer entity ownership.");
+        var epochOnB = (await control.GetOwnershipAsync(new OwnershipLookup
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "streamer", EntityId = first.StreamerId
+        })).Epoch;
+
+        // A's late claim — the exact call its registrar would retry — names the session the
+        // rotation retired: the control plane refuses it, and neither the record nor the
+        // routing projection moves. A session-less claim never gets that far.
+        using (var lateCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-a"))
+        using (var lateChannel = environment.Channel(environment.ControlPort, lateCertificate, "control-server"))
+        {
+            var lateClient = new ControlService.ControlServiceClient(lateChannel);
+            var refused = await Assert.ThrowsAsync<RpcException>(async () => await lateClient.ClaimOwnershipAsync(
+                new OwnershipRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", Kind = "streamer", EntityId = first.StreamerId,
+                    OwnerInstanceId = "streamer-a", LeaseSeconds = 15,
+                    SessionId = first.SessionId, SessionVersion = first.SessionVersion
+                }));
+            Assert.Equal(StatusCode.FailedPrecondition, refused.StatusCode);
+            var noSession = await Assert.ThrowsAsync<RpcException>(async () => await lateClient.ClaimOwnershipAsync(
+                new OwnershipRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", Kind = "streamer", EntityId = first.StreamerId,
+                    OwnerInstanceId = "streamer-a", LeaseSeconds = 15
+                }));
+            Assert.Equal(StatusCode.InvalidArgument, noSession.StatusCode);
+        }
+        var afterLate = await control.GetOwnershipAsync(new OwnershipLookup
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "streamer", EntityId = first.StreamerId
+        });
+        Assert.Equal("streamer-b", afterLate.OwnerInstanceId);
+        Assert.Equal(epochOnB, afterLate.Epoch);
+        var routeAfterLate = await routing.GetRoutingSnapshotAsync(new Empty());
+        var routeEntry = Assert.Single(routeAfterLate.Streamers, entry => entry.StreamerId == first.StreamerId);
+        Assert.Equal("streamer-b", routeEntry.OwnerInstanceId);
+
+        // A legitimate new login through A rotates the session again (version 3): its claim
+        // names the current session, so the record legitimately returns to A.
+        using (var certificate = environment.Certificate("tenant-a", "streamer-server", "login3-a02"))
+        using (var channel = environment.Channel(streamerPortA, certificate, "streamer-server"))
+        {
+            await new StreamerSession.StreamerSessionClient(channel).LoginAsync(new LoginRequest
+            {
+                Platform = "simulator", AppId = "app-1",
+                LaunchCredential = simulator.IssueCredential("app-1", "open-a02", "live-a02",
+                    TimeSpan.FromMinutes(10)),
+                LoginAttemptId = "attempt3-a02",
+                NextResumeSecret = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+                GatewayInstanceId = "gateway-1", ConnectionId = "connection-a02-c"
+            });
+        }
+        var backOnA = await WaitForAsync(async () =>
+        {
+            var ownership = await control.GetOwnershipAsync(new OwnershipLookup
+            {
+                TenantId = "tenant-a", GameId = "game-a", Kind = "streamer", EntityId = first.StreamerId
+            });
+            return ownership.Found && ownership.OwnerInstanceId == "streamer-a" && ownership.Status == "Active";
+        }, TimeSpan.FromSeconds(15));
+        Assert.True(backOnA, "A legitimate new login never took the entity back.");
+    }
+
     private sealed record StreamerEnvironment(
         int DataPort, string ControlEndpoint, int Port, string SlotId)
     {

@@ -107,8 +107,23 @@ public sealed class ControlGrpcService(
                 throw new RpcException(new Status(StatusCode.InvalidArgument,
                     "A streamer server can only claim ownership for itself."));
         }
-        var result = await store.ClaimOwnershipAsync(request.TenantId, request.GameId, request.Kind,
-            request.EntityId, request.OwnerInstanceId, request.LeaseSeconds, context.CancellationToken);
+        // A streamer claim is versioned (FIX-AUTH-02): it names the acting session, and the
+        // store admits it only while that session is the streamer's current one.
+        if (StringComparer.Ordinal.Equals(request.Kind, "streamer") &&
+            (string.IsNullOrWhiteSpace(request.SessionId) || request.SessionVersion <= 0))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "A streamer ownership claim names the acting session and its version."));
+        OwnerStatus result;
+        try
+        {
+            result = await store.ClaimOwnershipAsync(request.TenantId, request.GameId, request.Kind,
+                request.EntityId, request.OwnerInstanceId, request.LeaseSeconds, context.CancellationToken,
+                request.SessionId, request.SessionVersion);
+        }
+        catch (InvalidOperationException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
         return OwnerReply(result);
     }
 

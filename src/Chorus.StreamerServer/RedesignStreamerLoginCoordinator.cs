@@ -134,9 +134,11 @@ public sealed class RedesignStreamerLoginCoordinator(
             command.ConnectionId, command.NextResumeSecret, cancellationToken);
         await actor.OnSessionGrantedAsync(grant, cancellationToken);
         // This instance now speaks for the entity: put it on the control-plane record so routing
-        // names the holder and the registrar keeps the lease while the process is live.
+        // names the holder and the registrar keeps the lease while the process is live. The
+        // claim names the grant's session, so a claim carrying a rotated-out session is refused.
         if (ownershipRegistrar is not null)
-            await ownershipRegistrar.ClaimAsync(callerTenantId, gameId, streamerId, cancellationToken);
+            await ownershipRegistrar.ClaimAsync(callerTenantId, gameId, streamerId,
+                grant.SessionId, grant.SessionVersion, cancellationToken);
         await NotifyReplacementAsync(grant, command.GatewayInstanceId, command.ConnectionId,
             "replaced_by_login", cancellationToken);
         return Ready(grant);
@@ -156,7 +158,7 @@ public sealed class RedesignStreamerLoginCoordinator(
         // binding yet claims at login or at the mount instead — a scope-less claim cannot exist.
         if (ownershipRegistrar is not null && facts.ActiveBinding is { } binding)
             await ownershipRegistrar.ClaimAsync(callerTenantId, binding.GameId, grant.StreamerId,
-                cancellationToken);
+                grant.SessionId, grant.SessionVersion, cancellationToken);
         // A rotation displaced the previous connection wherever it lives — this gateway or
         // another. Duplicate retries carry no previous facts: the first attempt notified.
         await NotifyReplacementAsync(grant, command.GatewayInstanceId, command.ConnectionId,
@@ -275,7 +277,8 @@ public sealed class RedesignStreamerLoginCoordinator(
         // The mount names the game scope, so an entity that skipped the claim until now (a
         // resume before any binding) goes on the record here.
         if (ownershipRegistrar is not null)
-            await ownershipRegistrar.ClaimAsync(callerTenantId, gameId, access.StreamerId, cancellationToken);
+            await ownershipRegistrar.ClaimAsync(callerTenantId, gameId, access.StreamerId,
+                access.SessionId, access.SessionVersion, cancellationToken);
         return binding;
     }
 

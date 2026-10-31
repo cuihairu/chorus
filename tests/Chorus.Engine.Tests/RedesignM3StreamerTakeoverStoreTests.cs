@@ -8,7 +8,10 @@ namespace Chorus.Engine.Tests;
 /// Streamer-entity ownership handover (M3-7b, architecture 10.3): the transfer transaction moves
 /// the holder and bumps the epoch under the named-from guard, parks the row Recovering so the
 /// renewal registrar leaves it alone, and the new holder's own claim confirms it — same holder
-/// with a live lease keeps the epoch and returns the row Active.
+/// with a live lease keeps the epoch and returns the row Active. Claims are versioned
+/// (FIX-AUTH-02): a streamer claim names the acting session and is admitted only while that
+/// session is the streamer's current one, so a displaced holder's late claim cannot flip the
+/// routing record back once a rotation moved the session on.
 /// </summary>
 public sealed class RedesignM3StreamerTakeoverStoreTests
 {
@@ -17,9 +20,10 @@ public sealed class RedesignM3StreamerTakeoverStoreTests
     {
         await using var database = await TemporaryDatabase.CreateAsync();
         var control = new RedesignControlStore(database.ConnectionString);
+        await SeedSessionAsync(database.ConnectionString, "streamer-open-1", "sess-a1", 1);
 
         var claimed = await control.ClaimOwnershipAsync("tenant-a", "game-a", "streamer",
-            "streamer-open-1", "streamer-a", 15);
+            "streamer-open-1", "streamer-a", 15, sessionId: "sess-a1", sessionVersion: 1);
         Assert.Equal(1, claimed.Epoch);
         Assert.Equal("Active", claimed.Status);
 
@@ -28,7 +32,7 @@ public sealed class RedesignM3StreamerTakeoverStoreTests
             "tenant-a", "game-a", "streamer", "streamer-open-1", "streamer-b", "streamer-b", 15));
         // A scope that does not match the row is a visible refusal, not a silent second entity.
         await Assert.ThrowsAsync<InvalidOperationException>(() => control.TransferOwnershipAsync(
-            "tenant-a", "game-b", "streamer", "streamer-open-1", "streamer-a", "streamer-b", 15));
+            "tenant-b", "game-a", "streamer", "streamer-open-1", "streamer-a", "streamer-b", 15));
 
         var moved = await control.TransferOwnershipAsync("tenant-a", "game-a", "streamer",
             "streamer-open-1", "streamer-a", "streamer-b", 15);
@@ -40,20 +44,67 @@ public sealed class RedesignM3StreamerTakeoverStoreTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => control.TransferOwnershipAsync(
             "tenant-a", "game-a", "streamer", "streamer-open-1", "streamer-b", "streamer-c", 15));
 
-        // The new holder's claim — same holder, live lease — keeps the epoch and confirms Active.
+        // The streamer resumed through B: the rotation made B's grant current (session v2), and
+        // B's own claim — same holder, live lease — keeps the epoch and confirms Active.
+        await SeedSessionAsync(database.ConnectionString, "streamer-open-1", "sess-b1", 2);
         var confirmed = await control.ClaimOwnershipAsync("tenant-a", "game-a", "streamer",
-            "streamer-open-1", "streamer-b", 15);
+            "streamer-open-1", "streamer-b", 15, sessionId: "sess-b1", sessionVersion: 2);
         Assert.Equal("streamer-b", confirmed.OwnerInstanceId);
         Assert.Equal(2, confirmed.Epoch);
         Assert.Equal("Active", confirmed.Status);
 
-        // A late claim from the displaced holder steals visibly: the epoch moves again, because
-        // the session domain — not this row — decides who may speak for a streamer entity.
-        var stolen = await control.ClaimOwnershipAsync("tenant-a", "game-a", "streamer",
-            "streamer-open-1", "streamer-a", 15);
-        Assert.Equal("streamer-a", stolen.OwnerInstanceId);
-        Assert.Equal(3, stolen.Epoch);
-        Assert.Equal("Active", stolen.Status);
+        // A late claim from the displaced holder names the session the rotation retired: a
+        // visible refusal, and the record stays with the current holder at the same epoch.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => control.ClaimOwnershipAsync(
+            "tenant-a", "game-a", "streamer", "streamer-open-1", "streamer-a", 15,
+            sessionId: "sess-a1", sessionVersion: 1));
+        var afterLate = await control.GetOwnershipAsync("tenant-a", "game-a", "streamer", "streamer-open-1");
+        Assert.Equal("streamer-b", afterLate!.OwnerInstanceId);
+        Assert.Equal(2, afterLate.Epoch);
+        Assert.Equal("Active", afterLate.Status);
+
+        // A legitimate new login on A rotates the session to v3; its claim names the current
+        // session and takes the record back — the different-holder rule still bumps the epoch.
+        await SeedSessionAsync(database.ConnectionString, "streamer-open-1", "sess-a2", 3);
+        var retaken = await control.ClaimOwnershipAsync("tenant-a", "game-a", "streamer",
+            "streamer-open-1", "streamer-a", 15, sessionId: "sess-a2", sessionVersion: 3);
+        Assert.Equal("streamer-a", retaken.OwnerInstanceId);
+        Assert.Equal(3, retaken.Epoch);
+        Assert.Equal("Active", retaken.Status);
+    }
+
+    [Fact]
+    public async Task AStreamerClaimWithoutTheCurrentSessionIsRefusedVisibly()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var control = new RedesignControlStore(database.ConnectionString);
+        await SeedSessionAsync(database.ConnectionString, "streamer-open-3", "sess-c1", 4);
+
+        // A streamer with no session state has no current session a claim could name.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => control.ClaimOwnershipAsync(
+            "tenant-a", "game-a", "streamer", "streamer-unknown", "streamer-a", 15,
+            sessionId: "sess-x", sessionVersion: 1));
+        // A claim with no session, or a non-positive version, never reroutes.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => control.ClaimOwnershipAsync(
+            "tenant-a", "game-a", "streamer", "streamer-open-3", "streamer-a", 15));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => control.ClaimOwnershipAsync(
+            "tenant-a", "game-a", "streamer", "streamer-open-3", "streamer-a", 15,
+            sessionId: "sess-c1", sessionVersion: 0));
+        // The right version under the wrong session id is still not the current session.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => control.ClaimOwnershipAsync(
+            "tenant-a", "game-a", "streamer", "streamer-open-3", "streamer-a", 15,
+            sessionId: "sess-other", sessionVersion: 4));
+        // The streamer belongs to another tenant: the claim is out of scope.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => control.ClaimOwnershipAsync(
+            "tenant-b", "game-a", "streamer", "streamer-open-3", "streamer-a", 15,
+            sessionId: "sess-c1", sessionVersion: 4));
+        // None of the refusals above created or moved a record.
+        Assert.Null(await control.GetOwnershipAsync("tenant-a", "game-a", "streamer", "streamer-open-3"));
+        // The current session claims as before.
+        var claimed = await control.ClaimOwnershipAsync("tenant-a", "game-a", "streamer",
+            "streamer-open-3", "streamer-a", 15, sessionId: "sess-c1", sessionVersion: 4);
+        Assert.Equal("streamer-a", claimed.OwnerInstanceId);
+        Assert.Equal("Active", claimed.Status);
     }
 
     [Fact]
@@ -61,15 +112,17 @@ public sealed class RedesignM3StreamerTakeoverStoreTests
     {
         await using var database = await TemporaryDatabase.CreateAsync();
         var control = new RedesignControlStore(database.ConnectionString);
+        await SeedSessionAsync(database.ConnectionString, "streamer-open-1", "sess-1", 1);
+        await SeedSessionAsync(database.ConnectionString, "streamer-open-2", "sess-2", 1);
 
         await control.RegisterNodeAsync("node-a", "agent-1", "{}");
         await control.ReportProcessAsync("node-a", "agent-1", "node-a/streamer-server", "streamer-server",
             "streamer-a", 1, "Running", "Ready", "Healthy", "Accepting", "Steady", DateTime.UtcNow,
             "https://localhost:7502");
         var active = await control.ClaimOwnershipAsync("tenant-a", "game-a", "streamer", "streamer-open-1",
-            "streamer-a", 6);
+            "streamer-a", 6, sessionId: "sess-1", sessionVersion: 1);
         await control.ClaimOwnershipAsync("tenant-a", "game-a", "streamer", "streamer-open-2",
-            "streamer-a", 6);
+            "streamer-a", 6, sessionId: "sess-2", sessionVersion: 1);
         var moved = await control.TransferOwnershipAsync("tenant-a", "game-a", "streamer",
             "streamer-open-2", "streamer-a", "streamer-b", 6);
 
@@ -82,6 +135,26 @@ public sealed class RedesignM3StreamerTakeoverStoreTests
         Assert.True(open1!.LeaseUntilUtc > active.LeaseUntilUtc);
         Assert.Equal(moved.LeaseUntilUtc, open2!.LeaseUntilUtc);
         Assert.Equal("Recovering", open2.Status);
+    }
+
+    /// <summary>Seeds (or rotates) the streamer's session state: the current session a claim
+    /// must name, at the version rotation left it.</summary>
+    private static async Task SeedSessionAsync(
+        string connectionString, string streamerId, string sessionId, long version)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("""
+            INSERT INTO auth.streamer_state(streamer_id,tenant_id,current_session_version,current_session_id)
+            VALUES (@streamer,'tenant-a',@version,@session)
+            ON CONFLICT(streamer_id) DO UPDATE
+            SET current_session_version=excluded.current_session_version,
+                current_session_id=excluded.current_session_id
+            """, connection);
+        command.Parameters.AddWithValue("streamer", streamerId);
+        command.Parameters.AddWithValue("version", version);
+        command.Parameters.AddWithValue("session", sessionId);
+        await command.ExecuteNonQueryAsync();
     }
 
     private sealed class TemporaryDatabase(string source) : IAsyncDisposable
