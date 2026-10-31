@@ -66,6 +66,12 @@ builder.Services.AddHostedService<RoomStallGovernanceService>();
 // The end-operation discovery net (FIX-END-04): a room whose result froze without its
 // operation — the host's report lost or the host dead — is begun from the room's receipt.
 builder.Services.AddHostedService<RoomEndDiscoveryService>();
+// Step 3's delivery leg (FIX-END-05): the coordinator persists the stop-delivery command with
+// its responder set and pushes it at every authorized gateway — offline gateways are carried
+// as pending responders, never skipped.
+builder.Services.AddSingleton(new StopDeliveryNotifier(serverCertificate, root, nodeAuthority,
+    clusterId));
+builder.Services.AddHostedService<EndOperationCoordinatorService>();
 // The directory refresh loop (FIX-SCHED-01): the control plane's view of the game hosts
 // follows the process reports, not the startup configuration alone.
 builder.Services.AddHostedService(serviceProvider => new ClusterDirectoryRefreshService(

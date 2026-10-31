@@ -513,6 +513,36 @@ message GetEndStatusReply {
 // lease protocol it drives lives on the DataServer's PlatformTask service.
 service PlatformGatewayFace {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
+  // Step 3's command (architecture 6.4, FIX-END-05): the control plane tells this gateway the
+  // room's delivery closed at an exact version. The command carries the version the control
+  // plane derived from the recorded end-operation facts — the gateway never re-derives it, and
+  // a command naming anything older than what it already closed for this room must never close
+  // a newer round. Delivery of the command is only the ack; installing the stop and confirming
+  // DeliveryStopped are the later steps (FIX-END-07).
+  rpc StopDelivery(StopDeliveryRequest) returns (StopDeliveryReply);
+}
+
+// The stop-delivery command as the control plane recorded it (FIX-END-05): the room, its round
+// generation, and the CloseRouteVersion derived from the end operation's own facts — the same
+// round always carries the same version, a different round a different one.
+message StopDeliveryRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string end_operation_id = 4;
+  int64 round_generation = 5;
+  int64 close_route_version = 6;
+  // The mount generations the end operation recorded at begin — carried with the command so
+  // the gateway's record of what closed is the control plane's evidence, never a guess.
+  repeated EndBindingGeneration binding_generations = 7;
+}
+
+message StopDeliveryReply {
+  string end_operation_id = 1;
+  int64 close_route_version = 2;
+  // True when this gateway already closed this room's delivery at exactly this version — the
+  // replay answer of an idempotent receiver.
+  bool duplicate = 3;
 }
 
 // Admin: state reads, the round trace, and controlled failure commands (operations 6). Every

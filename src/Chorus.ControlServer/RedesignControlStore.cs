@@ -103,6 +103,22 @@ public sealed record UnreportedFinishingRoom(
 /// round that already has its one operation.</summary>
 public sealed class EndOperationConflictException(string message) : Exception(message);
 
+/// <summary>The persisted stop-delivery command (FIX-END-05, architecture 6.4 step 3): the
+/// room, the round generation the begin derived from the mounts, and the CloseRouteVersion
+/// computed from the operation's own recorded facts at issue. The version is frozen at issue —
+/// a repeated delivery of the recorded command always carries the same version, so a replay
+/// can never close a newer round.</summary>
+public sealed record StopDeliveryCommand(
+    string TenantId, string GameId, string EndOperationId, string RoomId, long RoundGeneration,
+    long CloseRouteVersion, DateTime IssuedAt);
+
+/// <summary>One gateway in the stop-delivery responder set (FIX-END-05): the process instance,
+/// the endpoint the command is pushed at (null when the gateway confirmed routing but reported
+/// no reachable endpoint), and the per-responder state the later steps drive — an offline but
+/// authorized gateway stays Pending until it answers.</summary>
+public sealed record StopDeliveryResponder(
+    string ProcessInstanceId, string? Endpoint, string State, DateTime? AnsweredAt);
+
 /// <summary>The mount's route source as the control plane recorded it (FIX-END-02): the
 /// binding the mounts entered, its generation, and the platform identity the login
 /// verified — the identity is derived from the live session join, never asserted by the
@@ -1118,6 +1134,160 @@ public sealed class RedesignControlStore(string connectionString)
                 connection, null, tenant, game, id, cancellationToken))!);
         return open;
     }
+
+    /// <summary>
+    /// Persists the stop-delivery command and its responder set (FIX-END-05, architecture 6.4
+    /// step 3). The CloseRouteVersion is derived here from the operation's own recorded facts —
+    /// never taken from a caller — and frozen with the row: a repeated issue replays the
+    /// recorded command, so a late or racing delivery cannot close a newer round. The responder
+    /// set is every gateway that held a confirmed routing version at issue: an offline gateway
+    /// keeps its process and confirm rows, so it stays a pending responder — the command waits
+    /// for it, it is never skipped.
+    /// </summary>
+    public async Task<(StopDeliveryCommand Command, bool Duplicate, List<StopDeliveryResponder> Responders)>
+        IssueStopDeliveryAsync(string tenantId, string gameId, string endOperationId,
+            CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        var operation = await ReadEndOperationAsync(
+            connection, transaction, tenantId, gameId, endOperationId, cancellationToken)
+            ?? throw new EndOperationConflictException(
+                $"The end operation {endOperationId} does not exist.");
+        if (operation.Phase == EndOperationPhases.Done)
+            throw new EndOperationConflictException(
+                $"The end operation {endOperationId} is Done; no stop delivery is issued.");
+
+        // The replay path: a command row already stands — the recorded version is the command,
+        // whatever the world looks like now.
+        var existing = await ReadStopDeliveryAsync(connection, transaction, tenantId, gameId,
+            endOperationId, cancellationToken);
+        if (existing is not null)
+        {
+            var responders = await ListStopDeliveryRespondersAsync(
+                connection, transaction, tenantId, gameId, endOperationId, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return (existing, true, responders);
+        }
+
+        var version = DeriveCloseRouteVersion(operation);
+        await using (var insert = new NpgsqlCommand("""
+            INSERT INTO control.stop_delivery(tenant_id,game_id,end_operation_id,room_id,
+                round_generation,close_route_version)
+            VALUES (@tenant,@game,@operation,@room,@generation,@version)
+            ON CONFLICT (tenant_id,game_id,end_operation_id) DO NOTHING
+            """, connection, transaction))
+        {
+            insert.Parameters.AddWithValue("tenant", tenantId);
+            insert.Parameters.AddWithValue("game", gameId);
+            insert.Parameters.AddWithValue("operation", endOperationId);
+            insert.Parameters.AddWithValue("room", operation.RoomId);
+            insert.Parameters.AddWithValue("generation", operation.RoundGeneration);
+            insert.Parameters.AddWithValue("version", version);
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
+        // The responder set at issue: every platform-gateway process with a confirmed routing
+        // version. No liveness filter — an offline gateway's confirm row is still its route
+        // authorization, and the command must reach it whenever it comes back.
+        await using (var responders = new NpgsqlCommand("""
+            INSERT INTO control.stop_delivery_responder(tenant_id,game_id,end_operation_id,
+                process_instance_id,endpoint)
+            SELECT @tenant,@game,@operation,p.process_instance_id,p.endpoint
+            FROM control.process p
+            JOIN control.deployment d ON d.slot_id=p.slot_id
+            JOIN control.routing_confirm c ON c.process_instance_id=p.process_instance_id
+            WHERE d.role='platform-gateway'
+            ON CONFLICT (tenant_id,game_id,end_operation_id,process_instance_id) DO NOTHING
+            """, connection, transaction))
+        {
+            responders.Parameters.AddWithValue("tenant", tenantId);
+            responders.Parameters.AddWithValue("game", gameId);
+            responders.Parameters.AddWithValue("operation", endOperationId);
+            await responders.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var command = await ReadStopDeliveryAsync(connection, transaction, tenantId, gameId,
+            endOperationId, cancellationToken)
+            ?? throw new InvalidOperationException("The stop-delivery row vanished under issue.");
+        var set = await ListStopDeliveryRespondersAsync(
+            connection, transaction, tenantId, gameId, endOperationId, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return (command, false, set);
+    }
+
+    /// <summary>The recorded stop-delivery command, or null when none was issued yet.</summary>
+    public async Task<StopDeliveryCommand?> GetStopDeliveryAsync(string tenantId, string gameId,
+        string endOperationId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        return await ReadStopDeliveryAsync(connection, null, tenantId, gameId, endOperationId,
+            cancellationToken);
+    }
+
+    /// <summary>The command's responder set — the pending and answered gateways alike.</summary>
+    public async Task<List<StopDeliveryResponder>> ListStopDeliveryRespondersAsync(
+        string tenantId, string gameId, string endOperationId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        return await ListStopDeliveryRespondersAsync(connection, null, tenantId, gameId,
+            endOperationId, cancellationToken);
+    }
+
+    private static async Task<StopDeliveryCommand?> ReadStopDeliveryAsync(
+        NpgsqlConnection connection, NpgsqlTransaction? transaction, string tenantId, string gameId,
+        string endOperationId, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT room_id,round_generation,close_route_version,issued_at
+            FROM control.stop_delivery
+            WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation
+            """, connection, transaction);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("operation", endOperationId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        return new StopDeliveryCommand(tenantId, gameId, endOperationId, reader.GetString(0),
+            reader.GetInt64(1), reader.GetInt64(2), reader.GetDateTime(3));
+    }
+
+    private static async Task<List<StopDeliveryResponder>> ListStopDeliveryRespondersAsync(
+        NpgsqlConnection connection, NpgsqlTransaction? transaction, string tenantId, string gameId,
+        string endOperationId, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT process_instance_id,endpoint,state,answered_at
+            FROM control.stop_delivery_responder
+            WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation
+            ORDER BY process_instance_id
+            """, connection, transaction);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("operation", endOperationId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var responders = new List<StopDeliveryResponder>();
+        while (await reader.ReadAsync(cancellationToken))
+            responders.Add(new StopDeliveryResponder(reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1), reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetDateTime(3)));
+        return responders;
+    }
+
+    /// <summary>The close version is derived from the operation's own recorded facts — the
+    /// room, its round generation, and the mount generations the begin froze. The same
+    /// operation always derives the same version; a different room or a newer round derives a
+    /// different one, so a replayed command can never close a newer round.</summary>
+    private static long DeriveCloseRouteVersion(EndOperation operation) =>
+        ContentHash(new[] { $"room|{operation.RoomId}|{operation.RoundGeneration}" }
+            .Concat(operation.BindingGenerations
+                .OrderBy(binding => binding.BindingId)
+                .Select(binding =>
+                    $"binding|{binding.BindingId}|{binding.Generation}|{binding.RoundGeneration}")));
 
     /// <summary>
     /// Registers a mount's route source (FIX-END-02, architecture 6.4): the StreamerServer

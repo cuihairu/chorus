@@ -35,7 +35,10 @@ public sealed class RedesignEndOperationHostTests
             ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
             ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
         };
-        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        // The coordinator stays lazy: this is the begin's own contract (one operation, replay,
+        // restart continuity) — the phase ladder's driver is END-05's subject, not this one.
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string> { ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "600000" });
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
         await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
             "streamer-server", streamerEnvironment);
@@ -117,7 +120,9 @@ public sealed class RedesignEndOperationHostTests
         Assert.Equal(1, mount.RoundGeneration);
 
         // The control plane dies between two steps and comes back on the same port: the
-        // operation row is the truth it continues under.
+        // operation row is the truth it continues under. The restarted coordinator's first
+        // pass continues the sequence (FIX-END-05) — the marker, the command with its empty
+        // responder set (no gateways reported here), the phase — under the same business id.
         environment.Kill("Chorus.ControlServer");
         await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
             new Dictionary<string, string>
@@ -127,14 +132,24 @@ public sealed class RedesignEndOperationHostTests
         using var postChannel = environment.Channel(environment.ControlPort, gameCertificate,
             "control-server");
         var post = new Chorus.Rpc.RoundEnd.RoundEndClient(postChannel);
-        var resumed = await post.GetEndStatusAsync(new Chorus.Rpc.GetEndStatusRequest
+        Chorus.Rpc.GetEndStatusReply? resumed = null;
+        var resumeDeadline = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < resumeDeadline)
         {
-            TenantId = "tenant-a", GameId = "game-a", RoomId = "room-end-op-1"
-        });
-        Assert.True(resumed.Found);
+            resumed = await post.GetEndStatusAsync(new Chorus.Rpc.GetEndStatusRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", RoomId = "room-end-op-1"
+            });
+            if (resumed.Phase == "StopDeliveryIssued") break;
+            await Task.Delay(150);
+        }
+        Assert.NotNull(resumed);
+        Assert.True(resumed!.Found);
         Assert.Equal("end-op-1", resumed.EndOperationId);
-        Assert.Equal("ResultFrozen", resumed.Phase);
+        Assert.Equal("StopDeliveryIssued", resumed.Phase);
         Assert.Equal(1, resumed.RoundGeneration);
+        Assert.Equal(120, resumed.FinalTick);
+        Assert.Equal(3, resumed.ResultVersion);
         Assert.Equal(host.BindingId, Assert.Single(resumed.BindingGenerations).BindingId);
 
         // The same begin after the restart still replays the one operation — the row, not
@@ -170,7 +185,7 @@ public sealed class RedesignEndOperationHostTests
             TenantId = "tenant-a", GameId = "game-a", RoomId = "room-end-op-1"
         });
         Assert.Equal("end-op-1", untouched.EndOperationId);
-        Assert.Equal("ResultFrozen", untouched.Phase);
+        Assert.Equal("StopDeliveryIssued", untouched.Phase);
     }
 
     [Fact]
@@ -189,12 +204,14 @@ public sealed class RedesignEndOperationHostTests
         };
         // The discovery net is pushed far out: here the host's own report is the only caller
         // that can begin the operation, so the row's presence proves the fast path
-        // (FIX-END-04), not the sweep.
+        // (FIX-END-04), not the sweep. The coordinator is lazy for the same reason: the
+        // frozen verdict's standing is this test's subject, not the ladder's walk.
         await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
             new Dictionary<string, string>
             {
                 ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "600000",
-                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600"
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "600000"
             });
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
         await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
@@ -404,12 +421,14 @@ public sealed class RedesignEndOperationHostTests
             ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
         };
         // The discovery net runs fast: the room's own persisted receipt is the evidence it
-        // begins from, and the grace keeps it just behind the freeze.
+        // begins from, and the grace keeps it just behind the freeze. The coordinator stays
+        // lazy: the sweep's begin is this test's subject, not the ladder's walk.
         await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
             new Dictionary<string, string>
             {
                 ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "150",
-                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "1"
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "1",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "600000"
             });
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
         await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
@@ -530,6 +549,212 @@ public sealed class RedesignEndOperationHostTests
         Assert.Equal(stateVersion, statusReply.ResultVersion);
         Assert.Equal(2, statusReply.BindingGenerations.Count);
     }
+
+    [Fact]
+    public async Task TheCoordinatorPersistsAndDeliversTheStopDeliveryCommand()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var gatewayPortA = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPortB = RedesignM0HostTests.HostEnvironment.FreePort();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        // The discovery net stays lazy — the begin below is the only caller — while the
+        // coordinator walks fast, so the phase ladder lands inside the test's patience.
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "600000",
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPortA, "platform-gateway",
+            GatewayEnvironment(environment.DataPort, controlEndpoint, gatewayPortA),
+            instanceId: "gateway-delivery-a");
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPortB, "platform-gateway",
+            GatewayEnvironment(environment.DataPort, controlEndpoint, gatewayPortB),
+            instanceId: "gateway-delivery-b");
+
+        // The node row both gateways self-report under.
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-delivery"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new Chorus.Rpc.ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new Chorus.Rpc.RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-delivery" });
+        }
+
+        // Route authorization first: each gateway applied a routing version and the control
+        // plane heard its confirm — the rows the responder set is derived from.
+        var authorized = false;
+        var authorizedDeadline = DateTime.UtcNow.AddSeconds(20);
+        while (DateTime.UtcNow < authorizedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT count(*) FROM control.routing_confirm
+                    WHERE process_instance_id IN ('gateway-delivery-a','gateway-delivery-b')
+                    """, connection);
+                if (Convert.ToInt64(await command.ExecuteScalarAsync()) == 2) { authorized = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(authorized, "The gateways never confirmed their routing versions.");
+
+        // A mounted binding and a started round — the mounts the begin's fence reads; the round
+        // itself never needs to run, the begin freezes what the mounts entered.
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "delivery-open-a", "live-delivery-a");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-delivery");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-delivery");
+        using var dataChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(dataChannel);
+        var claimed = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-delivery-1",
+            OwnerInstanceId = "gs-delivery", LeaseSeconds = 30
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new Chorus.Rpc.StartRoundRequest
+        {
+            RoomId = "room-delivery-1", OwnerInstanceId = "gs-delivery", Epoch = claimed.Epoch,
+            GameId = "game-a", ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            OperationId = "start-delivery", TenantId = "tenant-a",
+            Participants =
+            {
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = host.BindingId, ParticipantId = host.StreamerId, Role = "Host"
+                }
+            }
+        })).Status);
+
+        // The second gateway dies with its authorization standing: its process and confirm rows
+        // never leave, so the command must still count it — offline is pending, never skipped.
+        environment.Kill("gateway-delivery-b");
+
+        // Step 1: the begin freezes the result; steps 2-3: the coordinator records the marker,
+        // persists the command with its responder set, pushes, and records the phase.
+        using var roundEndChannel = environment.Channel(environment.ControlPort, gameCertificate, "control-server");
+        var roundEnd = new Chorus.Rpc.RoundEnd.RoundEndClient(roundEndChannel);
+        var begin = await roundEnd.BeginEndAsync(new Chorus.Rpc.BeginEndRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", RoomId = "room-delivery-1",
+            EndOperationId = "room-delivery-1/end", FinalTick = 120, ResultVersion = 3
+        });
+        Assert.Equal("ResultFrozen", begin.Phase);
+        var issued = false;
+        var issuedDeadline = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < issuedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand(
+                    "SELECT phase FROM control.end_operation WHERE room_id='room-delivery-1'", connection);
+                if (await command.ExecuteScalarAsync() is string phase
+                    && phase == "StopDeliveryIssued") { issued = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(issued, "The coordinator never reached StopDeliveryIssued.");
+
+        // The recorded command: the room, the generation the begin derived, and a close version
+        // frozen at issue; the responder set: both gateways — the dead one counted (a).
+        long closeVersion = 0;
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var command = new NpgsqlCommand("""
+                SELECT round_generation,close_route_version,
+                    (SELECT count(*) FROM control.stop_delivery_responder r
+                     WHERE r.end_operation_id='room-delivery-1/end' AND r.state='Pending'),
+                    (SELECT count(*) FROM control.stop_delivery_responder r
+                     WHERE r.end_operation_id='room-delivery-1/end'
+                       AND r.process_instance_id='gateway-delivery-b')
+                FROM control.stop_delivery WHERE room_id='room-delivery-1'
+                """, connection))
+            await using (var reader = await command.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync(), "The stop-delivery command was never persisted.");
+                Assert.Equal(1L, reader.GetInt64(0));
+                closeVersion = reader.GetInt64(1);
+                Assert.NotEqual(0L, closeVersion);
+                Assert.Equal(2L, reader.GetInt64(2));
+                Assert.Equal(1L, reader.GetInt64(3));
+            }
+        }
+
+        // The live gateway received the command at the exact recorded version — the delivery
+        // leg's evidence on its console channel; the dead gateway heard nothing.
+        var liveOutput = HostOutputFor(environment, "gateway-delivery-a");
+        Assert.Contains(
+            $"stop-delivery received room=room-delivery-1 version={closeVersion} " +
+            "operation=room-delivery-1/end duplicate=False", liveOutput);
+        Assert.DoesNotContain("stop-delivery received", HostOutputFor(environment, "gateway-delivery-b"));
+
+        // Repeated passes re-deliver the same recorded command and move nothing (b): one
+        // command row, both responders still pending, the phase where it stands — and the
+        // first delivery stays the only non-duplicate the gateway ever saw.
+        await Task.Delay(1500);
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var commands = new NpgsqlCommand(
+                "SELECT count(*) FROM control.stop_delivery", connection);
+            Assert.Equal(1L, Convert.ToInt64(await commands.ExecuteScalarAsync()));
+            await using var phase = new NpgsqlCommand(
+                "SELECT phase FROM control.end_operation WHERE room_id='room-delivery-1'", connection);
+            Assert.Equal("StopDeliveryIssued", await phase.ExecuteScalarAsync());
+            await using var pending = new NpgsqlCommand("""
+                SELECT count(*) FROM control.stop_delivery_responder
+                WHERE end_operation_id='room-delivery-1/end' AND state='Pending'
+                """, connection);
+            Assert.Equal(2L, Convert.ToInt64(await pending.ExecuteScalarAsync()));
+        }
+        var delivered = liveOutput.Split('\n')
+            .Count(line => line.Contains("stop-delivery received room=room-delivery-1"));
+        var firstDeliveries = liveOutput.Split('\n')
+            .Count(line => line.Contains("stop-delivery received room=room-delivery-1")
+                && line.Contains("duplicate=False"));
+        Assert.True(delivered >= 1, "The live gateway never logged the command.");
+        Assert.Equal(1, firstDeliveries);
+        var status = await roundEnd.GetEndStatusAsync(new Chorus.Rpc.GetEndStatusRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", RoomId = "room-delivery-1"
+        });
+        Assert.True(status.Found);
+        Assert.Equal("StopDeliveryIssued", status.Phase);
+    }
+
+    /// <summary>The captured console output of one started host, by instance id.</summary>
+    private static string HostOutputFor(RedesignM0HostTests.HostEnvironment environment, string instance) =>
+        environment.HostOutput(environment.HostProcesses.Single(pair => pair.Instance == instance).Process);
+
+    /// <summary>A gateway with no ingress duty: it self-reports and watches routing only — the
+    /// two legs whose rows the stop-delivery responder set reads.</summary>
+    private static Dictionary<string, string> GatewayEnvironment(
+        int dataPort, string controlEndpoint, int reportPort) => new()
+    {
+        ["CHORUS_DATA_PORT"] = dataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        ["CHORUS_DEV_PLATFORM_ENDPOINT"] = "http://127.0.0.1:9/",
+        ["CHORUS_CONTROL_ENDPOINT"] = controlEndpoint,
+        ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{reportPort}",
+        ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+    };
 
     /// <summary>The frozen verdict — receipt, result, grants — is untouched: the operation's
     /// replay and the late closing input must both leave it exactly where it stood.</summary>

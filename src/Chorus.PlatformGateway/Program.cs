@@ -66,6 +66,9 @@ IPlatformTaskAdapter taskAdapter = new DevelopmentPlatformTaskAdapter(
     new Uri(Required("CHORUS_DEV_PLATFORM_ENDPOINT")));
 
 builder.Services.AddSingleton(trustedCertificates);
+// The stop-delivery record (FIX-END-05): the gRPC service is created per request, so the
+// process-wide record of what this gateway already closed lives here.
+builder.Services.AddSingleton(new StopDeliveryRecord());
 builder.Services.AddHostedService(_ => new TaskReconciler(DataChannel, taskAdapter,
     identity.ProcessInstanceId,
     int.Parse(Environment.GetEnvironmentVariable("CHORUS_TASK_RECONCILE_INTERVAL_MS") ?? "1000"),
