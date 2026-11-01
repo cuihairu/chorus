@@ -10,5 +10,6 @@
     <ProjectReference Include="../Chorus.Platform/Chorus.Platform.csproj" />
     <ProjectReference Include="../Chorus.Engine/Chorus.Engine.csproj" />
     <ProjectReference Include="../Chorus.Adapters.Platforms/Chorus.Adapters.Platforms.csproj" />
+    <InternalsVisibleTo Include="Chorus.Engine.Tests" />
   </ItemGroup>
 </Project>

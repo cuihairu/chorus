@@ -20,7 +20,10 @@ namespace Chorus.Engine.Tests;
 /// a lost success reply retries the same event id and the duplicate ends it; a push that
 /// cannot land durably inside its bounded retries falls to the persistent inbox — an
 /// explicit pending record under the same dedup key, never a drop; a capacity refusal backs
-/// off and retries. The scripted doubles hold the whole world between the face and the wire.
+/// off and retries. FIX-END-07 adds the closure posture: a room whose delivery stands
+/// closed never pushes — late and mid-flight fenced arrivals alike fall to the inbox leg,
+/// while malformed refusals keep their visible 400. The scripted doubles hold the whole
+/// world between the face and the wire.
 /// </summary>
 public sealed class RedesignPushRetryUnitTests
 {
@@ -120,10 +123,103 @@ public sealed class RedesignPushRetryUnitTests
         Assert.Equal(0, ingest.Calls);
     }
 
+    /// <summary>
+    /// FIX-END-07: a room whose delivery this gateway closed stops being a push target —
+    /// the closure is the gate before any push. The event falls to the persistent inbox
+    /// under the same dedup key, its durable home until the drain disposes it terminally.
+    /// </summary>
+    [Fact]
+    public async Task AClosedRoomFallsToTheDurableLegInsteadOfPushing()
+    {
+        // No scripted push outcome: any push attempt fails the fact loudly.
+        var roomEvents = new ScriptedRoomEvents();
+        var directory = new ScriptedDirectory(Target("game-a", 1, "https://localhost:6001"), null!);
+        var ingest = new ScriptedIngest();
+        var stopDeliveries = new StopDeliveryRecord();
+        Assert.True(stopDeliveries.TryClose("tenant-a", "game-a", "room-retry", "end-op-retry",
+            7, 99, out _, out _));
+
+        var response = await PostAsync(roomEvents, directory, ingest,
+            """{"sessionId":"live-a","eventId":"closed-1","kind":"Gift","giftId":"g5","giftCount":1,"giftValue":50}""",
+            stopDeliveries);
+
+        Assert.Equal(StatusCodes.Status200OK, response.Status);
+        Assert.Equal(0, roomEvents.Seen.Count);
+        Assert.Equal(1, ingest.Calls);
+        Assert.Equal("closed-1", ingest.LastDedupKey);
+        var receipt = Assert.Single(response.Receipts);
+        Assert.Equal("Durable", receipt.GetProperty("disposition").GetString());
+    }
+
+    /// <summary>
+    /// FIX-END-07's mid-flight window: the push resolved before the command landed and the
+    /// receiver's fence (FIX-END-06) refused it after. A 400 would leave the event without
+    /// any durable trace, so when the closure now stands the event falls to the persistent
+    /// inbox instead — the only remaining no-trace path closed.
+    /// </summary>
+    [Fact]
+    public async Task AFencedPushFallsBackToTheDurableLegWhenTheClosureStands()
+    {
+        var stopDeliveries = new StopDeliveryRecord();
+        var roomEvents = new ScriptedRoomEvents(Fenced(() =>
+            stopDeliveries.TryClose("tenant-a", "game-a", "room-retry", "end-op-retry", 7, 99,
+                out _, out _)));
+        var directory = new ScriptedDirectory(Target("game-a", 1, "https://localhost:6001"), null!);
+        var ingest = new ScriptedIngest();
+
+        var response = await PostAsync(roomEvents, directory, ingest,
+            """{"sessionId":"live-a","eventId":"fenced-1","kind":"Gift","giftId":"g6","giftCount":1,"giftValue":60}""",
+            stopDeliveries);
+
+        Assert.Equal(StatusCodes.Status200OK, response.Status);
+        Assert.Equal(1, roomEvents.Seen.Count);
+        Assert.Equal(1, ingest.Calls);
+        Assert.Equal("fenced-1", ingest.LastDedupKey);
+        // The closed round's late arrival asked its closure for one more drain pass — its
+        // terminal disposition is the closure's own work, never the platform's retry.
+        Assert.True(stopDeliveries.DrainQueue.TryRead(out var drained));
+        Assert.Equal("room-retry", drained);
+    }
+
+    /// <summary>
+    /// The fall-through is scoped to the closure: a receiver refusal for any other reason —
+    /// a malformed push — keeps its visible 400, because retrying cannot fix it and the
+    /// inbox is not a trash can for broken requests.
+    /// </summary>
+    [Fact]
+    public async Task AMalformedPushRefusalKeepsItsVisible400()
+    {
+        var roomEvents = new ScriptedRoomEvents(new RpcException(new Status(StatusCode.InvalidArgument,
+            "the binding does not point at this room")));
+        var directory = new ScriptedDirectory(Target("game-a", 1, "https://localhost:6001"), null!);
+        var ingest = new ScriptedIngest();
+        var stopDeliveries = new StopDeliveryRecord();
+        stopDeliveries.ObserveApp("simulator", "app-1");
+
+        var response = await PostAsync(roomEvents, directory, ingest,
+            """{"sessionId":"live-a","eventId":"malformed-1","kind":"Gift","giftId":"g7","giftCount":1,"giftValue":70}""",
+            stopDeliveries);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, response.Status);
+        Assert.Equal(1, roomEvents.Seen.Count);
+        Assert.Equal(0, ingest.Calls);
+    }
+
     private static DeliverRoomEventReply Reply(string disposition) => new() { Disposition = disposition };
 
     private static RpcException Unreachable() =>
         new(new Status(StatusCode.Unavailable, "the owner endpoint refused the connection"));
+
+    /// <summary>The receiver's generation fence (FIX-END-06) as the push leg meets it. A
+    /// factory, not an exception: the double runs it when the push dequeues the outcome —
+    /// after the optional mid-flight hook — so a test can install the closure between the
+    /// face's resolve and its catch, exactly the window the command lands in.</summary>
+    private static Func<object> Fenced(Action? midFlight = null) => () =>
+    {
+        midFlight?.Invoke();
+        return new RpcException(new Status(StatusCode.InvalidArgument,
+            "the round is closed by the end operation end-op-retry"));
+    };
 
     private static GatewayRoutingMonitor.RoomRouteTarget Target(
         string owner, long epoch, string endpoint) =>
@@ -134,12 +230,13 @@ public sealed class RedesignPushRetryUnitTests
     /// <summary>Drives one simulator webhook through the face with the scripted doubles: the
     /// backoffs are zero so the retry posture itself is what the outcomes script.</summary>
     private static async Task<FaceResponse> PostAsync(ScriptedRoomEvents roomEvents,
-        IRoomRoutingDirectory directory, ScriptedIngest ingest, string body)
+        IRoomRoutingDirectory directory, ScriptedIngest ingest, string body,
+        StopDeliveryRecord? stopDeliveries = null)
     {
         var endpoint = new PlatformIngressEndpoint(new AllowAllPlatformEventVerifier(),
             [new SimulatorPlatformEventMapper()], ingest, directory,
             _ => Grpc.Net.Client.GrpcChannel.ForAddress("http://127.0.0.1:1"),
-            _ => roomEvents, [TimeSpan.Zero, TimeSpan.Zero]);
+            _ => roomEvents, [TimeSpan.Zero, TimeSpan.Zero], stopDeliveries);
         var context = new DefaultHttpContext();
         // The typed results the face returns serialize through the request's JSON options —
         // an empty provider with the defaults is all they need.
@@ -177,6 +274,9 @@ public sealed class RedesignPushRetryUnitTests
         {
             Seen.Add(request);
             var outcome = _outcomes.Dequeue();
+            // A factory outcome runs at dequeue time — mid-push, where the mid-flight hook
+            // of a fenced reply wants the closure installed.
+            if (outcome is Func<object> factory) outcome = factory();
             if (outcome is RpcException error)
                 throw error;
             var reply = (DeliverRoomEventReply)outcome;

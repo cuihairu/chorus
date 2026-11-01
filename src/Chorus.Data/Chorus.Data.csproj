@@ -34,6 +34,7 @@
     <EmbeddedResource Include="Schema/0023_route_source.sql" />
     <EmbeddedResource Include="Schema/0024_routing_confirm.sql" />
     <EmbeddedResource Include="Schema/0025_stop_delivery.sql" />
+    <EmbeddedResource Include="Schema/0026_delivery_stop_ack.sql" />
   </ItemGroup>
 
 </Project>

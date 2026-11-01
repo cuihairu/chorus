@@ -149,6 +149,97 @@ public sealed class RedesignStopDeliveryStoreTests
         Assert.Null(await arrange.Control.GetStopDeliveryAsync("tenant-a", "game-a", "end-op-1"));
     }
 
+    /// <summary>
+    /// The step-4 ack (FIX-END-07): the first confirmation freezes the responder's own
+    /// facts at the exact recorded version — identity, watermark and counts — and the ack
+    /// is phase-independent and first-answer-wins, so a restarted gateway's re-ack with
+    /// honest zeros hears Duplicate and changes nothing the first answer recorded.
+    /// </summary>
+    [Fact]
+    public async Task AnAcknowledgedDeliveryStopRecordsTheResponderFactsIdempotently()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
+        var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
+            "tenant-a", "game-a", "end-op-1");
+
+        // The first confirmation: Pending leaves for Stopped with the gateway's own facts.
+        var first = await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a",
+            "end-op-1", "room-1", "gateway-live", command.CloseRouteVersion,
+            cutoffSequence: 12, drainedOutOfRound: 3, drainedRouted: 1);
+        Assert.True(first.Recorded);
+        Assert.False(first.Duplicate);
+        Assert.Equal(command.CloseRouteVersion, first.RecordedCloseRouteVersion);
+        var answered = Assert.Single(await arrange.Control.ListStopDeliveryRespondersAsync(
+            "tenant-a", "game-a", "end-op-1"));
+        Assert.Equal("gateway-live", answered.ProcessInstanceId);
+        Assert.Equal("Stopped", answered.State);
+        Assert.NotNull(answered.AnsweredAt);
+        Assert.Equal(12, answered.CutoffSequence);
+        Assert.Equal(3, answered.DrainedOutOfRound);
+        Assert.Equal(1, answered.DrainedRouted);
+
+        // The gateway crashed after its first ack and came back knowing nothing: its re-ack
+        // carries honest zeros, and the first answer's watermark and counts stand — nothing
+        // a repeat carries can lower them, and the ack's phase never mattered.
+        var repeat = await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a",
+            "end-op-1", "room-1", "gateway-live", command.CloseRouteVersion,
+            cutoffSequence: 0, drainedOutOfRound: 0, drainedRouted: 0);
+        Assert.False(repeat.Recorded);
+        Assert.True(repeat.Duplicate);
+        Assert.Equal(command.CloseRouteVersion, repeat.RecordedCloseRouteVersion);
+        var still = Assert.Single(await arrange.Control.ListStopDeliveryRespondersAsync(
+            "tenant-a", "game-a", "end-op-1"));
+        Assert.Equal("Stopped", still.State);
+        Assert.Equal(answered.AnsweredAt, still.AnsweredAt);
+        Assert.Equal(12, still.CutoffSequence);
+        Assert.Equal(3, still.DrainedOutOfRound);
+        Assert.Equal(1, still.DrainedRouted);
+    }
+
+    /// <summary>
+    /// The ack's refusals (FIX-END-07): a version the command row does not hold, a room the
+    /// command does not close, an instance outside the frozen responder set, and a command
+    /// that never issued — each refuses loudly and writes nothing.
+    /// </summary>
+    [Fact]
+    public async Task AnAckFromAWrongVersionAnUnknownInstanceOrAnAbsentCommandWritesNothing()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
+        var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
+            "tenant-a", "game-a", "end-op-1");
+
+        var wrongVersion = await Assert.ThrowsAsync<EndOperationConflictException>(() =>
+            arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1", "room-1",
+                "gateway-live", command.CloseRouteVersion + 7, 0, 0, 0));
+        Assert.Contains("version", wrongVersion.Message);
+        var wrongRoom = await Assert.ThrowsAsync<EndOperationConflictException>(() =>
+            arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1", "room-other",
+                "gateway-live", command.CloseRouteVersion, 0, 0, 0));
+        Assert.Contains("not room-other", wrongRoom.Message);
+        var stranger = await Assert.ThrowsAsync<EndOperationConflictException>(() =>
+            arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1", "room-1",
+                "gateway-stranger", command.CloseRouteVersion, 0, 0, 0));
+        Assert.Contains("not a stop-delivery responder", stranger.Message);
+        await Assert.ThrowsAsync<EndOperationConflictException>(() =>
+            arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-none", "room-1",
+                "gateway-live", command.CloseRouteVersion, 0, 0, 0));
+
+        // Every refusal left the responder exactly as the issue froze it.
+        var responder = Assert.Single(await arrange.Control.ListStopDeliveryRespondersAsync(
+            "tenant-a", "game-a", "end-op-1"));
+        Assert.Equal("Pending", responder.State);
+        Assert.Null(responder.AnsweredAt);
+        Assert.Equal(0, responder.CutoffSequence);
+        Assert.Equal(0, responder.DrainedOutOfRound);
+        Assert.Equal(0, responder.DrainedRouted);
+    }
+
     /// <summary>One mounted binding, one started round and a gateway directory the responder
     /// set reads — the minimum the command's issue fence and set derivation need.</summary>
     private sealed class Arrange : IAsyncDisposable

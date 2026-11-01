@@ -115,9 +115,17 @@ public sealed record StopDeliveryCommand(
 /// <summary>One gateway in the stop-delivery responder set (FIX-END-05): the process instance,
 /// the endpoint the command is pushed at (null when the gateway confirmed routing but reported
 /// no reachable endpoint), and the per-responder state the later steps drive — an offline but
-/// authorized gateway stays Pending until it answers.</summary>
+/// authorized gateway stays Pending until it answers. The step-4 answer (FIX-END-07) freezes
+/// the responder's own facts: the cutoff watermark its push leg observed and the informational
+/// drain counts of its confirmation pass.</summary>
 public sealed record StopDeliveryResponder(
-    string ProcessInstanceId, string? Endpoint, string State, DateTime? AnsweredAt);
+    string ProcessInstanceId, string? Endpoint, string State, DateTime? AnsweredAt,
+    long CutoffSequence = 0, long DrainedOutOfRound = 0, long DrainedRouted = 0);
+
+/// <summary>The step-4 ack's answer (FIX-END-07): whether this call recorded the responder's
+/// first confirmation, and the version it recorded against — a repeat at the recorded version
+/// answers Duplicate with the first answer's facts standing unchanged.</summary>
+public sealed record DeliveryStopAck(bool Recorded, bool Duplicate, long RecordedCloseRouteVersion);
 
 /// <summary>The mount's route source as the control plane recorded it (FIX-END-02): the
 /// binding the mounts entered, its generation, and the platform identity the login
@@ -1239,6 +1247,65 @@ public sealed class RedesignControlStore(string connectionString)
             endOperationId, cancellationToken);
     }
 
+    /// <summary>
+    /// Records one responder's DeliveryStopped confirmation (FIX-END-07, architecture 6.4
+    /// step 4). The ack validates against the recorded command — never the phase — so a
+    /// restarted gateway re-acking after the ladder moved past DeliveryStopped still
+    /// replays idempotently. First answer wins: only a Pending row accepts the update, so
+    /// a repeat at the recorded version changes nothing and the first answer's watermark
+    /// and counts stand — a restarted process's honest zeros cannot lower them. A wrong
+    /// room or version, an instance outside the frozen responder set, or a command that
+    /// never issued refuses without writing.
+    /// </summary>
+    public async Task<DeliveryStopAck> AcknowledgeStopDeliveryAsync(string tenantId, string gameId,
+        string endOperationId, string roomId, string processInstanceId, long closeRouteVersion,
+        long cutoffSequence, long drainedOutOfRound, long drainedRouted,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        var command = await ReadStopDeliveryAsync(connection, null, tenantId, gameId,
+            endOperationId, cancellationToken)
+            ?? throw new EndOperationConflictException(
+                $"The end operation {endOperationId} never issued a stop-delivery command.");
+        if (command.RoomId != roomId)
+            throw new EndOperationConflictException(
+                $"The stop-delivery command for {endOperationId} closes the room {command.RoomId}, not {roomId}.");
+        if (command.CloseRouteVersion != closeRouteVersion)
+            throw new EndOperationConflictException(
+                $"The stop-delivery command for {roomId} stands at version {command.CloseRouteVersion}; " +
+                $"the ack names {closeRouteVersion}.");
+        await using (var update = new NpgsqlCommand("""
+            UPDATE control.stop_delivery_responder
+            SET state='Stopped', answered_at=clock_timestamp(),
+                cutoff_sequence=@cutoff, drained_out_of_round=@outOfRound, drained_routed=@routed
+            WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation
+              AND process_instance_id=@instance AND state='Pending'
+            """, connection))
+        {
+            update.Parameters.AddWithValue("tenant", tenantId);
+            update.Parameters.AddWithValue("game", gameId);
+            update.Parameters.AddWithValue("operation", endOperationId);
+            update.Parameters.AddWithValue("instance", processInstanceId);
+            update.Parameters.AddWithValue("cutoff", cutoffSequence);
+            update.Parameters.AddWithValue("outOfRound", drainedOutOfRound);
+            update.Parameters.AddWithValue("routed", drainedRouted);
+            if (await update.ExecuteNonQueryAsync(cancellationToken) > 0)
+                return new DeliveryStopAck(true, false, command.CloseRouteVersion);
+        }
+        // Zero rows: the responder either already answered at this version — the recorded
+        // answer is the answer — or holds no row at all.
+        var responder = (await ListStopDeliveryRespondersAsync(connection, null, tenantId, gameId,
+                endOperationId, cancellationToken))
+            .SingleOrDefault(row => row.ProcessInstanceId == processInstanceId)
+            ?? throw new EndOperationConflictException(
+                $"The process {processInstanceId} is not a stop-delivery responder for {endOperationId}.");
+        if (responder.State != "Stopped")
+            throw new EndOperationConflictException(
+                $"The responder {processInstanceId} stands at {responder.State}, which no ack records.");
+        return new DeliveryStopAck(false, true, command.CloseRouteVersion);
+    }
+
     private static async Task<StopDeliveryCommand?> ReadStopDeliveryAsync(
         NpgsqlConnection connection, NpgsqlTransaction? transaction, string tenantId, string gameId,
         string endOperationId, CancellationToken cancellationToken)
@@ -1262,7 +1329,8 @@ public sealed class RedesignControlStore(string connectionString)
         string endOperationId, CancellationToken cancellationToken)
     {
         await using var command = new NpgsqlCommand("""
-            SELECT process_instance_id,endpoint,state,answered_at
+            SELECT process_instance_id,endpoint,state,answered_at,
+                cutoff_sequence,drained_out_of_round,drained_routed
             FROM control.stop_delivery_responder
             WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation
             ORDER BY process_instance_id
@@ -1275,7 +1343,8 @@ public sealed class RedesignControlStore(string connectionString)
         while (await reader.ReadAsync(cancellationToken))
             responders.Add(new StopDeliveryResponder(reader.GetString(0),
                 reader.IsDBNull(1) ? null : reader.GetString(1), reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetDateTime(3)));
+                reader.IsDBNull(3) ? null : reader.GetDateTime(3),
+                reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6)));
         return responders;
     }
 

@@ -12,9 +12,12 @@ namespace Chorus.ControlServer;
 /// stop-delivery command with its responder set and pushes it at every authorized gateway,
 /// then records StopDeliveryIssued: the persisted command and the pending set are the step's
 /// evidence, so the phase advances even when a push could not land — an offline gateway stays
-/// pending and the re-push leg on every later pass carries it the same recorded command. Later
-/// phases belong to the later items; a failure is recorded on the row without leaving the
-/// phase, so a restarted control plane reads the phase and retries the same step.
+/// pending and the re-push leg on every later pass carries it the same recorded command. Step
+/// 4 (FIX-END-07) is the barrier the gateway acks drive: the phase records DeliveryStopped
+/// when every responder in the frozen set confirmed at the recorded version — an empty set is
+/// vacuously confirmed, one pending gateway parks the phase. Later phases belong to the later
+/// items; a failure is recorded on the row without leaving the phase, so a restarted control
+/// plane reads the phase and retries the same step.
 /// </summary>
 public sealed class EndOperationCoordinatorService(RedesignControlStore controlStore,
     StopDeliveryNotifier notifier, ILogger<EndOperationCoordinatorService> logger)
@@ -68,16 +71,30 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
             }
             if (current.Phase == EndOperationPhases.StopDeliveryIssued)
             {
-                // The re-push leg: responders still pending hear the same recorded command on
-                // every pass — a gateway offline at issue is carried, never skipped.
+                // The re-push leg: every responder hears the same recorded command on every
+                // pass — a gateway offline at issue is carried, never skipped, and a gateway
+                // that answered but restarted re-learns the closure from the duplicate its
+                // fresh record accepts (FIX-END-07). The recorded set is the truth: an empty
+                // set is vacuously confirmed (no gateway held route authorization, so none
+                // can have pushed), and the step-4 barrier (FIX-END-07) is every responder's
+                // own row at Stopped — one pending responder parks the phase here.
                 var command = await controlStore.GetStopDeliveryAsync(current.TenantId, current.GameId,
                     current.EndOperationId, cancellationToken);
                 if (command is not null)
-                    await PushAllAsync(command, current,
-                        (await controlStore.ListStopDeliveryRespondersAsync(current.TenantId,
-                            current.GameId, current.EndOperationId, cancellationToken))
-                        .Where(responder => responder.State == "Pending").ToList(),
-                        cancellationToken);
+                {
+                    var responders = await controlStore.ListStopDeliveryRespondersAsync(
+                        current.TenantId, current.GameId, current.EndOperationId, cancellationToken);
+                    await PushAllAsync(command, current, responders, cancellationToken);
+                    if (responders.Count == 0 || responders.All(responder => responder.State == "Stopped"))
+                    {
+                        current = await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
+                            current.GameId, current.EndOperationId, EndOperationPhases.StopDeliveryIssued,
+                            EndOperationPhases.DeliveryStopped, cancellationToken: cancellationToken);
+                        logger.LogInformation(
+                            "Delivery stopped for {RoomId}: every responder confirmed at version {Version}.",
+                            command.RoomId, command.CloseRouteVersion);
+                    }
+                }
             }
         }
         catch (EndOperationConflictException)

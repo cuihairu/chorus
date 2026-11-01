@@ -66,9 +66,11 @@ IPlatformTaskAdapter taskAdapter = new DevelopmentPlatformTaskAdapter(
     new Uri(Required("CHORUS_DEV_PLATFORM_ENDPOINT")));
 
 builder.Services.AddSingleton(trustedCertificates);
-// The stop-delivery record (FIX-END-05): the gRPC service is created per request, so the
-// process-wide record of what this gateway already closed lives here.
-builder.Services.AddSingleton(new StopDeliveryRecord());
+// The stop-delivery record (FIX-END-05/07): the gRPC service is created per request, so
+// the process-wide record of what this gateway already closed — and what its closure
+// observed — lives here, shared with the webhook face and the drain service.
+var stopDeliveries = new StopDeliveryRecord();
+builder.Services.AddSingleton(stopDeliveries);
 builder.Services.AddHostedService(_ => new TaskReconciler(DataChannel, taskAdapter,
     identity.ProcessInstanceId,
     int.Parse(Environment.GetEnvironmentVariable("CHORUS_TASK_RECONCILE_INTERVAL_MS") ?? "1000"),
@@ -98,6 +100,12 @@ if (controlEndpoint is { Length: > 0 })
             root, nodeAuthority, clusterId, "control-server"));
     builder.Services.AddSingleton(routingMonitor);
     builder.Services.AddHostedService(_ => new RoutingMonitorHost(routingMonitor));
+    // The step-4 worker (FIX-END-07): disposes the closed rooms' pending items and reports
+    // DeliveryStopped. Without the control plane there is no stop-delivery command to
+    // answer, so the worker belongs to the same condition as the routing watch.
+    builder.Services.AddHostedService(_ => new DeliveryStopDrainService(stopDeliveries,
+        DataChannel, () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint),
+            serverCertificate, root, nodeAuthority, clusterId, "control-server")));
 }
 builder.Services.AddGrpc();
 
@@ -115,7 +123,7 @@ if (ingressPort > 0)
         sp.GetService<IPlatformEventVerifier>(),
         sp.GetServices<IPlatformEventMapper>(),
         new PlatformIngest.PlatformIngestClient(DataChannel()),
-        sp.GetService<GatewayRoutingMonitor>(), gameChannelFactory));
+        sp.GetService<GatewayRoutingMonitor>(), gameChannelFactory, stopDeliveries: stopDeliveries));
 }
 
 var app = builder.Build();

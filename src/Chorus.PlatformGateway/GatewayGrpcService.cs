@@ -6,11 +6,12 @@ namespace Chorus.PlatformGateway;
 /// <summary>
 /// The PlatformGateway boundary. The gateway is an executor, not a data owner: its face carries
 /// readiness for supervisors and routing consumers while the task protocol it drives lives on
-/// the DataServer's PlatformTask service. The stop-delivery command (FIX-END-05) is recorded
-/// per room at the exact version it names — the record is the input the later stop steps
-/// (FIX-END-07) install the actual delivery stop from; a repeated command at the same version
-/// answers duplicate, and a command naming a different version than the gateway already closed
-/// is refused so a replay can never close a newer round.
+/// the DataServer's PlatformTask service. The stop-delivery command (FIX-END-05/07) installs
+/// the room's closure in the process-wide record at the exact version it names — the closure
+/// is the gate the webhook face consults before any push and the input the drain service
+/// disposes pending items and acks from; a repeated command at the same version answers
+/// duplicate, and a command naming a different version than the gateway already closed is
+/// refused so a replay can never close a newer round.
 /// </summary>
 public sealed class GatewayGrpcService(TrustedProcessCertificates trustedCertificates,
     StopDeliveryRecord stopDeliveries) : PlatformGatewayFace.PlatformGatewayFaceBase
@@ -35,7 +36,8 @@ public sealed class GatewayGrpcService(TrustedProcessCertificates trustedCertifi
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 "The stop-delivery command must name its round generation and close version."));
 
-        if (!stopDeliveries.TryClose(request.RoomId, request.EndOperationId, request.CloseRouteVersion,
+        if (!stopDeliveries.TryClose(request.TenantId, request.GameId, request.RoomId,
+                request.EndOperationId, request.RoundGeneration, request.CloseRouteVersion,
                 out var duplicate, out var closedVersion))
             throw new RpcException(new Status(StatusCode.FailedPrecondition,
                 $"The room {request.RoomId} already closed its delivery at version {closedVersion}; " +

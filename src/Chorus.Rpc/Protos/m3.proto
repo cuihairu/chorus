@@ -464,6 +464,11 @@ service RoundEnd {
   // The operation's own record — phase, progress and error — for the coordinators that
   // resume after a restart and the surfaces that report blocking reasons.
   rpc GetEndStatus(GetEndStatusRequest) returns (GetEndStatusReply);
+  // Step 4's confirmation (architecture 6.4, FIX-END-07): one gateway reports that it
+  // installed the closure, disposed its pending items and stopped pushing. The ack is
+  // phase-independent and first-answer-wins — a restarted gateway re-acks the same facts
+  // and hears Duplicate with the recorded answer unchanged.
+  rpc AckDeliveryStopped(AckDeliveryStoppedRequest) returns (AckDeliveryStoppedReply);
 }
 
 message BeginEndRequest {
@@ -511,6 +516,40 @@ message GetEndStatusReply {
   // The mount generations that entered the round, recorded at begin.
   repeated EndBindingGeneration binding_generations = 7;
   string last_error = 8;
+}
+
+// The step-4 confirmation as the control plane records it (FIX-END-07): the gateway's
+// identity is the caller certificate, never the body — the row the responder set froze at
+// issue is the membership the ack answers. The cutoff sequence is the highest delivery
+// sequence this gateway observed for the room through its push leg — a subset of the
+// room's shared delivery cursor, so 0 after a crash is honest (a fresh process holds
+// nothing in flight; everything it pushed before dying is already committed under the
+// room's cursor in the store). The drained counts are informational and per-responder:
+// concurrent gateways drain disjoint windows, so the counts are never summed into a room
+// total. After a crash-restart the gateway has observed no (platform, app) pairs yet, so
+// its drain pass routes nothing and the ack reports zeros while the pending items stay
+// durably attributed in the inbox — any later drain or the settlement backstop disposes
+// them; nothing is lost.
+message AckDeliveryStoppedRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string end_operation_id = 4;
+  // The exact CloseRouteVersion the gateway closed at — must equal the command row's
+  // frozen version, so an ack for any other round's closure never lands.
+  int64 close_route_version = 5;
+  int64 cutoff_sequence = 6;
+  int64 drained_out_of_round = 7;
+  int64 drained_routed = 8;
+}
+
+message AckDeliveryStoppedReply {
+  // True when this responder already confirmed at exactly the recorded version — the
+  // replay answer of an idempotent receiver; the first answer's facts stand unchanged.
+  bool duplicate = 1;
+  // The version the control plane holds for this command — the value the ack recorded
+  // against, echoed for the gateway's own log.
+  int64 recorded_close_route_version = 2;
 }
 
 // The PlatformGateway executor host (M3-8, architecture 6.3). The gateway is an executor, not a

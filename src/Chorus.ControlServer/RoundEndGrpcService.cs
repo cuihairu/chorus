@@ -88,7 +88,39 @@ public sealed class RoundEndGrpcService(
         return reply;
     }
 
-    private void Require(ServerCallContext context, params string[] roles)
+    public override async Task<AckDeliveryStoppedReply> AckDeliveryStopped(
+        AckDeliveryStoppedRequest request, ServerCallContext context)
+    {
+        // Step 4's caller is the confirming gateway; the control plane itself may drive the
+        // same ack in tests. The instance identity is the caller's certificate — the row the
+        // responder set froze at issue is the membership this ack answers, never a body claim.
+        var caller = Require(context, "platform-gateway", "control-server");
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId) ||
+            string.IsNullOrWhiteSpace(request.RoomId) || string.IsNullOrWhiteSpace(request.EndOperationId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The delivery-stop ack is incomplete."));
+        if (request.CloseRouteVersion == 0 || request.CutoffSequence < 0 ||
+            request.DrainedOutOfRound < 0 || request.DrainedRouted < 0)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The delivery-stop ack must name its version and non-negative drain facts."));
+        try
+        {
+            var ack = await controlStore.AcknowledgeStopDeliveryAsync(
+                request.TenantId, request.GameId, request.EndOperationId, request.RoomId,
+                caller.ProcessInstanceId, request.CloseRouteVersion, request.CutoffSequence,
+                request.DrainedOutOfRound, request.DrainedRouted, context.CancellationToken);
+            return new AckDeliveryStoppedReply
+            {
+                Duplicate = ack.Duplicate, RecordedCloseRouteVersion = ack.RecordedCloseRouteVersion
+            };
+        }
+        catch (EndOperationConflictException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+    }
+
+    private ProcessIdentity Require(ServerCallContext context, params string[] roles)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;
         if (certificate is null)
@@ -101,5 +133,6 @@ public sealed class RoundEndGrpcService(
         if (!roles.Contains(caller.Role, StringComparer.Ordinal))
             throw new RpcException(new Status(StatusCode.PermissionDenied,
                 "Role is not authorized."));
+        return caller;
     }
 }

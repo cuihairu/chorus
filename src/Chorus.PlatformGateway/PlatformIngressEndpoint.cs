@@ -14,7 +14,8 @@ namespace Chorus.PlatformGateway;
 /// one durable data-plane fact. Verification and mapping are the mounted modules' work
 /// (FIX-INPUT-08 assembly) — the face never parses a platform payload itself, it only moves
 /// the verified bytes to the mapper and the mapped event to the routed push
-/// (FIX-INPUT-02/05) or, when no route serves the event or the push cannot land durably, to
+/// (FIX-INPUT-02/05) or, when no route serves the event, the push cannot land durably, or
+/// the room's delivery stands closed (FIX-END-07), to
 /// <see cref="PlatformIngest.IngestBatch"/>. Whichever leg answers, every receipt the caller
 /// sees reflects a committed fact, never an in-memory acceptance. Attribution is the data
 /// plane's (canonical live session key, platform-strict): an event for a platform no
@@ -27,7 +28,8 @@ public sealed class PlatformIngressEndpoint(
     IRoomRoutingDirectory? routing = null,
     Func<string, Grpc.Net.Client.GrpcChannel>? gameChannelFactory = null,
     Func<Grpc.Net.Client.GrpcChannel, RoomEvents.RoomEventsClient>? roomEventsFactory = null,
-    TimeSpan[]? pushRetryBackoffs = null)
+    TimeSpan[]? pushRetryBackoffs = null,
+    StopDeliveryRecord? stopDeliveries = null)
 {
     /// <summary>The platform application the callback belongs to; per-app callbacks are how
     /// every platform console routes webhooks, so the face asks for it explicitly.</summary>
@@ -149,6 +151,10 @@ public sealed class PlatformIngressEndpoint(
         // moved to an owner the cache has not seen. A retry that cannot land durably falls to
         // the persistent inbox below: an explicit pending record, never a drop, and the same
         // event id makes the two legs idempotent across each other.
+        // Set when this event's room stands delivery-closed (FIX-END-07): the ingest leg
+        // below is its durable home, and its committed receipt asks for one more drain pass
+        // so the closed round's late arrivals reach a terminal disposition too.
+        string? closedRoom = null;
         if (routing is not null && gameChannelFactory is not null)
         {
             var backoffs = pushRetryBackoffs ?? DefaultPushRetryBackoffs;
@@ -156,6 +162,15 @@ public sealed class PlatformIngressEndpoint(
             {
                 if (!routing.TryResolve(platform, mapped.SessionId, out var route))
                     break;
+                // FIX-END-07: a room whose delivery this gateway closed at the command's
+                // version stops being a push target — no new pushes for the old round is the
+                // closure's own meaning. The event falls to the persistent inbox, whose drain
+                // pass disposes it terminally (OutOfRound) under the receiver's fence.
+                if (stopDeliveries is not null && stopDeliveries.IsClosed(route.RoomId, route.RoundGeneration))
+                {
+                    closedRoom = route.RoomId;
+                    break;
+                }
                 var push = new DeliverRoomEventRequest
                 {
                     TenantId = route.TenantId,
@@ -187,7 +202,18 @@ public sealed class PlatformIngressEndpoint(
                 }
                 catch (RpcException error) when (error.StatusCode == StatusCode.InvalidArgument)
                 {
-                    return Results.BadRequest(new { error = "rejected_push", platform, detail = error.Status.Detail });
+                    // The receiver refused the push. A room whose closure now stands — the
+                    // command landed mid-flight, between this resolve and the receiver's own
+                    // fence (FIX-END-06) — falls to the persistent inbox: a 400 would leave
+                    // the event without any durable trace. Anything else the receiver refused
+                    // (a malformed push) keeps its 400: retrying cannot fix it.
+                    if (stopDeliveries is null)
+                        return Results.BadRequest(new { error = "rejected_push", platform, detail = error.Status.Detail });
+                    routing.TryResolve(platform, mapped.SessionId, out var fenced);
+                    if (fenced is not null && !stopDeliveries.IsClosed(fenced.RoomId, fenced.RoundGeneration))
+                        return Results.BadRequest(new { error = "rejected_push", platform, detail = error.Status.Detail });
+                    closedRoom = fenced?.RoomId;
+                    break;
                 }
                 catch (RpcException)
                 {
@@ -200,6 +226,11 @@ public sealed class PlatformIngressEndpoint(
                     if (delivered.Disposition is PushDisposition.DurableAccepted
                         or PushDisposition.Duplicate)
                     {
+                        // The pair the drain later routes and the watermark the ack reports:
+                        // what this process durably observed for the room, nothing more.
+                        stopDeliveries?.ObserveApp(platform, appId);
+                        if (delivered.Sequence > 0)
+                            stopDeliveries?.RecordCutoff(route.RoomId, delivered.Sequence);
                         return Results.Ok(new
                         {
                             ok = true,
@@ -278,6 +309,12 @@ public sealed class PlatformIngressEndpoint(
             bindingId = receipt.BindingId,
             duplicate = receipt.Duplicate
         });
+        // The pair this process durably landed under — the enumeration a later drain pass
+        // routes — and, for a closed round's late arrival, the request for one more drain
+        // pass: its terminal disposition (OutOfRound) is the closure's own work (FIX-END-07).
+        stopDeliveries?.ObserveApp(platform, appId);
+        if (closedRoom is not null)
+            stopDeliveries?.RequestDrain(closedRoom);
         return Results.Ok(new { ok = true, platform, receipts });
     }
 }
