@@ -2375,7 +2375,11 @@ public sealed class RedesignEndOperationHostTests
                 {
                     lastPhase = reader.GetString(0);
                     lastStatus = reader.GetString(1);
-                    if (lastPhase == "Released" && lastStatus == "Settled") { released = true; break; }
+                    // FIX-END-14 walks the ladder on through Done in the same pass, so
+                    // Released is transient — any of the post-release phases is the
+                    // release's evidence (the frees asserted below are what it stands for).
+                    if (lastPhase is "Released" or "Destroyed" or "Done" && lastStatus == "Settled")
+                    { released = true; break; }
                 }
             }
             await Task.Delay(150);
@@ -2673,7 +2677,10 @@ public sealed class RedesignEndOperationHostTests
                 {
                     lastPhase = reader.GetString(0);
                     lastStatus = reader.GetString(1);
-                    if (lastPhase == "Released" && lastStatus == "Settled") { released = true; break; }
+                    // FIX-END-14 walks the ladder on through Done in the same pass, so any
+                    // post-release phase is the release's evidence.
+                    if (lastPhase is "Released" or "Destroyed" or "Done" && lastStatus == "Settled")
+                    { released = true; break; }
                 }
             }
             await Task.Delay(150);
@@ -2837,6 +2844,227 @@ public sealed class RedesignEndOperationHostTests
                 "SELECT state FROM input.delivery WHERE event_id='rel13-gift-1'", connection)
                 .ExecuteScalarAsync());
         }
+    }
+
+    /// <summary>
+    /// FIX-END-14: the settled round's runtime entity leaves the game host through the
+    /// ladder's own destroy step — and only through it. Before the release the normal
+    /// destroy's ceiling (the ownership row's own epoch, which equals the running epoch)
+    /// spares the live entity on the host; once the release lands, the coordinator
+    /// broadcasts the destroy with the row's bumped epoch and the ladder walks to Done.
+    /// The destroy moves no persistent fact — the ownership stays at exactly the release's
+    /// bump, the result, the settle outbox and the operation's own record all stand — and
+    /// a repeated destroy answers clean from the entity's absence, never a throw.
+    /// </summary>
+    [Fact]
+    public async Task TheReleasedRoundDestroysItsEntityAfterTheReleaseAndKeepsTheRecords()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        using var platform = DevelopmentTaskPlatform.Start(
+            () => RedesignM0HostTests.HostEnvironment.FreePort());
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        // The executor is deliberately absent at first: the end task parks authorized and
+        // the ladder holds short of the release, which is where the pre-release destroy
+        // probe below does its work.
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "60",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "15",
+                ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "600000",
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150",
+                ["CHORUS_END_BARRIER_STALE_SECONDS"] = "5"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{gamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+            },
+            clientTenant: "tenant-a", instanceId: "game-rel14");
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-rel14"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new Chorus.Rpc.ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new Chorus.Rpc.RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-rel14" });
+        }
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "rel14-open-1", "rel14-live-1");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-rel14");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-rel14");
+        using var dataChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(dataChannel);
+
+        var owner = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-rel14-1",
+            OwnerInstanceId = "game-rel14", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new Chorus.Rpc.StartRoundRequest
+        {
+            RoomId = "room-rel14-1", OwnerInstanceId = "game-rel14", Epoch = owner.Epoch,
+            GameId = "game-a", ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            OperationId = "start-rel14", TenantId = "tenant-a",
+            Participants =
+            {
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = host.BindingId, ParticipantId = host.StreamerId, Role = "Host"
+                }
+            }
+        })).Status);
+        using var hostChannel = environment.Channel(gamePort, controlCertificate, "game-server");
+        var gameHost = new Chorus.Rpc.GameHost.GameHostClient(hostChannel);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(
+            new Chorus.Rpc.PrepareRoomRequest
+            {
+                RoomId = "room-rel14-1", GameId = "game-a", OwnerInstanceId = "game-rel14",
+                Epoch = owner.Epoch, OperationId = "run-rel14", DurationTicks = 60, RandomSeed = 333,
+                TickMs = 25,
+                Participants =
+                {
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = host.BindingId, ParticipantId = host.StreamerId, Faction = "red"
+                    }
+                }
+            })).Status);
+
+        // The round settles and the ladder parks authorized with no executor to claim the
+        // end task — the release, and with it the destroy step, cannot run yet.
+        var parked = false;
+        string parkedTask = "", parkedPhase = "";
+        var parkedDeadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < parkedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT status FROM live.task WHERE barrier_end_operation_id='room-rel14-1/end'),
+                           (SELECT phase FROM control.end_operation WHERE room_id='room-rel14-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && !reader.IsDBNull(1))
+                {
+                    parkedTask = reader.GetString(0);
+                    parkedPhase = reader.GetString(1);
+                    if (parkedTask == "Pending" && parkedPhase == "PlatformTaskAuthorized")
+                    { parked = true; break; }
+                }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(parked, $"The end task never parked authorized (task: {parkedTask}, phase: {parkedPhase}).");
+
+        // The pre-release probe: the normal destroy's ceiling is the ownership row's own
+        // epoch — which before the finalize equals the running epoch — so the live entity
+        // is at, not below, the ceiling and every host spares it. The host's answer is the
+        // entity's presence: only a live actor can be spared.
+        var early = await gameHost.DestroyRoomAsync(new Chorus.Rpc.DestroyRoomRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", RoomId = "room-rel14-1",
+            ReleaseEpoch = owner.Epoch, EndOperationId = "room-rel14-1/end"
+        }, deadline: DateTime.UtcNow.AddSeconds(10));
+        Assert.False(early.Destroyed);
+        Assert.True(early.SparedNewGeneration);
+
+        // The executor appears: the platform close lands, the release frees the round, and
+        // the coordinator's own destroy step broadcasts at the row's bumped epoch — the
+        // ladder now walks Released through Destroyed to Done in the same pass.
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(GatewayEnvironment(environment.DataPort,
+                $"https://localhost:{environment.ControlPort}", gatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300",
+                ["CHORUS_TASK_LEASE_SECONDS"] = "60",
+                ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "70",
+                ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "120"
+            },
+            instanceId: "gateway-rel14");
+        var finished = false;
+        string lastPhase = "", lastStatus = "";
+        var finishDeadline = DateTime.UtcNow.AddSeconds(90);
+        while (DateTime.UtcNow < finishDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT phase FROM control.end_operation WHERE room_id='room-rel14-1'),
+                           (SELECT status FROM game.room WHERE room_id='room-rel14-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync())
+                {
+                    lastPhase = reader.GetString(0);
+                    lastStatus = reader.GetString(1);
+                    if (lastPhase == "Done" && lastStatus == "Settled") { finished = true; break; }
+                }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(finished, $"The ladder never finished through the destroy (phase: {lastPhase}, status: {lastStatus})." +
+            $" Control tail:\n{HostTailFor(environment, "Chorus.ControlServer")}");
+        Assert.Equal(1, platform.Calls("room-rel14-1/end"));
+
+        // The destroy moved no persistent fact: the ownership stays at exactly the
+        // release's bump (the destroy adds no epoch of its own), the result, the settle
+        // outbox and the operation's own row — the dedup record every replay answers from —
+        // all stand exactly as the release left them.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var records = new NpgsqlCommand("""
+                SELECT (SELECT status||':'||epoch FROM control.ownership
+                          WHERE kind='room' AND entity_id='room-rel14-1'),
+                       (SELECT count(*) FROM game.result WHERE room_id='room-rel14-1'),
+                       (SELECT kind FROM infra.outbox WHERE effect_id='room-rel14-1/0/settle'),
+                       (SELECT phase FROM control.end_operation WHERE room_id='room-rel14-1')
+                """, connection);
+            await using var reader = await records.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal($"Released:{owner.Epoch + 1}", reader.GetString(0));
+            Assert.True(reader.GetInt64(1) >= 1, "The committed result did not stand.");
+            Assert.Equal("round.settled", reader.GetString(2));
+            Assert.Equal("Done", reader.GetString(3));
+        }
+
+        // The repeated destroy answers from the entity's absence — clean, never a throw —
+        // and the absence is itself the evidence the broadcast removed it: the same call
+        // that spared the live entity before the release now finds nothing to spare.
+        var repeat = await gameHost.DestroyRoomAsync(new Chorus.Rpc.DestroyRoomRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", RoomId = "room-rel14-1",
+            ReleaseEpoch = owner.Epoch + 1, EndOperationId = "room-rel14-1/end"
+        }, deadline: DateTime.UtcNow.AddSeconds(10));
+        Assert.False(repeat.Destroyed);
+        Assert.False(repeat.SparedNewGeneration);
     }
 
     /// <summary>

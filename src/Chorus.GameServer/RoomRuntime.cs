@@ -432,6 +432,48 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     }
 
     /// <summary>
+    /// Destroys a released round's runtime entity on this host (FIX-END-14): the actor
+    /// leaves the dictionary whatever its state — a completed room's frozen result moves
+    /// into the bounded cache on the way out, a live leftover of the settled round is
+    /// disposed (its authority ended at the release; the dispose is local teardown, the
+    /// data plane is the truth). The epoch ceiling is the released ownership row's own
+    /// bumped epoch: an actor at or above it belongs to a newer generation and is never
+    /// touched. Idempotent and never throwing: an unknown or already-destroyed room
+    /// answers (false, false), a spared newer generation answers (false, true).
+    /// </summary>
+    internal async Task<(bool Destroyed, bool SparedNewGeneration)> DestroyRoomAsync(
+        string roomId, long releaseEpoch, CancellationToken cancellationToken = default)
+    {
+        var activation = _activations.GetOrAdd(roomId, static _ => new SemaphoreSlim(1, 1));
+        await activation.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_actors.TryGetValue(roomId, out var actor)) return (false, false);
+            if (actor.Epoch >= releaseEpoch) return (false, true);
+            var final = actor.FinalResult();
+            await actor.DisposeAsync();
+            _retiredStatuses[roomId] = actor.Status();
+            if (_actors.TryRemove(new KeyValuePair<string, RoomActor>(roomId, actor)))
+                _admission.Release();
+            if (final is not null)
+                lock (_resultGate)
+                {
+                    if (!_finalResults.ContainsKey(roomId)) _releaseOrder.Enqueue(roomId);
+                    _finalResults[roomId] = final;
+                    while (_finalResults.Count > RetainedResults)
+                        _finalResults.Remove(_releaseOrder.Dequeue());
+                }
+            // The start-line flag follows the room out, exactly as a retirement drops it.
+            _activated.TryRemove(new KeyValuePair<string, byte>(roomId, 0));
+            return (true, false);
+        }
+        finally
+        {
+            activation.Release();
+        }
+    }
+
+    /// <summary>
     /// The late-subscriber contract of a released room (FIX-ROOM-05): a subscriber on the
     /// result's epoch receives the frozen result and the stream ends; a stale epoch is told
     /// the epoch it must resubscribe at. A room with no cached result never reaches here —

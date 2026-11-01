@@ -83,6 +83,21 @@ public sealed class GameHostGrpcService(RoomRuntime runtime, TrustedProcessCerti
         }
     }
 
+    public override async Task<DestroyRoomReply> DestroyRoom(DestroyRoomRequest request,
+        ServerCallContext context)
+    {
+        Require(context, "control-server", "game-server");
+        // FIX-END-14: the destroy is idempotent and never refuses on room state — an
+        // unknown or already-destroyed room is a clean "nothing to destroy", and the
+        // epoch ceiling (not an ownership check) is what keeps a newer generation alive.
+        var (destroyed, spared) = await runtime.DestroyRoomAsync(request.RoomId,
+            request.ReleaseEpoch, context.CancellationToken);
+        return new DestroyRoomReply
+        {
+            RoomId = request.RoomId, Destroyed = destroyed, SparedNewGeneration = spared
+        };
+    }
+
     private ProcessIdentity Require(ServerCallContext context, params string[] roles)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;

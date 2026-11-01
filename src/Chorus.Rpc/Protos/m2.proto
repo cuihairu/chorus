@@ -496,6 +496,35 @@ service GameHost {
   // Snapshot recovery (architecture 10.3): replay from the newest usable snapshot, resume
   // ticking; a Finishing room recovers its tail without restarting battle ticks.
   rpc RecoverRoom(RecoverRoomRequest) returns (RecoverRoomReply);
+  // FIX-END-14: destroy a released round's runtime entities on this host. The ceiling is
+  // the released ownership row's own (bumped) epoch — every actor of this room strictly
+  // below it belongs to the settled round and goes; an actor at or above it is a newer
+  // generation and is never touched. The call does not depend on the original actor being
+  // alive: an unknown or already-destroyed room answers cleanly, and destroying never
+  // throws. The frozen result stays queryable (FIX-ROOM-05); no persisted row moves.
+  rpc DestroyRoom(DestroyRoomRequest) returns (DestroyRoomReply);
+}
+
+message DestroyRoomRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  // The released ownership epoch (the finalize transaction's own bump): actors strictly
+  // below it are the settled round's incarnations; an actor at or above it is a newer
+  // generation. A caller naming a pre-release row's epoch therefore spares everything —
+  // the normal destroy cannot run before the finalize.
+  int64 release_epoch = 4;
+  string end_operation_id = 5;
+}
+
+message DestroyRoomReply {
+  string room_id = 1;
+  // This call removed an entity. A repeated destroy (or a room this host never ran, or
+  // one whose entities already died with a restart) answers false — clean, never a throw.
+  bool destroyed = 2;
+  // A newer-generation actor of this room stands at or above the ceiling and was not
+  // touched: the old round's destroy is complete, the new round's entity stays.
+  bool spared_new_generation = 3;
 }
 
 // FIX-INPUT-01: the direct-push room-event edge on the game host. The routing layer

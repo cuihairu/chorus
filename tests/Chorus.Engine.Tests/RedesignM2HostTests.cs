@@ -1542,7 +1542,10 @@ public sealed class RedesignM2HostTests
                     """, connection);
                 if (await state.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
                     && !reader.IsDBNull(0) && !reader.IsDBNull(1) && !reader.IsDBNull(2)
-                    && reader.GetString(0) == "Released" && reader.GetString(1) == "Settled"
+                    // FIX-END-14 walks the ladder on through Done in the same coordinator
+                    // pass, so Released is transient — any post-release phase is evidence.
+                    && reader.GetString(0) is "Released" or "Destroyed" or "Done"
+                    && reader.GetString(1) == "Settled"
                     && reader.GetString(2) == $"Released:{owner.Epoch + 1}")
                 { released = true; break; }
             }
@@ -2391,7 +2394,10 @@ public sealed class RedesignM2HostTests
                     """, connection);
                 if (await state.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
                     && !reader.IsDBNull(0) && !reader.IsDBNull(1)
-                    && reader.GetString(0) == "Released" && reader.GetString(1) == "Settled")
+                    // FIX-END-14 walks the ladder on through Done in the same coordinator
+                    // pass, so Released is transient — any post-release phase is evidence.
+                    && reader.GetString(0) is "Released" or "Destroyed" or "Done"
+                    && reader.GetString(1) == "Settled")
                 { released = true; break; }
             }
             await Task.Delay(200);

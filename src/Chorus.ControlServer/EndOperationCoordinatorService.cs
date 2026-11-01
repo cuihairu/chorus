@@ -23,9 +23,12 @@ namespace Chorus.ControlServer;
 /// not the original game host — asks the data plane to finalize, and the data plane's own
 /// transaction re-checks the whole evidence (the ladder's platform-side phases, the inputs'
 /// terminal dispositions, the manifest's completion) before it atomically frees the round's
-/// pointers, participations, held capacity and ownership. Destroyed and Done belong to the
-/// later items. A failure is recorded on the row without leaving the phase, so a restarted
-/// control plane reads the phase and retries the same step.
+/// pointers, participations, held capacity and ownership. Step 8 (FIX-END-14) destroys the
+/// settled round's runtime entities on the game hosts — a broadcast whose epoch ceiling is
+/// the released ownership row's own bump, so the destroy is structurally post-release and a
+/// newer-generation actor is never touched — and Done closes the ladder. A failure is
+/// recorded on the row without leaving the phase, so a restarted control plane reads the
+/// phase and retries the same step.
 /// </summary>
 public sealed class EndOperationCoordinatorService(RedesignControlStore controlStore,
     StopDeliveryNotifier notifier, ClusterDirectory directory,
@@ -230,6 +233,64 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
                     logger.LogWarning(error,
                         "The release of {RoomId} waits for the data plane: {Message}",
                         current.RoomId, error.Message);
+                }
+            }
+            if (current.Phase == EndOperationPhases.Released)
+            {
+                // Step 8 (FIX-END-14): the settled round's runtime entities leave the game
+                // hosts. The ceiling is the ownership row's released epoch — the finalize
+                // transaction's own bump — so the destroy is structurally post-release: a
+                // pre-release row's epoch equals the running epoch and every host spares
+                // everything at or above it, while an actor a takeover raised after the
+                // release is a newer generation no destroy may touch. The broadcast reaches
+                // every live host because the entities die with a dead host's process: the
+                // directory's liveness set is exactly the set that can hold one. The destroy
+                // never depends on the original actor — an unknown or already-destroyed room
+                // answers clean — so a host that cannot be reached is the only thing worth
+                // waiting for: the phase parks and the next pass asks again, and a host that
+                // truly stopped reporting leaves the directory and with it the wait.
+                var owner = await controlStore.GetOwnershipAsync(current.TenantId, current.GameId,
+                    "room", current.RoomId, cancellationToken);
+                if (owner is null)
+                {
+                    logger.LogWarning(
+                        "The destroy of {RoomId} waits: the released ownership row is not readable yet.",
+                        current.RoomId);
+                }
+                else
+                {
+                    var destroyedHosts = 0;
+                    var sparedHosts = 0;
+                    foreach (var instanceId in directory.GameHostIds)
+                    {
+                        var channel = directory.GameHostChannel(instanceId);
+                        if (channel is null) continue; // left between the snapshot and the resolve
+                        var reply = await new GameHost.GameHostClient(channel).DestroyRoomAsync(
+                            new DestroyRoomRequest
+                            {
+                                TenantId = current.TenantId, GameId = current.GameId,
+                                RoomId = current.RoomId, ReleaseEpoch = owner.Epoch,
+                                EndOperationId = current.EndOperationId
+                            }, deadline: DateTime.UtcNow.AddSeconds(5),
+                            cancellationToken: cancellationToken);
+                        if (reply.Destroyed) destroyedHosts++;
+                        if (reply.SparedNewGeneration) sparedHosts++;
+                    }
+                    current = await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
+                        current.GameId, current.EndOperationId,
+                        EndOperationPhases.Released, EndOperationPhases.Destroyed,
+                        cancellationToken: cancellationToken);
+                    // Done closes the ladder: the row leaves the open list, and the standing
+                    // input fence retires with it — the settled status column and the
+                    // generation fences carry the late-event refusals from here (END-06).
+                    current = await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
+                        current.GameId, current.EndOperationId,
+                        EndOperationPhases.Destroyed, EndOperationPhases.Done,
+                        cancellationToken: cancellationToken);
+                    logger.LogInformation(
+                        "Destroyed {RoomId} below epoch {Epoch}: {Destroyed} host(s) removed entities, " +
+                        "{Spared} host(s) spared a newer generation.",
+                        current.RoomId, owner.Epoch, destroyedHosts, sparedHosts);
                 }
             }
         }
