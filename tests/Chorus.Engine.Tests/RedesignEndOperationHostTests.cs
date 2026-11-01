@@ -2434,6 +2434,412 @@ public sealed class RedesignEndOperationHostTests
     }
 
     /// <summary>
+    /// FIX-END-13, the reopened queue: the mount's next-round eligibility follows the
+    /// release receipt alone. While the platform close is still outstanding — failed or
+    /// unknown, the executor absent — the queue refuses the very mount and the status face
+    /// still names the room; once the release lands, the same mount queues again, the match
+    /// coordinator pairs the two mounts into a fresh round, and the old round's late
+    /// arrivals stay behind: the replay answers from its receipt with the first attribution
+    /// and route version kept, and a push claiming the old round's generation cannot enter
+    /// the new room.
+    /// </summary>
+    [Fact]
+    public async Task TheReleasedMountRequeuesWhileLateOldEventsStayInTheOldRound()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        using var platform = DevelopmentTaskPlatform.Start(
+            () => RedesignM0HostTests.HostEnvironment.FreePort());
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        // The executor is deliberately absent at first — the platform close cannot land,
+        // which is exactly the failed/unknown window that must keep the queue shut. The
+        // match coordinator runs at a test pace and asks for a long round, so the fact can
+        // act inside the paired room instead of racing its settlement.
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "60",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "15",
+                ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "600000",
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150",
+                ["CHORUS_END_BARRIER_STALE_SECONDS"] = "5",
+                ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+                ["CHORUS_ROUND_DURATION_TICKS"] = "600"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{gamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+            },
+            clientTenant: "tenant-a", instanceId: "game-rel13");
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-rel13"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new Chorus.Rpc.ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new Chorus.Rpc.RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-rel13" });
+        }
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountWithCredentialAsync(environment, simulator, "rel13-a", "live-rel13-a");
+        var guest = await MountAsync(environment, simulator, "rel13-b", "live-rel13-b");
+        const string partition = "tenant-a/game-a/rules-1/region-1/simulator/standard";
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-rel13");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-rel13");
+        using var dataChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(dataChannel);
+        // The control plane's own data-plane leg: the coordinator drives the ladder and the
+        // queue answers it, so the fact speaks with the same authority.
+        using var controlDataChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
+        var queue = new Chorus.Rpc.MatchQueue.MatchQueueClient(controlDataChannel);
+        var input = new Chorus.Rpc.RoundInput.RoundInputClient(controlDataChannel);
+
+        var owner = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-q-1",
+            OwnerInstanceId = "game-rel13", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new Chorus.Rpc.StartRoundRequest
+        {
+            RoomId = "room-q-1", OwnerInstanceId = "game-rel13", Epoch = owner.Epoch,
+            GameId = "game-a", ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            OperationId = "start-q-1", TenantId = "tenant-a",
+            Participants =
+            {
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = host.BindingId, ParticipantId = host.StreamerId, Role = "Host"
+                },
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = guest.BindingId, ParticipantId = guest.StreamerId, Role = "Guest"
+                }
+            }
+        })).Status);
+        using var hostChannel = environment.Channel(gamePort, controlCertificate, "game-server");
+        Assert.Equal("Running", (await new Chorus.Rpc.GameHost.GameHostClient(hostChannel).PrepareRoomAsync(
+            new Chorus.Rpc.PrepareRoomRequest
+            {
+                RoomId = "room-q-1", GameId = "game-a", OwnerInstanceId = "game-rel13",
+                Epoch = owner.Epoch, OperationId = "run-q-1", DurationTicks = 120, RandomSeed = 1313,
+                TickMs = 25,
+                Participants =
+                {
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = host.BindingId, ParticipantId = host.StreamerId, Faction = "red"
+                    },
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = guest.BindingId, ParticipantId = guest.StreamerId, Faction = "blue"
+                    }
+                }
+            })).Status);
+
+        // The status face carries the mount's round facts while the round stands — the
+        // eligibility is computed from them on every read, never cached ahead of the store.
+        using var statusCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-rel13-status");
+        using var statusChannel = environment.Channel(environment.StreamerPort, statusCertificate, "streamer-server");
+        var status = new Chorus.Rpc.StreamerSession.StreamerSessionClient(statusChannel);
+        var inRound = await status.GameplayStatusAsync(new Chorus.Rpc.GameplayStatusRequest
+            { TenantId = "tenant-a", AccessCredential = host.AccessCredential });
+        Assert.Equal(host.BindingId, inRound.BindingId);
+        Assert.Equal("room-q-1", inRound.CurrentRoomId);
+        Assert.Equal(1L, inRound.RoundGeneration);
+
+        // One gift rides the running round — its committed receipt is the dedup floor the
+        // late replay must meet unchanged.
+        var gift = await input.AcceptRoomEventAsync(new Chorus.Rpc.AcceptRoomEventRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", RoomId = "room-q-1",
+            OwnerInstanceId = "game-rel13", Epoch = owner.Epoch, EventId = "rel13-gift-1",
+            Platform = "simulator", AppId = "app-1", BindingId = host.BindingId,
+            RoundGeneration = 1, PayloadJson = """{"kind":"gift","amount":300}"""
+        });
+        Assert.False(gift.Duplicate);
+        Assert.Equal(1L, gift.RouteVersion);
+        var consumed = false;
+        var consumedDeadline = DateTime.UtcNow.AddSeconds(45);
+        while (DateTime.UtcNow < consumedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                if (Convert.ToString(await new NpgsqlCommand(
+                    "SELECT state FROM input.delivery WHERE event_id='rel13-gift-1'", connection)
+                    .ExecuteScalarAsync()) == "Consumed") { consumed = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(consumed, "The running round never consumed the gift.");
+
+        // The round ends; the ladder parks authorized with the executor absent — the
+        // platform close is neither succeeded nor observed: it simply cannot land. Two
+        // mounts mean two recorded end tasks; both must stand Pending.
+        var parked = false;
+        long parkedTasks = 0, parkedPending = 0;
+        string parkedPhase = "";
+        var parkedDeadline = DateTime.UtcNow.AddSeconds(90);
+        while (DateTime.UtcNow < parkedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT count(*) FROM live.task WHERE barrier_end_operation_id='room-q-1/end'),
+                           (SELECT count(*) FROM live.task
+                              WHERE barrier_end_operation_id='room-q-1/end' AND status='Pending'),
+                           (SELECT phase FROM control.end_operation WHERE room_id='room-q-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && !reader.IsDBNull(1) && !reader.IsDBNull(2))
+                {
+                    parkedTasks = reader.GetInt64(0);
+                    parkedPending = reader.GetInt64(1);
+                    parkedPhase = reader.GetString(2);
+                    if (parkedTasks == 2 && parkedPending == 2
+                        && parkedPhase == "PlatformTaskAuthorized")
+                    { parked = true; break; }
+                }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(parked, $"The end tasks never parked authorized (tasks: {parkedTasks}, " +
+            $"pending: {parkedPending}, phase: {parkedPhase}).");
+
+        // The queue stays shut for exactly this mount while the platform close is
+        // outstanding, and the status face still names the room it holds.
+        var refused = await Assert.ThrowsAsync<RpcException>(() => queue.EnqueueTicketAsync(
+            new Chorus.Rpc.EnqueueTicketRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", BindingId = host.BindingId,
+                SessionId = host.SessionId, PartitionKey = partition, OperationId = "rel13-enq-a"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, refused.StatusCode);
+        Assert.Contains("already participates", refused.Status.Detail);
+        var stillInRound = await status.GameplayStatusAsync(new Chorus.Rpc.GameplayStatusRequest
+            { TenantId = "tenant-a", AccessCredential = host.AccessCredential });
+        Assert.Equal("room-q-1", stillInRound.CurrentRoomId);
+
+        // The executor appears; the release lands on the coordinator's next pass under the
+        // end operation's own business id.
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(GatewayEnvironment(environment.DataPort,
+                $"https://localhost:{environment.ControlPort}", gatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300",
+                ["CHORUS_TASK_LEASE_SECONDS"] = "60",
+                ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "70",
+                ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "120"
+            },
+            instanceId: "gateway-rel13");
+        var released = false;
+        string lastPhase = "", lastStatus = "";
+        var releaseDeadline = DateTime.UtcNow.AddSeconds(90);
+        while (DateTime.UtcNow < releaseDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT phase FROM control.end_operation WHERE room_id='room-q-1'),
+                           (SELECT status FROM game.room WHERE room_id='room-q-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync())
+                {
+                    lastPhase = reader.GetString(0);
+                    lastStatus = reader.GetString(1);
+                    if (lastPhase == "Released" && lastStatus == "Settled") { released = true; break; }
+                }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(released, $"The release never landed (phase: {lastPhase}, status: {lastStatus})." +
+            $" Control tail:\n{HostTailFor(environment, "Chorus.ControlServer")}" +
+            $"\nGateway tail:\n{HostTailFor(environment, "gateway-rel13")}");
+
+        // The receipt is what reopened the mount: same binding, no room, the round
+        // generation kept as the mount's monotone counter.
+        var freed = await status.GameplayStatusAsync(new Chorus.Rpc.GameplayStatusRequest
+            { TenantId = "tenant-a", AccessCredential = host.AccessCredential });
+        Assert.Equal(host.BindingId, freed.BindingId);
+        Assert.Equal("", freed.CurrentRoomId);
+        Assert.Equal(1L, freed.RoundGeneration);
+
+        // The same mounts queue again and the coordinator pairs them into a fresh round on
+        // the same host — the eligibility the release opened is real, not cosmetic.
+        await queue.EnqueueTicketAsync(new Chorus.Rpc.EnqueueTicketRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", BindingId = host.BindingId,
+            SessionId = host.SessionId, PartitionKey = partition, OperationId = "rel13-enq-a2"
+        });
+        await queue.EnqueueTicketAsync(new Chorus.Rpc.EnqueueTicketRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", BindingId = guest.BindingId,
+            SessionId = guest.SessionId, PartitionKey = partition, OperationId = "rel13-enq-b2"
+        });
+        var match = new Chorus.Rpc.Match.MatchClient(controlDataChannel);
+        var room2 = "";
+        var pairedDeadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < pairedDeadline && room2.Length == 0)
+        {
+            var hostTicket = await queue.GetTicketAsync(new Chorus.Rpc.GetTicketRequest
+                { TenantId = "tenant-a", GameId = "game-a", BindingId = host.BindingId });
+            var guestTicket = await queue.GetTicketAsync(new Chorus.Rpc.GetTicketRequest
+                { TenantId = "tenant-a", GameId = "game-a", BindingId = guest.BindingId });
+            if (hostTicket.Ticket.State == "Committed" && guestTicket.Ticket.State == "Committed"
+                && hostTicket.Ticket.ReservationId.Length > 0
+                && hostTicket.Ticket.ReservationId == guestTicket.Ticket.ReservationId)
+            {
+                var reservation = await match.GetReservationAsync(new Chorus.Rpc.GetReservationRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a",
+                    ReservationId = hostTicket.Ticket.ReservationId
+                });
+                room2 = reservation.Reservation.RoomId;
+            }
+            await Task.Delay(200);
+        }
+        Assert.True(room2.Length > 0, "The coordinator never paired the released mounts." +
+            $" Control tail:\n{HostTailFor(environment, "Chorus.ControlServer")}");
+        var mountedAgain = false;
+        var mountedDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < mountedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var binding = new NpgsqlCommand(
+                    "SELECT current_room_id,round_generation FROM live.binding WHERE binding_id=@binding",
+                    connection);
+                binding.Parameters.AddWithValue("binding", host.BindingId);
+                if (await binding.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && reader.GetString(0) == room2 && reader.GetInt64(1) == 2)
+                { mountedAgain = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(mountedAgain, "The paired round never took the mounts.");
+        var requeued = await status.GameplayStatusAsync(new Chorus.Rpc.GameplayStatusRequest
+            { TenantId = "tenant-a", AccessCredential = host.AccessCredential });
+        Assert.Equal(room2, requeued.CurrentRoomId);
+        Assert.Equal(2L, requeued.RoundGeneration);
+
+        // The old round's late arrivals stay behind, three ways. First the floor: nothing
+        // may enter the new room across all three probes.
+        long room2Events = 0;
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var before = new NpgsqlCommand(
+                "SELECT count(*) FROM input.event WHERE attributed_room_id=@room", connection);
+            before.Parameters.AddWithValue("room", room2);
+            room2Events = Convert.ToInt64(await before.ExecuteScalarAsync());
+        }
+
+        // 1) The verbatim replay answers from its committed receipt — Duplicate, the first
+        //    attribution's route version, no new row anywhere.
+        var replay = await input.AcceptRoomEventAsync(new Chorus.Rpc.AcceptRoomEventRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", RoomId = "room-q-1",
+            OwnerInstanceId = "game-rel13", Epoch = owner.Epoch, EventId = "rel13-gift-1",
+            Platform = "simulator", AppId = "app-1", BindingId = host.BindingId,
+            RoundGeneration = 1, PayloadJson = """{"kind":"gift","amount":300}"""
+        });
+        Assert.True(replay.Duplicate);
+        Assert.Equal(1L, replay.RouteVersion);
+
+        // 2) A fresh event for the old room: the old authority is gone with the release —
+        //    the ownership fence refuses, and no trace is written.
+        var staleRoom = await Assert.ThrowsAsync<RpcException>(() => input.AcceptRoomEventAsync(
+            new Chorus.Rpc.AcceptRoomEventRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", RoomId = "room-q-1",
+                OwnerInstanceId = "game-rel13", Epoch = owner.Epoch, EventId = "rel13-gift-9",
+                Platform = "simulator", AppId = "app-1", BindingId = host.BindingId,
+                RoundGeneration = 1, PayloadJson = """{"kind":"gift","amount":90}"""
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, staleRoom.StatusCode);
+        Assert.Contains("ownership fence", staleRoom.Status.Detail);
+
+        // 3) An old-claim push aimed at the NEW room: the current authority admits the
+        //    caller, and the route fence still refuses — both generations named.
+        string owner2 = ""; var epoch2 = 0L;
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var authority = new NpgsqlCommand("""
+                SELECT owner_process_instance_id,epoch FROM control.ownership
+                WHERE kind='room' AND entity_id=@room
+                """, connection);
+            authority.Parameters.AddWithValue("room", room2);
+            if (await authority.ExecuteReaderAsync() is { } authorityReader && await authorityReader.ReadAsync())
+            {
+                owner2 = authorityReader.GetString(0);
+                epoch2 = authorityReader.GetInt64(1);
+            }
+        }
+        var staleClaim = await Assert.ThrowsAsync<RpcException>(() => input.AcceptRoomEventAsync(
+            new Chorus.Rpc.AcceptRoomEventRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", RoomId = room2,
+                OwnerInstanceId = owner2, Epoch = epoch2, EventId = "rel13-gift-10",
+                Platform = "simulator", AppId = "app-1", BindingId = host.BindingId,
+                RoundGeneration = 1, PayloadJson = """{"kind":"gift","amount":90}"""
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.InvalidArgument, staleClaim.StatusCode);
+        Assert.Contains("claims round generation 1", staleClaim.Status.Detail);
+        Assert.Contains("holds 2", staleClaim.Status.Detail);
+
+        // Nothing entered the new round, the refused pushes left no trace, and the accepted
+        // gift never moved: its attribution and its consumption stand exactly as first
+        // committed.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var after = new NpgsqlCommand(
+                "SELECT count(*) FROM input.event WHERE attributed_room_id=@room", connection);
+            after.Parameters.AddWithValue("room", room2);
+            Assert.Equal(room2Events, Convert.ToInt64(await after.ExecuteScalarAsync()));
+            await using var traces = new NpgsqlCommand("""
+                SELECT count(*) FROM input.event
+                WHERE event_id IN ('rel13-gift-9','rel13-gift-10')
+                """, connection);
+            Assert.Equal(0L, Convert.ToInt64(await traces.ExecuteScalarAsync()));
+            Assert.Equal("room-q-1", await new NpgsqlCommand(
+                "SELECT attributed_room_id FROM input.event WHERE event_id='rel13-gift-1'", connection)
+                .ExecuteScalarAsync());
+            Assert.Equal("Consumed", await new NpgsqlCommand(
+                "SELECT state FROM input.delivery WHERE event_id='rel13-gift-1'", connection)
+                .ExecuteScalarAsync());
+        }
+    }
+
+    /// <summary>
     /// FIX-END-10, the lost answer: the platform applies the end call but its reply never
     /// arrives — the executor's patience ends first, the task parks OutcomeUnknown, and the
     /// ladder may not record the close on an outcome nobody observed. The same operation id
@@ -2793,9 +3199,11 @@ public sealed class RedesignEndOperationHostTests
             "The escalation never even asked the platform it cannot question.");
     }
 
-    /// <summary>The captured console output of one started host, by instance id.</summary>
+    /// <summary>The captured console output of one started host, by instance id. A fact may
+    /// kill and restart a host under the same instance id (M2-10 restarts the data plane);
+    /// the newest start — the live process — is the console worth quoting.</summary>
     private static string HostOutputFor(RedesignM0HostTests.HostEnvironment environment, string instance) =>
-        environment.HostOutput(environment.HostProcesses.Single(pair => pair.Instance == instance).Process);
+        environment.HostOutput(environment.HostProcesses.Last(pair => pair.Instance == instance).Process);
 
     /// <summary>The console tail a failure message quotes, however short the console ran —
     /// an eager range on a quiet host would out-of-range before the assert could speak.</summary>
@@ -2899,6 +3307,16 @@ public sealed class RedesignEndOperationHostTests
         RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator, string openId,
         string liveKey)
     {
+        var mount = await MountWithCredentialAsync(environment, simulator, openId, liveKey);
+        return (mount.StreamerId, mount.SessionId, mount.BindingId);
+    }
+
+    /// <summary>The mount with its access credential, for facts that poll the status face
+    /// as the streamer's own session would (FIX-END-13).</summary>
+    private static async Task<(string StreamerId, string SessionId, string BindingId, string AccessCredential)>
+        MountWithCredentialAsync(RedesignM0HostTests.HostEnvironment environment,
+            DevelopmentPlatformSimulator simulator, string openId, string liveKey)
+    {
         var credential = simulator.IssueCredential("app-1", openId, liveKey, TimeSpan.FromMinutes(10));
         using var certificate = environment.Certificate("tenant-a", "streamer-server", "streamer-" + openId);
         using var channel = environment.Channel(environment.StreamerPort, certificate, "streamer-server");
@@ -2914,6 +3332,6 @@ public sealed class RedesignEndOperationHostTests
         {
             AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "mount-" + openId
         });
-        return (login.StreamerId, login.SessionId, mounted.BindingId);
+        return (login.StreamerId, login.SessionId, mounted.BindingId, login.AccessCredential);
     }
 }

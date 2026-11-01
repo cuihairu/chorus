@@ -1525,7 +1525,10 @@ public sealed class RedesignM2HostTests
         // ownership withdrawn at the bumped epoch — and the same mounts open the next
         // round (AT20).
         var released = false;
-        var releaseDeadline = DateTime.UtcNow.AddSeconds(60);
+        // CI runners run the suite packed far tighter than a local gate: the ladder's own
+        // steps (settle executor, barrier staleness, platform task) each stretch, so the
+        // window carries external-load margin instead of the local ~5s figure.
+        var releaseDeadline = DateTime.UtcNow.AddSeconds(120);
         while (DateTime.UtcNow < releaseDeadline)
         {
             await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
@@ -1546,7 +1549,8 @@ public sealed class RedesignM2HostTests
             await Task.Delay(200);
         }
         Assert.True(released, "The coordinator never released the settled round. Control tail:\n" +
-            RedesignEndOperationHostTests.HostTailFor(environment, "Chorus.ControlServer"));
+            RedesignEndOperationHostTests.HostTailFor(environment, "Chorus.ControlServer") +
+            "\nData tail:\n" + RedesignEndOperationHostTests.HostTailFor(environment, "Chorus.DataServer"));
         var nextOwner = await control.ClaimOwnershipAsync(new OwnershipRequest
         {
             TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-11",
@@ -2375,7 +2379,7 @@ public sealed class RedesignM2HostTests
         // evidence stands (FIX-END-12) — the retention boundary then answers with its
         // guards against a really settled room.
         var released = false;
-        var releaseDeadline = DateTime.UtcNow.AddSeconds(60);
+        var releaseDeadline = DateTime.UtcNow.AddSeconds(120);
         while (DateTime.UtcNow < releaseDeadline)
         {
             await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))

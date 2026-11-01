@@ -165,6 +165,13 @@ message GameplayStatusReply {
   int64 generation = 4;
   string state = 5;
   bool duplicate = 6;
+  // The mount's round participation (FIX-END-13): the room the binding currently points
+  // at and the round generation its routing snapshot claims. Empty and zero mean the mount
+  // holds no round — free to queue the next one. The release transaction is the only
+  // writer that clears the room, so the eligibility opens exactly when its receipt
+  // commits; the generation survives releases as the mount's monotone round counter.
+  string current_room_id = 7;
+  int64 round_generation = 8;
 }
 
 message SessionAttachRequest {
@@ -253,6 +260,11 @@ message BindingStatusReply {
   string game_id = 3;
   int64 generation = 4;
   string state = 5;
+  // The round participation of the restored binding (FIX-END-13): empty room and zero
+  // generation mean the mount holds no round and may queue the next one. The release
+  // transaction is the only writer that clears the room pointer.
+  string current_room_id = 6;
+  int64 round_generation = 7;
 }
 
 message LiveSessionRequest {

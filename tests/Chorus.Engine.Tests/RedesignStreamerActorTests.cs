@@ -77,7 +77,7 @@ public sealed class RedesignStreamerActorTests
                 : Task.FromResult<StreamerBindingStatus?>(Binding is null
                     ? null
                     : new StreamerBindingStatus(Binding.LiveSessionId, Binding.BindingId, Binding.GameId,
-                        Binding.Generation, Binding.State));
+                        Binding.Generation, Binding.State, null, 0));
     }
 
     private sealed record Rig(

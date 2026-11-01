@@ -202,7 +202,7 @@ public sealed class StreamerSessionGrpcService(
             var binding = await coordinator.StartGameplayAsync(TenantFor(caller, request.TenantId), request.AccessCredential,
                 request.GameId, request.OperationId, context.CancellationToken);
             return StatusReply(binding.LiveSessionId, binding.BindingId, binding.GameId,
-                binding.Generation, binding.State, binding.Duplicate);
+                binding.Generation, binding.State, binding.Duplicate, null, 0);
         }
         catch (TenantApplicationDeniedException)
         {
@@ -240,7 +240,7 @@ public sealed class StreamerSessionGrpcService(
             return status is null
                 ? new GameplayStatusReply()
                 : StatusReply(status.LiveSessionId, status.BindingId, status.GameId,
-                    status.Generation, status.State, false);
+                    status.Generation, status.State, false, status.CurrentRoomId, status.RoundGeneration);
         }
         catch (AccessCredentialRejectedException)
         {
@@ -257,11 +257,16 @@ public sealed class StreamerSessionGrpcService(
     }
 
     private static GameplayStatusReply StatusReply(
-        string liveSessionId, string bindingId, string gameId, long generation, string state, bool duplicate)
+        string liveSessionId, string bindingId, string gameId, long generation, string state, bool duplicate,
+        string? currentRoomId, long roundGeneration)
         => new()
         {
             LiveSessionId = liveSessionId, BindingId = bindingId, GameId = gameId,
-            Generation = generation, State = state, Duplicate = duplicate
+            Generation = generation, State = state, Duplicate = duplicate,
+            // FIX-END-13: the mount's round participation travels with the status — an
+            // empty room is the queue-eligible verdict, and it clears exactly when the
+            // release receipt's transaction commits.
+            CurrentRoomId = currentRoomId ?? "", RoundGeneration = roundGeneration
         };
 
     private async Task<ProcessIdentity> RequireAsync(ServerCallContext context)

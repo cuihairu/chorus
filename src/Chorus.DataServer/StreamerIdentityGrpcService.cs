@@ -210,7 +210,8 @@ public sealed class StreamerIdentityGrpcService(
             : new BindingStatusReply
             {
                 LiveSessionId = status.LiveSessionId, BindingId = status.BindingId, GameId = status.GameId,
-                Generation = status.Generation, State = status.State
+                Generation = status.Generation, State = status.State,
+                CurrentRoomId = status.CurrentRoomId ?? "", RoundGeneration = status.RoundGeneration
             };
     }
 

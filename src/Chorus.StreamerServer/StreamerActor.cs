@@ -141,8 +141,10 @@ public sealed class StreamerActor(string tenantId, string streamerId)
         {
             Facts = new StreamerActorFacts(Facts?.SessionOnline ?? false, Facts?.SessionCurrent ?? false,
                 Facts?.SessionVersion ?? 0L, LiveOpen: true,
+                // A freshly committed mount points at no room (FIX-END-13); the round
+                // participation joins the facts at the next status read.
                 new StreamerBindingStatus(binding.LiveSessionId, binding.BindingId, binding.GameId,
-                    binding.Generation, binding.State));
+                    binding.Generation, binding.State, null, 0));
         }
         finally
         {

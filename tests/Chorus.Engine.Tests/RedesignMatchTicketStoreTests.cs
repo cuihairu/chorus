@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using Chorus.Data;
 using Chorus.ControlServer;
 using Chorus.DataServer;
@@ -74,6 +75,60 @@ public sealed class RedesignMatchTicketStoreTests
         Assert.NotNull(status);
         Assert.Equal(again.TicketId, status!.TicketId);
         Assert.Null(await tickets.GetTicketAsync("tenant-a", "game-a", "binding-none"));
+    }
+
+    [Fact]
+    public async Task AReleasedMountRegainsItsQueueEligibility()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var frameStore = new RedesignFrameStore(database.ConnectionString);
+        var settlementStore = new RedesignSettlementStore(database.ConnectionString);
+        var tickets = new RedesignMatchTicketStore(database.ConnectionString);
+
+        // The mount rides a round to its release: while the round stands — whatever the
+        // platform close is still doing, succeeded, failed or unknown — the queue refuses
+        // it, and the binding's restore view carries the room it holds (FIX-END-13).
+        var (player, binding) = await MountAsync(identityStore, bindingStore, "live-key-r1", "ticket-r1");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-r-1", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-r-1", "gs-1", claim.Epoch,
+            [new RoundParticipant(binding.BindingId, player.StreamerId, "Host")],
+            "1.0.0", "cfg-1", "pkg-1", "start-r1");
+        await Assert.ThrowsAsync<RedesignMatchException>(() => tickets.EnqueueTicketAsync(
+            "tenant-a", "game-a", binding.BindingId, binding.SessionId, Partition, "enqueue-r1"));
+        var inRound = await bindingStore.GetActiveBindingAsync("tenant-a", player.StreamerId);
+        Assert.NotNull(inRound);
+        Assert.Equal("room-r-1", inRound!.CurrentRoomId);
+        Assert.Equal(1L, inRound.RoundGeneration);
+
+        // The release receipt lands and the same facts flip in its one transaction: the
+        // room pointer clears while the round generation survives as the mount's counter.
+        await roomStore.PrepareRoundAsync("tenant-a", "game-a", "room-r-1", "gs-1", claim.Epoch,
+            [1, 2, 3], [4, 5, 6], 1, "prepare-r1");
+        await roomStore.ActivateRoundAsync("tenant-a", "game-a", "room-r-1", "gs-1", claim.Epoch,
+            "activate-r1");
+        const string resultJson = """{"winner":"red"}""";
+        await frameStore.CommitFrameAsync("tenant-a", "game-a", "room-r-1",
+            new FrameCommit("final-r1", "gs-1", claim.Epoch, 0, 1, [], [9, 9, 9], [],
+                "1.0.0", "cfg-1", Final: true, ResultJson: resultJson,
+                PlanHash: SHA256.HashData(Encoding.UTF8.GetBytes(resultJson)),
+                Grants: [new PlannedGrant(player.StreamerId, "round-score", "room-r-1/grant/p1", "points", 100)]));
+        await settlementStore.CommitResultAsync("tenant-a", "game-a", "room-r-1", "settle-r1");
+        await EndLadderEvidence.StandAsync(database.ConnectionString, "room-r-1");
+        Assert.Equal("Settled", (await settlementStore.FinalizeRoundAsync(
+            "tenant-a", "game-a", "room-r-1", "finalize-r1")).Status);
+        var freed = await bindingStore.GetActiveBindingAsync("tenant-a", player.StreamerId);
+        Assert.NotNull(freed);
+        Assert.Null(freed!.CurrentRoomId);
+        Assert.Equal(1L, freed.RoundGeneration);
+
+        // The queue takes the same mount again: the release is what reopened it.
+        var ticket = await tickets.EnqueueTicketAsync("tenant-a", "game-a", binding.BindingId,
+            binding.SessionId, Partition, "enqueue-r2");
+        Assert.Equal(RedesignMatchTicketStore.Queued, ticket.State);
     }
 
     [Fact]

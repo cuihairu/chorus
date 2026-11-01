@@ -50,8 +50,14 @@ public sealed record StreamerAccessState(
 public sealed record StreamerBinding(
     string BindingId, string LiveSessionId, string GameId, long Generation, string State, bool Duplicate);
 
+/// <summary>The mount's standing with its round participation (FIX-END-13): the room the
+/// binding points at — null while the mount holds no round — and the mount's monotone round
+/// generation. The next-round eligibility is computed from these facts (architecture 5.3),
+/// never cached ahead of the store: the release transaction is the only writer that clears
+/// the room, so the eligibility opens exactly when its receipt commits.</summary>
 public sealed record StreamerBindingStatus(
-    string LiveSessionId, string BindingId, string GameId, long Generation, string State);
+    string LiveSessionId, string BindingId, string GameId, long Generation, string State,
+    string? CurrentRoomId, long RoundGeneration);
 
 /// <summary>The entity is not usable; LoginReady must not be returned (AT01).</summary>
 public sealed class EntityNotReadyException : Exception;

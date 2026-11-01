@@ -131,7 +131,9 @@ public sealed class StreamerIdentityChannel(Func<GrpcChannel> channelFactory) : 
         return string.IsNullOrEmpty(reply.BindingId)
             ? null
             : new StreamerBindingStatus(reply.LiveSessionId, reply.BindingId, reply.GameId,
-                reply.Generation, reply.State);
+                reply.Generation, reply.State,
+                string.IsNullOrEmpty(reply.CurrentRoomId) ? null : reply.CurrentRoomId,
+                reply.RoundGeneration);
     }
 
     public async Task<StreamerSessionRevocation> RevokeSessionAsync(string tenantId, string sessionId,

@@ -148,7 +148,7 @@ public sealed class RedesignM3RoomTurnoverSoakHostTests
             // grants settled, platform closed, finalize fired under the operation's id —
             // and only the recorded release ends this iteration.
             var released = false;
-            var releaseDeadline = DateTime.UtcNow.AddSeconds(60);
+            var releaseDeadline = DateTime.UtcNow.AddSeconds(120);
             while (DateTime.UtcNow < releaseDeadline)
             {
                 await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))

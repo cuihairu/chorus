@@ -9,8 +9,13 @@ namespace Chorus.DataServer;
 public sealed record BindingGrant(
     string BindingId, string LiveSessionId, string GameId, long Generation, string State, bool Duplicate);
 
+/// <summary>The active binding to restore, with its round participation (FIX-END-13): the
+/// room the binding points at — null while the mount holds no round, the only state from
+/// which it may queue the next one — and the mount's monotone round generation, which
+/// survives releases and fences stale route claims.</summary>
 public sealed record BindingStatus(
-    string LiveSessionId, string BindingId, string GameId, long Generation, string State);
+    string LiveSessionId, string BindingId, string GameId, long Generation, string State,
+    string? CurrentRoomId, long RoundGeneration);
 
 /// <summary>
 /// Gameplay mounting on the shared live slot (architecture 6.2). The slot mutex is
@@ -135,7 +140,8 @@ public sealed class RedesignBindingStore(string connectionString, Action? crashA
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand($"""
-            SELECT s.live_session_id,b.binding_id,b.game_id,b.generation,b.state
+            SELECT s.live_session_id,b.binding_id,b.game_id,b.generation,b.state,
+                   b.current_room_id,b.round_generation
             FROM live.session s
             JOIN live.binding b ON b.live_session_id=s.live_session_id AND b.state IN {ActiveStates}
             WHERE s.tenant_id=@tenant AND s.streamer_id=@streamer AND s.ended_at IS NULL
@@ -146,7 +152,8 @@ public sealed class RedesignBindingStore(string connectionString, Action? crashA
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;
         return new BindingStatus(reader.GetString(0), reader.GetString(1), reader.GetString(2),
-            reader.GetInt64(3), reader.GetString(4));
+            reader.GetInt64(3), reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5), reader.GetInt64(6));
     }
 
     /// <summary>
