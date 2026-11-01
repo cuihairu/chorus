@@ -27,6 +27,16 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
         Environment.GetEnvironmentVariable("CHORUS_END_COORDINATOR_INTERVAL_MS") ?? "1000",
         System.Globalization.CultureInfo.InvariantCulture));
 
+    /// <summary>How long a gateway's process reports may age before its route authorization
+    /// counts as lapsed for the delivery-stop barrier (FIX-END-08) — the same
+    /// fresh-process idiom the directory uses. A lapsed holder owes no confirmation: the
+    /// receiver-side fence refuses its pushes for the closed round regardless, so the exit
+    /// is safe exactly because the standing operation the barrier drives IS that fence.
+    /// A holder that reports again re-enters the barrier and owes its answer anew.</summary>
+    private static readonly int BarrierStaleSeconds = int.Parse(
+        Environment.GetEnvironmentVariable("CHORUS_END_BARRIER_STALE_SECONDS") ?? "60",
+        System.Globalization.CultureInfo.InvariantCulture);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
@@ -71,28 +81,38 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
             }
             if (current.Phase == EndOperationPhases.StopDeliveryIssued)
             {
-                // The re-push leg: every responder hears the same recorded command on every
-                // pass — a gateway offline at issue is carried, never skipped, and a gateway
-                // that answered but restarted re-learns the closure from the duplicate its
-                // fresh record accepts (FIX-END-07). The recorded set is the truth: an empty
-                // set is vacuously confirmed (no gateway held route authorization, so none
-                // can have pushed), and the step-4 barrier (FIX-END-07) is every responder's
-                // own row at Stopped — one pending responder parks the phase here.
+                // The re-push leg: every holder of route authorization hears the same recorded
+                // command on every pass — a gateway offline at issue is carried, never
+                // skipped, and a gateway that answered but restarted re-learns the closure
+                // from the duplicate its fresh record accepts (FIX-END-07). FIX-END-08 makes
+                // the barrier's truth the LIVE authorization set: a gateway that confirmed its
+                // routing only after the issue joins the responders here (a missed instance
+                // must not slip past), and a holder whose authorization lapsed — its process
+                // stopped reporting — owes nothing, because the standing operation this phase
+                // drives is itself the receiver-side fence that refuses its pushes.
                 var command = await controlStore.GetStopDeliveryAsync(current.TenantId, current.GameId,
                     current.EndOperationId, cancellationToken);
                 if (command is not null)
                 {
-                    var responders = await controlStore.ListStopDeliveryRespondersAsync(
-                        current.TenantId, current.GameId, current.EndOperationId, cancellationToken);
-                    await PushAllAsync(command, current, responders, cancellationToken);
-                    if (responders.Count == 0 || responders.All(responder => responder.State == "Stopped"))
+                    var responders = await controlStore.ResolveDeliveryStopBarrierAsync(
+                        current.TenantId, current.GameId, current.EndOperationId,
+                        BarrierStaleSeconds, cancellationToken);
+                    var holders = responders
+                        .Where(responder => responder.HoldsAuthorization).ToList();
+                    await PushAllAsync(command, current, holders, cancellationToken);
+                    if (await controlStore.AdvanceDeliveryStoppedBarrierAsync(current.TenantId,
+                        current.GameId, current.EndOperationId, BarrierStaleSeconds, cancellationToken))
                     {
-                        current = await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
-                            current.GameId, current.EndOperationId, EndOperationPhases.StopDeliveryIssued,
-                            EndOperationPhases.DeliveryStopped, cancellationToken: cancellationToken);
-                        logger.LogInformation(
-                            "Delivery stopped for {RoomId}: every responder confirmed at version {Version}.",
-                            command.RoomId, command.CloseRouteVersion);
+                        var lapsed = responders.Count - holders.Count;
+                        if (lapsed > 0)
+                            logger.LogInformation(
+                                "Delivery stopped for {RoomId} at version {Version}: every current holder " +
+                                "confirmed; {Lapsed} responder's authorization lapsed pending its answer.",
+                                command.RoomId, command.CloseRouteVersion, lapsed);
+                        else
+                            logger.LogInformation(
+                                "Delivery stopped for {RoomId}: every responder confirmed at version {Version}.",
+                                command.RoomId, command.CloseRouteVersion);
                     }
                 }
             }

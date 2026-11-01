@@ -164,6 +164,7 @@ public sealed class RedesignStopDeliveryStoreTests
         await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
         var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
             "tenant-a", "game-a", "end-op-1");
+        await arrange.ToStopDeliveryIssuedAsync();
 
         // The first confirmation: Pending leaves for Stopped with the gateway's own facts.
         var first = await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a",
@@ -213,6 +214,7 @@ public sealed class RedesignStopDeliveryStoreTests
         await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
         var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
             "tenant-a", "game-a", "end-op-1");
+        await arrange.ToStopDeliveryIssuedAsync();
 
         var wrongVersion = await Assert.ThrowsAsync<EndOperationConflictException>(() =>
             arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1", "room-1",
@@ -240,6 +242,236 @@ public sealed class RedesignStopDeliveryStoreTests
         Assert.Equal(0, responder.DrainedRouted);
     }
 
+    /// <summary>
+    /// The barrier's truth is the live authorization set (FIX-END-08): a gateway that
+    /// confirmed its routing only after the issue joins the standing barrier as a pending
+    /// responder — a missed instance must not slip past — and until it answers, the phase
+    /// parks no matter what the frozen set says.
+    /// </summary>
+    [Fact]
+    public async Task ALateAuthorizedGatewayJoinsTheStandingBarrier()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
+        var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
+            "tenant-a", "game-a", "end-op-1");
+        await arrange.ToStopDeliveryIssuedAsync();
+
+        // The late holder: reported and confirmed only after the command stood.
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-late", "https://localhost:7602");
+        var responders = await arrange.Control.ResolveDeliveryStopBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60);
+        Assert.Contains(responders, responder => responder.ProcessInstanceId == "gateway-late"
+            && responder.State == "Pending" && responder.HoldsAuthorization);
+        Assert.False(await arrange.Control.AdvanceDeliveryStoppedBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60));
+
+        // Every current holder answers; only then the barrier opens.
+        await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+            "room-1", "gateway-live", command.CloseRouteVersion, 0, 0, 0);
+        await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+            "room-1", "gateway-late", command.CloseRouteVersion, 0, 0, 0);
+        Assert.True(await arrange.Control.AdvanceDeliveryStoppedBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60));
+    }
+
+    /// <summary>
+    /// A responder whose authorization lapsed — its process stopped reporting past the
+    /// barrier's stale window — exits the barrier (FIX-END-08), but only past the window:
+    /// within it the holder is merely quiet and still owes its answer. The exit is safe
+    /// because the standing operation is itself the receiver-side fence that refuses the
+    /// lapsed gateway's pushes.
+    /// </summary>
+    [Fact]
+    public async Task ALapsedResponderExitsTheBarrierOnlyPastItsWindow()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-online", "https://localhost:7601");
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-quiet", "https://localhost:7602");
+        var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
+            "tenant-a", "game-a", "end-op-1");
+        await arrange.ToStopDeliveryIssuedAsync();
+        await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+            "room-1", "gateway-online", command.CloseRouteVersion, 0, 0, 0);
+
+        // The quiet gateway's reports stopped two minutes ago — its route authorization
+        // counts as lapsed at a sixty-second window.
+        await using (var age = new NpgsqlCommand("""
+            UPDATE control.process SET observed_at = clock_timestamp() - interval '120 seconds'
+            WHERE process_instance_id='gateway-quiet'
+            """, new NpgsqlConnection(arrange.Database.ConnectionString)))
+        {
+            await age.Connection.OpenAsync();
+            await age.ExecuteNonQueryAsync();
+        }
+        var responders = await arrange.Control.ResolveDeliveryStopBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60);
+        Assert.Contains(responders, responder => responder.ProcessInstanceId == "gateway-quiet"
+            && !responder.HoldsAuthorization);
+        Assert.True(await arrange.Control.AdvanceDeliveryStoppedBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60));
+
+        // The same quiet gateway ten seconds ago — inside the window — still holds: the
+        // barrier does not shed a holder for one missed report cycle.
+        await using (var warm = new NpgsqlCommand("""
+            UPDATE control.process SET observed_at = clock_timestamp() - interval '10 seconds'
+            WHERE process_instance_id='gateway-quiet'
+            """, new NpgsqlConnection(arrange.Database.ConnectionString)))
+        {
+            await warm.Connection.OpenAsync();
+            await warm.ExecuteNonQueryAsync();
+        }
+        var within = await arrange.Control.ResolveDeliveryStopBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60);
+        Assert.Contains(within, responder => responder.ProcessInstanceId == "gateway-quiet"
+            && responder.HoldsAuthorization);
+    }
+
+    /// <summary>
+    /// The lapse predicate reads the lifecycle the codebase's own liveness reads
+    /// (FIX-END-08): a supervisor keeps reporting an exited slot with a fresh observed_at,
+    /// so freshness alone could never lapse a crashed agent-supervised gateway — an exited
+    /// lifecycle is lapsed the moment the barrier looks, even while its row stays warm.
+    /// </summary>
+    [Fact]
+    public async Task AnAgentReportedExitedGatewayIsLapsedEvenWhileFresh()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-exited", "https://localhost:7602");
+        var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
+            "tenant-a", "game-a", "end-op-1");
+        await arrange.ToStopDeliveryIssuedAsync();
+        await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+            "room-1", "gateway-live", command.CloseRouteVersion, 0, 0, 0);
+
+        // The supervisor's report loop keeps the exited slot's row warm — fresh is not live.
+        await using (var exited = new NpgsqlCommand("""
+            UPDATE control.process SET lifecycle='Exited', observed_at = clock_timestamp()
+            WHERE process_instance_id='gateway-exited'
+            """, new NpgsqlConnection(arrange.Database.ConnectionString)))
+        {
+            await exited.Connection.OpenAsync();
+            await exited.ExecuteNonQueryAsync();
+        }
+        var responders = await arrange.Control.ResolveDeliveryStopBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60);
+        Assert.Contains(responders, responder => responder.ProcessInstanceId == "gateway-exited"
+            && !responder.HoldsAuthorization);
+        Assert.True(await arrange.Control.AdvanceDeliveryStoppedBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60));
+    }
+
+    /// <summary>
+    /// A wrong-version ack cannot open the barrier (FIX-END-08): the ack validates against
+    /// the command row before any write, so the responder stays Pending and the barrier —
+    /// whose completeness predicate reads the Stopped rows themselves — parks.
+    /// </summary>
+    [Fact]
+    public async Task AWrongVersionAckParksTheBarrier()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
+        var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
+            "tenant-a", "game-a", "end-op-1");
+        await arrange.ToStopDeliveryIssuedAsync();
+
+        var wrong = await Assert.ThrowsAsync<EndOperationConflictException>(() =>
+            arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+                "room-1", "gateway-live", command.CloseRouteVersion + 1, 0, 0, 0));
+        Assert.Contains("version", wrong.Message);
+        var responders = await arrange.Control.ResolveDeliveryStopBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60);
+        Assert.Contains(responders, responder => responder.ProcessInstanceId == "gateway-live"
+            && responder.State == "Pending" && responder.HoldsAuthorization);
+        Assert.False(await arrange.Control.AdvanceDeliveryStoppedBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60));
+    }
+
+    /// <summary>
+    /// An old incarnation's confirmation is not its successor's (FIX-END-08): a restart
+    /// mints a new instance id whose authorization is its own row, and the barrier reads
+    /// the live set — the successor's Pending parks the phase until the successor itself
+    /// answers, however the old instance's row stands.
+    /// </summary>
+    [Fact]
+    public async Task AnOldIncarnationStoppedDoesNotSatisfyItsFreshSuccessor()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-old", "https://localhost:7601");
+        var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
+            "tenant-a", "game-a", "end-op-1");
+        await arrange.ToStopDeliveryIssuedAsync();
+        await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+            "room-1", "gateway-old", command.CloseRouteVersion, 0, 0, 0);
+
+        // The restart: a fresh instance id reporting and confirming under its own name.
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-new", "https://localhost:7602");
+        var responders = await arrange.Control.ResolveDeliveryStopBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60);
+        Assert.Contains(responders, responder => responder.ProcessInstanceId == "gateway-old"
+            && responder.State == "Stopped" && responder.HoldsAuthorization);
+        Assert.Contains(responders, responder => responder.ProcessInstanceId == "gateway-new"
+            && responder.State == "Pending");
+        Assert.False(await arrange.Control.AdvanceDeliveryStoppedBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60));
+
+        // The successor's own answer — and only it — opens the barrier.
+        await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+            "room-1", "gateway-new", command.CloseRouteVersion, 0, 0, 0);
+        Assert.True(await arrange.Control.AdvanceDeliveryStoppedBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60));
+    }
+
+    /// <summary>
+    /// The ack leg carries the barrier's completeness itself (FIX-END-08): a holder that
+    /// authorized after the issue may ack before any coordinator pass inserted its row —
+    /// its ack proves possession of the command (the room, the operation, the exact frozen
+    /// version), so the confirmation records itself. An instance without route
+    /// authorization remains a stranger.
+    /// </summary>
+    [Fact]
+    public async Task AnAckFromALateAuthorizedHolderInsertsItsOwnResponderRow()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
+        var (command, _, _) = await arrange.Control.IssueStopDeliveryAsync(
+            "tenant-a", "game-a", "end-op-1");
+        await arrange.ToStopDeliveryIssuedAsync();
+
+        // No resolve pass ran: the late holder's row does not exist, its ack creates it.
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-late", "https://localhost:7602");
+        var recorded = await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a",
+            "end-op-1", "room-1", "gateway-late", command.CloseRouteVersion, 7, 2, 0);
+        Assert.True(recorded.Recorded);
+        Assert.Equal(command.CloseRouteVersion, recorded.RecordedCloseRouteVersion);
+        var inserted = (await arrange.Control.ListStopDeliveryRespondersAsync(
+            "tenant-a", "game-a", "end-op-1"))
+            .Single(responder => responder.ProcessInstanceId == "gateway-late");
+        Assert.Equal("Stopped", inserted.State);
+        Assert.Equal("https://localhost:7602", inserted.Endpoint);
+        Assert.Equal(7, inserted.CutoffSequence);
+
+        // A reported gateway without a routing confirm holds no route authorization: its
+        // ack is a stranger's and refuses.
+        await arrange.RegisterGatewayWithoutConfirmAsync("gateway-unconfirmed");
+        await Assert.ThrowsAsync<EndOperationConflictException>(() =>
+            arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+                "room-1", "gateway-unconfirmed", command.CloseRouteVersion, 0, 0, 0));
+    }
+
     /// <summary>One mounted binding, one started round and a gateway directory the responder
     /// set reads — the minimum the command's issue fence and set derivation need.</summary>
     private sealed class Arrange : IAsyncDisposable
@@ -250,6 +482,16 @@ public sealed class RedesignStopDeliveryStoreTests
         public RedesignBindingStore BindingStore = null!;
         public RedesignControlStore Control = null!;
         public (string BindingId, string StreamerId) Binding { get; init; }
+
+        /// <summary>Walks the operation to the phase the delivery-stop barrier drives —
+        /// the store facts stand in for the coordinator's ladder.</summary>
+        public async Task ToStopDeliveryIssuedAsync()
+        {
+            await Control.AdvanceEndOperationPhaseAsync("tenant-a", "game-a", "end-op-1",
+                EndOperationPhases.ResultFrozen, EndOperationPhases.ClosingInput);
+            await Control.AdvanceEndOperationPhaseAsync("tenant-a", "game-a", "end-op-1",
+                EndOperationPhases.ClosingInput, EndOperationPhases.StopDeliveryIssued);
+        }
 
         /// <summary>A gateway holding route authorization: a process row under a
         /// platform-gateway deployment plus a confirmed routing version.</summary>

@@ -1440,6 +1440,303 @@ public sealed class RedesignEndOperationHostTests
         }
     }
 
+    /// <summary>
+    /// FIX-END-08, the barrier's completeness end to end: the confirmation owed is every
+    /// current holder of route authorization. The round's own pusher reports a dead
+    /// endpoint — authorized, confirming its snapshot, but unreachable for the command —
+    /// so the phase parks at StopDeliveryIssued. A second gateway that authorizes only
+    /// after the command stood joins the barrier, receives the re-push and answers, and
+    /// its answer does not clear the unreachable holder: the phase parks still. Only the
+    /// holder's death — its reports aging past the barrier's stale window — exits it, and
+    /// the exit is safe because the standing operation is itself the fence: a push from
+    /// the dead gateway's own identity, carrying the round's own generation claim, is
+    /// refused at the receiver with the operation named.
+    /// </summary>
+    [Fact]
+    public async Task AMissedGatewayHoldsTheBarrierUntilItAcksOrItsAuthorizationLapses()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var ingressPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        // The unreachable holder's advertised face: a live port number nobody serves, so
+        // the control plane's pushes to it fail while its own outbound legs — the report,
+        // the routing confirm, the webhook pushes — all work.
+        var deadEndpointPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var lateGatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        // The coordinator walks fast and the barrier's stale window is short (the lapse leg
+        // must land inside the test's patience), while the discovery net stays lazy — the
+        // host's own report is the begin's only caller.
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "60",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "15",
+                ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "600000",
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150",
+                ["CHORUS_END_BARRIER_STALE_SECONDS"] = "5"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{gamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+            },
+            clientTenant: "tenant-a", instanceId: "game-hold");
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+        // The round's pusher: a live gateway whose ADVERTISED endpoint is dead — authorized
+        // and confirming, unreachable for the stop-delivery command.
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(GatewayEnvironment(environment.DataPort, controlEndpoint,
+                deadEndpointPort))
+            {
+                ["CHORUS_INGRESS_PORT"] = ingressPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["Ingress__Platforms__0"] = "douyin",
+                ["Ingress__AllowAll"] = "true",
+                ["Ingress__Douyin__AppSecret"] = "hold-secret"
+            },
+            instanceId: "gateway-hold-a");
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-hold"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new Chorus.Rpc.ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new Chorus.Rpc.RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-hold" });
+        }
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "hold-open-1", "hold-live-1");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-hold");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        var routing = new Chorus.Rpc.Routing.RoutingClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-hold");
+        using var dataChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(dataChannel);
+
+        var owner = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-hold-1",
+            OwnerInstanceId = "game-hold", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new Chorus.Rpc.StartRoundRequest
+        {
+            RoomId = "room-hold-1", OwnerInstanceId = "game-hold", Epoch = owner.Epoch,
+            GameId = "game-a", ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            OperationId = "start-hold", TenantId = "tenant-a",
+            Participants =
+            {
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = host.BindingId, ParticipantId = host.StreamerId, Role = "Host"
+                }
+            }
+        })).Status);
+        using var hostChannel = environment.Channel(gamePort, controlCertificate, "game-server");
+        Assert.Equal("Running", (await new Chorus.Rpc.GameHost.GameHostClient(hostChannel).PrepareRoomAsync(
+            new Chorus.Rpc.PrepareRoomRequest
+            {
+                RoomId = "room-hold-1", GameId = "game-a", OwnerInstanceId = "game-hold",
+                Epoch = owner.Epoch, OperationId = "run-hold", DurationTicks = 400, RandomSeed = 777,
+                TickMs = 25,
+                Participants =
+                {
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = host.BindingId, ParticipantId = host.StreamerId, Faction = "red"
+                    }
+                }
+            })).Status);
+
+        // The face's picture warms before the push: the snapshot must carry the live key's
+        // streamer and the room's owner endpoint, and hold its version still (FIX-END-03).
+        var warm = false;
+        var warmDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < warmDeadline)
+        {
+            var snapshot = await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty());
+            var streamerThere = snapshot.Streamers.Any(streamer =>
+                streamer.Platform == "simulator" && streamer.CanonicalLiveSessionKey == "hold-live-1");
+            var roomThere = snapshot.Rooms.FirstOrDefault(room => room.RoomId == "room-hold-1")
+                is { Endpoint.Length: > 0 };
+            if (streamerThere && roomThere)
+            {
+                var before = snapshot.Version;
+                await Task.Delay(600);
+                var after = (await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty())).Version;
+                if (before == after) { warm = true; break; }
+            }
+            else await Task.Delay(200);
+        }
+        Assert.True(warm, "The gateway's routing snapshot never carried the room's route.");
+
+        // The round's own event, pushed by the unreachable-to-be holder: its ingress works,
+        // its push leg works, its confirmation of the snapshot works — everything but the
+        // face the command must reach.
+        using var http = await HttpClientAsync(environment);
+        var pushed = await PostAsync(http, ingressPort, "simulator", "app-1",
+            """{"sessionId":"hold-live-1","eventId":"hold-gift-1","kind":"Gift","giftId":"g1","giftCount":1,"giftValue":100}""");
+        Assert.True(pushed.StatusCode == HttpStatusCode.OK,
+            $"The webhook was not accepted: {pushed.StatusCode}");
+        Assert.Equal("DurableAccepted", Assert.Single(ReadReceipts(
+            await pushed.Content.ReadAsStringAsync())).GetProperty("disposition").GetString());
+
+        // The round settles and the operation begins; the command issues and the phase
+        // parks — the holder never heard it.
+        var parked = false;
+        var parkedDeadline = DateTime.UtcNow.AddSeconds(90);
+        while (DateTime.UtcNow < parkedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT eo.phase,
+                        (SELECT r.state FROM control.stop_delivery_responder r
+                         WHERE r.end_operation_id='room-hold-1/end'
+                           AND r.process_instance_id='gateway-hold-a')
+                    FROM control.end_operation eo WHERE eo.room_id='room-hold-1'
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && reader.GetString(0) == "StopDeliveryIssued"
+                    && reader.GetString(1) == "Pending") { parked = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(parked, "The phase never parked on the unreachable holder.");
+
+        // The late holder: a second gateway, real endpoint, authorized only now. The
+        // barrier grows to cover it, the re-push carries it the command, and it answers —
+        // and the phase still parks, because the unreachable holder owes its own answer.
+        await environment.StartAsync("Chorus.PlatformGateway", lateGatewayPort, "platform-gateway",
+            GatewayEnvironment(environment.DataPort, controlEndpoint, lateGatewayPort),
+            instanceId: "gateway-hold-b");
+        var answered = false;
+        var answeredDeadline = DateTime.UtcNow.AddSeconds(45);
+        while (DateTime.UtcNow < answeredDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT r.state FROM control.stop_delivery_responder r
+                              WHERE r.end_operation_id='room-hold-1/end'
+                                AND r.process_instance_id='gateway-hold-b'),
+                           (SELECT eo.phase FROM control.end_operation eo
+                              WHERE eo.room_id='room-hold-1')
+                    """, connection);
+                // The late holder's row appears only when the barrier resolves it; NULL is
+                // the not-yet, and the loop keeps waiting.
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && reader.GetString(0) == "Stopped"
+                    && reader.GetString(1) == "StopDeliveryIssued")
+                { answered = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(answered,
+            "The late holder never answered, or its answer wrongly cleared the parked phase.");
+
+        // The holder dies: its reports stop, its authorization lapses past the barrier's
+        // window, and only then the phase records DeliveryStopped — the exit is the
+        // lapse, never a timeout of patience.
+        environment.Kill("gateway-hold-a");
+        var stopped = false;
+        var stoppedDeadline = DateTime.UtcNow.AddSeconds(45);
+        while (DateTime.UtcNow < stoppedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                if (await new NpgsqlCommand(
+                    "SELECT phase FROM control.end_operation WHERE room_id='room-hold-1'",
+                    connection).ExecuteScalarAsync() is string phase && phase == "DeliveryStopped")
+                { stopped = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(stopped, "The barrier never opened after the holder's authorization lapsed.");
+
+        // The network 'recovers' and the old identity pushes: the standing operation is
+        // the fence, so the dead gateway's own claim — the round's own generation — is
+        // refused at the receiver with the operation named (FIX-END-06's fence standing
+        // behind FIX-END-08's exit). The status column is flipped open first — the fence
+        // must refuse on its own, not hide behind the room-status gate.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var flip = new NpgsqlCommand(
+                "UPDATE game.room SET status='Running' WHERE room_id='room-hold-1'", connection);
+            await flip.ExecuteNonQueryAsync();
+        }
+        using var zombieCertificate = environment.Certificate("tenant-a", "platform-gateway", "gateway-hold-a");
+        using var zombieChannel = environment.Channel(gamePort, zombieCertificate, "game-server");
+        var zombieError = await Assert.ThrowsAsync<RpcException>(() =>
+            new Chorus.Rpc.RoomEvents.RoomEventsClient(zombieChannel).DeliverEventAsync(
+                new Chorus.Rpc.DeliverRoomEventRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", RoomId = "room-hold-1",
+                    OwnerInstanceId = "game-hold", Epoch = owner.Epoch, EventId = "hold-zombie-raw",
+                    Platform = "simulator", AppId = "app-1", BindingId = host.BindingId,
+                    RoundGeneration = 1, PayloadJson = """{"kind":"gift","amount":300}"""
+                }).ResponseAsync);
+        Assert.Equal(StatusCode.InvalidArgument, zombieError.StatusCode);
+        Assert.Contains("closed by the end operation", zombieError.Status.Detail);
+        Assert.Contains("room-hold-1/end", zombieError.Status.Detail);
+
+        // The barrier's own evidence: the answered holder's facts recorded, the missed
+        // holder's row exactly as it stood — Pending, the honest trace of the
+        // confirmation that never came — and the zombie push wrote nothing.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var responders = new NpgsqlCommand("""
+                SELECT r.process_instance_id, r.state, r.answered_at IS NOT NULL
+                FROM control.stop_delivery_responder r
+                WHERE r.end_operation_id='room-hold-1/end'
+                ORDER BY r.process_instance_id
+                """, connection))
+            await using (var reader = await responders.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("gateway-hold-a", reader.GetString(0));
+                Assert.Equal("Pending", reader.GetString(1));
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("gateway-hold-b", reader.GetString(0));
+                Assert.Equal("Stopped", reader.GetString(1));
+                Assert.True(reader.GetBoolean(2));
+                Assert.False(await reader.ReadAsync());
+            }
+            Assert.Equal("Consumed", await new NpgsqlCommand(
+                "SELECT state FROM input.delivery WHERE event_id='hold-gift-1'", connection)
+                .ExecuteScalarAsync());
+            Assert.Equal(0L, Convert.ToInt64(await new NpgsqlCommand(
+                "SELECT count(*) FROM input.delivery WHERE event_id='hold-zombie-raw'", connection)
+                .ExecuteScalarAsync()));
+        }
+    }
+
     /// <summary>The captured console output of one started host, by instance id.</summary>
     private static string HostOutputFor(RedesignM0HostTests.HostEnvironment environment, string instance) =>
         environment.HostOutput(environment.HostProcesses.Single(pair => pair.Instance == instance).Process);
