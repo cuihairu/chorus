@@ -18,6 +18,14 @@ public sealed record PlatformTaskState(
 /// at. The phase row is the persistent credential — this is its live reading.</summary>
 public sealed record PlatformTaskBarrier(bool Authorized, string Phase);
 
+/// <summary>The close standing of one end operation's platform tasks (FIX-END-10): the
+/// recorded task count against the expected mount count, split by whether each answer
+/// closes (Completed, NotRequired) or still owes (anything else). Complete means every
+/// expected task answered a close — a count short of expected is recording still in
+/// flight, never a vacuous completion.</summary>
+public sealed record PlatformTaskClose(
+    bool Complete, int Tasks, int Completed, int NotRequired, int Outstanding);
+
 /// <summary>
 /// External platform task coordination (architecture 6.3). A task persists DesiredState,
 /// ObservedState, OperationId, TaskEpoch, Attempt, NextAttemptAt and LastError. Executors only
@@ -35,6 +43,10 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
     public const string Retryable = "Retryable";
     public const string OutcomeUnknown = "OutcomeUnknown";
     public const string NeedsAttention = "NeedsAttention";
+    /// <summary>FIX-END-10: the platform answered that this operation needs no call — the
+    /// capability ground recorded in the observation. Terminal and closes like Completed;
+    /// never listed for execution and never re-driven except the admin's requeue path.</summary>
+    public const string NotRequired = "NotRequired";
 
     /// <summary>
     /// Records the desired external state for a binding operation. Idempotent per
@@ -229,6 +241,20 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
     }
 
     /// <summary>
+    /// A terminal close whose ground is the platform's capability, not its execution
+    /// (FIX-END-10): the adapter answered that this operation needs no call, and the observed
+    /// json carries that ground. Transitions and closes exactly like Completed.
+    /// </summary>
+    public Task<PlatformTaskState> CompleteNotRequiredAsync(string taskId, string ownerInstanceId,
+        string basisJson, CancellationToken cancellationToken = default)
+    {
+        Require(basisJson, nameof(basisJson));
+        using (JsonDocument.Parse(basisJson)) { }
+        return FinishAttemptAsync(taskId, ownerInstanceId, NotRequired, basisJson, null,
+            "Recorded", cancellationToken);
+    }
+
+    /// <summary>
     /// A call timed out (or the process died mid-call). Without a queryable official outcome
     /// the task stays here; blind retries of possibly-conflicting calls are not allowed.
     /// </summary>
@@ -297,7 +323,7 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         var row = await LoadForUpdateAsync(connection, transaction, taskId, cancellationToken);
-        if (row.Status == Completed)
+        if (row.Status is Completed or NotRequired)
             throw new TaskStateConflictException();
         await using (var update = new NpgsqlCommand("""
             UPDATE live.task SET status=@status, last_error=@error WHERE task_id=@task
@@ -425,6 +451,37 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         return await ReadBarrierAsync(connection, null, bindingId, endOperationId, cancellationToken);
     }
 
+    /// <summary>
+    /// The control plane's close standing for one end operation (FIX-END-10): the tasks
+    /// recorded under its barrier credential, split by whether each answer closes. Complete
+    /// requires every expected task to have answered — success or a grounded NotRequired —
+    /// so an unknown, failed, attention or still-recording task keeps the operation open.
+    /// </summary>
+    public async Task<PlatformTaskClose> GetCloseCompletionAsync(string endOperationId, int expectedTasks,
+        CancellationToken cancellationToken = default)
+    {
+        Require(endOperationId, nameof(endOperationId));
+        if (expectedTasks < 0) throw new ArgumentOutOfRangeException(nameof(expectedTasks));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT count(*),
+                count(*) FILTER (WHERE status = 'Completed'),
+                count(*) FILTER (WHERE status = 'NotRequired')
+            FROM live.task WHERE barrier_end_operation_id = @operation
+            """, connection);
+        command.Parameters.AddWithValue("operation", endOperationId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+        var tasks = Convert.ToInt32(reader.GetInt64(0));
+        var completed = Convert.ToInt32(reader.GetInt64(1));
+        var notRequired = Convert.ToInt32(reader.GetInt64(2));
+        var outstanding = tasks - completed - notRequired;
+        return new PlatformTaskClose(
+            tasks == expectedTasks && outstanding == 0,
+            tasks, completed, notRequired, outstanding);
+    }
+
     public async Task<PlatformTaskState?> GetTaskAsync(string taskId, CancellationToken cancellationToken = default)
     {
         Require(taskId, nameof(taskId));
@@ -438,8 +495,8 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
     /// Executor discovery: due work the lease protocol hands out — Pending, Retryable past its
     /// backoff, OutcomeUnknown awaiting a verifier — plus tasks left Executing by a holder whose
     /// lease expired (the reassignment candidates: a new lease holder resolves the official
-    /// outcome after the old attempt's deadline instead of re-issuing the call). Completed and
-    /// NeedsAttention never appear; a live lease never appears.
+    /// outcome after the old attempt's deadline instead of re-issuing the call). Completed,
+    /// NotRequired and NeedsAttention never appear; a live lease never appears.
     /// </summary>
     public async Task<IReadOnlyList<PlatformTaskState>> ListReadyTasksAsync(int max,
         CancellationToken cancellationToken = default)

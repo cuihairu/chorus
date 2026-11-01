@@ -283,6 +283,129 @@ public sealed class RedesignPlatformTaskStoreTests
             ready.Select(task => task.OperationId).OrderBy(operation => operation, StringComparer.Ordinal).ToArray());
     }
 
+    /// <summary>FIX-END-10: a capability ground is a first-class terminal answer. The
+    /// platform's "no call required" lands as its own status carrying its basis, closes the
+    /// task exactly like a completion, never re-enters execution, and refuses both the
+    /// attention stop and the admin requeue — the ground, once recorded, is the answer.</summary>
+    [Fact]
+    public async Task ANotRequiredAnswerIsTerminalGroundedAndNeverReDriven()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var taskStore = new RedesignPlatformTaskStore(database.ConnectionString);
+        var binding = await MountAsync(identityStore, bindingStore, "live-key-not-required");
+
+        var task = await taskStore.EnqueueDesiredAsync(binding.BindingId, "op-not-required",
+            """{"kind":"end-round","categories":{"roundEnd":"apply"}}""");
+        await taskStore.AcquireLeaseAsync(task.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(task.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+
+        var basis = """{"basis":"no per-round close on this platform"}""";
+        var closed = await taskStore.CompleteNotRequiredAsync(task.TaskId, "gw-a", basis);
+        Assert.Equal(RedesignPlatformTaskStore.NotRequired, closed.Status);
+        Assert.Equal("""{"basis": "no per-round close on this platform"}""", closed.ObservedJson);
+        await AssertOutboxAsync(database, task.TaskId + ":1", "Recorded");
+
+        // The terminal ground refuses both the attention stop and the admin requeue.
+        await Assert.ThrowsAsync<TaskStateConflictException>(() =>
+            taskStore.MarkNeedsAttentionAsync(task.TaskId, "a late alarm"));
+        await Assert.ThrowsAsync<TaskStateConflictException>(() =>
+            taskStore.RequeueTaskAsync(task.TaskId));
+
+        // A replay reads the same terminal answer back; the ground never re-enters execution.
+        var replay = await taskStore.EnqueueDesiredAsync(binding.BindingId, "op-not-required",
+            """{"kind":"end-round","categories":{"roundEnd":"apply"}}""");
+        Assert.True(replay.Duplicate);
+        Assert.Equal(RedesignPlatformTaskStore.NotRequired, replay.Status);
+
+        var ready = await taskStore.ListReadyTasksAsync(16);
+        Assert.DoesNotContain(task.TaskId, ready.Select(item => item.TaskId));
+    }
+
+    /// <summary>FIX-END-10: the close credential counts every expected mount. A short count
+    /// is recording still in flight — never a vacuous completion — and only answers of
+    /// success or a grounded NotRequired complete; an attention task keeps the operation
+    /// open exactly like a pending one.</summary>
+    [Fact]
+    public async Task CloseCompletionCountsEveryExpectedMountAnswer()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var taskStore = new RedesignPlatformTaskStore(database.ConnectionString);
+        var bindingA = await MountAsync(identityStore, bindingStore, "live-key-close-a");
+        var bindingB = await MountAsync(identityStore, bindingStore, "live-key-close-b");
+
+        var desired = """{"kind":"end-round"}""";
+        var taskA = await taskStore.EnqueueDesiredAsync(bindingA.BindingId, "end-op-close",
+            desired, barrierEndOperationId: "end-op-close");
+        var taskB = await taskStore.EnqueueDesiredAsync(bindingB.BindingId, "end-op-close",
+            desired, barrierEndOperationId: "end-op-close");
+
+        // The operation stands past its barrier — the phase row is the tasks' live
+        // credential, seeded directly: this fact's subject is the close count, not the
+        // walk to the authorization.
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var seed = new NpgsqlCommand("""
+                INSERT INTO control.end_operation
+                    (tenant_id, game_id, end_operation_id, room_id, round_generation,
+                     binding_generations, phase)
+                VALUES ('tenant-a','game-a','end-op-close','room-close',1,
+                        '[{"bindingId":"seed","generation":1,"roundGeneration":1}]'::jsonb,
+                        'PlatformTaskAuthorized')
+                """, connection);
+            await seed.ExecuteNonQueryAsync();
+        }
+
+        // Both recorded, neither answered: outstanding, open.
+        var before = await taskStore.GetCloseCompletionAsync("end-op-close", 2);
+        Assert.False(before.Complete);
+        Assert.Equal(2, before.Tasks);
+        Assert.Equal(2, before.Outstanding);
+
+        // One success and one capability ground: complete, split by its answers.
+        await taskStore.AcquireLeaseAsync(taskA.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(taskA.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        await taskStore.CompleteAttemptAsync(taskA.TaskId, "gw-a", """{"executed":true}""");
+        await taskStore.AcquireLeaseAsync(taskB.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        await taskStore.BeginAttemptAsync(taskB.TaskId, "gw-a", TimeSpan.FromSeconds(30));
+        await taskStore.CompleteNotRequiredAsync(taskB.TaskId, "gw-a",
+            """{"basis":"no per-round close on this platform"}""");
+        var complete = await taskStore.GetCloseCompletionAsync("end-op-close", 2);
+        Assert.True(complete.Complete);
+        Assert.Equal(1, complete.Completed);
+        Assert.Equal(1, complete.NotRequired);
+        Assert.Equal(0, complete.Outstanding);
+
+        // A late-arriving third mount under the same operation: the count no longer matches
+        // the expectation — the recording grew past what the begin froze, so the read is
+        // honest about the mismatch instead of silently completing.
+        var bindingC = await MountAsync(identityStore, bindingStore, "live-key-close-c");
+        var taskC = await taskStore.EnqueueDesiredAsync(bindingC.BindingId, "end-op-close",
+            desired, barrierEndOperationId: "end-op-close");
+        var grown = await taskStore.GetCloseCompletionAsync("end-op-close", 2);
+        Assert.False(grown.Complete);
+        Assert.Equal(3, grown.Tasks);
+
+        // An attention answer never closes: the outstanding count keeps the operation open.
+        await AssertOutstandingAsync(taskStore, taskC, "end-op-close", 2);
+    }
+
+    /// <summary>Drives one task to NeedsAttention and asserts the operation stays open —
+    /// the attention state owes a human decision, not a close.</summary>
+    private static async Task AssertOutstandingAsync(RedesignPlatformTaskStore taskStore,
+        PlatformTaskState task, string endOperationId, int expected)
+    {
+        await taskStore.MarkNeedsAttentionAsync(task.TaskId,
+            "The outcome could not be queried and this platform's re-issue is not idempotent");
+        var attention = await taskStore.GetCloseCompletionAsync(endOperationId, expected);
+        Assert.False(attention.Complete);
+        Assert.Equal(1, attention.Outstanding);
+    }
+
     private static async Task<BindingGrant> MountAsync(
         RedesignIdentityStore identityStore, RedesignBindingStore bindingStore, string canonicalKey)
     {

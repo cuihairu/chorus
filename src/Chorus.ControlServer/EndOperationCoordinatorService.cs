@@ -17,8 +17,10 @@ namespace Chorus.ControlServer;
 /// pending and the re-push leg on every later pass carries it the same recorded command. Step
 /// 4 (FIX-END-07) is the barrier the gateway acks drive: the phase records DeliveryStopped
 /// when every responder in the frozen set confirmed at the recorded version — an empty set is
-/// vacuously confirmed, one pending gateway parks the phase. Later phases belong to the later
-/// items; a failure is recorded on the row without leaving the phase, so a restarted control
+/// vacuously confirmed, one pending gateway parks the phase. Step 6 (FIX-END-10) closes the
+/// platform side: the phase records PlatformClosed when every mount's end task answered
+/// success or a grounded NotRequired. The later phases belong to the later items; a failure
+/// is recorded on the row without leaving the phase, so a restarted control
 /// plane reads the phase and retries the same step.
 /// </summary>
 public sealed class EndOperationCoordinatorService(RedesignControlStore controlStore,
@@ -135,13 +137,49 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
                         // Step 5 (FIX-END-09): the barrier stood complete, so the platform
                         // end tasks' credential is minted — the phase row itself. Executors
                         // read it live before any call leaves their process.
-                        await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
+                        current = await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
                             current.GameId, current.EndOperationId, EndOperationPhases.DeliveryStopped,
                             EndOperationPhases.PlatformTaskAuthorized, cancellationToken: cancellationToken);
                         logger.LogInformation(
                             "Platform end tasks authorized for {RoomId}: {Bindings} binding(s) may close on the platform.",
                             command.RoomId, current.BindingGenerations.Count);
                     }
+                }
+            }
+            if (current.Phase == EndOperationPhases.PlatformTaskAuthorized)
+            {
+                // Step 6 (FIX-END-10): the platform close's credential is the tasks' own
+                // standing — every mount's end task answered success or a grounded
+                // NotRequired. A count short of the operation's recorded mounts is the
+                // recording still in flight (the enqueue retries above), never a vacuous
+                // completion; an unknown, failed or attention task keeps the operation open —
+                // a timeout may not advance as success. A data plane the channel cannot
+                // reach holds the read, never the ladder: the next pass asks again.
+                try
+                {
+                    var close = await _tasks.GetCloseCompletionAsync(new TaskCloseRequest
+                    {
+                        EndOperationId = current.EndOperationId,
+                        ExpectedTasks = current.BindingGenerations
+                            .DistinctBy(binding => binding.BindingId).Count()
+                    }, deadline: DateTime.UtcNow.AddSeconds(5),
+                        cancellationToken: cancellationToken);
+                    if (close.Complete)
+                    {
+                        await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
+                            current.GameId, current.EndOperationId,
+                            EndOperationPhases.PlatformTaskAuthorized, EndOperationPhases.PlatformClosed,
+                            cancellationToken: cancellationToken);
+                        logger.LogInformation(
+                            "Platform closed for {RoomId}: {Completed} executed, {NotRequired} not required.",
+                            current.RoomId, close.Completed, close.NotRequired);
+                    }
+                }
+                catch (RpcException error)
+                {
+                    logger.LogWarning(error,
+                        "Platform close completion for {RoomId} waits for the data plane: {Message}",
+                        current.RoomId, error.Message);
                 }
             }
         }
@@ -169,7 +207,12 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
     /// <summary>Records one platform end task per mount binding, bound to the standing
     /// operation's barrier (FIX-END-09). The operation id — the platform's idempotency key —
     /// is the end operation itself: one platform close per ended round, replayed safely
-    /// across coordinator restarts by the (binding, operation) row identity.</summary>
+    /// across coordinator restarts by the (binding, operation) row identity. The desired
+    /// state carries the operation's category declaration (FIX-END-10): the round end's
+    /// scope is the round — the mount and the live outlive it and close in their own later
+    /// operations — so a plain round change can never unbind the gameplay or end the live,
+    /// and the grounds of those two non-calls are recorded on the task, not implied by
+    /// silence.</summary>
     private async Task EnqueuePlatformEndTasksAsync(StopDeliveryCommand command,
         EndOperation operation, CancellationToken cancellationToken)
     {
@@ -181,7 +224,13 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
                 command.TenantId, command.GameId, command.RoomId, command.EndOperationId,
                 command.RoundGeneration, command.CloseRouteVersion,
                 bindingId = binding.BindingId, bindingGeneration = binding.Generation,
-                bindingRoundGeneration = binding.RoundGeneration
+                bindingRoundGeneration = binding.RoundGeneration,
+                categories = new Dictionary<string, string>
+                {
+                    ["roundEnd"] = "apply",
+                    ["gameplayUnbind"] = "not-required:the round end's scope is the round",
+                    ["liveEnd"] = "not-required:the round end's scope is the round"
+                }
             });
             await _tasks.EnqueueDesiredAsync(new TaskEnqueueRequest
             {

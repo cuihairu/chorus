@@ -1974,7 +1974,8 @@ public sealed class RedesignEndOperationHostTests
         Assert.True(called, "The authorized end task never called the platform.");
 
         // The task completed on the platform's own record — the one call — and the ladder
-        // stands at the authorization: the platform-close step belongs to the later item.
+        // walks on: the completed answer is the close credential, so the phase records
+        // PlatformClosed in the same walk (FIX-END-10).
         var completed = false;
         string lastTask = "", lastPhase = "";
         var completedDeadline = DateTime.UtcNow.AddSeconds(30);
@@ -1991,22 +1992,564 @@ public sealed class RedesignEndOperationHostTests
                 {
                     lastTask = reader.GetString(0);
                     lastPhase = reader.GetString(1);
-                    if (lastTask == "Completed" && lastPhase == "PlatformTaskAuthorized")
+                    if (lastTask == "Completed" && lastPhase == "PlatformClosed")
                     { completed = true; break; }
                 }
             }
             await Task.Delay(150);
         }
-        Assert.True(completed, $"The end task never completed at the authorized phase " +
+        Assert.True(completed, $"The end task never completed through to the closed phase " +
             $"(task: {lastTask}, phase: {lastPhase}). Gateway-b console tail:\n" +
-            HostOutputFor(environment, "gateway-hold2-b")[^1200..]);
+            HostTailFor(environment, "gateway-hold2-b"));
         await Task.Delay(2000);
         Assert.Equal(1, platform.Calls("room-hold2-1/end"));
+    }
+
+    /// <summary>
+    /// FIX-END-10, the close's scope end to end: the round's own end operation calls the
+    /// platform with exactly the round-end category — the gameplay unbind and the live end
+    /// are recorded as grounded non-calls on the task itself, because the mount and the
+    /// live outlive the round and close in their own later operations — and the platform's
+    /// success answer is the credential the ladder's PlatformClosed step records.
+    /// </summary>
+    [Fact]
+    public async Task APlainRoundChangeClosesOnlyTheRoundOnThePlatform()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        using var platform = RecordingPlatform.Start();
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "60",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "15",
+                ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "600000",
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150",
+                ["CHORUS_END_BARRIER_STALE_SECONDS"] = "5"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{gamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+            },
+            clientTenant: "tenant-a", instanceId: "game-close");
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(GatewayEnvironment(environment.DataPort,
+                $"https://localhost:{environment.ControlPort}", gatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300",
+                ["CHORUS_TASK_LEASE_SECONDS"] = "60",
+                ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "70",
+                ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "120"
+            },
+            instanceId: "gateway-close-a");
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-close"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new Chorus.Rpc.ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new Chorus.Rpc.RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-close" });
+        }
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "close-open-1", "close-live-1");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-close");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-close");
+        using var dataChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(dataChannel);
+
+        var owner = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-close-1",
+            OwnerInstanceId = "game-close", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new Chorus.Rpc.StartRoundRequest
+        {
+            RoomId = "room-close-1", OwnerInstanceId = "game-close", Epoch = owner.Epoch,
+            GameId = "game-a", ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            OperationId = "start-close", TenantId = "tenant-a",
+            Participants =
+            {
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = host.BindingId, ParticipantId = host.StreamerId, Role = "Host"
+                }
+            }
+        })).Status);
+        using var hostChannel = environment.Channel(gamePort, controlCertificate, "game-server");
+        Assert.Equal("Running", (await new Chorus.Rpc.GameHost.GameHostClient(hostChannel).PrepareRoomAsync(
+            new Chorus.Rpc.PrepareRoomRequest
+            {
+                RoomId = "room-close-1", GameId = "game-a", OwnerInstanceId = "game-close",
+                Epoch = owner.Epoch, OperationId = "run-close", DurationTicks = 400, RandomSeed = 999,
+                TickMs = 25,
+                Participants =
+                {
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = host.BindingId, ParticipantId = host.StreamerId, Faction = "red"
+                    }
+                }
+            })).Status);
+
+        // The round settles, the barrier completes on the gateway's own ack, the authorized
+        // task calls the platform once, and the success answer closes the operation — the
+        // whole walk, with the patience a loaded shared runner owes it.
+        var closed = false;
+        string lastTask = "", lastPhase = "";
+        var closedDeadline = DateTime.UtcNow.AddSeconds(90);
+        while (DateTime.UtcNow < closedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT status FROM live.task WHERE barrier_end_operation_id='room-close-1/end'),
+                           (SELECT phase FROM control.end_operation WHERE room_id='room-close-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && !reader.IsDBNull(1))
+                {
+                    lastTask = reader.GetString(0);
+                    lastPhase = reader.GetString(1);
+                    if (lastTask == "Completed" && lastPhase == "PlatformClosed") { closed = true; break; }
+                }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(closed, $"The end task never closed the operation " +
+            $"(task: {lastTask}, phase: {lastPhase}). Gateway console tail:\n" +
+            HostTailFor(environment, "gateway-close-a"));
+
+        // The platform heard exactly the round end — never an unbind, never a live end.
+        Assert.Equal(1, platform.Calls("room-close-1/end"));
+        Assert.All(platform.Kinds.Values, kind => Assert.Equal("end-round", kind));
+
+        // The two non-calls are recorded with their ground on the task itself, and the
+        // mount the live carries is still standing: the round changed, the live did not.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand("""
+                SELECT desired->'categories'->>'roundEnd',
+                       desired->'categories'->>'gameplayUnbind',
+                       desired->'categories'->>'liveEnd',
+                       observed->>'observedJson' IS NOT NULL OR observed IS NOT NULL
+                FROM live.task WHERE barrier_end_operation_id='room-close-1/end'
+                """, connection);
+            await using (var reader = await command.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("apply", reader.GetString(0));
+                Assert.StartsWith("not-required:", reader.GetString(1));
+                Assert.StartsWith("not-required:", reader.GetString(2));
+                Assert.True(reader.GetBoolean(3),
+                    "The success answer's observation was never recorded.");
+            }
+            // The mount itself is untouched: the round changed, the live it carries did not.
+            var stillBound = new NpgsqlCommand(
+                "SELECT count(*) FROM live.binding WHERE binding_id=@binding", connection);
+            stillBound.Parameters.AddWithValue("binding", host.BindingId);
+            Assert.Equal(1L, Convert.ToInt64(await stillBound.ExecuteScalarAsync()));
+        }
+    }
+
+    /// <summary>
+    /// FIX-END-10, the lost answer: the platform applies the end call but its reply never
+    /// arrives — the executor's patience ends first, the task parks OutcomeUnknown, and the
+    /// ladder may not record the close on an outcome nobody observed. The same operation id
+    /// is the resolution: the status face's official record grounds the success, the task
+    /// completes without a second call, and only then the phase records PlatformClosed.
+    /// </summary>
+    [Fact]
+    public async Task ATimedOutPlatformCallNeverClosesAndTheOperationIdResolvesIt()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        using var platform = RecordingPlatform.Start();
+        platform.ScriptOperation("room-resolve-1/end", new RecordingPlatform.Script
+        {
+            Apply = true, HangAnswer = TimeSpan.FromSeconds(10)
+        });
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "60",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "15",
+                ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "600000",
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150",
+                ["CHORUS_END_BARRIER_STALE_SECONDS"] = "5"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{gamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+            },
+            clientTenant: "tenant-a", instanceId: "game-resolve");
+        // The executor's patience is short and its deadline shorter: the unknown parks fast,
+        // and the takeover query that resolves it is due almost immediately after.
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(GatewayEnvironment(environment.DataPort,
+                $"https://localhost:{environment.ControlPort}", gatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300",
+                ["CHORUS_TASK_LEASE_SECONDS"] = "60",
+                ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "5",
+                ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "3"
+            },
+            instanceId: "gateway-resolve-a");
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-resolve"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new Chorus.Rpc.ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new Chorus.Rpc.RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-resolve" });
+        }
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "resolve-open-1", "resolve-live-1");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-resolve");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-resolve");
+        using var dataChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(dataChannel);
+
+        var owner = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-resolve-1",
+            OwnerInstanceId = "game-resolve", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new Chorus.Rpc.StartRoundRequest
+        {
+            RoomId = "room-resolve-1", OwnerInstanceId = "game-resolve", Epoch = owner.Epoch,
+            GameId = "game-a", ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            OperationId = "start-resolve", TenantId = "tenant-a",
+            Participants =
+            {
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = host.BindingId, ParticipantId = host.StreamerId, Role = "Host"
+                }
+            }
+        })).Status);
+        using var hostChannel = environment.Channel(gamePort, controlCertificate, "game-server");
+        Assert.Equal("Running", (await new Chorus.Rpc.GameHost.GameHostClient(hostChannel).PrepareRoomAsync(
+            new Chorus.Rpc.PrepareRoomRequest
+            {
+                RoomId = "room-resolve-1", GameId = "game-a", OwnerInstanceId = "game-resolve",
+                Epoch = owner.Epoch, OperationId = "run-resolve", DurationTicks = 400, RandomSeed = 1010,
+                TickMs = 25,
+                Participants =
+                {
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = host.BindingId, ParticipantId = host.StreamerId, Faction = "red"
+                    }
+                }
+            })).Status);
+
+        // The call leaves, its answer is lost, the task parks OutcomeUnknown — and the
+        // ladder stands at the authorization: a timeout is not a success, however long the
+        // wait.
+        var parked = false;
+        string parkedTask = "", parkedPhase = "";
+        var parkedDeadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < parkedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT status FROM live.task WHERE barrier_end_operation_id='room-resolve-1/end'),
+                           (SELECT phase FROM control.end_operation WHERE room_id='room-resolve-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && !reader.IsDBNull(1))
+                {
+                    parkedTask = reader.GetString(0);
+                    parkedPhase = reader.GetString(1);
+                    if (parkedTask == "OutcomeUnknown" && parkedPhase == "PlatformTaskAuthorized")
+                    { parked = true; break; }
+                }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(parked, $"The lost answer never parked the task unknown " +
+            $"(task: {parkedTask}, phase: {parkedPhase}). Gateway console tail:\n" +
+            HostTailFor(environment, "gateway-resolve-a"));
+
+        // The same operation id resolves it: the status face's official record grounds the
+        // apply, the task completes without a second call, and the close follows.
+        var resolved = false;
+        string resolvedTask = "", resolvedPhase = "";
+        var resolvedDeadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < resolvedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT status FROM live.task WHERE barrier_end_operation_id='room-resolve-1/end'),
+                           (SELECT phase FROM control.end_operation WHERE room_id='room-resolve-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && !reader.IsDBNull(1))
+                {
+                    resolvedTask = reader.GetString(0);
+                    resolvedPhase = reader.GetString(1);
+                    if (resolvedTask == "Completed" && resolvedPhase == "PlatformClosed")
+                    { resolved = true; break; }
+                }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(resolved, $"The official record never resolved the unknown " +
+            $"(task: {resolvedTask}, phase: {resolvedPhase}).");
+
+        // The resolution was a query, never a re-call: the platform heard one execute and
+        // at least one status, and the task's attempt count still says one.
+        Assert.Equal(1, platform.Calls("room-resolve-1/end"));
+        Assert.True(platform.StatusQueries("room-resolve-1/end") >= 1,
+            "The resolution never asked the platform for its official record.");
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            Assert.Equal(1, Convert.ToInt32(await new NpgsqlCommand(
+                "SELECT attempt_count FROM live.task WHERE barrier_end_operation_id='room-resolve-1/end'",
+                connection).ExecuteScalarAsync()));
+        }
+    }
+
+    /// <summary>
+    /// FIX-END-10, the unanswerable unknown: the platform applies the call, loses the
+    /// answer, and cannot answer for it either — and this platform's re-issue is not
+    /// idempotent, so no blind retry is ever safe. The task escalates to NeedsAttention
+    /// with its ground, the ladder stays open at the authorization, and the platform hears
+    /// exactly the one call it already owed.
+    /// </summary>
+    [Fact]
+    public async Task AnUnanswerableUnknownOnAnUnsafePlatformReachesNeedsAttention()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        using var platform = RecordingPlatform.Start();
+        platform.ScriptOperation("room-attend-1/end", new RecordingPlatform.Script
+        {
+            Apply = true, HangAnswer = TimeSpan.FromSeconds(10), StatusCannotAnswer = true
+        });
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "60",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "15",
+                ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "600000",
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150",
+                ["CHORUS_END_BARRIER_STALE_SECONDS"] = "5"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{gamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+            },
+            clientTenant: "tenant-a", instanceId: "game-attend");
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(GatewayEnvironment(environment.DataPort,
+                $"https://localhost:{environment.ControlPort}", gatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                // This platform's re-issue cannot be trusted: the only safe moves left are
+                // the question (which it also cannot answer) and the escalation.
+                ["CHORUS_DEV_PLATFORM_IDEMPOTENT_REISSUE"] = "false",
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300",
+                ["CHORUS_TASK_LEASE_SECONDS"] = "60",
+                ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "5",
+                ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "3"
+            },
+            instanceId: "gateway-attend-a");
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-attend"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new Chorus.Rpc.ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new Chorus.Rpc.RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-attend" });
+        }
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "attend-open-1", "attend-live-1");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-attend");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-attend");
+        using var dataChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(dataChannel);
+
+        var owner = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-attend-1",
+            OwnerInstanceId = "game-attend", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new Chorus.Rpc.StartRoundRequest
+        {
+            RoomId = "room-attend-1", OwnerInstanceId = "game-attend", Epoch = owner.Epoch,
+            GameId = "game-a", ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            OperationId = "start-attend", TenantId = "tenant-a",
+            Participants =
+            {
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = host.BindingId, ParticipantId = host.StreamerId, Role = "Host"
+                }
+            }
+        })).Status);
+        using var hostChannel = environment.Channel(gamePort, controlCertificate, "game-server");
+        Assert.Equal("Running", (await new Chorus.Rpc.GameHost.GameHostClient(hostChannel).PrepareRoomAsync(
+            new Chorus.Rpc.PrepareRoomRequest
+            {
+                RoomId = "room-attend-1", GameId = "game-a", OwnerInstanceId = "game-attend",
+                Epoch = owner.Epoch, OperationId = "run-attend", DurationTicks = 400, RandomSeed = 1111,
+                TickMs = 25,
+                Participants =
+                {
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = host.BindingId, ParticipantId = host.StreamerId, Faction = "red"
+                    }
+                }
+            })).Status);
+
+        // The answer is lost and the status face cannot answer for it: the only remaining
+        // safe move is the escalation — NeedsAttention, with the ground named.
+        var escalated = false;
+        string escalatedTask = "", escalatedPhase = "", escalatedError = "";
+        var escalatedDeadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < escalatedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT status FROM live.task WHERE barrier_end_operation_id='room-attend-1/end'),
+                           (SELECT phase FROM control.end_operation WHERE room_id='room-attend-1'),
+                           (SELECT last_error FROM live.task WHERE barrier_end_operation_id='room-attend-1/end')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && !reader.IsDBNull(1))
+                {
+                    escalatedTask = reader.GetString(0);
+                    escalatedPhase = reader.GetString(1);
+                    escalatedError = reader.IsDBNull(2) ? "" : reader.GetString(2);
+                    if (escalatedTask == "NeedsAttention") { escalated = true; break; }
+                }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(escalated, $"The unanswerable unknown never reached NeedsAttention " +
+            $"(task: {escalatedTask}, phase: {escalatedPhase}). Gateway console tail:\n" +
+            HostTailFor(environment, "gateway-attend-a"));
+        Assert.Contains("not idempotent", escalatedError);
+
+        // The attention is not a close: the ladder stands open at the authorization, the
+        // platform heard exactly its one call, and the questions it could not answer are
+        // on the record too.
+        var stableDeadline = DateTime.UtcNow.AddSeconds(8);
+        while (DateTime.UtcNow < stableDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                Assert.Equal("PlatformTaskAuthorized", await new NpgsqlCommand(
+                    "SELECT phase FROM control.end_operation WHERE room_id='room-attend-1'",
+                    connection).ExecuteScalarAsync());
+            }
+            await Task.Delay(500);
+        }
+        Assert.Equal(1, platform.Calls("room-attend-1/end"));
+        Assert.True(platform.StatusQueries("room-attend-1/end") >= 1,
+            "The escalation never even asked the platform it cannot question.");
     }
 
     /// <summary>The captured console output of one started host, by instance id.</summary>
     private static string HostOutputFor(RedesignM0HostTests.HostEnvironment environment, string instance) =>
         environment.HostOutput(environment.HostProcesses.Single(pair => pair.Instance == instance).Process);
+
+    /// <summary>The console tail a failure message quotes, however short the console ran —
+    /// an eager range on a quiet host would out-of-range before the assert could speak.</summary>
+    private static string HostTailFor(RedesignM0HostTests.HostEnvironment environment, string instance)
+    {
+        var output = HostOutputFor(environment, instance);
+        return output.Length > 1200 ? output[^1200..] : output;
+    }
 
     /// <summary>Posts one platform webhook to the gateway's public ingress face.</summary>
     private static async Task<HttpResponseMessage> PostAsync(HttpClient http, int ingressPort,
@@ -2056,12 +2599,35 @@ public sealed class RedesignEndOperationHostTests
     /// the whole observation — the pre-gate's claim is about whether any call happens at
     /// all, and the exactly-once claim is the platform's own idempotent record.
     /// </summary>
+    /// <summary>The platform as a recording and a script (FIX-END-10): every execute call is
+    /// recorded with the kind its desired state declares; per operation the call may apply
+    /// or not, its answer may be lost to a hang (the outcome the executor could not
+    /// observe), and the status face either answers the official record under the same
+    /// operation id or cannot answer at all — the three platform shapes the close's
+    /// acceptance walks.</summary>
     private sealed class RecordingPlatform : IDisposable
     {
+        /// <summary>One operation's platform behavior. The defaults are the honest platform:
+        /// the call applies, the answer arrives, the status face answers the official
+        /// record.</summary>
+        public sealed class Script
+        {
+            public bool Apply = true;
+            /// <summary>The reply never arrives in time: the operation applies (or not) and
+            /// the caller's patience ends first — the outcome is the executor's unknown.</summary>
+            public TimeSpan? HangAnswer;
+            /// <summary>The status face cannot answer for the operation (answers 503).</summary>
+            public bool StatusCannotAnswer;
+        }
+
         private readonly HttpListener _listener = new();
         private readonly CancellationTokenSource _stop = new();
         private readonly object _gate = new();
         private readonly Dictionary<string, int> _calls = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _kinds = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _statusQueries = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, bool> _executed = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, Script> _scripts = new(StringComparer.Ordinal);
 
         public string Url { get; }
 
@@ -2079,6 +2645,23 @@ public sealed class RedesignEndOperationHostTests
         public int Calls(string operationId)
         {
             lock (_gate) return _calls.GetValueOrDefault(operationId);
+        }
+
+        /// <summary>The kind every received operation declared, by operation id — the
+        /// evidence that a round end never carried an unbind or a live end.</summary>
+        public IReadOnlyDictionary<string, string> Kinds
+        {
+            get { lock (_gate) return new Dictionary<string, string>(_kinds, StringComparer.Ordinal); }
+        }
+
+        public int StatusQueries(string operationId)
+        {
+            lock (_gate) return _statusQueries.GetValueOrDefault(operationId);
+        }
+
+        public void ScriptOperation(string operationId, Script script)
+        {
+            lock (_gate) _scripts[operationId] = script;
         }
 
         public void Dispose()
@@ -2104,14 +2687,67 @@ public sealed class RedesignEndOperationHostTests
         {
             try
             {
+                if (context.Request.HttpMethod == "GET"
+                    && context.Request.Url!.AbsolutePath.EndsWith("/status", StringComparison.Ordinal))
+                {
+                    var queried = context.Request.QueryString["operationId"] ?? "";
+                    Script? script;
+                    bool executed;
+                    lock (_gate)
+                    {
+                        _statusQueries[queried] = _statusQueries.GetValueOrDefault(queried) + 1;
+                        script = _scripts.GetValueOrDefault(queried);
+                        executed = _executed.GetValueOrDefault(queried);
+                    }
+                    if (script is { StatusCannotAnswer: true })
+                    {
+                        context.Response.StatusCode = 503;
+                        context.Response.Close();
+                        return;
+                    }
+                    var statusReply = JsonSerializer.Serialize(new
+                    {
+                        executed,
+                        observedJson = executed ? """{"applied":true}""" : null as string
+                    }, JsonSerializerOptions.Web);
+                    context.Response.ContentType = "application/json";
+                    await context.Response.OutputStream.WriteAsync(
+                        Encoding.UTF8.GetBytes(statusReply), _stop.Token);
+                    context.Response.Close();
+                    return;
+                }
                 using var document = JsonDocument.Parse(await new StreamReader(context.Request.InputStream)
                     .ReadToEndAsync(_stop.Token));
                 var operationId = document.RootElement.GetProperty("operationId").GetString()!;
-                lock (_gate) _calls[operationId] = _calls.GetValueOrDefault(operationId) + 1;
+                var kind = document.RootElement.TryGetProperty("desired", out var desired)
+                    && desired.ValueKind == JsonValueKind.String
+                    && JsonDocument.Parse(desired.GetString()!).RootElement.TryGetProperty(
+                        "kind", out var kindElement)
+                    && kindElement.ValueKind == JsonValueKind.String
+                        ? kindElement.GetString()! : "unknown";
+                Script? callScript;
+                lock (_gate)
+                {
+                    _calls[operationId] = _calls.GetValueOrDefault(operationId) + 1;
+                    _kinds[operationId] = kind;
+                    callScript = _scripts.GetValueOrDefault(operationId);
+                    // Idempotent by operation id: a replay reads the official record, the
+                    // apply itself never runs twice.
+                    if (!_executed.ContainsKey(operationId))
+                        _executed[operationId] = callScript?.Apply ?? true;
+                }
+                if (callScript?.HangAnswer is { } hang)
+                {
+                    // The operation stands applied (or not) on the platform while the caller's
+                    // patience ends first — the outcome only the status face can answer for.
+                    await Task.Delay(hang, _stop.Token);
+                }
+                bool applied;
+                lock (_gate) applied = _executed[operationId];
                 var reply = JsonSerializer.Serialize(new
                 {
-                    executed = true,
-                    observedJson = """{"applied":true}"""
+                    executed = applied,
+                    observedJson = applied ? """{"applied":true}""" : null as string
                 }, JsonSerializerOptions.Web);
                 context.Response.ContentType = "application/json";
                 await context.Response.OutputStream.WriteAsync(

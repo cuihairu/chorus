@@ -935,9 +935,15 @@ public sealed class RedesignM1HostTests
             new TaskLeaseRequest { TaskId = enqueued.TaskId, OwnerInstanceId = "gw-3", LeaseSeconds = 300 })
             .ResponseAsync);
         Assert.Equal(StatusCode.PermissionDenied, wrongRole.StatusCode);
-        var wrongPlane = await Assert.ThrowsAsync<RpcException>(() => takeover.MarkNeedsAttentionAsync(
-            new TaskStopRequest { TaskId = enqueued.TaskId, LastError = "not the control plane" })
+        var wrongPlane = await Assert.ThrowsAsync<RpcException>(() => streamerClient.MarkNeedsAttentionAsync(
+            new TaskStopRequest { TaskId = enqueued.TaskId, LastError = "not this plane's call" })
             .ResponseAsync);
         Assert.Equal(StatusCode.PermissionDenied, wrongPlane.StatusCode);
+        // FIX-END-10: the gateway is an attention caller now — so its flag on a completed
+        // task is refused by state, not by role: a terminal answer never reopens as attention.
+        var reopened = await Assert.ThrowsAsync<RpcException>(() => takeover.MarkNeedsAttentionAsync(
+            new TaskStopRequest { TaskId = enqueued.TaskId, LastError = "the gateway may ask" })
+            .ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, reopened.StatusCode);
     }
 }

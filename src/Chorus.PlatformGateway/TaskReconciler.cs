@@ -105,13 +105,36 @@ public sealed class TaskReconciler(
         // cancel a call already sent, so the old attempt's deadline bounds the wait before
         // verification. Take the lease, ask the platform for the official outcome, and let
         // the record decide — executed completes without a second call, not-executed
-        // becomes retryable immediately.
+        // becomes retryable immediately. A platform that cannot answer for the operation
+        // keeps an idempotent executor asking, but an executor whose re-issue cannot be
+        // trusted may never re-call: the unanswerable unknown escalates to human attention
+        // instead of looping forever (FIX-END-10).
         if (task.Status is "Executing" or "OutcomeUnknown")
         {
             if (task.AttemptDeadlineUnixMs > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
                 return;
             await LeaseAsync(tasks, task.TaskId, cancellationToken);
-            var outcome = await adapter.QueryAsync(task.OperationId, cancellationToken);
+            PlatformTaskOutcome? outcome = null;
+            try
+            {
+                using var queryCancellation =
+                    CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                queryCancellation.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, callTimeoutSeconds)));
+                outcome = await adapter.QueryAsync(task.OperationId, queryCancellation.Token);
+            }
+            catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
+            {
+                if (!adapter.IdempotentReissue)
+                {
+                    await tasks.MarkNeedsAttentionAsync(new TaskStopRequest
+                    {
+                        TaskId = task.TaskId,
+                        LastError = "The outcome could not be queried and this platform's " +
+                            $"re-issue is not idempotent: {error.Message}"
+                    }, deadline: DateTime.UtcNow.Add(RpcTimeout), cancellationToken: cancellationToken);
+                }
+                return;
+            }
             await tasks.ResolveOutcomeAsync(new TaskResolveRequest
             {
                 TaskId = task.TaskId, OwnerInstanceId = instanceId,
@@ -123,7 +146,8 @@ public sealed class TaskReconciler(
         // Due work: lease, record the attempt (its outbox effect is part of the same store
         // transaction), then issue the call and land the observed state. A call that could
         // not be observed parks OutcomeUnknown — this loop or a successor resolves it by
-        // query; it is never re-issued blindly.
+        // query; it is never re-issued blindly. The platform's own answer may also be that
+        // no call is required (FIX-END-10): the capability ground is the terminal record.
         if (!await BeginDueAttemptAsync(tasks, task, cancellationToken)) return;
         using var callCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         callCancellation.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, callTimeoutSeconds)));
@@ -131,7 +155,16 @@ public sealed class TaskReconciler(
         {
             var observed = await adapter.CallAsync(
                 new PlatformTaskCall(task.OperationId, task.DesiredJson), callCancellation.Token);
-            if (observed.Executed)
+            if (observed.NotRequired)
+            {
+                await tasks.CompleteNotRequiredAsync(new TaskCompleteRequest
+                {
+                    TaskId = task.TaskId, OwnerInstanceId = instanceId,
+                    ObservedJson = observed.ObservedJson
+                        ?? """{"basis":"the platform requires no call for this operation"}"""
+                }, deadline: DateTime.UtcNow.Add(RpcTimeout), cancellationToken: cancellationToken);
+            }
+            else if (observed.Executed)
             {
                 await tasks.CompleteAttemptAsync(new TaskCompleteRequest
                 {

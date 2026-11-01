@@ -402,6 +402,24 @@ message TaskBarrierReply {
   string phase = 2;
 }
 
+// FIX-END-10: the control plane's read of one end operation's platform-close standing. The
+// expected task count is the operation's own recorded mount count — a count short of it
+// means the recording is still in flight, never that the close is complete — and completion
+// means every recorded task answered success (Completed) or a grounded NotRequired.
+// Unknown, failed and attention states never close the operation.
+message TaskCloseRequest {
+  string end_operation_id = 1;
+  int32 expected_tasks = 2;
+}
+
+message TaskCloseReply {
+  bool complete = 1;
+  int32 tasks = 2;
+  int32 completed = 3;
+  int32 not_required = 4;
+  int32 outstanding = 5;
+}
+
 // StreamerServer session boundary; the caller presents a tenant-scoped streamer-server
 // identity and the tenant is taken from the authenticated certificate, not the request.
 service StreamerSession {
@@ -490,4 +508,8 @@ service PlatformTask {
   rpc ListReadyTasks(TaskListRequest) returns (TaskListReply);
   rpc RequeueTask(TaskRequeueRequest) returns (TaskStateReply);
   rpc GetBarrierAuthorization(TaskBarrierRequest) returns (TaskBarrierReply);
+  // FIX-END-10: a terminal close whose ground is the platform's capability, not its
+  // execution — the adapter answered that this operation needs no call.
+  rpc CompleteNotRequired(TaskCompleteRequest) returns (TaskStateReply);
+  rpc GetCloseCompletion(TaskCloseRequest) returns (TaskCloseReply);
 }

@@ -53,6 +53,18 @@ public sealed class PlatformTaskGrpcService(
                 request.ObservedJson, context.CancellationToken);
         });
 
+    /// <summary>FIX-END-10: the executor's terminal answer for a platform that requires no
+    /// call for this operation — the observed json is the capability ground, and the task
+    /// closes exactly like a completed one.</summary>
+    public override Task<TaskStateReply> CompleteNotRequired(TaskCompleteRequest request,
+        ServerCallContext context) =>
+        ExecuteAsync(() =>
+        {
+            Require(context, "platform-gateway");
+            return taskStore.CompleteNotRequiredAsync(request.TaskId, request.OwnerInstanceId,
+                request.ObservedJson, context.CancellationToken);
+        });
+
     public override Task<TaskStateReply> MarkOutcomeUnknown(TaskErrorRequest request, ServerCallContext context) =>
         ExecuteAsync(() =>
         {
@@ -73,7 +85,11 @@ public sealed class PlatformTaskGrpcService(
     public override Task<TaskStateReply> MarkNeedsAttention(TaskStopRequest request, ServerCallContext context) =>
         ExecuteAsync(() =>
         {
-            Require(context, "control-server");
+            // FIX-END-10 widens the caller to the executor: the gateway holding the lease is
+            // the one that knows the outcome is unknown AND the platform cannot answer for
+            // it AND its own re-issue is not idempotent — the three facts that leave human
+            // attention as the only safe move. The control plane keeps the same call.
+            Require(context, "control-server", "platform-gateway");
             return taskStore.MarkNeedsAttentionAsync(request.TaskId, request.LastError,
                 context.CancellationToken);
         });
@@ -122,6 +138,21 @@ public sealed class PlatformTaskGrpcService(
             Require(context, "control-server");
             return taskStore.RequeueTaskAsync(request.TaskId, context.CancellationToken);
         });
+
+    /// <summary>FIX-END-10: the coordinator's read of one end operation's platform-close
+    /// standing — the credential the ladder's PlatformClosed step is built on.</summary>
+    public override async Task<TaskCloseReply> GetCloseCompletion(TaskCloseRequest request,
+        ServerCallContext context)
+    {
+        Require(context, "control-server");
+        var close = await taskStore.GetCloseCompletionAsync(request.EndOperationId,
+            request.ExpectedTasks, context.CancellationToken);
+        return new TaskCloseReply
+        {
+            Complete = close.Complete, Tasks = close.Tasks, Completed = close.Completed,
+            NotRequired = close.NotRequired, Outstanding = close.Outstanding
+        };
+    }
 
     private static async Task<TaskStateReply> ExecuteAsync(Func<Task<PlatformTaskState>> action)
     {
