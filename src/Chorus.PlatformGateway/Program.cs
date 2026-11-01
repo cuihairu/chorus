@@ -71,7 +71,8 @@ builder.Services.AddSingleton(trustedCertificates);
 // observed — lives here, shared with the webhook face and the drain service.
 var stopDeliveries = new StopDeliveryRecord();
 builder.Services.AddSingleton(stopDeliveries);
-builder.Services.AddHostedService(_ => new TaskReconciler(DataChannel, taskAdapter,
+builder.Services.AddHostedService(_ => new TaskReconciler(
+    new PlatformTask.PlatformTaskClient(DataChannel()), taskAdapter,
     identity.ProcessInstanceId,
     int.Parse(Environment.GetEnvironmentVariable("CHORUS_TASK_RECONCILE_INTERVAL_MS") ?? "1000"),
     int.Parse(Environment.GetEnvironmentVariable("CHORUS_TASK_LEASE_SECONDS") ?? "30"),

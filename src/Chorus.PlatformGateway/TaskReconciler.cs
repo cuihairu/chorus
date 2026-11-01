@@ -1,7 +1,6 @@
 using Chorus.Platform;
 using Chorus.Rpc;
 using Grpc.Core;
-using GrpcChannel = Grpc.Net.Client.GrpcChannel;
 
 namespace Chorus.PlatformGateway;
 
@@ -14,7 +13,7 @@ namespace Chorus.PlatformGateway;
 /// fail-soft: one task's error never stops the pass, and the next pass retries.
 /// </summary>
 public sealed class TaskReconciler(
-    Func<GrpcChannel> channelFactory, IPlatformTaskAdapter adapter, string instanceId,
+    PlatformTask.PlatformTaskClient tasks, IPlatformTaskAdapter adapter, string instanceId,
     int intervalMs, int leaseSeconds, int deadlineSeconds, int callTimeoutSeconds,
     ILogger<TaskReconciler>? logger = null) : BackgroundService
 {
@@ -36,8 +35,6 @@ public sealed class TaskReconciler(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var channel = channelFactory();
-        var tasks = new PlatformTask.PlatformTaskClient(channel);
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -91,6 +88,19 @@ public sealed class TaskReconciler(
     private async Task ReconcileCoreAsync(PlatformTask.PlatformTaskClient tasks,
         TaskStateReply task, CancellationToken cancellationToken)
     {
+        // FIX-END-09: a task bound to a standing end operation waits for the operation's
+        // ladder to authorize platform work — asked here, before any lease is taken, so an
+        // unauthorized end task never even enters the lease protocol. The refusal is the
+        // skip: the pass asks again next sweep, and the barrier's completion is the next
+        // pass's green light.
+        if (task.BarrierEndOperationId.Length > 0)
+        {
+            var barrier = await tasks.GetBarrierAuthorizationAsync(new TaskBarrierRequest
+            {
+                TaskId = task.TaskId
+            }, deadline: DateTime.UtcNow.Add(RpcTimeout), cancellationToken: cancellationToken);
+            if (!barrier.Authorized) return;
+        }
         // A task another executor left behind, or one parked unknown: the epoch cannot
         // cancel a call already sent, so the old attempt's deadline bounds the wait before
         // verification. Take the lease, ask the platform for the official outcome, and let

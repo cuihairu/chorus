@@ -10,7 +10,13 @@ public sealed record PlatformTaskState(
     string TaskId, string BindingId, long BindingGeneration, long TaskEpoch, string OperationId,
     string Status, int AttemptCount, string DesiredJson, string? ObservedJson, string? LastError,
     DateTimeOffset? NextAttemptUtc, string? LeaseOwner, DateTimeOffset? LeaseUntilUtc,
-    string? AttemptOwner, DateTimeOffset? AttemptDeadlineUtc, bool Duplicate);
+    string? AttemptOwner, DateTimeOffset? AttemptDeadlineUtc, bool Duplicate,
+    string? BarrierEndOperationId = null);
+
+/// <summary>The answer to an executor's barrier question (FIX-END-09): whether the standing
+/// end operation a task is bound to has authorized platform work, and the phase it stands
+/// at. The phase row is the persistent credential — this is its live reading.</summary>
+public sealed record PlatformTaskBarrier(bool Authorized, string Phase);
 
 /// <summary>
 /// External platform task coordination (architecture 6.3). A task persists DesiredState,
@@ -35,7 +41,8 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
     /// (binding, operation); the same operation with a different desired state conflicts.
     /// </summary>
     public async Task<PlatformTaskState> EnqueueDesiredAsync(string bindingId, string operationId,
-        string desiredJson, CancellationToken cancellationToken = default)
+        string desiredJson, string? barrierEndOperationId = null,
+        CancellationToken cancellationToken = default)
     {
         Require(bindingId, nameof(bindingId));
         Require(operationId, nameof(operationId));
@@ -55,8 +62,9 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         var taskId = Guid.NewGuid().ToString("N");
         await using (var insert = new NpgsqlCommand("""
             INSERT INTO live.task(task_id,binding_id,binding_generation,task_epoch,desired,
-                operation_id,status,next_attempt)
-            VALUES (@task,@binding,@generation,1,@desired::jsonb,@operation,@status,clock_timestamp())
+                operation_id,status,next_attempt,barrier_end_operation_id)
+            VALUES (@task,@binding,@generation,1,@desired::jsonb,@operation,@status,clock_timestamp(),
+                @barrier)
             ON CONFLICT (binding_id,operation_id) DO NOTHING
             """, connection, transaction))
         {
@@ -66,6 +74,8 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
             insert.Parameters.AddWithValue("desired", desiredJson);
             insert.Parameters.AddWithValue("operation", operationId);
             insert.Parameters.AddWithValue("status", Pending);
+            if (barrierEndOperationId is null) insert.Parameters.AddWithValue("barrier", DBNull.Value);
+            else insert.Parameters.AddWithValue("barrier", barrierEndOperationId);
             await insert.ExecuteNonQueryAsync(cancellationToken);
         }
         await using (var existing = new NpgsqlCommand("""
@@ -154,6 +164,17 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
             throw new TaskStateConflictException();
         if (row.NextAttempt is not null && row.NextAttempt.Value > DateTimeOffset.UtcNow)
             throw new TaskStateConflictException();
+        // FIX-END-09: a task bound to a standing end operation may not leave this process
+        // until the operation's ladder authorizes platform work — the delivery-stop barrier
+        // stood complete first. The check is authoritative here (an executor that skipped
+        // its own pre-check cannot begin an attempt) and advisory at the executor, which
+        // asks before taking any lease at all.
+        if (row.BarrierEndOperationId is not null)
+        {
+            var barrier = await ReadBarrierAsync(connection, transaction, row.BindingId,
+                row.BarrierEndOperationId, cancellationToken);
+            if (!barrier.Authorized) throw new TaskBarrierException();
+        }
         var attempt = row.AttemptCount + 1;
         try
         {
@@ -380,6 +401,30 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         return ToState(updated, Duplicate: false);
     }
 
+    /// <summary>The executor's pre-call validation (FIX-END-09): reads one task's barrier
+    /// credential live. A task with no binding answers authorized — the gate is scoped to
+    /// the end-operation tasks that carry it.</summary>
+    public async Task<PlatformTaskBarrier> GetBarrierAuthorizationAsync(string taskId,
+        CancellationToken cancellationToken = default)
+    {
+        Require(taskId, nameof(taskId));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT t.barrier_end_operation_id, b.binding_id FROM live.task t
+            JOIN live.binding b ON b.binding_id = t.binding_id
+            WHERE t.task_id = @task
+            """, connection);
+        command.Parameters.AddWithValue("task", taskId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken) || reader.IsDBNull(0))
+            return new PlatformTaskBarrier(Authorized: true, Phase: "");
+        var bindingId = reader.GetString(1);
+        var endOperationId = reader.GetString(0);
+        await reader.DisposeAsync();
+        return await ReadBarrierAsync(connection, null, bindingId, endOperationId, cancellationToken);
+    }
+
     public async Task<PlatformTaskState?> GetTaskAsync(string taskId, CancellationToken cancellationToken = default)
     {
         Require(taskId, nameof(taskId));
@@ -405,7 +450,7 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         await using var command = new NpgsqlCommand("""
             SELECT task_id,binding_id,binding_generation,task_epoch,operation_id,status,attempt_count,
                 desired::text,observed::text,last_error,next_attempt,lease_owner,lease_until,
-                attempt_owner,attempt_deadline
+                attempt_owner,attempt_deadline,barrier_end_operation_id
             FROM live.task
             WHERE (status IN ('Pending','Retryable','OutcomeUnknown')
                     AND (next_attempt IS NULL OR next_attempt<=clock_timestamp()))
@@ -425,7 +470,35 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         string TaskId, string BindingId, long BindingGeneration, long TaskEpoch, string OperationId,
         string Status, int AttemptCount, string Desired, string? Observed, string? LastError,
         DateTimeOffset? NextAttempt, string? LeaseOwner, DateTimeOffset? LeaseUntil,
-        string? AttemptOwner, DateTimeOffset? AttemptDeadline);
+        string? AttemptOwner, DateTimeOffset? AttemptDeadline, string? BarrierEndOperationId);
+
+    /// <summary>The standing end operation phases at or past the platform-task authorization
+    /// (architecture 6.4's ladder, mirrored here because the ladder's home is the control
+    /// plane's store). At or past PlatformTaskAuthorized the delivery-stop barrier stood
+    /// complete — every authorized gateway confirmed or lapsed — so platform work may leave
+    /// the executor.</summary>
+    private static readonly HashSet<string> PlatformTaskAuthorizedPhases = new(StringComparer.Ordinal)
+    {
+        "PlatformTaskAuthorized", "PlatformClosed", "Released", "Destroyed", "Done"
+    };
+
+    private static async Task<PlatformTaskBarrier> ReadBarrierAsync(NpgsqlConnection connection,
+        NpgsqlTransaction? transaction, string bindingId, string endOperationId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            SELECT eo.phase FROM live.binding b
+            JOIN control.end_operation eo
+              ON eo.tenant_id = b.tenant_id AND eo.game_id = b.game_id
+             AND eo.end_operation_id = @operation
+            WHERE b.binding_id = @binding
+            """, connection, transaction);
+        command.Parameters.AddWithValue("binding", bindingId);
+        command.Parameters.AddWithValue("operation", endOperationId);
+        var phase = await command.ExecuteScalarAsync(cancellationToken) as string;
+        return new PlatformTaskBarrier(
+            phase is not null && PlatformTaskAuthorizedPhases.Contains(phase), phase ?? "");
+    }
 
     private static async Task<TaskRow> LoadForUpdateAsync(NpgsqlConnection connection,
         NpgsqlTransaction transaction, string taskId, CancellationToken cancellationToken)
@@ -444,7 +517,7 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         await using var command = new NpgsqlCommand($"""
             SELECT task_id,binding_id,binding_generation,task_epoch,operation_id,status,attempt_count,
                 desired::text,observed::text,last_error,next_attempt,lease_owner,lease_until,
-                attempt_owner,attempt_deadline
+                attempt_owner,attempt_deadline,barrier_end_operation_id
             FROM live.task WHERE task_id=@task{(forUpdate ? " FOR UPDATE" : "")}
             """, connection, transaction);
         command.Parameters.AddWithValue("task", taskId);
@@ -462,12 +535,13 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         reader.IsDBNull(11) ? null : reader.GetString(11),
         reader.IsDBNull(12) ? null : new DateTimeOffset(reader.GetDateTime(12), TimeSpan.Zero),
         reader.IsDBNull(13) ? null : reader.GetString(13),
-        reader.IsDBNull(14) ? null : new DateTimeOffset(reader.GetDateTime(14), TimeSpan.Zero));
+        reader.IsDBNull(14) ? null : new DateTimeOffset(reader.GetDateTime(14), TimeSpan.Zero),
+        reader.IsDBNull(15) ? null : reader.GetString(15));
 
     private static PlatformTaskState ToState(TaskRow row, bool Duplicate) => new(
         row.TaskId, row.BindingId, row.BindingGeneration, row.TaskEpoch, row.OperationId, row.Status,
         row.AttemptCount, row.Desired, row.Observed, row.LastError, row.NextAttempt, row.LeaseOwner,
-        row.LeaseUntil, row.AttemptOwner, row.AttemptDeadline, Duplicate);
+        row.LeaseUntil, row.AttemptOwner, row.AttemptDeadline, Duplicate, row.BarrierEndOperationId);
 
     private static void Require(string? value, string name)
     {

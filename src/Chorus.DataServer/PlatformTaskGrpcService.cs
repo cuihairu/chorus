@@ -24,7 +24,9 @@ public sealed class PlatformTaskGrpcService(
         {
             Require(context, "control-server", "streamer-server");
             return taskStore.EnqueueDesiredAsync(request.BindingId, request.OperationId,
-                request.DesiredJson, context.CancellationToken);
+                request.DesiredJson,
+                request.BarrierEndOperationId.Length == 0 ? null : request.BarrierEndOperationId,
+                context.CancellationToken);
         });
 
     public override Task<TaskStateReply> AcquireLease(TaskLeaseRequest request, ServerCallContext context) =>
@@ -101,6 +103,19 @@ public sealed class PlatformTaskGrpcService(
         return new TaskListReply { Tasks = { tasks.Select(Reply) } };
     }
 
+    /// <summary>FIX-END-09: the executor's pre-call barrier check. Executors ask before they
+    /// take any lease at all, so an unauthorized end task never enters the lease protocol
+    /// through this face — the store's BeginAttempt refusal is the same predicate read
+    /// authoritatively for an executor that skipped its own question.</summary>
+    public override async Task<TaskBarrierReply> GetBarrierAuthorization(
+        TaskBarrierRequest request, ServerCallContext context)
+    {
+        Require(context, "control-server", "platform-gateway");
+        var barrier = await taskStore.GetBarrierAuthorizationAsync(request.TaskId,
+            context.CancellationToken);
+        return new TaskBarrierReply { Authorized = barrier.Authorized, Phase = barrier.Phase };
+    }
+
     public override Task<TaskStateReply> RequeueTask(TaskRequeueRequest request, ServerCallContext context) =>
         ExecuteAsync(() =>
         {
@@ -121,6 +136,11 @@ public sealed class PlatformTaskGrpcService(
         catch (TaskStateConflictException)
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "The platform task does not accept this transition now."));
+        }
+        catch (TaskBarrierException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The platform end task is not authorized: the delivery-stop barrier has not completed."));
         }
         catch (IdempotencyConflictException)
         {
@@ -147,7 +167,8 @@ public sealed class PlatformTaskGrpcService(
         LeaseUntilUnixMs = state.LeaseUntilUtc?.ToUnixTimeMilliseconds() ?? 0,
         AttemptOwner = state.AttemptOwner ?? "",
         AttemptDeadlineUnixMs = state.AttemptDeadlineUtc?.ToUnixTimeMilliseconds() ?? 0,
-        Duplicate = state.Duplicate
+        Duplicate = state.Duplicate,
+        BarrierEndOperationId = state.BarrierEndOperationId ?? ""
     };
 
     private void Require(ServerCallContext context, params string[] roles)

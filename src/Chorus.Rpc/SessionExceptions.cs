@@ -14,3 +14,8 @@ public sealed class TaskBusyException : Exception;
 
 /// <summary>The platform task is not in a state that accepts this transition from this caller.</summary>
 public sealed class TaskStateConflictException : Exception;
+
+/// <summary>The task is bound to a standing end operation whose barrier has not authorized
+/// it yet (FIX-END-09): no attempt may begin before the ladder reaches
+/// PlatformTaskAuthorized.</summary>
+public sealed class TaskBarrierException : Exception;

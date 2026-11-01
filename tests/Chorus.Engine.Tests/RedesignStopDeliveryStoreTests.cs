@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Chorus.ControlServer;
 using Chorus.Data;
 using Chorus.DataServer;
+using Chorus.Rpc;
 using Npgsql;
 using Xunit;
 
@@ -474,6 +475,126 @@ public sealed class RedesignStopDeliveryStoreTests
 
     /// <summary>One mounted binding, one started round and a gateway directory the responder
     /// set reads — the minimum the command's issue fence and set derivation need.</summary>
+    /// <summary>
+    /// FIX-END-09: the platform end task is recorded early — durably bound to the standing
+    /// operation's barrier credential — but no attempt may begin until the ladder reaches
+    /// PlatformTaskAuthorized. The listing stays honest (the executor asks its own question
+    /// before any lease), and the store's BeginAttempt refusal is the same predicate read
+    /// authoritatively: an executor that skipped its pre-check still cannot issue the call.
+    /// </summary>
+    [Fact]
+    public async Task APlatformEndTaskWaitsForTheBarrierBeforeItsFirstAttempt()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        var tasks = new RedesignPlatformTaskStore(arrange.Database.ConnectionString);
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
+        await arrange.Control.IssueStopDeliveryAsync("tenant-a", "game-a", "end-op-1");
+
+        // The coordinator's recording, as the ClosingInput step makes it: one task per
+        // binding, bound to the operation, replayed idempotently by a restart's re-enqueue.
+        var task = await tasks.EnqueueDesiredAsync(arrange.Binding.BindingId, "end-op-1",
+            """{"kind":"end-round","roomId":"room-1"}""", barrierEndOperationId: "end-op-1");
+        Assert.Equal("end-op-1", task.BarrierEndOperationId);
+        var replay = await tasks.EnqueueDesiredAsync(arrange.Binding.BindingId, "end-op-1",
+            """{"kind":"end-round","roomId":"room-1"}""", barrierEndOperationId: "end-op-1");
+        Assert.True(replay.Duplicate);
+
+        // The listing is the lease protocol's view, not the ladder's: the executor sees the
+        // task and must refuse it itself. The barrier answers not-authorized while the ladder
+        // stands below the authorization phase.
+        Assert.Contains(await tasks.ListReadyTasksAsync(16),
+            listed => listed.TaskId == task.TaskId && listed.BarrierEndOperationId == "end-op-1");
+        var waiting = await tasks.GetBarrierAuthorizationAsync(task.TaskId);
+        Assert.False(waiting.Authorized);
+        Assert.Equal("ResultFrozen", waiting.Phase);
+
+        // The authoritative refusal: a lease may be taken (the protocol's own bookkeeping),
+        // but no attempt — no external call — may begin, at any phase below the barrier's
+        // completion.
+        await tasks.AcquireLeaseAsync(task.TaskId, "gateway-live", TimeSpan.FromMinutes(5));
+        await Assert.ThrowsAsync<TaskBarrierException>(() =>
+            tasks.BeginAttemptAsync(task.TaskId, "gateway-live", TimeSpan.FromSeconds(30)));
+        await arrange.ToStopDeliveryIssuedAsync();
+        await Assert.ThrowsAsync<TaskBarrierException>(() =>
+            tasks.BeginAttemptAsync(task.TaskId, "gateway-live", TimeSpan.FromSeconds(30)));
+
+        // The barrier completes and the ladder authorizes: the same attempt call now begins,
+        // and the recorded credential answers authorized at the phase it stands.
+        await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+            "room-1", "gateway-live",
+            (await arrange.Control.GetStopDeliveryAsync("tenant-a", "game-a", "end-op-1"))!.CloseRouteVersion,
+            0, 0, 0);
+        Assert.True(await arrange.Control.AdvanceDeliveryStoppedBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60));
+        await arrange.Control.AdvanceEndOperationPhaseAsync("tenant-a", "game-a", "end-op-1",
+            EndOperationPhases.DeliveryStopped, EndOperationPhases.PlatformTaskAuthorized);
+        var authorized = await tasks.GetBarrierAuthorizationAsync(task.TaskId);
+        Assert.True(authorized.Authorized);
+        Assert.Equal("PlatformTaskAuthorized", authorized.Phase);
+        var attempt = await tasks.BeginAttemptAsync(task.TaskId, "gateway-live",
+            TimeSpan.FromSeconds(30));
+        Assert.Equal(RedesignPlatformTaskStore.Executing, attempt.Status);
+    }
+
+    /// <summary>
+    /// The credential's reading is scoped and durable (FIX-END-09): an operation that never
+    /// stood answers not-authorized however fresh the task is, an ungated launch task answers
+    /// authorized — the gate is scoped to the end tasks that carry the binding — and once the
+    /// ladder passes the authorization the answer stays authorized through every later phase,
+    /// so a retry that outlives the sequence's completion still lands.
+    /// </summary>
+    [Fact]
+    public async Task TheBarrierCredentialIsScopedDurableAndMonotone()
+    {
+        await using var arrange = await Arrange.RoundAsync();
+        var tasks = new RedesignPlatformTaskStore(arrange.Database.ConnectionString);
+        await arrange.Control.BeginEndOperationAsync("tenant-a", "game-a", "room-1",
+            "end-op-1", finalTick: 600, resultVersion: 2);
+        await arrange.RegisterAuthorizedGatewayAsync("gateway-live", "https://localhost:7601");
+        await arrange.Control.IssueStopDeliveryAsync("tenant-a", "game-a", "end-op-1");
+
+        // A barrier id no standing operation carries: no credential, no authorization.
+        var orphan = await tasks.EnqueueDesiredAsync(arrange.Binding.BindingId, "end-op-none",
+            """{"kind":"end-round"}""", barrierEndOperationId: "end-op-none");
+        var refused = await tasks.GetBarrierAuthorizationAsync(orphan.TaskId);
+        Assert.False(refused.Authorized);
+        Assert.Equal("", refused.Phase);
+
+        // A launch-time task carries no binding to any end operation: not this gate's business.
+        var launch = await tasks.EnqueueDesiredAsync(arrange.Binding.BindingId, "op-screen",
+            """{"kind":"screen-link","state":"active"}""");
+        var untouched = await tasks.GetBarrierAuthorizationAsync(launch.TaskId);
+        Assert.True(untouched.Authorized);
+        Assert.Equal("", untouched.Phase);
+
+        // Past the authorization the answer never retreats: the platform call may land late
+        // in the sequence — through the finalize, the destroy, even past Done — and the
+        // executor's question still answers yes.
+        var task = await tasks.EnqueueDesiredAsync(arrange.Binding.BindingId, "end-op-1",
+            """{"kind":"end-round"}""", barrierEndOperationId: "end-op-1");
+        await arrange.ToStopDeliveryIssuedAsync();
+        await arrange.Control.AcknowledgeStopDeliveryAsync("tenant-a", "game-a", "end-op-1",
+            "room-1", "gateway-live",
+            (await arrange.Control.GetStopDeliveryAsync("tenant-a", "game-a", "end-op-1"))!.CloseRouteVersion,
+            0, 0, 0);
+        Assert.True(await arrange.Control.AdvanceDeliveryStoppedBarrierAsync(
+            "tenant-a", "game-a", "end-op-1", staleSeconds: 60));
+        foreach (var (from, to) in new[]
+        {
+            (EndOperationPhases.DeliveryStopped, EndOperationPhases.PlatformTaskAuthorized),
+            (EndOperationPhases.PlatformTaskAuthorized, EndOperationPhases.PlatformClosed),
+            (EndOperationPhases.PlatformClosed, EndOperationPhases.Released),
+            (EndOperationPhases.Released, EndOperationPhases.Destroyed),
+            (EndOperationPhases.Destroyed, EndOperationPhases.Done)
+        })
+            await arrange.Control.AdvanceEndOperationPhaseAsync("tenant-a", "game-a", "end-op-1", from, to);
+        var late = await tasks.GetBarrierAuthorizationAsync(task.TaskId);
+        Assert.True(late.Authorized);
+        Assert.Equal("Done", late.Phase);
+    }
+
     private sealed class Arrange : IAsyncDisposable
     {
         public TemporaryDatabase Database = null!;

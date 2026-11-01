@@ -311,6 +311,9 @@ message TaskEnqueueRequest {
   string binding_id = 1;
   string operation_id = 2;
   string desired_json = 3;
+  // FIX-END-09: non-empty binds the task to the standing end operation's barrier — the
+  // executor validates the authorization phase before any external call may be issued.
+  string barrier_end_operation_id = 4;
 }
 
 message TaskLeaseRequest {
@@ -385,6 +388,18 @@ message TaskStateReply {
   string attempt_owner = 14;
   int64 attempt_deadline_unix_ms = 15;
   bool duplicate = 16;
+  string barrier_end_operation_id = 17;
+}
+
+// FIX-END-09: the executor's pre-call validation of one task's barrier credential. The
+// answer is the standing end operation's own phase: authorized means the ladder has reached
+// PlatformTaskAuthorized or beyond, so the delivery-stop barrier stood complete before any
+// platform call may leave this process.
+message TaskBarrierRequest { string task_id = 1; }
+
+message TaskBarrierReply {
+  bool authorized = 1;
+  string phase = 2;
 }
 
 // StreamerServer session boundary; the caller presents a tenant-scoped streamer-server
@@ -474,4 +489,5 @@ service PlatformTask {
   rpc GetTask(TaskGetRequest) returns (TaskStateReply);
   rpc ListReadyTasks(TaskListRequest) returns (TaskListReply);
   rpc RequeueTask(TaskRequeueRequest) returns (TaskStateReply);
+  rpc GetBarrierAuthorization(TaskBarrierRequest) returns (TaskBarrierReply);
 }

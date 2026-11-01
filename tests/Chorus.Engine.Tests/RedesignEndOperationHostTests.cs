@@ -133,8 +133,9 @@ public sealed class RedesignEndOperationHostTests
         // responder set (no gateways reported here), the phase — under the same business id.
         // The empty set is vacuously confirmed (FIX-END-07): no gateway held route
         // authorization, so none can have pushed, and the ladder records DeliveryStopped
-        // in the same pass — the poll accepts either phase, because the continuation, not
-        // the parking, is this fact's claim.
+        // in the same pass — then mints the platform credential over it in the very next
+        // breath (FIX-END-09), so the poll accepts any of the three phases, because the
+        // continuation, not the parking, is this fact's claim.
         environment.Kill("Chorus.ControlServer");
         await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
             new Dictionary<string, string>
@@ -152,13 +153,13 @@ public sealed class RedesignEndOperationHostTests
             {
                 TenantId = "tenant-a", GameId = "game-a", RoomId = "room-end-op-1"
             });
-            if (resumed.Phase is "StopDeliveryIssued" or "DeliveryStopped") break;
+            if (resumed.Phase is "StopDeliveryIssued" or "DeliveryStopped" or "PlatformTaskAuthorized") break;
             await Task.Delay(150);
         }
         Assert.NotNull(resumed);
         Assert.True(resumed!.Found);
         Assert.Equal("end-op-1", resumed.EndOperationId);
-        Assert.True(resumed.Phase is "StopDeliveryIssued" or "DeliveryStopped",
+        Assert.True(resumed.Phase is "StopDeliveryIssued" or "DeliveryStopped" or "PlatformTaskAuthorized",
             $"The resumed phase is {resumed.Phase}.");
         Assert.Equal(1, resumed.RoundGeneration);
         Assert.Equal(120, resumed.FinalTick);
@@ -198,7 +199,7 @@ public sealed class RedesignEndOperationHostTests
             TenantId = "tenant-a", GameId = "game-a", RoomId = "room-end-op-1"
         });
         Assert.Equal("end-op-1", untouched.EndOperationId);
-        Assert.True(untouched.Phase is "StopDeliveryIssued" or "DeliveryStopped",
+        Assert.True(untouched.Phase is "StopDeliveryIssued" or "DeliveryStopped" or "PlatformTaskAuthorized",
             $"The untouched phase is {untouched.Phase}.");
     }
 
@@ -630,9 +631,11 @@ public sealed class RedesignEndOperationHostTests
         Assert.True(issued, "The coordinator never reached StopDeliveryIssued.");
 
         // The gateway confirmed (FIX-END-07): it installed the closure, drained and acked,
-        // so the ladder records DeliveryStopped — the poll that follows needs the
-        // confirmation standing, because the closure gate, not the receiver's fence, now
-        // answers this gateway's late webhooks.
+        // so the barrier completed — the pass that records DeliveryStopped mints the
+        // platform credential over it in the same breath (FIX-END-09), so the poll accepts
+        // either dress of the completed barrier. The confirmation standing is what the
+        // rest of the fact needs: the closure gate, not the receiver's fence, now answers
+        // this gateway's late webhooks.
         var stopped = false;
         var stoppedDeadline = DateTime.UtcNow.AddSeconds(45);
         while (DateTime.UtcNow < stoppedDeadline)
@@ -643,12 +646,13 @@ public sealed class RedesignEndOperationHostTests
                 await using var phase = new NpgsqlCommand(
                     "SELECT phase FROM control.end_operation WHERE room_id='room-end-fence-1'", connection);
                 if (await phase.ExecuteScalarAsync() is string phaseValue
-                    && phaseValue == "DeliveryStopped") { stopped = true; break; }
+                    && phaseValue is "DeliveryStopped" or "PlatformTaskAuthorized")
+                { stopped = true; break; }
             }
             await Task.Delay(150);
         }
         Assert.True(stopped,
-            "The gateway never confirmed its delivery stop, so the ladder never recorded DeliveryStopped.");
+            "The gateway never confirmed its delivery stop, so the barrier never completed.");
 
         // The receiver's fence at the RPC edge, first as the room's own frozen status
         // refuses it — a raw push (exactly what an old, closure-less gateway sends) meets
@@ -797,9 +801,13 @@ public sealed class RedesignEndOperationHostTests
                 Assert.True(reader.GetBoolean(2), "The cutoff watermark was never recorded.");
                 Assert.True(reader.GetBoolean(3), "The command row carries no frozen version.");
             }
-            Assert.Equal("DeliveryStopped", await new NpgsqlCommand(
+            // The ladder rests past the barrier FIX-END-09 minted: either dress of the
+            // completed barrier is the honest standing, and neither reopens input.
+            var fencePhase = await new NpgsqlCommand(
                 "SELECT phase FROM control.end_operation WHERE room_id='room-end-fence-1'", connection)
-                .ExecuteScalarAsync());
+                .ExecuteScalarAsync() as string;
+            Assert.True(fencePhase is "DeliveryStopped" or "PlatformTaskAuthorized",
+                $"The ladder left the completed barrier: {fencePhase}.");
         }
     }
 
@@ -1067,7 +1075,12 @@ public sealed class RedesignEndOperationHostTests
             }
             await Task.Delay(150);
         }
-        Assert.True(issued, "The coordinator never reached StopDeliveryIssued.");
+        Assert.True(issued, "The coordinator never reached StopDeliveryIssued. Host consoles:\n"
+            + string.Join("\n---\n", environment.HostProcesses.Select(pair =>
+            {
+                var output = environment.HostOutput(pair.Process);
+                return $"[{pair.Instance}]\n" + (output.Length > 1200 ? output[^1200..] : output);
+            })));
 
         // The live gateway confirms (FIX-END-07): it installed the closure, drained its
         // observed pairs and acked, so its responder row left Pending — the ack's own
@@ -1335,7 +1348,9 @@ public sealed class RedesignEndOperationHostTests
 
         // The round settles, the host's report begins the operation, the coordinator issues
         // the command, the gateway installs the closure, drains the pending item terminally
-        // and acks — the ladder records DeliveryStopped on its confirmation.
+        // and acks — the pass that records DeliveryStopped on its confirmation mints the
+        // platform credential over it in the same breath (FIX-END-09), so the poll accepts
+        // either dress of the completed barrier.
         var settled = false;
         // A liveness margin, not a performance bound — the chain this waits on (final
         // frame, settle, report, command, drain, ack) is exactly the one a loaded shared
@@ -1353,11 +1368,11 @@ public sealed class RedesignEndOperationHostTests
                     "SELECT phase FROM control.end_operation WHERE room_id='room-stopdrain-1'", connection);
                 if (Convert.ToInt64(await consumed.ExecuteScalarAsync()) == 1
                     && await stopped.ExecuteScalarAsync() is string phase
-                    && phase == "DeliveryStopped") { settled = true; break; }
+                    && phase is "DeliveryStopped" or "PlatformTaskAuthorized") { settled = true; break; }
             }
             await Task.Delay(150);
         }
-        Assert.True(settled, "The round never settled through to a recorded DeliveryStopped.");
+        Assert.True(settled, "The round never settled through the completed delivery-stop barrier.");
 
         await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
         {
@@ -1434,9 +1449,13 @@ public sealed class RedesignEndOperationHostTests
             Assert.Equal(1L, Convert.ToInt64(await new NpgsqlCommand(
                 "SELECT count(*) FROM control.stop_delivery", connection)
                 .ExecuteScalarAsync()));
-            Assert.Equal("DeliveryStopped", await new NpgsqlCommand(
+            // The ladder rests past the barrier FIX-END-09 minted — either dress of the
+            // completed barrier is where it stands.
+            var drainPhase = await new NpgsqlCommand(
                 "SELECT phase FROM control.end_operation WHERE room_id='room-stopdrain-1'", connection)
-                .ExecuteScalarAsync());
+                .ExecuteScalarAsync() as string;
+            Assert.True(drainPhase is "DeliveryStopped" or "PlatformTaskAuthorized",
+                $"The ladder left the completed barrier: {drainPhase}.");
         }
     }
 
@@ -1659,8 +1678,10 @@ public sealed class RedesignEndOperationHostTests
             "The late holder never answered, or its answer wrongly cleared the parked phase.");
 
         // The holder dies: its reports stop, its authorization lapses past the barrier's
-        // window, and only then the phase records DeliveryStopped — the exit is the
-        // lapse, never a timeout of patience.
+        // window, and only then the barrier completes — the exit is the lapse, never a
+        // timeout of patience. The pass that records DeliveryStopped mints the platform
+        // credential over it in the same breath (FIX-END-09), so the poll accepts either
+        // dress of the opened barrier.
         environment.Kill("gateway-hold-a");
         var stopped = false;
         var stoppedDeadline = DateTime.UtcNow.AddSeconds(45);
@@ -1671,7 +1692,8 @@ public sealed class RedesignEndOperationHostTests
                 await connection.OpenAsync();
                 if (await new NpgsqlCommand(
                     "SELECT phase FROM control.end_operation WHERE room_id='room-hold-1'",
-                    connection).ExecuteScalarAsync() is string phase && phase == "DeliveryStopped")
+                    connection).ExecuteScalarAsync() is string phase
+                    && phase is "DeliveryStopped" or "PlatformTaskAuthorized")
                 { stopped = true; break; }
             }
             await Task.Delay(150);
@@ -1737,6 +1759,251 @@ public sealed class RedesignEndOperationHostTests
         }
     }
 
+    /// <summary>
+    /// FIX-END-09, the platform end call's pre-gate end to end: the end task is recorded at
+    /// the stop-delivery issue — durably bound to the operation's barrier credential — and
+    /// while the barrier stands incomplete (an unreachable authorization holder parks the
+    /// phase) the platform receives nothing, however many executor passes list the task: no
+    /// lease, no attempt, no call. The barrier completes — the holder's authorization lapses,
+    /// the ladder authorizes — and the very next pass issues the task's first and only call.
+    /// </summary>
+    [Fact]
+    public async Task APlatformEndTaskWaitsForTheBarrierToAuthorizeItsFirstCall()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        using var platform = RecordingPlatform.Start();
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        // The unreachable holder's advertised face: authorized and confirming its routing,
+        // but the stop-delivery command cannot land, so the barrier parks on its answer.
+        var deadEndpointPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var lateGatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "60",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "15",
+                ["CHORUS_END_DISCOVERY_INTERVAL_MS"] = "600000",
+                ["CHORUS_END_DISCOVERY_GRACE_SECONDS"] = "600",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150",
+                ["CHORUS_END_BARRIER_STALE_SECONDS"] = "5"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{gamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+            },
+            clientTenant: "tenant-a", instanceId: "game-hold2");
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+        var taskEnvironment = new Dictionary<string, string>(GatewayEnvironment(environment.DataPort,
+            controlEndpoint, deadEndpointPort))
+        {
+            ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+            ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300",
+            ["CHORUS_TASK_LEASE_SECONDS"] = "60",
+            ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "70",
+            ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "120"
+        };
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            taskEnvironment, instanceId: "gateway-hold2-a");
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-hold2"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new Chorus.Rpc.ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new Chorus.Rpc.RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-hold2" });
+        }
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "hold2-open-1", "hold2-live-1");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-hold2");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-hold2");
+        using var dataChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(dataChannel);
+
+        var owner = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-hold2-1",
+            OwnerInstanceId = "game-hold2", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new Chorus.Rpc.StartRoundRequest
+        {
+            RoomId = "room-hold2-1", OwnerInstanceId = "game-hold2", Epoch = owner.Epoch,
+            GameId = "game-a", ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1",
+            OperationId = "start-hold2", TenantId = "tenant-a",
+            Participants =
+            {
+                new Chorus.Rpc.RoundParticipantProto
+                {
+                    BindingId = host.BindingId, ParticipantId = host.StreamerId, Role = "Host"
+                }
+            }
+        })).Status);
+        using var hostChannel = environment.Channel(gamePort, controlCertificate, "game-server");
+        Assert.Equal("Running", (await new Chorus.Rpc.GameHost.GameHostClient(hostChannel).PrepareRoomAsync(
+            new Chorus.Rpc.PrepareRoomRequest
+            {
+                RoomId = "room-hold2-1", GameId = "game-a", OwnerInstanceId = "game-hold2",
+                Epoch = owner.Epoch, OperationId = "run-hold2", DurationTicks = 400, RandomSeed = 888,
+                TickMs = 25,
+                Participants =
+                {
+                    new Chorus.Rpc.GameParticipantProto
+                    {
+                        BindingId = host.BindingId, ParticipantId = host.StreamerId, Faction = "red"
+                    }
+                }
+            })).Status);
+
+        // The round settles and the operation begins; the task is recorded at the issue and
+        // the phase parks on the unreachable holder — the state in which the whole gate is
+        // under test: the task listed, the barrier not yet won.
+        var parked = false;
+        var parkedDeadline = DateTime.UtcNow.AddSeconds(90);
+        while (DateTime.UtcNow < parkedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT count(*) FROM live.task
+                              WHERE barrier_end_operation_id='room-hold2-1/end'),
+                           (SELECT phase FROM control.end_operation WHERE room_id='room-hold2-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && reader.GetInt64(0) == 1 && reader.GetString(1) == "StopDeliveryIssued")
+                { parked = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(parked, "The end task was never recorded on the parked barrier.");
+
+        // The gate holds across executor passes: the reconciler lists the task every 300ms
+        // and issues nothing — no lease is even taken — while the barrier stands incomplete.
+        await Task.Delay(2000);
+        Assert.Equal(0, platform.Calls("room-hold2-1/end"));
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand("""
+                SELECT status, attempt_count, lease_owner IS NULL FROM live.task
+                WHERE barrier_end_operation_id='room-hold2-1/end'
+                """, connection);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("Pending", reader.GetString(0));
+            Assert.Equal(0, reader.GetInt32(1));
+            Assert.True(reader.GetBoolean(2));
+        }
+
+        // A second gateway joins with a real face: it hears the command, drains and acks —
+        // and the phase still parks, because the unreachable holder owes its answer. Its ack
+        // proves the strongest form of the gate's claim: an executor that HAS confirmed
+        // delivery stopped still waits for the ladder's authorization before the platform
+        // hears anything.
+        await environment.StartAsync("Chorus.PlatformGateway", lateGatewayPort, "platform-gateway",
+            new Dictionary<string, string>(GatewayEnvironment(environment.DataPort,
+                controlEndpoint, lateGatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300",
+                ["CHORUS_TASK_LEASE_SECONDS"] = "60",
+                ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "70",
+                ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "120"
+            },
+            instanceId: "gateway-hold2-b");
+        var secondAcked = false;
+        var secondDeadline = DateTime.UtcNow.AddSeconds(45);
+        while (DateTime.UtcNow < secondDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT r.state FROM control.stop_delivery_responder r
+                              WHERE r.end_operation_id='room-hold2-1/end'
+                                AND r.process_instance_id='gateway-hold2-b'),
+                           (SELECT eo.phase FROM control.end_operation eo
+                              WHERE eo.room_id='room-hold2-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && reader.GetString(0) == "Stopped"
+                    && reader.GetString(1) == "StopDeliveryIssued")
+                { secondAcked = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(secondAcked,
+            "The second gateway never acked, or its ack wrongly cleared the parked phase.");
+        await Task.Delay(1000);
+        Assert.Equal(0, platform.Calls("room-hold2-1/end"));
+
+        // The barrier completes the END-08 way: the unreachable holder dies, its
+        // authorization lapses past the stale window, the ladder authorizes — and the very
+        // next executor pass issues the task's first call.
+        environment.Kill("gateway-hold2-a");
+        var called = false;
+        var calledDeadline = DateTime.UtcNow.AddSeconds(45);
+        while (DateTime.UtcNow < calledDeadline)
+        {
+            if (platform.Calls("room-hold2-1/end") > 0) { called = true; break; }
+            await Task.Delay(150);
+        }
+        Assert.True(called, "The authorized end task never called the platform.");
+
+        // The task completed on the platform's own record — the one call — and the ladder
+        // stands at the authorization: the platform-close step belongs to the later item.
+        var completed = false;
+        string lastTask = "", lastPhase = "";
+        var completedDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < completedDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var command = new NpgsqlCommand("""
+                    SELECT (SELECT status FROM live.task WHERE barrier_end_operation_id='room-hold2-1/end'),
+                           (SELECT phase FROM control.end_operation WHERE room_id='room-hold2-1')
+                    """, connection);
+                if (await command.ExecuteReaderAsync() is { } reader && await reader.ReadAsync())
+                {
+                    lastTask = reader.GetString(0);
+                    lastPhase = reader.GetString(1);
+                    if (lastTask == "Completed" && lastPhase == "PlatformTaskAuthorized")
+                    { completed = true; break; }
+                }
+            }
+            await Task.Delay(150);
+        }
+        Assert.True(completed, $"The end task never completed at the authorized phase " +
+            $"(task: {lastTask}, phase: {lastPhase}). Gateway-b console tail:\n" +
+            HostOutputFor(environment, "gateway-hold2-b")[^1200..]);
+        await Task.Delay(2000);
+        Assert.Equal(1, platform.Calls("room-hold2-1/end"));
+    }
+
     /// <summary>The captured console output of one started host, by instance id.</summary>
     private static string HostOutputFor(RedesignM0HostTests.HostEnvironment environment, string instance) =>
         environment.HostOutput(environment.HostProcesses.Single(pair => pair.Instance == instance).Process);
@@ -1781,6 +2048,81 @@ public sealed class RedesignEndOperationHostTests
         using var document = JsonDocument.Parse(json);
         return document.RootElement.GetProperty("receipts").EnumerateArray()
             .Select(receipt => receipt.Clone()).ToList();
+    }
+
+    /// <summary>
+    /// FIX-END-09's witness: an in-process HTTP platform that records every executed
+    /// operation by id and answers each call as executed. One counter per operation id is
+    /// the whole observation — the pre-gate's claim is about whether any call happens at
+    /// all, and the exactly-once claim is the platform's own idempotent record.
+    /// </summary>
+    private sealed class RecordingPlatform : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _stop = new();
+        private readonly object _gate = new();
+        private readonly Dictionary<string, int> _calls = new(StringComparer.Ordinal);
+
+        public string Url { get; }
+
+        private RecordingPlatform(int port) => Url = $"http://localhost:{port}/";
+
+        public static RecordingPlatform Start()
+        {
+            var platform = new RecordingPlatform(RedesignM0HostTests.HostEnvironment.FreePort());
+            platform._listener.Prefixes.Add(platform.Url);
+            platform._listener.Start();
+            _ = platform.RunAsync();
+            return platform;
+        }
+
+        public int Calls(string operationId)
+        {
+            lock (_gate) return _calls.GetValueOrDefault(operationId);
+        }
+
+        public void Dispose()
+        {
+            _stop.Cancel();
+            _listener.Close();
+        }
+
+        private async Task RunAsync()
+        {
+            try
+            {
+                while (!_stop.IsCancellationRequested)
+                {
+                    var context = await _listener.GetContextAsync();
+                    _ = Task.Run(() => HandleAsync(context));
+                }
+            }
+            catch (Exception error) when (error is HttpListenerException or ObjectDisposedException) { }
+        }
+
+        private async Task HandleAsync(HttpListenerContext context)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(await new StreamReader(context.Request.InputStream)
+                    .ReadToEndAsync(_stop.Token));
+                var operationId = document.RootElement.GetProperty("operationId").GetString()!;
+                lock (_gate) _calls[operationId] = _calls.GetValueOrDefault(operationId) + 1;
+                var reply = JsonSerializer.Serialize(new
+                {
+                    executed = true,
+                    observedJson = """{"applied":true}"""
+                }, JsonSerializerOptions.Web);
+                context.Response.ContentType = "application/json";
+                await context.Response.OutputStream.WriteAsync(
+                    Encoding.UTF8.GetBytes(reply), _stop.Token);
+                context.Response.Close();
+            }
+            catch (Exception)
+            {
+                // A half-open probe is the caller's problem; the record already stands.
+            }
+        }
     }
 
     /// <summary>A gateway with no ingress duty: it self-reports and watches routing only — the

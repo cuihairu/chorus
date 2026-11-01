@@ -1,3 +1,5 @@
+using Chorus.Rpc;
+using Grpc.Core;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -20,9 +22,12 @@ namespace Chorus.ControlServer;
 /// plane reads the phase and retries the same step.
 /// </summary>
 public sealed class EndOperationCoordinatorService(RedesignControlStore controlStore,
-    StopDeliveryNotifier notifier, ILogger<EndOperationCoordinatorService> logger)
+    StopDeliveryNotifier notifier, ClusterDirectory directory,
+    ILogger<EndOperationCoordinatorService> logger)
     : BackgroundService
 {
+    private readonly PlatformTask.PlatformTaskClient _tasks = new(directory.DataChannel);
+
     private static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(int.Parse(
         Environment.GetEnvironmentVariable("CHORUS_END_COORDINATOR_INTERVAL_MS") ?? "1000",
         System.Globalization.CultureInfo.InvariantCulture));
@@ -71,6 +76,14 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
             {
                 var (command, _, responders) = await controlStore.IssueStopDeliveryAsync(
                     current.TenantId, current.GameId, current.EndOperationId, cancellationToken);
+                // FIX-END-09: the platform end tasks are recorded now — durably bound to
+                // this operation's barrier credential — but their executors may not call
+                // until the ladder reaches PlatformTaskAuthorized below. Recording early is
+                // the point: the task waits on the barrier, the barrier never waits on the
+                // recording, and a restart re-enqueues the same (binding, operation) row
+                // idempotently. A data plane the channel cannot reach holds the recording,
+                // never the delivery-stop leg: the StopDeliveryIssued pass retries it.
+                await TryEnqueuePlatformEndTasksAsync(command, current, cancellationToken);
                 await PushAllAsync(command, current, responders, cancellationToken);
                 current = await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
                     current.GameId, current.EndOperationId, EndOperationPhases.ClosingInput,
@@ -94,6 +107,12 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
                     current.EndOperationId, cancellationToken);
                 if (command is not null)
                 {
+                    // The recording retry (FIX-END-09): a task the ClosingInput step could
+                    // not reach the data plane to write lands here, idempotently, while the
+                    // barrier gathers its answers. Authorization below is safe either way —
+                    // a task recorded after the barrier completed can only ever call after
+                    // it completed.
+                    await TryEnqueuePlatformEndTasksAsync(command, current, cancellationToken);
                     var responders = await controlStore.ResolveDeliveryStopBarrierAsync(
                         current.TenantId, current.GameId, current.EndOperationId,
                         BarrierStaleSeconds, cancellationToken);
@@ -113,6 +132,15 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
                             logger.LogInformation(
                                 "Delivery stopped for {RoomId}: every responder confirmed at version {Version}.",
                                 command.RoomId, command.CloseRouteVersion);
+                        // Step 5 (FIX-END-09): the barrier stood complete, so the platform
+                        // end tasks' credential is minted — the phase row itself. Executors
+                        // read it live before any call leaves their process.
+                        await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
+                            current.GameId, current.EndOperationId, EndOperationPhases.DeliveryStopped,
+                            EndOperationPhases.PlatformTaskAuthorized, cancellationToken: cancellationToken);
+                        logger.LogInformation(
+                            "Platform end tasks authorized for {RoomId}: {Bindings} binding(s) may close on the platform.",
+                            command.RoomId, current.BindingGenerations.Count);
                     }
                 }
             }
@@ -135,6 +163,51 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
             {
                 logger.LogWarning(recordError, "Recording the end operation failure itself failed");
             }
+        }
+    }
+
+    /// <summary>Records one platform end task per mount binding, bound to the standing
+    /// operation's barrier (FIX-END-09). The operation id — the platform's idempotency key —
+    /// is the end operation itself: one platform close per ended round, replayed safely
+    /// across coordinator restarts by the (binding, operation) row identity.</summary>
+    private async Task EnqueuePlatformEndTasksAsync(StopDeliveryCommand command,
+        EndOperation operation, CancellationToken cancellationToken)
+    {
+        foreach (var binding in operation.BindingGenerations)
+        {
+            var desired = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                kind = "end-round",
+                command.TenantId, command.GameId, command.RoomId, command.EndOperationId,
+                command.RoundGeneration, command.CloseRouteVersion,
+                bindingId = binding.BindingId, bindingGeneration = binding.Generation,
+                bindingRoundGeneration = binding.RoundGeneration
+            });
+            await _tasks.EnqueueDesiredAsync(new TaskEnqueueRequest
+            {
+                BindingId = binding.BindingId,
+                OperationId = command.EndOperationId,
+                DesiredJson = desired,
+                BarrierEndOperationId = command.EndOperationId
+            }, deadline: DateTime.UtcNow.AddSeconds(5), cancellationToken: cancellationToken);
+        }
+    }
+
+    /// <summary>The enqueue's transport faults are the data plane's outage, not this
+    /// operation's: logged and retried on the next pass, so a dead data channel holds the
+    /// platform task's recording without ever holding the delivery-stop leg hostage.</summary>
+    private async Task TryEnqueuePlatformEndTasksAsync(StopDeliveryCommand command,
+        EndOperation operation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await EnqueuePlatformEndTasksAsync(command, operation, cancellationToken);
+        }
+        catch (Exception error) when (error is RpcException or HttpRequestException)
+        {
+            logger.LogWarning(error,
+                "Platform end task recording for {RoomId} waits for the data plane: {Message}",
+                command.RoomId, error.Message);
         }
     }
 
