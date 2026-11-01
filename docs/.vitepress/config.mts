@@ -34,6 +34,7 @@ const designLinks = [
   "/design/bilibili-danmaku-adapter",
   "/design/overall-architecture",
   "/audit-doc-consistency",
+  "/审计-文档一致性",
 ];
 const referenceLinks = [
   "/reference/glossary",

@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="docs/public/logo.svg" width="64" height="64" alt="Chorus logo" /> <a href="https://cuihairu.github.io/chorus//"><img src="https://img.shields.io/badge/docs-blue" alt="docs"></a>
+  <img src="docs/public/logo.svg" width="64" height="64" alt="Chorus logo" /> <a href="https://cuihairu.github.io/chorus/"><img src="https://img.shields.io/badge/docs-blue" alt="docs"></a>
 </p>
 
 <h1 align="center">Chorus</h1>
@@ -17,14 +17,14 @@
 <a href="https://github.com/cuihairu/chorus/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://github.com/cuihairu/chorus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/chorus/actions/workflows/ci.yml/badge.svg" /></a> <a href="https://github.com/cuihairu/chorus/actions/workflows/nightly.yml"><img alt="Nightly" src="https://github.com/cuihairu/chorus/actions/workflows/nightly.yml/badge.svg" /></a> <a href="https://codecov.io/gh/cuihairu/chorus"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/chorus/branch/main/graph/badge.svg" /></a> <a href="https://github.com/cuihairu/chorus/releases"><img alt="Release" src="https://img.shields.io/github/v/release/cuihairu/chorus?sort=semver" /></a> <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a> <img alt=".NET" src="https://img.shields.io/badge/.NET-10.0-512BD4" />
 </p>
 
-## Documentation (VuePress)
+## Documentation (VitePress)
 
-**Target redesign (2026-10-25):** [distributed live-game server design](docs/architecture/architecture.md), [acceptance plan](docs/architecture/redesign-acceptance.md), and [M0 implementation/evidence](docs/architecture/redesign-m0-implementation.md). The M0 PostgreSQL schema, DataServer/ControlServer hosts, certificate boundary, and dual-OS NodeAgent skeleton are in progress; this is not a claim that the full M0 exit gate has passed.
+**Target redesign (2026-10-25):** [distributed live-game server design](docs/architecture/architecture.md), [acceptance plan](docs/architecture/redesign-acceptance.md), and [M0 implementation/evidence](docs/architecture/redesign-m0-implementation.md). The M0 PostgreSQL schema, DataServer/ControlServer hosts, certificate boundary, and dual-OS NodeAgent skeleton have landed as a runnable skeleton; the full M0 exit gate is not yet passed.
 
 - Site (GitHub Pages): `https://cuihairu.github.io/chorus/`
 - Source: `docs/`
-- Local preview: `npm install && npm run docs:dev`
-- Static build: `npm run docs:build` (output: `docs/.vuepress/dist`)
+- Local preview: `pnpm install && pnpm docs:dev`
+- Static build: `pnpm docs:build` (output: `docs/.vitepress/dist`)
 
 Key pages: [architecture & trade-offs](docs/architecture.md) ·
 [current architecture overview](docs/design/architecture-overview.md) ·
@@ -83,7 +83,7 @@ Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --url
 - `Chorus.PlatformGateway`: platform ingress only, `/ingress/{platform}` on port 5168 in this example.
 - `Chorus.StreamerGateway`: streamer WebSocket only, `/ws` on port 5169.
 - Shared transport/control discovery lives in `Chorus.Gateway.Runtime`; shared protocol faces live in `Chorus.Gateway.Core`.
-- Hosts publish and scale independently without `Gateway:Roles`. `Chorus.Gateway` remains a compatibility host. See [Independent gateways](docs/guide/independent-gateways.md).
+- Hosts publish and scale independently without `Gateway:Roles` (the former combined `Chorus.Gateway` host was removed in 48623a5; use the two dedicated gateway hosts). See [Independent gateways](docs/guide/independent-gateways.md).
 - EngineHost: runs the authoritative tick + snapshots, talking to the Gateway over local IPC
   (UDS first, NamedPipe fallback)
 
