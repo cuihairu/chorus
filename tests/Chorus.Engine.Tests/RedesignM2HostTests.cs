@@ -1585,6 +1585,183 @@ public sealed class RedesignM2HostTests
     }
 
     [Fact]
+    public async Task TheBusinessExecutorCompletesRewardsAfterTheSettlerDiedAndTheHostIsGone()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (simulatorKey, accessKey) = (RandomNumberGenerator.GetBytes(32),
+            RandomNumberGenerator.GetBytes(32));
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        // FIX-END-11: the business executor walks the settle queue on a slow test cadence —
+        // the host is killed inside the death-observation window, strictly before the
+        // executor's next pass, so the completion is provably post-host. The data plane's
+        // settler dies on the manifest's first grant, once, so the executor's own pass is
+        // never shot down.
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_SETTLE_EXECUTOR_INTERVAL_MS"] = "8000",
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server",
+            new Dictionary<string, string> { ["CHORUS_SETTLE_CRASH_AFTER_GRANT"] = "1" });
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+        await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            clientTenant: "tenant-a");
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-run-s", "live-m2-set-a");
+        var (guest, guestBinding) = await MountAsync(environment, simulator, "open-m2-run-t", "live-m2-set-b");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-actor");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new ControlService.ControlServiceClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "game-1");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new RoundStore.RoundStoreClient(gameChannel);
+        var routing = new RoundInput.RoundInputClient(gameChannel);
+        using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "gateway-1");
+        using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+        var ingest = new PlatformIngest.PlatformIngestClient(gatewayChannel);
+        using var hostChannel = environment.Channel(environment.GamePort, controlCertificate, "game-server");
+        var gameHost = new GameHost.GameHostClient(hostChannel);
+        using var controlDataChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
+
+        var owner = await control.ClaimOwnershipAsync(new OwnershipRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-set-1",
+            OwnerInstanceId = "game-1", LeaseSeconds = 60
+        });
+        Assert.Equal("Preparing", (await rounds.StartRoundAsync(new StartRoundRequest
+        {
+            RoomId = "room-m2-set-1", OwnerInstanceId = "game-1", Epoch = owner.Epoch, GameId = "game-a",
+            ModuleVersion = "1.0.0", ConfigHash = "cfg-1", PackageHash = "pkg-1", OperationId = "start-op-set",
+            Participants =
+            {
+                new RoundParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Role = "Host" },
+                new RoundParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Role = "Guest" }
+            }
+        })).Status);
+        Assert.Equal("Running", (await gameHost.PrepareRoomAsync(new PrepareRoomRequest
+        {
+            RoomId = "room-m2-set-1", GameId = "game-a", OwnerInstanceId = "game-1", Epoch = owner.Epoch,
+            OperationId = "run-op-set", DurationTicks = 40, RandomSeed = 4343, TickMs = 25,
+            Participants =
+            {
+                new GameParticipantProto { BindingId = hostBinding, ParticipantId = host.StreamerId, Faction = "red" },
+                new GameParticipantProto { BindingId = guestBinding, ParticipantId = guest.StreamerId, Faction = "blue" }
+            }
+        })).Status);
+        var batch = new IngestBatchRequest { Platform = "simulator", AppId = "app-1", OperationId = "batch-set" };
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-set-a", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-set-a", PayloadJson = """{"kind":"gift","amount":100}"""
+        });
+        batch.Events.Add(new IngestEvent
+        {
+            SourceDedupKey = "gift-set-b", Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+            CanonicalRoomKey = "live-m2-set-b", PayloadJson = """{"kind":"gift","amount":30}"""
+        });
+        await ingest.IngestBatchAsync(batch);
+        await routing.RouteEventsAsync(new RouteEventsRequest
+        {
+            Platform = "simulator", AppId = "app-1", OperationId = "route-set", MaxEvents = 50
+        });
+
+        // The round finishes and the data host's settle dies on the first grant: the
+        // manifest stands half-open with nothing applied.
+        var died = false;
+        var diedDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < diedDeadline)
+        {
+            var console = environment.HostOutput(environment.HostProcesses
+                .Single(pair => pair.Instance == "Chorus.DataServer").Process);
+            if (console.Contains("The settler died after grant"))
+            { died = true; break; }
+            await Task.Delay(100);
+        }
+        Assert.True(died, "The injected settler death never fired.");
+        // The rolled-back try left nothing applied — the host's own settle terminally
+        // failed (its swallow never retries) — so the host is killed now, well inside the
+        // executor's 8s gap, and whatever completes the grants does it without a data host.
+        environment.Kill("Chorus.GameServer");
+        var settled = false;
+        var settleDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < settleDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+            {
+                await connection.OpenAsync();
+                await using var grants = new NpgsqlCommand(
+                    "SELECT count(*) FROM settlement.grant WHERE room_id='room-m2-set-1' " +
+                    "AND status='Granted'", connection);
+                if (Convert.ToInt64(await grants.ExecuteScalarAsync()) == 2) { settled = true; break; }
+            }
+            await Task.Delay(150);
+        }
+        var executorConsole = environment.HostOutput(environment.HostProcesses
+            .Single(pair => pair.Instance == "Chorus.ControlServer").Process);
+        Assert.True(settled, "The business executor never completed the rewards. " +
+            $"Control console tail:\n{(executorConsole.Length > 1000 ? executorConsole[^1000..] : executorConsole)}");
+        // With the only data host dead, the grants' completion is the executor's hand
+        // alone — nothing else could have driven them.
+
+        // Exactly one ledger line per grant — the dead settler's rolled-back try and the
+        // executor's drive are one effect between them, not two.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var ledger = new NpgsqlCommand(
+                "SELECT count(DISTINCT operation_id),count(*) FROM player.ledger " +
+                "WHERE reason LIKE 'settlement:room-m2-set-1/%'", connection))
+            {
+                await using var reader = await ledger.ExecuteReaderAsync();
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(2L, reader.GetInt64(0));
+                Assert.Equal(2L, reader.GetInt64(1));
+            }
+            await using var balance = new NpgsqlCommand(
+                "SELECT balance FROM player.asset WHERE tenant_id='tenant-a' AND game_id='game-a' " +
+                "AND asset_id='points' AND player_id=@player", connection);
+            balance.Parameters.AddWithValue("player", host.StreamerId);
+            Assert.Equal(100L, Convert.ToInt64(await balance.ExecuteScalarAsync()));
+        }
+        var board = await new Settlement.SettlementClient(controlDataChannel).ReadLeaderboardAsync(
+            new ReadLeaderboardRequest
+            {
+                GameId = "game-a", BoardId = "points", MaxEntries = 10, TenantId = "tenant-a"
+            });
+        Assert.Equal(2, board.Entries.Count);
+        Assert.Equal(host.StreamerId, board.Entries[0].PlayerId);
+        Assert.Equal(100L, board.Entries[0].Score);
+        Assert.Equal(30L, board.Entries[1].Score);
+
+        // The completed manifest left the queue, and the executor's face is the control
+        // plane's alone: a data host's certificate is refused at the role gate.
+        var queue = await new Settlement.SettlementClient(controlDataChannel).ListPendingSettlementsAsync(
+            new ListPendingSettlementsRequest { GameId = "game-a", Limit = 10, TenantId = "tenant-a" });
+        Assert.Empty(queue.Settlements);
+        var wrongRole = await Assert.ThrowsAsync<RpcException>(() =>
+            new Settlement.SettlementClient(gameChannel).SettleGrantsAsync(new SettleGrantsRequest
+            {
+                RoomId = "room-m2-set-1", GameId = "game-a", TenantId = "tenant-a"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, wrongRole.StatusCode);
+    }
+
+    [Fact]
     public async Task SlowSubscribersAreRebaselinedWhileFastSubscribersStreamContiguousDeltas()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();

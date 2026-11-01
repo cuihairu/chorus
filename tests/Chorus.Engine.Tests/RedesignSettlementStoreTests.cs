@@ -305,6 +305,64 @@ public sealed class RedesignSettlementStoreTests
             board.Select(entry => (entry.PlayerId, entry.Score)).ToArray());
     }
 
+    [Fact]
+    public async Task TwoSettlersDriveTheSameManifestToOneLinePerGrant()
+    {
+        await using var arrange = await Arrange.CreateAsync();
+        await arrange.FinalFrameAsync("room-1", "settle-open-9", "settle-live-9");
+        var store = new RedesignSettlementStore(arrange.Database.ConnectionString);
+
+        // FIX-END-11's floor: the business executor and the data host are two drivers of
+        // the same committed manifest, racing whatever overlap they race — each grant's own
+        // receipt serializes them, so every grant lands exactly one ledger line (the claim
+        // and retry discipline above this floor is FIX-SETTLE-03's).
+        var replies = await Task.WhenAll(
+            store.CommitResultAsync("tenant-a", "game-a", "room-1", "settle-driver-host"),
+            store.CommitResultAsync("tenant-a", "game-a", "room-1", "settle-driver-executor"));
+
+        Assert.All(replies, reply =>
+        {
+            Assert.Equal(3, reply.Total);
+            Assert.Equal(0, reply.Pending);
+        });
+        await using (var connection = new NpgsqlConnection(arrange.Database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var ledger = new NpgsqlCommand(
+"""
+                SELECT count(DISTINCT operation_id),count(*) FROM player.ledger
+                WHERE reason LIKE 'settlement:room-1/%'
+""", connection))
+            {
+                await using var reader = await ledger.ExecuteReaderAsync();
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(3L, reader.GetInt64(0));
+                Assert.Equal(3L, reader.GetInt64(1));
+            }
+            await using var balance = new NpgsqlCommand(
+                "SELECT balance FROM player.asset WHERE asset_id='points' AND player_id='p1'",
+                connection);
+            Assert.Equal(100L, Convert.ToInt64(await balance.ExecuteScalarAsync()));
+        }
+        var board = await store.ReadLeaderboardAsync("tenant-a", "game-a", "points", 10);
+        Assert.Equal([("p1", 100L), ("p2", 30L), ("p3", 30L)],
+            board.Select(entry => (entry.PlayerId, entry.Score)).ToArray());
+
+        // A late third driver finds the manifest complete: its call is the visible
+        // duplicate and adds nothing.
+        var replay = await store.CommitResultAsync("tenant-a", "game-a", "room-1",
+            "settle-driver-late");
+        Assert.True(replay.Duplicate);
+        await using (var connection = new NpgsqlConnection(arrange.Database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var ledger = new NpgsqlCommand(
+                "SELECT count(*) FROM player.ledger WHERE reason LIKE 'settlement:room-1/%'",
+                connection);
+            Assert.Equal(3L, Convert.ToInt64(await ledger.ExecuteScalarAsync()));
+        }
+    }
+
     /// <summary>Test arrange: stores plus admitted rooms with final frames and manifests.</summary>
     private sealed class Arrange : IAsyncDisposable
     {

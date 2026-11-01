@@ -54,7 +54,27 @@ builder.Services.AddSingleton(new RedesignRoomStore(connectionString, maxActiveR
 builder.Services.AddSingleton(new RedesignRoundInputStore(connectionString));
 builder.Services.AddSingleton(new RedesignFrameStore(connectionString));
 builder.Services.AddSingleton(new RedesignRecoveryStore(connectionString));
-builder.Services.AddSingleton(new RedesignSettlementStore(connectionString));
+// The settler's death, once (FIX-END-11): CHORUS_SETTLE_CRASH_AFTER_GRANT names a grant
+// ordinal whose FIRST application in this process rolls back after its writes — the
+// manifest keeps the room listed and the business executor completes it later. The seam
+// fires once per process so the executor's own pass is never shot down.
+var settleCrashOrdinal = 0;
+if (int.TryParse(Environment.GetEnvironmentVariable("CHORUS_SETTLE_CRASH_AFTER_GRANT"),
+        out var settleCrashAt) && settleCrashAt > 0)
+    settleCrashOrdinal = settleCrashAt;
+var settleCrashArmed = settleCrashOrdinal > 0;
+builder.Services.AddSingleton(new RedesignSettlementStore(connectionString,
+    settleCrashOrdinal > 0
+        ? ordinal =>
+        {
+            if (ordinal >= settleCrashOrdinal && settleCrashArmed)
+            {
+                settleCrashArmed = false;
+                throw new InvalidOperationException(
+                    $"The settler died after grant {ordinal} (injected).");
+            }
+        }
+        : null));
 builder.Services.AddSingleton(new RedesignRetentionStore(connectionString));
 builder.Services.AddGrpc();
 

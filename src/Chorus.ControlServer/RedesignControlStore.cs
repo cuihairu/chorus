@@ -99,6 +99,11 @@ public sealed class StaleRoundGenerationException(string message) : Exception(me
 public sealed record UnreportedFinishingRoom(
     string TenantId, string GameId, string RoomId, long LastTick, long StateVersion);
 
+/// <summary>One tenant-and-game domain the settlement executor walks (FIX-END-11). A room
+/// with unapplied grants is always Finishing — the terminator refuses an incomplete
+/// manifest — so the Finishing rooms name every domain the settle queue can hold.</summary>
+public sealed record SettleDomain(string TenantId, string GameId);
+
 /// <summary>Thrown when a second, different business id wants to begin the end of a
 /// round that already has its one operation.</summary>
 public sealed class EndOperationConflictException(string message) : Exception(message);
@@ -1046,6 +1051,26 @@ public sealed class RedesignControlStore(string connectionString)
             rooms.Add(new UnreportedFinishingRoom(reader.GetString(0), reader.GetString(1),
                 reader.GetString(2), reader.GetInt64(3), reader.GetInt64(4)));
         return rooms;
+    }
+
+    /// <summary>The settle executor's domain walk (FIX-END-11): every tenant and game that
+    /// still holds a Finishing room. This read only names where to ask — the queue's truth
+    /// stays behind the data plane's ListPendingSettlements face.</summary>
+    public async Task<List<SettleDomain>> ListSettleDomainsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+"""
+            SELECT DISTINCT tenant_id,game_id FROM game.room WHERE status='Finishing'
+            ORDER BY tenant_id,game_id
+""", connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var domains = new List<SettleDomain>();
+        while (await reader.ReadAsync(cancellationToken))
+            domains.Add(new SettleDomain(reader.GetString(0), reader.GetString(1)));
+        return domains;
     }
 
     /// <summary>The room's end operation, whatever phase it stands at.</summary>

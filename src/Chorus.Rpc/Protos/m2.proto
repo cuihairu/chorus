@@ -461,6 +461,11 @@ service Settlement {
   // grants, one bounded page in room order. Rooms without a committed result never
   // appear; a partially applied manifest stays listed until every grant is Granted.
   rpc ListPendingSettlements(ListPendingSettlementsRequest) returns (ListPendingSettlementsReply);
+  // FIX-END-11: the control plane's settlement executor applies a room's remaining grants —
+  // each grant its own idempotent receipt transaction, so the original host, a recoverer and
+  // this executor can drive the same manifest concurrently and every grant still lands one
+  // ledger line. The data plane stores; it never decides settlement or closing steps.
+  rpc SettleGrants(SettleGrantsRequest) returns (CommitResultReply);
 }
 
 // Authoritative frame commits and round inbox reads (architecture 8.2, 6.1.6). Only the
@@ -730,6 +735,12 @@ message ListPendingSettlementsReply {
   // Present when the page filled to its limit — more rooms may follow; empty on the
   // last page. Send it back verbatim as the next request's cursor.
   string next_cursor = 2;
+}
+
+message SettleGrantsRequest {
+  string game_id = 1;
+  string room_id = 2;
+  string tenant_id = 3;
 }
 
 message PendingSettlementProto {

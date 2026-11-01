@@ -51,6 +51,42 @@ public sealed class SettlementGrpcService(
         }
     }
 
+    public override async Task<CommitResultReply> SettleGrants(SettleGrantsRequest request,
+        ServerCallContext context)
+    {
+        // The business executor's face (FIX-END-11): the result already stands committed by
+        // the data host's final frame; this call only applies the manifest's remaining
+        // grants, each as its own idempotent receipt transaction. The business id is the
+        // room's own settle id — the same one the host's settle and a recoverer's replay
+        // use — though the per-grant receipts carry their own identities regardless.
+        var caller = Require(context, "control-server");
+        try
+        {
+            var progress = await settlementStore.CommitResultAsync(
+                ResolveTenant(caller, request.TenantId), request.GameId,
+                request.RoomId, request.RoomId + "/settle", context.CancellationToken);
+            return new CommitResultReply
+            {
+                RoomId = progress.RoomId, ResultVersion = progress.ResultVersion,
+                GrantsTotal = progress.Total, GrantsGranted = progress.Granted,
+                GrantsPending = progress.Pending, Duplicate = progress.Duplicate
+            };
+        }
+        catch (SettlementRejectedException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
     public override async Task<FinalizeRoundReply> FinalizeRound(FinalizeRoundRequest request,
         ServerCallContext context)
     {

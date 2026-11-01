@@ -26,10 +26,14 @@ public sealed class RedesignM3AdminHostTests
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
         var accessKey = RandomNumberGenerator.GetBytes(32);
+        // The premise is a settlement worker that died before commit: the business
+        // executor is off (FIX-END-11's interval zero), so the manifest stays broken for
+        // the trace and the audited admin repair is the only driver (AT31).
         await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
             new Dictionary<string, string>
             {
-                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}"
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_SETTLE_EXECUTOR_INTERVAL_MS"] = "0"
             });
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
         await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",

@@ -72,6 +72,10 @@ builder.Services.AddHostedService<RoomEndDiscoveryService>();
 builder.Services.AddSingleton(new StopDeliveryNotifier(serverCertificate, root, nodeAuthority,
     clusterId));
 builder.Services.AddHostedService<EndOperationCoordinatorService>();
+// The settlement business executor (architecture 9.3, FIX-END-11): completes committed
+// manifests' rewards when the data host cannot — the queue and the grants live on the data
+// plane; this loop only discovers and asks.
+builder.Services.AddHostedService<SettlementExecutorService>();
 // The directory refresh loop (FIX-SCHED-01): the control plane's view of the game hosts
 // follows the process reports, not the startup configuration alone.
 builder.Services.AddHostedService(serviceProvider => new ClusterDirectoryRefreshService(
