@@ -1,7 +1,5 @@
 
-<p align="center">
-  <img src="docs/public/logo.svg" width="64" height="64" alt="Chorus logo" />
-</p>
+<p align="center"><img src="docs/public/logo.svg" width="64" height="64" alt="Chorus logo" /> <a href="https://cuihairu.github.io/chorus/"><img src="https://img.shields.io/badge/docs-docs-blue" alt="docs"></a></p>
 
 <h1 align="center">Chorus</h1>
 
