@@ -434,3 +434,15 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **测试形状**（+7：1472→1479，store +6 host +1）：store 新 6 fact（迟到持有人入列停闸/新鲜度窗口内外翻转/agent 报 Exited 虽新鲜仍 lapse/错版本停闸/旧 incarnation Stopped 不满足新 incarnation/迟到授权者 ack 自补行+陌生人冲突）；host `AMissedGatewayHoldsTheBarrierUntilItAcksOrItsAuthorizationLapses`——gateway-a 活授权但 CHORUS_REPORT_ENDPOINT 指死端口（出口腿全通、控制面推不进）：相位停 StopDeliveryIssued+responder Pending；gateway-b 授权后启动→Resolve 插入→重推→b 排水答零值→相位**仍停**（漏一不放）；kill a→5s 失效窗→DeliveryStopped；翻回 Running 后 a 旧身份裸推被 standing op 拒（detail 含 room-hold-1/end）；终局 a 仍 Pending（诚实证据）/b Stopped+E1 恰 1 Consumed+裸推零行。
 - **门禁**：build 0 错；定向族 store 12/12、host 7/7×3（首跑一 flake：answered poll 在 b 入列前读 NULL subquery 抛 InvalidCastException——修为 IsDBNull 容忍，属测试自身缺陷）；全量首跑 1478/1479 唯一败 `RedesignRecoverEntryUnitTests.ALiveActorOfTheSameEpochAnswersRunningWithItsRealHead`（89ms 纯 unit 计数断言，恢复域零触及，隔离 3×绿——共租负载 flake 先例模式），复跑全量 **1479/1479** 6m41s。残留 0 进程 0 库。零 schema 变更。
 - **诚实边界**：屏障证明「持授权者都答过或已失效」，不证明失联进程真装了闭包——装不上闭包的旧进程的推送由接收端 standing 栅栏拒（两层正交）；stale 窗口是运维参数（默认 60s），窗内失联者会拖住相位——设计取向（宁可慢不可漏）；drained 计数仍不做判据。CI 侧 Dependabot #183 仍待用户定夺。
+
+## 平台结束调用的前置闸：凭据即相位行，问在租约前（FIX-END-09，a9cd7c6）
+
+- **问题**：M1 的平台任务机制里结束任务与普通任务同列同跑——结束任务若在下发停止投递的同一时刻被任意执行者领走直呼平台，平台会在「投递未停、旧网关还可能再推」的窗口里收到结束调用。结束调用必须以关闭屏障完备为先置条件，且该条件要**持久**（重启不丢）、要**活校验**（不能靠一次性签发的 token）。
+- **凭据=任务列+相位行**：schema 0027 给 `live.task` 加 nullable `barrier_end_operation_id`——携带即受闸，NULL 保持 M1 全部任务的发射时语义。真值是 `control.end_operation` 相位行本身：`phase ∈ {PlatformTaskAuthorized, PlatformClosed, Released, Destroyed, Done}` 每次执行前活算。不签 token、不把相位复制进任务行，重启/重排/竞态读到的都是现值；相位单调，问过授权即不会倒退。
+- **协调者提前入队+同遍铸凭**：ClosingInput（与停止投递签发同遍）与 StopDeliveryIssued（重试腿）两处 `TryEnqueuePlatformEndTasksAsync`——按 BindingGenerations 逐绑定入 `end-round` 任务并绑屏障 id；Rpc/Http 异常仅告警下遍重试，数据面不可达只拖任务记录、永不拖投递腿。屏障完备的同遍 `DeliveryStopped→PlatformTaskAuthorized`：**凭据的铸造就是相位推进本身**。
+- **执行者前置闸（问在租约前）**：TaskReconciler 每分支先调新 RPC `GetBarrierAuthorization`——未授权的 skip 就是全部协议动作（无租约、无 attempt、无外呼），下一遍再问；构造函数从 `Func<GrpcChannel>` 改为直接持 `PlatformTaskClient`（网关 Program 注入）。
+- **存储权威拒**：`BeginAttemptAsync` 事务内再读屏障，未授权 throw `TaskBarrierException`→gRPC FailedPrecondition——前置闸之下的第二道闸，兜住「预检通过后相位行被并发改写」的竞态（实际不可达，防线仍在）。孤儿屏障（操作行不在）答未授权；无屏障任务恒授权。
+- **测试形状**（+4：1479→1483）：store +2（入队绑凭/回放 Duplicate/未授权 GetBarrier false+AcquireLease 后 BeginAttempt 拒/答齐过闸 Executing；孤儿 false、无闸恒 true、走完梯到 Done 仍 true 的 scoped-durable-monotone）；unit +1（`RedesignTaskReconcilerUnitTests`：ScriptedTasks+RecordingAdapter 钉「未授权零租约零 attempt 零调用、同列无闸任务照跑、闸门一开恰一呼」）；host +1（`APlatformEndTaskWaitsForTheBarrierToAuthorizeItsFirstCall`：a 授权但报告端点死→相位停 StopDeliveryIssued→平台 0 呼+任务 Pending attempt 0 lease null；b 入列回答仍 0 呼；kill a→失效窗开闸→下一遍首呼→任务 Completed+相位 PlatformTaskAuthorized+2s 后仍恰 1 呼）。
+- **配套相位断言更新**：同遍铸凭使 DeliveryStopped 成为瞬态——END-04 重启、END-06 栅栏、END-07 排水、END-08 屏障四个 host 事实的相位轮询与终局断言改为接受两/三相，注释同步记「同一口气铸凭」。
+- **门禁**：build 0 错；定向族 9/9；全量 **1483/1483** 9m13s；残留 0 进程 0 库。schema 0027（一列）+迁移 pin 26→27。
+- **诚实边界**：闸证明「呼出时刻屏障已完备」，不证平台侧执行语义——结果核对/超时/NeedsAttention 属 END-10；`GetBarrierAuthorization` 是咨询性预检，权威拒在存储事务内；屏障列无唯一约束，重排幂等靠 (binding, operation) 任务的 op id 冲突 Duplicate。
