@@ -446,3 +446,15 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **配套相位断言更新**：同遍铸凭使 DeliveryStopped 成为瞬态——END-04 重启、END-06 栅栏、END-07 排水、END-08 屏障四个 host 事实的相位轮询与终局断言改为接受两/三相，注释同步记「同一口气铸凭」。
 - **门禁**：build 0 错；定向族 9/9；全量 **1483/1483** 9m13s；残留 0 进程 0 库。schema 0027（一列）+迁移 pin 26→27。
 - **诚实边界**：闸证明「呼出时刻屏障已完备」，不证平台侧执行语义——结果核对/超时/NeedsAttention 属 END-10；`GetBarrierAuthorization` 是咨询性预检，权威拒在存储事务内；屏障列无唯一约束，重排幂等靠 (binding, operation) 任务的 op id 冲突 Duplicate。
+
+## 按平台能力收尾：成功/无需调用/未知三分，核对用同一个 OperationId（FIX-END-10，a6eeb69）
+
+- **问题**：END-09 把结束任务的首次呼叫闸在了屏障之后，但呼出之后的三种落法此前没有各自的凭据：①平台对「这一局结束」可能根本不需要某类调用（玩法解绑、直播结束是挂载与直播自己的后续操作，不是换局的动作）——沉默不是证据；②回答丢失（超时）不能当成功推进，也不能当失败盲重试；③结果不可查询且平台重发不幂等时，追问循环没有出口。
+- **分类声明即契约**：desired JSON 携带 `categories{roundEnd:"apply", gameplayUnbind:"not-required:…", liveEnd:"not-required:…"}`——局结束的范围是局：挂载与直播跨局存续，由各自后续操作收。执行者只发 `end-round` 一类调用；两个非调用的理据随任务落库，不靠沉默暗示。host 实弹：换局后平台恰好一听 `end-round`，`live.binding` 原行未动。
+- **NotRequired 终态**：adapter 答「无需调用」（`PlatformTaskOutcome.NotRequired`）即走新 RPC `CompleteNotRequired`——observed 理据必填（JSON 可解析校验），outbox Recorded；终态与 Completed 同列同权：不再被驱动、MarkNeedsAttention 拒（TaskStateConflict）、admin Requeue 拒、入队回放 Duplicate、ListReady 永不列出。
+- **关闭凭据=任务自身的站位**：新 RPC `GetCloseCompletion` 答 `{tasks, completed, not_required, outstanding}`，complete ⟺ 任务数**恰等于**操作的 distinct 绑定数 ∧ outstanding=0（全部 ∈{Completed,NotRequired}）。协调者 PlatformTaskAuthorized 相位以此铸 PlatformClosed：数量不足是记录仍在途（入队重试腿会补齐），**永不空转完成**；NeedsAttention/未知/失败任务把操作钉在原地。数据面不可达只拖这一读（告警下遍重试），不拖梯子。
+- **超时不是成功**：呼叫不可观察 → OutcomeUnknown（M1 既有），相位钉 PlatformTaskAuthorized；同一 OperationId 是核对凭据——执行者经 adapter `QueryAsync` 问官方记录，`ResolveOutcome` 落 Completed 才放行。host 实弹：平台挂 10s 答而执行者 5s 耐心尽→OutcomeUnknown+相位不动→状态面答官方记录→Completed+PlatformClosed，全程恰 1 次执行 ≥1 次查询、attempt_count=1。
+- **不可问且不可幂等 → NeedsAttention**：`IPlatformTaskAdapter.IdempotentReissue`（dev adapter 由 `CHORUS_DEV_PLATFORM_IDEMPOTENT_REISSUE=false` 模拟）——查询故障且重发不安全时 `MarkNeedsAttention`（角色放宽为 control-server+platform-gateway：升级路径本就在网关），终态 Completed/NotRequired 拒绝重开（FailedPrecondition）；幂等平台同一形状持续追问、永不升级。host 实弹：状态面 503+重发不安全→NeedsAttention（last_error 点名 not idempotent）→8s 相位仍 PlatformTaskAuthorized、恰 1 呼。
+- **测试形状**（+7：1483→1490）：store +2（NotRequired 终态落地/理据/拒重开/拒 Requeue/回放 Duplicate/永不列出；CloseCompletion 计数——outstanding→complete 的 Completed/NotRequired 拆分、迟到第三任务破计数、NeedsAttention 保持开启）；unit +2（ScriptedTasks+RecordingAdapter 钉「无需调用以理据闭任务不落 Completed」「查询不可答：不幂等升级/幂等持续追问」）；host +3（换局只收局+分类理据入库+挂载未动；超时由 OperationId 核对解决；不可答不可幂等升级且相位钉住）。M1 崩溃事实的 wrong-plane 断言按新契约更新：网关已是合法 attention 调用者，其旗标落在 Completed 任务上按**状态**拒（FailedPrecondition），角色分裂改由 streamer-server 证书证（PermissionDenied）。
+- **门禁**：build 0 错；定向族 host 11/11、unit+store 10/10、M1 7/7；全量三跑——首跑 1489/1490（M1 崩溃事实真回归：角色放宽改契约，即改即绿）、二跑 1489/1490（DirectPush `RoomWatch.Dispose` 共租负载 flake，隔离 3×绿）、三跑 **1490/1490** 8m28s。残留 0 进程 0 库。零 schema 变更（status 为自由文本列，迁移 pin 仍 27）。
+- **诚实边界**：NotRequired 的理据是 adapter 的断言，机制只保证它**有据落地**、不证其真——错的能力声明要靠平台的验收对账暴露；升级只覆盖「查询故障且不幂等」，平台**答了** executed=false 走 Retryable、答 unknown 持续追问，均不升级；NeedsAttention 的人工 requeue 面在 admin RPC，操作侧只钉相位不告警——告警通道属运维面后续项；CI 侧 Dependabot #183 仍待用户定夺。
