@@ -90,6 +90,10 @@ public sealed class SettlementGrpcService(
     public override async Task<FinalizeRoundReply> FinalizeRound(FinalizeRoundRequest request,
         ServerCallContext context)
     {
+        // The release (FIX-END-12): the end ladder's coordinator drives it with the end
+        // operation's own id, and the store's transaction below refuses any caller whose
+        // evidence is incomplete — the gateway barrier, the platform close, the inputs'
+        // terminal dispositions and the manifest's completion — no matter which role asks.
         var caller = Require(context, "control-server", "game-server");
         try
         {

@@ -23,9 +23,11 @@ public sealed record PendingSettlement(
 /// CommitResult applies each planned grant as its own idempotent transaction: a crash
 /// mid-settlement only ever retries the incomplete grants, never re-awards the completed
 /// ones, and every grant lands exactly one ledger line. FinalizeRound is the persistent
-/// terminator: it verifies the preconditions and atomically settles the room, closes the
-/// participations, frees the mount pointers and withdraws the ownership — after it, the
-/// mounts can open the next round.
+/// terminator: it verifies the four release evidences — the end ladder's gateway barrier
+/// and platform close (FIX-END-12), the inputs' terminal dispositions and the reward
+/// manifest's completion — and in one transaction atomically settles the room, closes the
+/// participations (which frees the mounts' held capacity), clears the mount pointers and
+/// withdraws the ownership; after it, the mounts can open the next round.
 /// </summary>
 /// <param name="crashAfterGrant">
 /// Fault-injection seam for settlement restart tests: invoked inside each grant
@@ -37,6 +39,16 @@ public sealed class RedesignSettlementStore(string connectionString, Action<int>
 {
     public const string Granted = "Granted";
     public const string Settled = "Settled";
+
+    /// <summary>The end ladder phases that carry the release's whole platform-side
+    /// evidence (FIX-END-12): a standing operation at PlatformClosed means the gateway
+    /// barrier stood (the ladder's DeliveryStopped precedes it) and the platform close
+    /// answered success or a grounded NotRequired — so the release can never fire before
+    /// the platform end tasks existed. The phases after PlatformClosed are the same
+    /// evidence seen from a later rung: the finalize itself records Released, and its
+    /// receipt answers any replay as a duplicate before this check runs again.</summary>
+    private static readonly string[] ReleaseEvidencePhases =
+        ["PlatformClosed", "Released", "Destroyed", "Done"];
 
     /// <summary>The most pending rooms one discovery page answers (FIX-SETTLE-01): the
     /// queue walks in bounded pages, never one unbounded answer over the whole history.</summary>
@@ -212,6 +224,29 @@ public sealed class RedesignSettlementStore(string connectionString, Action<int>
                 throw new SettlementRejectedException($"A room in status {status} cannot be finalized.");
             if (status == Settled)
                 throw new SettlementRejectedException("The room is already settled.");
+        }
+        // FIX-END-12: the release's first evidence is the end ladder itself. One row per
+        // room stands in control.end_operation; its phase carries both platform-side
+        // credentials — the gateway barrier (DeliveryStopped, strictly before) and the
+        // platform close (PlatformClosed). A room with no operation, or one whose ladder
+        // has not closed the platform side yet, is refused here: the input-terminal and
+        // grants-complete credentials below are checked against the same transaction, but
+        // no combination of them may stand in for the ladder's recorded phases.
+        await using (var evidence = new NpgsqlCommand("""
+            SELECT phase FROM control.end_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room
+            """, connection, transaction))
+        {
+            evidence.Parameters.AddWithValue("tenant", tenantId);
+            evidence.Parameters.AddWithValue("game", gameId);
+            evidence.Parameters.AddWithValue("room", roomId);
+            var phase = await evidence.ExecuteScalarAsync(cancellationToken) as string;
+            if (phase is null)
+                throw new SettlementRejectedException(
+                    "The room has no end operation; the release waits for the end ladder's evidence.");
+            if (!ReleaseEvidencePhases.Contains(phase, StringComparer.Ordinal))
+                throw new SettlementRejectedException(
+                    $"The end operation stands at {phase}; the release waits for the platform close evidence.");
         }
         long resultVersion;
         await using (var result = new NpgsqlCommand(

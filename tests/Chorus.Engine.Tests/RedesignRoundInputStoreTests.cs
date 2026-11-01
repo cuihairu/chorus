@@ -461,6 +461,7 @@ public sealed class RedesignRoundInputStoreTests
                 PlanHash: SHA256.HashData(Encoding.UTF8.GetBytes(resultJson)),
                 Grants: [new PlannedGrant("p1", "round-score", "room-w6/grant/p1", "points", 100)]));
         await settlementStore.CommitResultAsync("tenant-a", "game-a", "room-w6", "settle-w6");
+        await EndLadderEvidence.StandAsync(database.ConnectionString, "room-w6");
         var finalized = await settlementStore.FinalizeRoundAsync("tenant-a", "game-a", "room-w6",
             "finalize-w6");
         Assert.Equal("Settled", finalized.Status);

@@ -107,6 +107,7 @@ public sealed class RedesignSettlementStoreTests
         await arrange.FinalFrameAsync("room-pending-2", "settle-open-8", "settle-live-8");
         await arrange.FinalFrameAsync("room-done", "settle-open-6", "settle-live-6");
         await store.CommitResultAsync("tenant-a", "game-a", "room-done", "settle-op-done");
+        await EndLadderEvidence.StandAsync(arrange.Database.ConnectionString, "room-done");
         await store.FinalizeRoundAsync("tenant-a", "game-a", "room-done", "fin-done");
 
         var queue = await store.ListPendingSettlementsAsync("tenant-a", "game-a", null,
@@ -162,6 +163,11 @@ public sealed class RedesignSettlementStoreTests
             pendingInput: true);
         var roomC = await arrange.FinalFrameAsync("room-3", "settle-open-4", "settle-live-4");
         await arrange.AdmittedAsync("room-4", "settle-open-5", "settle-live-5");
+        // The settled rooms' end ladders stand closed (FIX-END-12): the release reads the
+        // ladder's platform-close evidence, so the fixtures stand it before finalizing.
+        await EndLadderEvidence.StandAsync(arrange.Database.ConnectionString, "room-1");
+        await EndLadderEvidence.StandAsync(arrange.Database.ConnectionString, "room-2");
+        await EndLadderEvidence.StandAsync(arrange.Database.ConnectionString, "room-3");
 
         var store = new RedesignSettlementStore(arrange.Database.ConnectionString);
         // Preconditions are visible rejections, never silent settlements: a Running room,
@@ -363,6 +369,68 @@ public sealed class RedesignSettlementStoreTests
         }
     }
 
+    [Fact]
+    public async Task FinalizeRoundNeedsTheWholeEndLadderEvidence()
+    {
+        await using var arrange = await Arrange.CreateAsync();
+        await arrange.FinalFrameAsync("room-evidence-1", "settle-open-ev", "settle-live-ev");
+        var store = new RedesignSettlementStore(arrange.Database.ConnectionString);
+        await store.CommitResultAsync("tenant-a", "game-a", "room-evidence-1", "settle-ev-1");
+
+        // A complete manifest is not release evidence on its own: with no end operation the
+        // release has nothing to stand on, however settled the rewards are.
+        var noOperation = await Assert.ThrowsAsync<SettlementRejectedException>(() =>
+            store.FinalizeRoundAsync("tenant-a", "game-a", "room-evidence-1", "finalize-ev"));
+        Assert.Contains("no end operation", noOperation.Message);
+
+        // Every rung short of the platform close is a visible refusal that names where the
+        // ladder stands — the gateway barrier and the platform close are the ladder's own
+        // recorded phases, and no reward or input state may stand in for them.
+        await EndLadderEvidence.StandAsync(arrange.Database.ConnectionString, "room-evidence-1",
+            phase: "ResultFrozen");
+        string[] ladder =
+        [
+            "ResultFrozen", "ClosingInput", "StopDeliveryIssued",
+            "DeliveryStopped", "PlatformTaskAuthorized"
+        ];
+        for (var index = 0; index < ladder.Length; index++)
+        {
+            var refused = await Assert.ThrowsAsync<SettlementRejectedException>(() =>
+                store.FinalizeRoundAsync("tenant-a", "game-a", "room-evidence-1", "finalize-ev"));
+            Assert.Contains(ladder[index], refused.Message);
+            Assert.Contains("platform close evidence", refused.Message);
+            var next = index + 1 < ladder.Length ? ladder[index + 1] : "PlatformClosed";
+            await arrange.Control.AdvanceEndOperationPhaseAsync("tenant-a", "game-a",
+                "room-evidence-1/end", ladder[index], next);
+        }
+
+        // The platform close is the last credential: the release fires, and in that one
+        // transaction the round settles and every hold the round had — participation,
+        // pointer, held capacity, ownership — is freed.
+        var finalized = await store.FinalizeRoundAsync("tenant-a", "game-a", "room-evidence-1",
+            "finalize-ev");
+        Assert.Equal("Settled", finalized.Status);
+        await using (var connection = new NpgsqlConnection(arrange.Database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var freed = new NpgsqlCommand("""
+                SELECT (SELECT status FROM game.room WHERE room_id='room-evidence-1'),
+                       (SELECT count(*) FROM game.participation
+                          WHERE room_id='room-evidence-1' AND state IN ('Active','Offline')),
+                       (SELECT count(*) FROM live.binding
+                          WHERE current_room_id='room-evidence-1'),
+                       (SELECT status FROM control.ownership
+                          WHERE kind='room' AND entity_id='room-evidence-1')
+                """, connection);
+            await using var reader = await freed.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("Settled", reader.GetString(0));
+            Assert.Equal(0L, reader.GetInt64(1));
+            Assert.Equal(0L, reader.GetInt64(2));
+            Assert.Equal("Released", reader.GetString(3));
+        }
+    }
+
     /// <summary>Test arrange: stores plus admitted rooms with final frames and manifests.</summary>
     private sealed class Arrange : IAsyncDisposable
     {
@@ -492,5 +560,38 @@ public sealed class RedesignSettlementStoreTests
             await using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{_name}\" WITH (FORCE)", admin);
             await drop.ExecuteNonQueryAsync();
         }
+    }
+}
+
+/// <summary>
+/// Stands the end ladder's recorded row for a fixture room (FIX-END-12): the release's
+/// data-plane check reads the room's one end-operation row, so fixtures that settle rooms
+/// without the live ladder insert the row at the phase their fact needs. The live walk —
+/// begin, barrier, platform tasks, close — belongs to the control-store and host facts.
+/// </summary>
+internal static class EndLadderEvidence
+{
+    public static async Task StandAsync(string connectionString, string roomId,
+        string phase = "PlatformClosed", string tenantId = "tenant-a", string gameId = "game-a",
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var insert = new NpgsqlCommand("""
+            INSERT INTO control.end_operation(tenant_id,game_id,end_operation_id,room_id,
+                round_generation,binding_generations,final_tick,result_version,phase)
+            VALUES (@tenant,@game,@operation,@room,1,'[]',1,1,@phase)
+            """, connection)
+        {
+            Parameters =
+            {
+                new NpgsqlParameter("tenant", tenantId),
+                new NpgsqlParameter("game", gameId),
+                new NpgsqlParameter("operation", roomId + "/end"),
+                new NpgsqlParameter("room", roomId),
+                new NpgsqlParameter("phase", phase)
+            }
+        };
+        await insert.ExecuteNonQueryAsync(cancellationToken);
     }
 }

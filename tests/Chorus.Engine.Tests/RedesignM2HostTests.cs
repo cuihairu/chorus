@@ -1351,16 +1351,37 @@ public sealed class RedesignM2HostTests
             ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
             ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
         };
-        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        // The end ladder drives this round all the way to its release (FIX-END-12): the
+        // coordinator walks the phases, the gateway executes the platform end task, and
+        // the release is the coordinator's own finalize call under the end operation's id.
+        using var platform = Chorus.Platform.DevelopmentTaskPlatform.Start(
+            RedesignM0HostTests.HostEnvironment.FreePort);
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "200"
+            });
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
         await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
             "streamer-server", streamerEnvironment);
         await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
             new Dictionary<string, string>
             {
-                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{environment.GamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
             },
             clientTenant: "tenant-a");
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(RedesignEndOperationHostTests.GatewayEnvironment(
+                environment.DataPort, $"https://localhost:{environment.ControlPort}", gatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300"
+            });
 
         var simulator = new DevelopmentPlatformSimulator(simulatorKey);
         var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-run-k", "live-m2-10-a");
@@ -1498,15 +1519,34 @@ public sealed class RedesignM2HostTests
             Assert.Equal(2L, Convert.ToInt64(await ledger.ExecuteScalarAsync()));
         }
 
-        // The control plane finalizes: Settled, participations closed, mounts freed,
-        // ownership withdrawn — and the same mounts open the next round (AT20).
-        var finalized = await new Settlement.SettlementClient(controlDataChannel).FinalizeRoundAsync(
-            new FinalizeRoundRequest
+        // The coordinator releases the round (FIX-END-12): the ladder's platform close
+        // landed, the finalize fired under the end operation's own id, and the room shows
+        // the one-transaction freedom — Settled, participations closed, mounts freed,
+        // ownership withdrawn at the bumped epoch — and the same mounts open the next
+        // round (AT20).
+        var released = false;
+        var releaseDeadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < releaseDeadline)
+        {
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
             {
-                RoomId = "room-m2-10", GameId = "game-a", OperationId = "finalize-10", TenantId = "tenant-a"
-            });
-        Assert.Equal("Settled", finalized.Status);
-        Assert.Equal(owner.Epoch + 1, finalized.Epoch);
+                await connection.OpenAsync();
+                await using var state = new NpgsqlCommand("""
+                    SELECT (SELECT phase FROM control.end_operation WHERE room_id='room-m2-10'),
+                           (SELECT status FROM game.room WHERE room_id='room-m2-10'),
+                           (SELECT status||':'||epoch FROM control.ownership
+                              WHERE kind='room' AND entity_id='room-m2-10')
+                    """, connection);
+                if (await state.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && !reader.IsDBNull(1) && !reader.IsDBNull(2)
+                    && reader.GetString(0) == "Released" && reader.GetString(1) == "Settled"
+                    && reader.GetString(2) == $"Released:{owner.Epoch + 1}")
+                { released = true; break; }
+            }
+            await Task.Delay(200);
+        }
+        Assert.True(released, "The coordinator never released the settled round. Control tail:\n" +
+            RedesignEndOperationHostTests.HostTailFor(environment, "Chorus.ControlServer"));
         var nextOwner = await control.ClaimOwnershipAsync(new OwnershipRequest
         {
             TenantId = "tenant-a", GameId = "game-a", Kind = "room", EntityId = "room-m2-11",
@@ -2233,7 +2273,18 @@ public sealed class RedesignM2HostTests
             ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
             ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
         };
-        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+        // The end ladder reaches the release here too (FIX-END-12): the capacity the round
+        // holds is only freed by the coordinator's finalize, so the pressure story below
+        // plays against a real released seat, not an assumed one.
+        using var platform = Chorus.Platform.DevelopmentTaskPlatform.Start(
+            RedesignM0HostTests.HostEnvironment.FreePort);
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "200"
+            });
         // One active room is all this node admits: pressure refuses new rounds visibly with
         // a counted reason instead of freeing space quietly (AT21).
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server",
@@ -2243,9 +2294,19 @@ public sealed class RedesignM2HostTests
         await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
             new Dictionary<string, string>
             {
-                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{environment.GamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
             },
             clientTenant: "tenant-a");
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(RedesignEndOperationHostTests.GatewayEnvironment(
+                environment.DataPort, $"https://localhost:{environment.ControlPort}", gatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300"
+            });
 
         var simulator = new DevelopmentPlatformSimulator(simulatorKey);
         var (host, hostBinding) = await MountAsync(environment, simulator, "open-m2-ret-a", "live-m2-15-a");
@@ -2310,23 +2371,29 @@ public sealed class RedesignM2HostTests
             }
         })).Status);
 
-        FinalizeRoundReply finalized = new();
-        var deadline = DateTime.UtcNow.AddSeconds(20);
-        while (DateTime.UtcNow < deadline)
+        // The round ends by itself and the coordinator releases it when the ladder's
+        // evidence stands (FIX-END-12) — the retention boundary then answers with its
+        // guards against a really settled room.
+        var released = false;
+        var releaseDeadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < releaseDeadline)
         {
-            try
+            await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
             {
-                finalized = await new Settlement.SettlementClient(controlDataChannel).FinalizeRoundAsync(
-                    new FinalizeRoundRequest
-                    {
-                        RoomId = "room-m2-15", GameId = "game-a", OperationId = "finalize-15", TenantId = "tenant-a"
-                    });
+                await connection.OpenAsync();
+                await using var state = new NpgsqlCommand("""
+                    SELECT (SELECT phase FROM control.end_operation WHERE room_id='room-m2-15'),
+                           (SELECT status FROM game.room WHERE room_id='room-m2-15')
+                    """, connection);
+                if (await state.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                    && !reader.IsDBNull(0) && !reader.IsDBNull(1)
+                    && reader.GetString(0) == "Released" && reader.GetString(1) == "Settled")
+                { released = true; break; }
             }
-            catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition) { }
-            if (finalized.Status == "Settled") break;
             await Task.Delay(200);
         }
-        Assert.Equal("Settled", finalized.Status);
+        Assert.True(released, "The coordinator never released the pressure-test round. Control tail:\n" +
+            RedesignEndOperationHostTests.HostTailFor(environment, "Chorus.ControlServer"));
 
         // The settled round sits inside its retention window: the default answer is a visible
         // refusal, and only the explicit override releases anything.

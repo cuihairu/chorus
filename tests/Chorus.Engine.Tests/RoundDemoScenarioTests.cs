@@ -64,8 +64,9 @@ public sealed class RoundDemoScenarioTests
     public async Task DisconnectedEdgeRejoinsTheJourneyAndTheRecordAgreesThreeWays()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
-        var evidence = await RoundDemoScenario.RunAsync(new HostEnvironmentCluster(environment),
-            Console.Out, disconnectGuestEdge: true);
+        using var cluster = new HostEnvironmentCluster(environment);
+        var evidence = await RoundDemoScenario.RunAsync(cluster, Console.Out,
+            disconnectGuestEdge: true);
 
         // The reconnected guest edge holds the same frozen result as the edge that never
         // left: its baseline snapshot, one head snapshot on reconnect (strictly above the
@@ -156,9 +157,10 @@ public sealed class RoundDemoScenarioTests
     /// certificates and ports the other host tests use, so the scenario code path is the
     /// console demo's code path. Disposal stays with the owning test.
     /// </summary>
-    private sealed class HostEnvironmentCluster : IDemoCluster
+    private sealed class HostEnvironmentCluster : IDemoCluster, IDisposable
     {
         private readonly RedesignM0HostTests.HostEnvironment _environment;
+        private Chorus.Platform.DevelopmentTaskPlatform? _platform;
 
         public HostEnvironmentCluster(RedesignM0HostTests.HostEnvironment environment) =>
             _environment = environment;
@@ -179,17 +181,41 @@ public sealed class RoundDemoScenarioTests
                 ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessCredentialKey),
                 ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
             };
-            await _environment.StartAsync("Chorus.ControlServer", ControlPort, "control-server");
+            // The end ladder drives the round's release (FIX-END-12): the coordinator
+            // walks the phases at a demo pace, the gateway executes the platform end task
+            // against the in-process development platform, and the game host reports its
+            // own round end so the operation begins immediately.
+            await _environment.StartAsync("Chorus.ControlServer", ControlPort, "control-server",
+                new Dictionary<string, string>
+                {
+                    ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{DataPort}",
+                    ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "300"
+                });
             await _environment.StartAsync("Chorus.DataServer", DataPort, "data-server");
             await _environment.StartAsync("Chorus.StreamerServer", StreamerPort,
                 "streamer-server", streamerEnvironment);
             await _environment.StartAsync("Chorus.GameServer", GamePort, "game-server",
                 new Dictionary<string, string>
                 {
-                    ["CHORUS_DATA_PORT"] = DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    ["CHORUS_DATA_PORT"] = DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{ControlPort}",
+                    ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{GamePort}",
+                    ["CHORUS_REPORT_INTERVAL_MS"] = "500"
                 },
                 clientTenant: "tenant-a");
+            _platform = Chorus.Platform.DevelopmentTaskPlatform.Start(
+                RedesignM0HostTests.HostEnvironment.FreePort);
+            var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+            await _environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+                new Dictionary<string, string>(RedesignEndOperationHostTests.GatewayEnvironment(
+                    DataPort, $"https://localhost:{ControlPort}", gatewayPort))
+                {
+                    ["CHORUS_DEV_PLATFORM_ENDPOINT"] = _platform.Url,
+                    ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300"
+                });
         }
+
+        public void Dispose() => _platform?.Dispose();
 
         public System.Security.Cryptography.X509Certificates.X509Certificate2 Certificate(
             string tenant, string role, string instance) => _environment.Certificate(tenant, role, instance);

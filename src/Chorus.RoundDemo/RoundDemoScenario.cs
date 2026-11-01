@@ -147,20 +147,24 @@ public static class RoundDemoScenario
             $"receipts [{string.Join(", ", guestEvidence.CommandReceipts)}], result at tick {guestEvidence.FinalTick}");
 
         // The round's final frame carries the planned grants and the host settles the manifest
-        // itself; FinalizeRound is the persistent terminator and rejects visibly until the
-        // settlement completed, so the control plane simply retries (architecture 9.3).
+        // itself; FinalizeRound is the persistent terminator. The end ladder's coordinator
+        // drives the release with the end operation's own id (FIX-END-12), and this probe
+        // names the same business id, so whichever fires first owns the release and the
+        // other reads it back as a duplicate — the loop converges on the settled receipt
+        // either way, and until the ladder's evidence stands (the barrier, the platform
+        // close, the manifest) the terminator rejects visibly and the loop retries.
         FinalizeRoundReply finalized = new();
         using (var settleChannel = cluster.Channel(cluster.DataPort, controlCertificate, "data-server"))
         {
             var settlement = new Settlement.SettlementClient(settleChannel);
-            var deadline = DateTime.UtcNow.AddSeconds(20);
+            var deadline = DateTime.UtcNow.AddSeconds(45);
             while (DateTime.UtcNow < deadline)
             {
                 try
                 {
                     finalized = await settlement.FinalizeRoundAsync(new FinalizeRoundRequest
                     {
-                        RoomId = RoomId, GameId = GameId, OperationId = RoomId + "/finalize",
+                        RoomId = RoomId, GameId = GameId, OperationId = RoomId + "/end",
                         TenantId = "tenant-a"
                     }, deadline: DateTime.UtcNow.AddSeconds(5), cancellationToken: cancellationToken);
                 }

@@ -19,9 +19,13 @@ namespace Chorus.ControlServer;
 /// when every responder in the frozen set confirmed at the recorded version — an empty set is
 /// vacuously confirmed, one pending gateway parks the phase. Step 6 (FIX-END-10) closes the
 /// platform side: the phase records PlatformClosed when every mount's end task answered
-/// success or a grounded NotRequired. The later phases belong to the later items; a failure
-/// is recorded on the row without leaving the phase, so a restarted control
-/// plane reads the phase and retries the same step.
+/// success or a grounded NotRequired. Step 7 (FIX-END-12) is the release: the coordinator —
+/// not the original game host — asks the data plane to finalize, and the data plane's own
+/// transaction re-checks the whole evidence (the ladder's platform-side phases, the inputs'
+/// terminal dispositions, the manifest's completion) before it atomically frees the round's
+/// pointers, participations, held capacity and ownership. Destroyed and Done belong to the
+/// later items. A failure is recorded on the row without leaving the phase, so a restarted
+/// control plane reads the phase and retries the same step.
 /// </summary>
 public sealed class EndOperationCoordinatorService(RedesignControlStore controlStore,
     StopDeliveryNotifier notifier, ClusterDirectory directory,
@@ -29,6 +33,7 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
     : BackgroundService
 {
     private readonly PlatformTask.PlatformTaskClient _tasks = new(directory.DataChannel);
+    private readonly Settlement.SettlementClient _settlement = new(directory.DataChannel);
 
     private static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(int.Parse(
         Environment.GetEnvironmentVariable("CHORUS_END_COORDINATOR_INTERVAL_MS") ?? "1000",
@@ -179,6 +184,51 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
                 {
                     logger.LogWarning(error,
                         "Platform close completion for {RoomId} waits for the data plane: {Message}",
+                        current.RoomId, error.Message);
+                }
+            }
+            if (current.Phase == EndOperationPhases.PlatformClosed)
+            {
+                // Step 7 (FIX-END-12): the release is the control plane's own call — the
+                // terminator does not depend on the original game host. The business id is
+                // the end operation itself, so a coordinator restart replays into the same
+                // receipt: whichever pass fired first owns the release, every later pass
+                // reads it back as a duplicate. The data plane's transaction re-checks the
+                // whole evidence — the ladder's phases recorded here, the inputs' terminal
+                // dispositions and the manifest's completion recorded there — and refuses
+                // visibly when any of it is still gathering; a refusal parks this phase and
+                // the next pass asks again, so a settle still in flight (FIX-END-11's
+                // executor or the host's own settle) merely delays the release.
+                try
+                {
+                    var released = await _settlement.FinalizeRoundAsync(new FinalizeRoundRequest
+                    {
+                        TenantId = current.TenantId, GameId = current.GameId,
+                        RoomId = current.RoomId, OperationId = current.EndOperationId
+                    }, deadline: DateTime.UtcNow.AddSeconds(30),
+                        cancellationToken: cancellationToken);
+                    current = await controlStore.AdvanceEndOperationPhaseAsync(current.TenantId,
+                        current.GameId, current.EndOperationId,
+                        EndOperationPhases.PlatformClosed, EndOperationPhases.Released,
+                        cancellationToken: cancellationToken);
+                    logger.LogInformation(
+                        "Released {RoomId}: the round is settled at epoch {Epoch}{Duplicate}.",
+                        current.RoomId, released.Epoch,
+                        released.Duplicate ? " (a duplicate receipt — the release already stood)" : "");
+                }
+                catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition)
+                {
+                    // The evidence is still gathering — most often the manifest mid-settle.
+                    // The refusal names what the data plane's transaction found missing; the
+                    // phase parks and the next pass asks again.
+                    logger.LogInformation(
+                        "The release of {RoomId} waits for its evidence: {Message}",
+                        current.RoomId, error.Message);
+                }
+                catch (RpcException error)
+                {
+                    logger.LogWarning(error,
+                        "The release of {RoomId} waits for the data plane: {Message}",
                         current.RoomId, error.Message);
                 }
             }

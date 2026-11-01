@@ -43,7 +43,8 @@ public sealed class RedesignM3RoomTurnoverSoakHostTests
                 ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
                 ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
                 ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "6",
-                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "3"
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "3",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "200"
             });
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
@@ -66,6 +67,18 @@ public sealed class RedesignM3RoomTurnoverSoakHostTests
                 ["CHORUS_SLOT_ID"] = "node-a/game-server",
                 ["CHORUS_REPORT_INTERVAL_MS"] = "500"
             }, clientTenant: "tenant-a", instanceId: "game-a");
+        // The platform task executor: the rooms' end ladders walk to their releases
+        // (FIX-END-12), so the turnover the soak measures is the coordinator-driven one.
+        using var platform = Chorus.Platform.DevelopmentTaskPlatform.Start(
+            RedesignM0HostTests.HostEnvironment.FreePort);
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(RedesignEndOperationHostTests.GatewayEnvironment(
+                environment.DataPort, controlEndpoint, gatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300"
+            });
 
         using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-soak7");
         using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
@@ -91,8 +104,6 @@ public sealed class RedesignM3RoomTurnoverSoakHostTests
 
         var simulator = new DevelopmentPlatformSimulator(simulatorKey);
         var host = environment.HostProcesses.Single(entry => entry.Instance == "game-a").Process;
-        using var controlDataChannel = environment.Channel(environment.DataPort, controlCertificate, "data-server");
-        var settlement = new Settlement.SettlementClient(controlDataChannel);
         const int total = 8;
         var settledRooms = new List<string>();
         var rssTrend = new List<(int Round, long Rss)>();
@@ -132,26 +143,31 @@ public sealed class RedesignM3RoomTurnoverSoakHostTests
             });
             Assert.Equal("Running", prepared.Status);
 
-            // The round ends by itself, and the control plane finalizes what ended: result
-            // committed by the host, Settled by FinalizeRound, mounts freed with it. A
-            // Finishing hold-off answers FailedPrecondition and is retried, not assumed away.
-            FinalizeRoundReply finalized = new();
-            var settleDeadline = DateTime.UtcNow.AddSeconds(60);
-            while (DateTime.UtcNow < settleDeadline)
+            // The round ends by itself and the ladder releases it: the coordinator walks
+            // the end operation to Released (FIX-END-12) — result committed by the host,
+            // grants settled, platform closed, finalize fired under the operation's id —
+            // and only the recorded release ends this iteration.
+            var released = false;
+            var releaseDeadline = DateTime.UtcNow.AddSeconds(60);
+            while (DateTime.UtcNow < releaseDeadline)
             {
-                try
+                await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
                 {
-                    finalized = await settlement.FinalizeRoundAsync(new FinalizeRoundRequest
-                    {
-                        RoomId = roomId, GameId = "game-a", OperationId = "finalize-soak7-" + index,
-                        TenantId = "tenant-a"
-                    });
+                    await connection.OpenAsync();
+                    await using var state = new NpgsqlCommand("""
+                        SELECT (SELECT phase FROM control.end_operation WHERE room_id=@room),
+                               (SELECT status FROM game.room WHERE room_id=@room)
+                        """, connection);
+                    state.Parameters.AddWithValue("room", roomId);
+                    if (await state.ExecuteReaderAsync() is { } reader && await reader.ReadAsync()
+                        && !reader.IsDBNull(0) && !reader.IsDBNull(1)
+                        && reader.GetString(0) == "Released" && reader.GetString(1) == "Settled")
+                    { released = true; break; }
                 }
-                catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition) { }
-                if (finalized.Status == "Settled") break;
                 await Task.Delay(200);
             }
-            Assert.Equal("Settled", finalized.Status);
+            Assert.True(released, $"Round {index} never settled through the coordinator's release." +
+                $" Control tail:\n{RedesignEndOperationHostTests.HostTailFor(environment, "Chorus.ControlServer")}");
             var pointersCleared = await WaitForAsync(async () =>
             {
                 await using var connection = new NpgsqlConnection(environment.DatabaseConnectionString);

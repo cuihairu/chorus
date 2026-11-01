@@ -54,7 +54,9 @@ public sealed class DemoCluster : IDemoCluster
     public int DataPort { get; } = FreePort();
     public int StreamerPort { get; } = FreePort();
     public int GamePort { get; } = FreePort();
+    public int GatewayPort { get; } = FreePort();
     public string DatabaseConnectionString => _connectionString;
+    private Chorus.Platform.DevelopmentTaskPlatform? _platform;
 
     public async Task StartAllAsync(byte[] simulatorSigningKey, byte[] accessCredentialKey)
     {
@@ -95,15 +97,35 @@ public sealed class DemoCluster : IDemoCluster
             ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessCredentialKey),
             ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
         };
-        await StartAsync("Chorus.ControlServer", ControlPort, "control-server");
+        // The end ladder walks at a demo's pace: the coordinator's pass is short so the
+        // release the scenario waits for lands inside its patience.
+        await StartAsync("Chorus.ControlServer", ControlPort, "control-server",
+            new Dictionary<string, string> { ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "300" });
         await StartAsync("Chorus.DataServer", DataPort, "data-server");
         await StartAsync("Chorus.StreamerServer", StreamerPort, "streamer-server", streamerEnvironment);
         await StartAsync("Chorus.GameServer", GamePort, "game-server",
             new Dictionary<string, string>
             {
-                ["CHORUS_DATA_PORT"] = DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                ["CHORUS_DATA_PORT"] = DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{GamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
             },
             clientTenant: "tenant-a");
+        // The platform task executor: without a gateway the end ladder parks at its
+        // authorized tasks and the round never releases (FIX-END-12). The development
+        // task platform answers the executor's calls in process.
+        _platform = Chorus.Platform.DevelopmentTaskPlatform.Start(FreePort);
+        await StartAsync("Chorus.PlatformGateway", GatewayPort, "platform-gateway",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = _platform.Url,
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{GatewayPort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500",
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300"
+            });
     }
 
     public X509Certificate2 Certificate(string tenant, string role, string instance) =>
@@ -187,6 +209,9 @@ public sealed class DemoCluster : IDemoCluster
                 else if (role == "game-server")
                     await new GameHost.GameHostClient(channel).ReadyAsync(new Empty(),
                         deadline: DateTime.UtcNow.AddSeconds(1));
+                else if (role == "platform-gateway")
+                    await new PlatformGatewayFace.PlatformGatewayFaceClient(channel).ReadyAsync(new Empty(),
+                        deadline: DateTime.UtcNow.AddSeconds(1));
                 else
                     await new DataService.DataServiceClient(channel).ReadyAsync(new Empty(),
                         deadline: DateTime.UtcNow.AddSeconds(1));
@@ -216,6 +241,7 @@ public sealed class DemoCluster : IDemoCluster
         }
         _nodeAuthority?.Dispose();
         _root?.Dispose();
+        _platform?.Dispose();
         if (Directory.Exists(_directory)) Directory.Delete(_directory, recursive: true);
     }
 

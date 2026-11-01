@@ -362,6 +362,7 @@ public sealed class RedesignRetentionStoreTests
                         $"snapshot-{roomId}-{tick}");
             }
             await Settlement.CommitResultAsync("tenant-a", "game-a", roomId, "settle-" + roomId);
+            await EndLadderEvidence.StandAsync(Database.ConnectionString, roomId);
             await Settlement.FinalizeRoundAsync("tenant-a", "game-a", roomId, "finalize-" + roomId);
             return room;
         }
