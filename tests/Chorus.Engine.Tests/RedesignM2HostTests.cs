@@ -1527,8 +1527,11 @@ public sealed class RedesignM2HostTests
         var released = false;
         // CI runners run the suite packed far tighter than a local gate: the ladder's own
         // steps (settle executor, barrier staleness, platform task) each stretch, so the
-        // window carries external-load margin instead of the local ~5s figure.
-        var releaseDeadline = DateTime.UtcNow.AddSeconds(120);
+        // window carries external-load margin instead of the local ~5s figure — the packed
+        // CI runner with coverage instrumentation walks the same ladder correctly but
+        // minutes slower (coordinator data-plane connects queue behind the instrumented
+        // hosts), so the window is patience, not a timeout of correctness.
+        var releaseDeadline = DateTime.UtcNow.AddSeconds(240);
         while (DateTime.UtcNow < releaseDeadline)
         {
             await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
