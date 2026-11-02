@@ -15,7 +15,7 @@ Related docs:
 
 ## Metrics Endpoint
 
-All three processes expose `GET /metrics`, returning Prometheus text format (`text/plain; version=0.0.4; charset=utf-8`), which Prometheus can scrape directly:
+`Chorus.Server` and `Chorus.EngineHost` expose `GET /metrics` (the split gateway hosts do not expose `/metrics` yet), returning Prometheus text format (`text/plain; version=0.0.4; charset=utf-8`), which Prometheus can scrape directly:
 
 ```yaml
 # prometheus.yml 示例
@@ -26,12 +26,9 @@ scrape_configs:
   - job_name: chorus-engine
     static_configs:
       - targets: ["localhost:5200"]        # Chorus.EngineHost
-  - job_name: chorus-gateway
-    static_configs:
-      - targets: ["localhost:5300"]        # Chorus.Gateway
 ```
 
-The single-process mode (Chorus.Server) has no IPC hop, so `chorus_ipc_publish_failures_total` is always 0. In split mode, each side outputs the publish failures of its own direction: the Gateway side counts Gateway→Engine events (`src/Chorus.Gateway/GatewayIpcService.cs`), and the EngineHost side counts Engine→Gateway snapshots and welcomes (`src/Chorus.EngineHost/EngineIpcService.cs`, rendered by `RenderEngine`). The engine-side snapshot publishing is best-effort (a publish failure does not kill the tick, see `EngineBusSessionClient.SafePublishAsync`), but failures are counted and alerted on, no longer silently swallowed (`8e87a47`).
+The split gateway hosts (`Chorus.PlatformGateway` / `Chorus.StreamerGateway`) do not expose `/metrics` yet (the shared renderer lives in `Chorus.Gateway.Runtime`), so the example scrapes only `Chorus.Server` / `Chorus.EngineHost`. The single-process mode (Chorus.Server) has no IPC hop, so `chorus_ipc_publish_failures_total` is always 0. In split mode, each side outputs the publish failures of its own direction: the Gateway side counts Gateway→Engine events (`src/Chorus.Gateway.Runtime/GatewayIpcService.cs`), and the EngineHost side counts Engine→Gateway snapshots and welcomes (`src/Chorus.EngineHost/EngineIpcService.cs`, rendered by `RenderEngine`). The engine-side snapshot publishing is best-effort (a publish failure does not kill the tick, see `EngineBusSessionClient.SafePublishAsync`), but failures are counted and alerted on, no longer silently swallowed (`8e87a47`).
 
 ## Metric Inventory
 

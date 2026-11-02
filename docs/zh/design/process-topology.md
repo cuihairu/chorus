@@ -7,7 +7,7 @@
 > **Chorus.StreamerGateway**（`/ws`）作为独立可执行。两者都用
 > `Chorus.Gateway.Runtime` 库；互不依赖对方可执行，也不用 `Gateway:Roles`。
 > 见[独立网关部署](../guide/independent-gateways.md)。
-> 下面合并的 `Chorus.Gateway` 与角色切换示例仅为兼容保留。
+> 旧合并形态的 `Chorus.Gateway` 宿主已于 2026-10-31 移除（`48623a5`）；下文保留为设计沿革。
 
 ## 1. 提案与结论
 

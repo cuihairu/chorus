@@ -5,7 +5,7 @@ title: 当前架构总览（进程拓扑与组件）
 
 # 当前架构总览
 
-经代码核实的拓扑（2026-10-19 刷新）。独立 `Chorus.Server` 无控制面即可运行。持久拆分模式以 `Chorus.ControlHost` 为共享房间权威，配一个或多个 `Chorus.Gateway` 实例与 `Chorus.EngineHost`；生产多机故障与容量门槛仍为 open。
+经代码核实的拓扑（2026-10-19 刷新）。独立 `Chorus.Server` 无控制面即可运行。持久拆分模式以 `Chorus.ControlHost` 为共享房间权威，配独立网关宿主（`Chorus.PlatformGateway` / `Chorus.StreamerGateway`）与 `Chorus.EngineHost`——旧单体 `Chorus.Gateway` 进程已于 2026-10-31 移除（`48623a5`）；生产多机故障与容量门槛仍为 open。
 
 ## 带控制面的拆分模式
 
@@ -16,10 +16,10 @@ flowchart TB
     C["主播 / 直播伴侣客户端"]
   end
 
-  subgraph GW["Chorus.Gateway 进程（可多实例，Gateway:Id 区分）"]
+  subgraph GW["网关边缘（Chorus.PlatformGateway + Chorus.StreamerGateway）"]
     INGRESS["PlatformIngressFace<br/>POST /ingress/{platform}"]
     WS["StreamerWsFace<br/>WS /ws"]
-    OPS["/health /ready /faces /metrics"]
+    OPS["网关诊断（GatewayHosting）<br/>拆分宿主暂未映射"]
     GWIPC["GatewayIpcService<br/>eng→gw 通道 server（每实例一条）<br/>gw→eng 通道 client"]
   end
 
@@ -65,13 +65,14 @@ flowchart TB
 
 | 组件 | 位置 |
 |---|---|
-| Gateway 路由表（/ingress、/ws、/ready 等） | `src/Chorus.Gateway/Program.cs:100` |
+| 平台网关入口监听（`POST /ingress/{platform}`） | `src/Chorus.PlatformGateway/Program.cs:147` |
+| 主播网关 `/ws` 路由 | `src/Chorus.StreamerGateway/Program.cs:147` |
 | EngineHost 路由表（/health、/metrics） | `src/Chorus.EngineHost/Program.cs:34` |
 | Server 路由表（含 /sessions、/matches） | `src/Chorus.Server/Program.cs:102` |
 | `PlatformIngressFace`（限流/大小/超时/验签/去重/Tell） | `src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs` |
 | B 站开放平台桥（wss → `/ingress/bilibili` 签名转发，凭据齐备才启动） | `src/Chorus.Adapters.Platforms/Bilibili/BilibiliOpenLiveClient.cs` |
 | `StreamerWsFace`（鉴权/版本门/ACK 限流） | `src/Chorus.Gateway.Core/Faces/StreamerWsFace.cs` |
-| `GatewayIpcService`（eng→gw server + gw→eng client） | `src/Chorus.Gateway/GatewayIpcService.cs:149` |
+| `GatewayIpcService`（eng→gw server + gw→eng client） | `src/Chorus.Gateway.Runtime/GatewayIpcService.cs:10` |
 | `EngineIpcService`（gw→eng server + 扇出 client） | `src/Chorus.EngineHost/EngineIpcService.cs:88` |
 | `FanOutMessageBus`（按网关发布、失败聚合） | `src/Chorus.Messaging/FanOutMessageBus.cs` |
 | IPC 通道命名（Gateway:Id 后缀） | `src/Chorus.Messaging/Ipc/IpcEndpointBuilder.cs:22` |

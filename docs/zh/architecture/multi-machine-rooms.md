@@ -69,7 +69,7 @@ flowchart LR
 | 图中组件 | 源码入口（审查时行号） |
 |---|---|
 | PlatformIngressFace / StreamerWsFace | `src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs:21`、`src/Chorus.Gateway.Core/Faces/StreamerWsFace.cs:54` |
-| GatewayIpcService / RoomAffinity | `src/Chorus.Gateway/GatewayIpcService.cs:153`、`src/Chorus.Engine/Routing/RoomAffinity.cs:20` |
+| GatewayIpcService / RoomAffinity | `src/Chorus.Gateway.Runtime/GatewayIpcService.cs:10`、`src/Chorus.Engine/Routing/RoomAffinity.cs:20` |
 | EngineIpcService / SessionRegistry / SessionActor | `src/Chorus.EngineHost/EngineIpcService.cs:109`、`src/Chorus.Engine/Session/SessionRegistry.cs:15`、`src/Chorus.Engine/Session/SessionActor.cs:9` |
 | WorkerRegistry / RoomRouteTable | `src/Chorus.Engine/Routing/WorkerRegistry.cs:22`、`src/Chorus.Engine/Routing/RoomAffinity.cs:53` |
 | RoomAuthorityRegistry / RoomLifecycleRegistry | `src/Chorus.Engine/Routing/RoomAuthorityRegistry.cs:35`、`src/Chorus.Engine/Routing/RoomLifecycle.cs:151` |
@@ -111,7 +111,7 @@ flowchart LR
 
 ## 7. 2026-10-19 控制面接线与存储复核
 
-当前实现将控制面部署为单独的 `Chorus.ControlHost` HTTP 服务，SQLite WAL 文件只由该进程本机访问；Worker 和 Gateway 通过带共享密钥的 HTTP API 注册、续租、查询目录及登记连接。新房间分配在 SQLite 写事务中完成，`RoomId → WorkerId + WorkerInstance + Epoch` 作为稳定归属；扩容后存量房间不自动搬迁，新房间会分配给有容量的健康 Worker。入口发送带 `AuthorityEpoch` 的 IPC，EngineHost 的 tick commit 在共享控制面核对 Worker lease、实例、epoch 和连续 tick；迁移先进入 Migrating 冻结 commit，handoff 后 epoch 递增并进入 Recovering。关键实现位于 `src/Chorus.Control/RoomControlStore.cs`、`src/Chorus.Control/ControlDatabase.cs`、`src/Chorus.EngineHost/EngineControl.cs`、`src/Chorus.Gateway/GatewayControl.cs` 和 `src/Chorus.ControlHost/Program.cs`。
+当前实现将控制面部署为单独的 `Chorus.ControlHost` HTTP 服务，SQLite WAL 文件只由该进程本机访问；Worker 和 Gateway 通过带共享密钥的 HTTP API 注册、续租、查询目录及登记连接。新房间分配在 SQLite 写事务中完成，`RoomId → WorkerId + WorkerInstance + Epoch` 作为稳定归属；扩容后存量房间不自动搬迁，新房间会分配给有容量的健康 Worker。入口发送带 `AuthorityEpoch` 的 IPC，EngineHost 的 tick commit 在共享控制面核对 Worker lease、实例、epoch 和连续 tick；迁移先进入 Migrating 冻结 commit，handoff 后 epoch 递增并进入 Recovering。关键实现位于 `src/Chorus.Control/RoomControlStore.cs`、`src/Chorus.Control/ControlDatabase.cs`、`src/Chorus.EngineHost/EngineControl.cs`、`src/Chorus.Gateway.Runtime/GatewayControl.cs` 和 `src/Chorus.ControlHost/Program.cs`。
 
 容量准入已改为满载拒绝新 Actor，不再以 LRU 悄悄销毁房间；可选的空房间清扫默认关闭。控制面待处理事件、去重回执和 checkpoint 已从房间目录 JSON 拆到独立关系表，事件按 `(room_id,event_key)` 建唯一索引，待处理数/回执数用事务内计数维护。SQLite 保留开发/单机默认，PostgreSQL provider 已接入；房间 checkpoint 与可靠事件写入通过房间行锁降低并发冲突。
 

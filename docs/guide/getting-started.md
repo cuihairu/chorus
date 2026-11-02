@@ -66,6 +66,6 @@ pnpm install --frozen-lockfile
 pnpm docs:build
 ```
 
-Output directory: `docs/.vuepress/dist`
+Output directory: `docs/.vitepress/dist`
 
-> **Dependency pin note**: The documentation site is an old VuePress 1.x + webpack 4 chain, and `package.json`'s `overrides` has a batch of security pins. When changing pins, verify locally that both `npm ci` and `npm run docs:build` pass before committing — two pitfalls already hit: an override key in the form `"a>b"` is pnpm syntax, and npm rejects it with `EINVALIDTAGNAME` (nested objects are the npm form); webpack-log 3.0.2 declares `nanoid: ^2.0.3` and calls `require('nanoid')` as a function, so pinning to nanoid 3.x makes the build fail at `nanoid is not a function`.
+> **Toolchain note**: the documentation site is built with VitePress — `package.json` scripts `docs:dev` = `vitepress dev docs` and `docs:build` = `vitepress build docs`; the Pages deploy uploads `docs/.vitepress/dist` (`.github/workflows/docs.yml`).

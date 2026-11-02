@@ -20,7 +20,7 @@
 | 引擎 | `Chorus.Engine` | 会话与 tick 循环（`SessionActor`）、帧历史（`FrameHistory`）、匹配（`Matchmaking`）、模块契约（`Abstractions`） |
 | 数据 | `Chorus.Data` | 排行榜存储（`LeaderboardStore`）、数据命令模型 |
 | 摄取 | `Chorus.Adapters.*`（平台适配器）、`Chorus.Gateway.Core`（两面共享实现 + 指标/排行榜 HTTP） | 平台签名校验/映射；入口与主播 ws 监听面 |
-| 宿主与消费者 | `Chorus.Server`（单进程）、`Chorus.Gateway` + `Chorus.EngineHost`（分离）、`Chorus.Messaging`（IPC）、`Chorus.SampleGame`（参考游戏）、`Chorus.Client`（客户端 SDK）、`Chorus.LoadTool`（压测工具） | 进程装配与外部入口点 |
+| 宿主与消费者 | `Chorus.Server`（单进程）、`Chorus.PlatformGateway` / `Chorus.StreamerGateway` + `Chorus.EngineHost`（分离；旧单体 `Chorus.Gateway` 已于 `48623a5` 移除）、`Chorus.Messaging`（IPC）、`Chorus.SampleGame`（参考游戏）、`Chorus.Client`（客户端 SDK）、`Chorus.LoadTool`（压测工具） | 进程装配与外部入口点 |
 
 一次观众互动的数据流（单进程形态省一跳 IPC）：
 
@@ -38,7 +38,7 @@ flowchart LR
 
 ## 两种部署形态，一条边界
 
-同一套代码，两个装配：`Chorus.Server` 单进程；`Chorus.Gateway` + `Chorus.EngineHost` 分离。两种形态**共享同一对监听面**（`PlatformIngressFace`、`StreamerWsFace`，在 `Chorus.Gateway.Core`）；会话状态永远在引擎侧（单进程 `SessionManager`，分离 `EngineIpcService`）——网关不持有会话状态。
+同一套代码，多个装配：`Chorus.Server` 单进程；`Chorus.PlatformGateway` / `Chorus.StreamerGateway` + `Chorus.EngineHost` 分离（旧单体 `Chorus.Gateway` 已于 `48623a5` 移除）。两种形态**共享同一对监听面**（`PlatformIngressFace`、`StreamerWsFace`，在 `Chorus.Gateway.Core`）；会话状态永远在引擎侧（单进程 `SessionManager`，分离 `EngineIpcService`）——网关不持有会话状态。
 
 > 为何先单进程：最小的运维面（单进程、无 IPC），且压测显示单 worker 在数百房间规模足够
 > （todo.md:156：800 房间 + 30k rps 签名事件，`ingested==applied==45287`，峰值 CPU 27.6）。
@@ -48,9 +48,9 @@ flowchart LR
 
 分离形态，每步带源码锚点（写成 `file:line`，以 main 为准）：
 
-1. 平台回调到达 `POST /ingress/{platform}`（`src/Chorus.Gateway/Program.cs:148`，由 `Gateway:Roles` 门控）。
+1. 平台回调到达 `POST /ingress/{platform}`（`src/Chorus.PlatformGateway/Program.cs:147`，监听在 `CHORUS_INGRESS_PORT`）。
 2. `PlatformIngressFace` 依序应用：限流（`:58` 429）、请求体上限（`:68` 413）、fail-closed 签名校验（`:76` 401）、平台映射、未知事件拒绝（`:93` 400）、TTL 去重（`:101` 200 duplicated）、阵营分配、会话路由。
-3. 网关把事件包成 `Envelope`（`gw.audienceEvent`），经 IPC 总线发往引擎（`src/Chorus.Gateway/GatewayIpcService.cs`；信封在 `src/Chorus.Messaging/`）。
+3. 网关把事件包成 `Envelope`（`gw.audienceEvent`），经 IPC 总线发往引擎（`src/Chorus.Gateway.Runtime/GatewayIpcService.cs`；信封在 `src/Chorus.Messaging/`）。
 4. 引擎接收循环按类型分发（`src/Chorus.EngineHost/EngineIpcService.cs:294`），写入目标会话的缓冲（`SessionActor.TryIngestAudienceEventAsync`，`src/Chorus.Engine/Session/SessionActor.cs:190`）。
 5. tick 循环（`SessionActor.cs:518`）每 66ms 把缓冲事件交给玩法规则（`SessionConfig.cs:4`）：`IGameModule.ApplyEvents`（`src/Chorus.Engine/Abstractions/IGameModule.cs:10`）。
 6. 模块产出新状态；引擎编码为 `ServerSnapshot`（每 tick 一帧，`SessionConfig.cs:6`）；近期帧进 `FrameHistory`（字节上限 `SessionConfig.cs:24`）供重同步回放。

@@ -95,9 +95,9 @@ Match-forming rule details: real players FIFO, at most `maxParticipants` per mat
 
 `Matchmaker` is only responsible for forming matches. Making bots act in the game is the job of two other types:
 
-- `IBotStrategy` / `BotWorldView` / `BotStrategyConfig` (`src/Chorus.Engine/BotStrategy.cs:66-78`, `:56`, `:6`)
+- `IBotStrategy` / `BotWorldView` / `BotStrategyConfig` (`src/Chorus.Engine/Matchmaking/BotStrategy.cs:66-78`, `:56`, `:6`)
   — computes a `BotAction` from the world view each tick.
-- `BotRuntime` (`src/Chorus.Engine/BotRuntime.cs:158`) — pulls strategy output each tick, submits it to the session via the bounded queue
+- `BotRuntime` (`src/Chorus.Engine/Matchmaking/BotStrategy.cs:158`; queue helpers in `src/Chorus.Engine/Matchmaking/BotRuntime.cs`) — pulls strategy output each tick, submits it to the session via the bounded queue
   `BotActionQueue` (`:61`), with `Drain`/`DrainUpTo` controlling the consumption pace (`:166`, `:180`);
   the built-in factory `DefaultBotParticipantFactory` is at `:8`.
 

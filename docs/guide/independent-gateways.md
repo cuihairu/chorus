@@ -17,7 +17,7 @@ Shared code is layered:
 - `Chorus.Gateway.Core`: entry-point protocol implementations and their interfaces, shared with the monolithic host.
 - `Chorus.Control` / `Chorus.Messaging` / `Chorus.Protocol`: control-plane client, communication, and message contracts.
 
-The legacy `Chorus.Gateway` is kept for compatibility with existing deployments; its configurable roles are not a dependency of the new independent hosts. The Core library still contains both faces, and platform adapter assemblies may still be copied into the publish directory. What is isolated is the host, service registration, endpoints, and configuration responsibility — not a complete removal of every transitive assembly.
+The legacy single `Chorus.Gateway` host was removed (2026-10-31, `48623a5`); the two hosts above are the only gateway executables. The Core library still contains both faces, and platform adapter assemblies may still be copied into the publish directory. What is isolated is the host, service registration, endpoints, and configuration responsibility — not a complete removal of every transitive assembly.
 
 ## Running locally
 
@@ -29,7 +29,7 @@ Gateway__Id=platform-gw dotnet run --project src/Chorus.PlatformGateway -- --url
 Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --urls http://localhost:5169
 ```
 
-The platform endpoint is `http://localhost:5168/ingress/{platform}`; the streamer endpoint is `ws://localhost:5169/ws`. Platform secrets are configured in the platform host; `Faces:StreamerWs:AuthTokens` is configured in the streamer host. Use `Ingress:AllowAll=true` or `Faces:StreamerWs:AllowAnonymous=true` only for development and testing. Both hosts expose `/health`, `/ready`, `/metrics`, and `/faces`; entry points the host does not own return 404.
+The platform endpoint is `http://localhost:5168/ingress/{platform}`; the streamer endpoint is `ws://localhost:5169/ws`. Platform secrets are configured in the platform host; `Faces:StreamerWs:AuthTokens` is configured in the streamer host. Use `Ingress:AllowAll=true` or `Faces:StreamerWs:AllowAnonymous=true` only for development and testing. The shared diagnostic endpoints (`/health`, `/ready`, `/metrics`, `/faces`) are implemented in `Chorus.Gateway.Runtime` (`GatewayHosting.cs`); after the independent-host split they are still mapped only by `Chorus.Server` / `Chorus.EngineHost`, and the two gateway hosts do not expose them yet. Entry points a host does not own return 404.
 
 ## Multi-machine and independent publishing
 

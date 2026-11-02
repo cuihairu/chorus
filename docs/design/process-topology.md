@@ -8,7 +8,7 @@
 > **Chorus.StreamerGateway** (`/ws`) as separate executables. Both use the
 > `Chorus.Gateway.Runtime` library; neither depends on the other executable or
 > uses `Gateway:Roles`. See [independent gateway deployment](../guide/independent-gateways.md).
-> The combined `Chorus.Gateway` and role-switch examples below remain for compatibility.
+> The legacy combined `Chorus.Gateway` host was removed (2026-10-31, `48623a5`); the sections below remain as design history.
 
 ## 1. Proposal and Conclusion
 

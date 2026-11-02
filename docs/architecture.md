@@ -28,7 +28,7 @@ Bottom-up, the 13 projects fall into five layers (dependencies may only point do
 | Engine | `Chorus.Engine` | Sessions and the tick loop (`SessionActor`), frame history (`FrameHistory`), matchmaking (`Matchmaking`), module contract (`Abstractions`) |
 | Data | `Chorus.Data` | Leaderboard storage (`LeaderboardStore`), data command model |
 | Ingest | `Chorus.Adapters.*` (platform adapters), `Chorus.Gateway.Core` (shared implementation of both faces + metrics/leaderboard HTTP) | Platform signature verification/mapping; the ingress and streamer-ws listener faces |
-| Hosts and consumers | `Chorus.Server` (single process), `Chorus.Gateway` + `Chorus.EngineHost` (split), `Chorus.Messaging` (IPC), `Chorus.SampleGame` (reference game), `Chorus.Client` (client SDK), `Chorus.LoadTool` (load tool) | Process assembly and external entry points |
+| Hosts and consumers | `Chorus.Server` (single process), `Chorus.PlatformGateway` / `Chorus.StreamerGateway` + `Chorus.EngineHost` (split; legacy single `Chorus.Gateway` removed in `48623a5`), `Chorus.Messaging` (IPC), `Chorus.SampleGame` (reference game), `Chorus.Client` (client SDK), `Chorus.LoadTool` (load tool) | Process assembly and external entry points |
 
 The data flow of one audience interaction (the single-process shape saves one IPC hop):
 
@@ -46,8 +46,8 @@ flowchart LR
 
 ## Two deployment shapes, one boundary
 
-The same code, two assemblies: `Chorus.Server` single process; `Chorus.Gateway` + `Chorus.EngineHost`
-split. Both shapes **share the same pair of listener faces** (`PlatformIngressFace`,
+The same code, two assemblies: `Chorus.Server` single process; `Chorus.PlatformGateway` / `Chorus.StreamerGateway` + `Chorus.EngineHost`
+split (legacy single `Chorus.Gateway` removed in `48623a5`). Both shapes **share the same pair of listener faces** (`PlatformIngressFace`,
 `StreamerWsFace`, in `Chorus.Gateway.Core`); session state always lives on the engine side
 (single-process `SessionManager`, split `EngineIpcService`) — the gateway holds no session state.
 
@@ -60,13 +60,13 @@ split. Both shapes **share the same pair of listener faces** (`PlatformIngressFa
 
 Split shape, with a source anchor for every step (written `file:line`, as of main):
 
-1. A platform callback arrives at `POST /ingress/{platform}` (`src/Chorus.Gateway/Program.cs:148`,
-   gated by `Gateway:Roles`).
+1. A platform callback arrives at `POST /ingress/{platform}` (`src/Chorus.PlatformGateway/Program.cs:147`,
+   on the `CHORUS_INGRESS_PORT` listener).
 2. `PlatformIngressFace` applies, in order: rate limiting (`:58` 429), body size cap (`:68` 413),
    fail-closed signature verification (`:76` 401), platform mapping, unknown-event rejection
    (`:93` 400), TTL dedup (`:101` 200 duplicated), faction assignment, session routing.
 3. The gateway wraps the event into an `Envelope` (`gw.audienceEvent`) and sends it to the engine
-   over the IPC bus (`src/Chorus.Gateway/GatewayIpcService.cs`; envelopes live in `src/Chorus.Messaging/`).
+   over the IPC bus (`src/Chorus.Gateway.Runtime/GatewayIpcService.cs`; envelopes live in `src/Chorus.Messaging/`).
 4. The engine receive loop dispatches by type (`src/Chorus.EngineHost/EngineIpcService.cs:294`) and
    writes into the target session's buffer (`SessionActor.TryIngestAudienceEventAsync`,
    `src/Chorus.Engine/Session/SessionActor.cs:190`).

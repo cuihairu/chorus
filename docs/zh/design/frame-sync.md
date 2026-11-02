@@ -116,7 +116,7 @@ title: 帧同步（权威 Tick + 快照）
 **P1 —— 帧号语义 + 客户端按帧号回放（已实现）**
 
 - 帧号 = `tickId`，随快照下发；客户端按帧号排序渲染（§4.1）。
-- 客户端回放状态机 `src/Chorus.LoadTool/FramePlayer.cs`：帧号 ≤ 已应用帧 → 丢弃（幂等；重放窗口不会渲染两遍）；帧号 > 已应用帧 + 1 → 应用并上报首个缺口帧号供 `resync` 拉取。单元测试 `FramePlayerTests`（7 例）；`ClientSimulation` 已接线（`LoadTool` 输出 `resyncs=` 计数）。
+- 客户端回放状态机 `src/Chorus.Client/FramePlayer.cs`：帧号 ≤ 已应用帧 → 丢弃（幂等；重放窗口不会渲染两遍）；帧号 > 已应用帧 + 1 → 应用并上报首个缺口帧号供 `resync` 拉取。单元测试 `FramePlayerTests`（7 例）；`ClientSimulation` 已接线（`LoadTool` 输出 `resyncs=` 计数）。
 - `state.frameEvents` 约定**已废弃**：原计划把帧归属塞进 `state`（零协议改动）；P2 的信封字段是更优解（一等协议字段，客户端无需知晓 `state` 约定），G1 直接由 P2 关闭。
 
 **P2 —— 协议扩展（增量可选，已实现）**

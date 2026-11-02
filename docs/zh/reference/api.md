@@ -15,38 +15,37 @@ title: API 参考（后端/管理侧）
 - 两个带认证的面：`POST /ingress/{platform}`（平台回调签名校验，fail-closed）与 `WS /ws`
   （hello token 认证，fail-closed）。配置见[配置参考](./config.md)。
 
-## 端口（launchSettings 默认）
+## 端口
 
 | 宿主 | HTTP | 来源 |
 |---|---|---|
 | `Chorus.Server`（单进程） | `5083` | `src/Chorus.Server/Properties/launchSettings.json:8` |
-| `Chorus.Gateway` | `5168` | `src/Chorus.Gateway/Properties/launchSettings.json:8` |
+| `Chorus.PlatformGateway` | 内部 `7504`（`CHORUS_PORT`）；仅设置 `CHORUS_INGRESS_PORT` 时才有入口监听 | `src/Chorus.PlatformGateway/Program.cs:17`、`:24` |
+| `Chorus.StreamerGateway` | 内部 `7530`（`CHORUS_PORT`）；客户端 WSS `7443`（`CHORUS_WSS_PORT`） | `src/Chorus.StreamerGateway/Program.cs:15`、`:18` |
 | `Chorus.EngineHost` | `5067` | `src/Chorus.EngineHost/Properties/launchSettings.json:8` |
 
 ## HTTP 端点
 
-### Chorus.Gateway（`src/Chorus.Gateway/Program.cs`）
+### Chorus.PlatformGateway（`src/Chorus.PlatformGateway/Program.cs`）
 
-| 方法 路径 | 用途 | 响应 | 来源 |
-|---|---|---|---|
-| `GET /` | 自描述 | `{"name":"Chorus.Gateway","ok":true}` | `Program.cs:123` |
-| `GET /health` | 存活探针 | 200 空 | `Program.cs:124` |
-| `GET /faces` | 监听面计数器 JSON（入口/ws 两面） | `FaceCounters`，见下 | `Program.cs:125`，字段 `Faces/FaceCounters.cs:67`，`:76` |
-| `GET /metrics` | Prometheus 文本（`chorus_*`） | text | `Program.cs:126`，渲染 `Gateway.Core/Metrics/ChorusMetricsText.cs` |
-| `GET /ready` | 就绪探针（仅分离 Gateway） | 200 `{"ready":true,"engineSilenceMs":n}`；超窗静默 503 `{"ready":false,"engineSilenceMs":n}` | `Program.cs:133`，决策 `Gateway/GatewayIpcService.cs:32` |
-| `POST /ingress/{platform}` | 平台事件入口（platform 角色） | 见"Ingress 错误码" | `Program.cs:148`；`Gateway:Roles` 未选该角色时端点不注册（404），`Program.cs:144` |
-| `WS /ws` | 主播客户端（streamer 角色） | 见"WS 协议" | `Program.cs:156`；同上的角色门 `Program.cs:151` |
+| 方法 路径 | 用途 | 来源 |
+|---|---|---|
+| `POST /ingress/{platform}` | 平台事件入口（限流/验签/映射/去重，fail-closed）；仅设置 `CHORUS_INGRESS_PORT` 时开启公开监听 | `Program.cs:147`、端口 `:24` |
+| mTLS gRPC `GatewayGrpcService` | 集群内部面（内部端口 `CHORUS_PORT`，默认 `7504`） | `Program.cs:142` |
 
-网关不持有会话状态，故无 `/sessions` 或 `/leaderboard`（后者在 EngineHost / Server 上）。
+### Chorus.StreamerGateway（`src/Chorus.StreamerGateway/Program.cs`）
 
-curl 示例（Gateway 在 5168）：
+| 方法 路径 | 用途 | 来源 |
+|---|---|---|
+| `WS /ws` | 主播客户端协议（公开 WSS 监听，`CHORUS_WSS_PORT`，默认 `7443`） | `Program.cs:147` |
+| mTLS gRPC `GatewayGrpcService` | 集群内部面（内部端口 `CHORUS_PORT`，默认 `7530`） | `Program.cs:146` |
+
+网关宿主不持有会话状态，故无 `/sessions` 或 `/leaderboard`（后者在 EngineHost / Server 上）。旧单体网关的诊断端点（`GET /`、`/health`、`/ready`、`/faces`、`/metrics`）实现在 `Chorus.Gateway.Runtime`（`GatewayHosting.cs:22-35`），当前由 `Chorus.Server` / `Chorus.EngineHost` 映射，两个拆分网关宿主暂未暴露。下文的 ingress 请求/错误码与 WS 协议语义是 `Chorus.Gateway.Core` 的共享面，单进程与拆分形态都适用。
+
+Ingress curl 示例（单进程 `Chorus.Server`，端口 5083）：
 
 ```bash
-curl http://localhost:5168/health
-curl http://localhost:5168/ready
-curl http://localhost:5168/faces
-curl http://localhost:5168/metrics
-curl -X POST http://localhost:5168/ingress/test -H 'content-type: application/json' \
+curl -X POST http://localhost:5083/ingress/test -H 'content-type: application/json' \
   -d '{"sessionId":"s1","eventId":"e1","userId":"u1","kind":"comment","text":"hi"}'
 ```
 

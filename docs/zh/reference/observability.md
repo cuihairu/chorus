@@ -15,7 +15,7 @@ Chorus 的可观测面由三部分组成：**Prometheus 文本指标**（`chorus
 
 ## 指标端点
 
-三进程都暴露 `GET /metrics`，返回 Prometheus 文本格式（`text/plain; version=0.0.4; charset=utf-8`），Prometheus 可直接抓取：
+`Chorus.Server` 与 `Chorus.EngineHost` 暴露 `GET /metrics`（拆分网关宿主暂未暴露 `/metrics`），返回 Prometheus 文本格式（`text/plain; version=0.0.4; charset=utf-8`），Prometheus 可直接抓取：
 
 ```yaml
 # prometheus.yml 示例
@@ -26,12 +26,9 @@ scrape_configs:
   - job_name: chorus-engine
     static_configs:
       - targets: ["localhost:5200"]        # Chorus.EngineHost
-  - job_name: chorus-gateway
-    static_configs:
-      - targets: ["localhost:5300"]        # Chorus.Gateway
 ```
 
-单进程模式（Chorus.Server）没有 IPC 跳数，`chorus_ipc_publish_failures_total` 恒为 0。拆分模式两侧各输出自己方向的发布失败：Gateway 侧统计 Gateway→Engine 事件（`src/Chorus.Gateway/GatewayIpcService.cs`），EngineHost 侧统计 Engine→Gateway 快照与 welcome（`src/Chorus.EngineHost/EngineIpcService.cs`，由 `RenderEngine` 渲染）。引擎侧快照发布是尽力而为（发布失败不杀 tick，见 `EngineBusSessionClient.SafePublishAsync`），但失败会被计数与告警，不再被静默吞掉（`8e87a47`）。
+拆分网关宿主（`Chorus.PlatformGateway` / `Chorus.StreamerGateway`）暂未暴露 `/metrics`（共享渲染在 `Chorus.Gateway.Runtime`），示例只抓取 `Chorus.Server` / `Chorus.EngineHost`。单进程模式（Chorus.Server）没有 IPC 跳数，`chorus_ipc_publish_failures_total` 恒为 0。拆分模式两侧各输出自己方向的发布失败：Gateway 侧统计 Gateway→Engine 事件（`src/Chorus.Gateway.Runtime/GatewayIpcService.cs`），EngineHost 侧统计 Engine→Gateway 快照与 welcome（`src/Chorus.EngineHost/EngineIpcService.cs`，由 `RenderEngine` 渲染）。引擎侧快照发布是尽力而为（发布失败不杀 tick，见 `EngineBusSessionClient.SafePublishAsync`），但失败会被计数与告警，不再被静默吞掉（`8e87a47`）。
 
 ## 指标清单
 

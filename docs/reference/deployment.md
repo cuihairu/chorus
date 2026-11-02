@@ -19,17 +19,17 @@ Related docs:
 > **Chorus.StreamerGateway** (`/ws`) as separate executables. Both use the
 > `Chorus.Gateway.Runtime` library; neither depends on the other executable or
 > uses `Gateway:Roles`. See [independent gateway deployment](../guide/independent-gateways.md).
-> The combined `Chorus.Gateway` and role-switch examples below remain for compatibility.
+> The legacy single `Chorus.Gateway` host was removed (2026-10-31, `48623a5`); the forms below describe the independent hosts.
 
 ## Forms
 
 | Form | Processes | Applicable |
 | --- | --- | --- |
 | Single-process | `Chorus.Server` | Default, debugging, small scale; ingress/WS/engine in the same process |
-| Split (single-gateway process) | `Chorus.Gateway` + `Chorus.EngineHost`; add `Chorus.ControlHost` when `Control:Url` is configured | Gateway and authoritative logic on separate machines/containers; IPC connects them; ControlHost enables shared room authority and durable checkpoints |
-| Split gateway roles | Two `Chorus.Gateway` instances (`Gateway:Roles=platform` / `streamer`) + `Chorus.EngineHost`; add `Chorus.ControlHost` for controlled rooms | Separate platform and streamer edges share the worker IPC fanout; multi-worker routing and durable recovery use ControlHost, see [Process Topology](../design/process-topology.md) §4 |
+| Split (independent gateway hosts) | `Chorus.PlatformGateway` + `Chorus.StreamerGateway` + `Chorus.EngineHost`; add `Chorus.ControlHost` when `Control:Url` is configured | Gateway edge and authoritative logic on separate machines/containers; ControlHost enables shared room authority and durable checkpoints |
+| Edge scaling | Multiple `Chorus.PlatformGateway` / `Chorus.StreamerGateway` instances with distinct `Gateway:Id` + `Chorus.EngineHost`; add `Chorus.ControlHost` for controlled rooms | Platform and streamer edges scale independently; multi-worker routing and durable recovery use ControlHost, see [Process Topology](../design/process-topology.md) §4 |
 
-The Gateway `/ingress`, `/ws`, `/faces`, `/metrics` surfaces are identical across split forms. `/sessions` is a `Chorus.Server` diagnostic endpoint; ControlHost exposes its own authenticated `/api/matches` management API.
+`/ingress/{platform}` lives on `Chorus.PlatformGateway` and `/ws` on `Chorus.StreamerGateway`; the diagnostic surfaces (`/health`, `/ready`, `/faces`, `/metrics`) are currently mapped by `Chorus.Server` / `Chorus.EngineHost` (the gateway hosts do not expose them yet). `/sessions` is a `Chorus.Server` diagnostic endpoint; ControlHost exposes its own authenticated `/api/matches` management API.
 
 ## Build and Run
 
@@ -62,16 +62,16 @@ Supply the connection string through the deployment secret store, enable TLS and
 
 | Endpoint | Purpose | Single-process | Split |
 | --- | --- | --- | --- |
-| `GET /health` | Liveness probe | ✅ | ✅ (Gateway / EngineHost each) |
-| `GET /ready` | **Readiness probe (split Gateway only)**: any engine message (heartbeat/welcome/snapshot) received within `Ipc:ReadinessMaxSilenceMs` → 200, otherwise 503 | ❌ | ✅ (Gateway) |
+| `GET /health` | Liveness probe | ✅ | ✅ (EngineHost; gateway hosts not yet) |
+| `GET /ready` | **Readiness probe**: any engine message (heartbeat/welcome/snapshot) received within `Ipc:ReadinessMaxSilenceMs` → 200, otherwise 503 | ❌ | Not yet mapped — mechanism retained in `Chorus.Gateway.Runtime` (`GatewayIpcService`), see the readiness section below |
 | `GET /sessions` | Session/client metrics JSON (per-client lag/ack detail) | ✅ | ✅ (EngineHost; completed in `c7846a6` — the engine is the session authority in split mode, previously not exposed) |
 | `GET /matches` | Match-level aggregate view JSON | ✅ | ❌ The authoritative `MatchRegistry` is only in single-process; use `/metrics` |
-| `GET /faces` | Listener face counter JSON | ✅ | ✅ (Gateway) |
-| `GET /metrics` | Prometheus text (`chorus_*`) | ✅ | ✅ (all three processes each) |
-| `POST /ingress/{platform}` | Platform event entry | ✅ | ✅ (Gateway) |
-| `WS /ws` | Streamer/viewer client | ✅ | ✅ (Gateway) |
+| `GET /faces` | Listener face counter JSON | ✅ | ❌ (gateway hosts not yet; face counters remain on Server) |
+| `GET /metrics` | Prometheus text (`chorus_*`) | ✅ | ✅ (Server / EngineHost; gateway hosts not yet) |
+| `POST /ingress/{platform}` | Platform event entry | ✅ | ✅ (PlatformGateway) |
+| `WS /ws` | Streamer/viewer client | ✅ | ✅ (StreamerGateway) |
 
-Default ports are in each one's `Properties/launchSettings.json`: Server `5083`, Gateway `5168`, EngineHost `5067`.
+Default ports: Server `5083`, EngineHost `5067` (`Properties/launchSettings.json`); `Chorus.PlatformGateway` internal `7504` / ingress listener via `CHORUS_INGRESS_PORT`, `Chorus.StreamerGateway` internal `7530` / WSS `7443` (`CHORUS_PORT` / `CHORUS_WSS_PORT`; no launchSettings files).
 
 Split mode IPC ports (`Ipc:TcpGatewayToEnginePort=27500`, `Ipc:TcpEngineToGatewayPort=27501`, HTTP transport uses `27600/27601`).
 
@@ -90,6 +90,7 @@ Gateway's `GET /ready`:
 | `Ipc:HeartbeatIntervalMs` (EngineHost) | `5000` | Engine heartbeat interval; `0` disables (after disabling, the Gateway can only decide readiness when client connections produce welcome/snapshot) |
 | `Ipc:ReadinessMaxSilenceMs` (Gateway) | `15000` | Maximum silence window for the readiness decision, recommended ≥ 3× heartbeat interval |
 
+> Status after `48623a5`: the readiness mechanism (`GatewayIpcService` + the two keys above) is retained in `Chorus.Gateway.Runtime`, but no split gateway host currently maps `/ready`; treat this section as the design contract until the independent hosts wire it up.
 The single-process form has no IPC hop and does not expose `/ready` (`/health` is sufficient).
 
 ## Security Configuration (fail-closed)
@@ -157,13 +158,13 @@ Logs use structured templates; key fields: `sessionId`, `clientId`, `tickId`, `e
 ## State and Restart
 
 - GameModule state is in memory while a worker is running. When EngineHost uses ControlHost durability, each committed tick also stores a fenced checkpoint and a replacement owner restores it; standalone mode without control durability has no restart recovery.
-- ControlHost is the shared room authority for configured Gateway/EngineHost processes. Gateway instances use distinct `Gateway:Id` channel suffixes and can share one EngineHost; do not run separate deployments on the same IPC channel names.
+- ControlHost is the shared room authority for configured gateway/EngineHost processes. Gateway processes use distinct `Gateway:Id` channel suffixes and can share one EngineHost; do not run separate deployments on the same IPC channel names.
 - Graceful shutdown: process exit terminates sessions immediately; the upstream should handle reconnection.
 
 ## Split Mode Containerization
 
-- For split Gateway roles, configure two Gateways with `Gateway:Roles=platform` / `streamer` (unselected listeners return 404) and distinct `Gateway:Id` values to share the EngineHost fanout IPC. Controlled rooms also require `Chorus.ControlHost` and `Control:Url` on Gateway/EngineHost; ControlHost routing can use the TCP/HTTP advertised endpoint reported by each Worker. Static IPC with multiple gateways still needs UDS/NamedPipe to avoid port conflicts.
-- Two containers: Gateway and EngineHost; `Ipc:Transport=Tcp`, map `27500/27501` (HTTP then `27600/27601`).
-- Health checks probe `/health` separately (liveness); **Gateway readiness probes `/ready`** (200 = any engine message arrived within the window),
-  on the EngineHost side use `chorus_snapshots_sent_total` in `/metrics` to determine whether the engine is producing snapshots.
+- Run the two gateway hosts as separate containers (`Chorus.PlatformGateway`, `Chorus.StreamerGateway`), each with a distinct `Gateway:Id` to share the EngineHost fanout IPC. Controlled rooms also require `Chorus.ControlHost` and `Control:Url` on Gateway/EngineHost; ControlHost routing can use the TCP/HTTP advertised endpoint reported by each Worker. Static IPC with multiple gateways still needs UDS/NamedPipe to avoid port conflicts.
+- Containers: the two gateway hosts plus EngineHost; `Ipc:Transport=Tcp`, map `27500/27501` (HTTP then `27600/27601`).
+- Health checks probe `/health` separately (liveness); gateway readiness (`/ready`) follows the readiness section above but is not yet mapped by the split hosts.
+  On the EngineHost side use `chorus_snapshots_sent_total` in `/metrics` to determine whether the engine is producing snapshots.
 - Order is not mandatory: if EngineHost is not ready when Gateway starts, event publishing fails and counts into `chorus_ipc_publish_failures_total` (idempotent retry on the client side), and it recovers automatically once EngineHost is ready.

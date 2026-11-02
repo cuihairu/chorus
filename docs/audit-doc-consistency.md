@@ -4,8 +4,8 @@
 > Historical audit snapshot. Its 41-claim counts describe the 2026-10-13 tree, not current debt;
 > bilingual corrections and current documentation status are tracked in the root `todo.md`.
 
-Scope audited: README.md, README.zh.md, all 30 pages under docs/ + .vuepress/config.js + the
-public surface (GitHub About / homepageUrl / topics).
+Scope audited: README.md, README.zh.md, all pages under docs/ + the site config (`docs/.vitepress/`) + the
+public surface (GitHub About / homepageUrl / topics). (The original `.vuepress/config.js` wording predates the site's migration to VitePress.)
 Method: enumerate the doc surface → extract each claim → verify claim-by-claim with `file:line`
 evidence (before asserting "not implemented", confirm the search path exists) → bucket into three
 classes → fix with code as the source of truth.
@@ -92,8 +92,7 @@ classes → fix with code as the source of truth.
 
 ## New vitepress instance
 
-Not applicable — this repo already has a VuePress 1.x site (`docs/.vuepress/`, 30 pages + the
-mermaid plugin + Pages auto-deploy in `docs.yml`).
+Not applicable — this repo already has a docs site (VitePress, Pages auto-deploy in `docs.yml`). The original text described the former VuePress 1.x site (`docs/.vuepress/`), which has since been migrated.
 
 ## Fix principle
 

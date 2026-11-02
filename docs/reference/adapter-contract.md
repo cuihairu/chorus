@@ -203,7 +203,7 @@ Key points:
 
 ## Registration
 
-Use the existing Douyin registration in `Chorus.Server` / `Chorus.Gateway` as the template (the two hosts are isomorphic):
+Use the existing Douyin registration in `Chorus.Server` as the template:
 
 ```csharp
 // 1. 具名验证器：先注册具体类型，再以 IPlatformNamedEventVerifier 暴露给 Router 收集

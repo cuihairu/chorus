@@ -18,7 +18,7 @@ title: Independent Gateway Hosts
 - `Chorus.Gateway.Core`：入口协议实现及接口，与单体宿主共享。
 - `Chorus.Control` / `Chorus.Messaging` / `Chorus.Protocol`：控制面客户端、通信及消息契约。
 
-旧 `Chorus.Gateway` 保留用于兼容原有部署，其可配置角色不作为新独立宿主的依赖。
+旧单体 `Chorus.Gateway` 宿主已于 2026-10-31 移除（`48623a5`）；上面两个宿主就是仅有的网关可执行文件。
 当前 Core 库仍包含两个 face，平台适配器程序集仍可传递到发布目录；隔离的是宿主、服务注册、端点与配置职责，并非完全剥离所有传递程序集。
 
 ## 本机启动
@@ -34,7 +34,7 @@ Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --url
 平台地址为 `http://localhost:5168/ingress/{platform}`；主播地址为 `ws://localhost:5169/ws`。
 平台密钥配置在平台宿主；`Faces:StreamerWs:AuthTokens` 配置在主播宿主。
 开发测试才使用 `Ingress:AllowAll=true` 或 `Faces:StreamerWs:AllowAnonymous=true`。
-两端均提供 `/health`、`/ready`、`/metrics`、`/faces`，未所属的业务入口返回 404。
+共享诊断端点（`/health`、`/ready`、`/metrics`、`/faces`）实现在 `Chorus.Gateway.Runtime`（`GatewayHosting.cs`）；独立宿主拆分后它们仍只由 `Chorus.Server` / `Chorus.EngineHost` 映射，两个网关宿主暂未暴露。未所属的业务入口返回 404。
 
 ## 多机与独立发布
 

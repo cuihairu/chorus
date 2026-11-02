@@ -17,14 +17,14 @@
 <a href="https://github.com/cuihairu/chorus/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://cuihairu.github.io/chorus/zh/"><img alt="Docs" src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue"></a> <a href="https://github.com/cuihairu/chorus/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/chorus/actions/workflows/ci.yml/badge.svg" /></a> <a href="https://github.com/cuihairu/chorus/actions/workflows/nightly.yml"><img alt="Nightly" src="https://github.com/cuihairu/chorus/actions/workflows/nightly.yml/badge.svg" /></a> <a href="https://codecov.io/gh/cuihairu/chorus"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/chorus/branch/main/graph/badge.svg" /></a> <a href="https://github.com/cuihairu/chorus/releases"><img alt="Release" src="https://img.shields.io/github/v/release/cuihairu/chorus?sort=semver" /></a> <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a> <img alt=".NET" src="https://img.shields.io/badge/.NET-10.0-512BD4" />
 </p>
 
-## 文档（VuePress）
+## 文档（VitePress）
 
 **重设计方案（2026-10-25）**：[分布式直播游戏服务器完整设计](docs/architecture/architecture.md)、[验收计划](docs/architecture/redesign-acceptance.md)与 [M0 实现/证据](docs/architecture/redesign-m0-implementation.md)。M0 的 PostgreSQL schema、DataServer/ControlServer、证书边界和双系统 NodeAgent 骨架正在落地；这不代表 M0 出口已全部通过。下文仍是当前代码的使用说明。
 
 - 站点（GitHub Pages）：`https://cuihairu.github.io/chorus/`
 - 源码：`docs/`
 - 本地预览：`npm install && npm run docs:dev`
-- 构建静态站：`npm run docs:build`（输出：`docs/.vuepress/dist`）
+- 构建静态站：`npm run docs:build`（输出：`docs/.vitepress/dist`）
 
 重点页面：架构说明（分层与取舍） ·
 当前架构总览 ·
@@ -81,7 +81,7 @@ Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --url
 - `Chorus.PlatformGateway`（平台网关）：只提供 `/ingress/{platform}`，本地示例端口 5168。
 - `Chorus.StreamerGateway`（主播网关）：只提供 `/ws`，本地示例端口 5169。
 - 公共 IPC、控制面路由、健康检查在 `Chorus.Gateway.Runtime`；共享入口协议在 `Chorus.Gateway.Core`。
-- 两个宿主独立发布、部署和扩容，不需要 `Gateway:Roles`。旧 `Chorus.Gateway` 保留兼容入口。详见[独立网关部署](docs/guide/independent-gateways.md)。
+- 两个宿主独立发布、部署和扩容，不需要 `Gateway:Roles`。旧单体 `Chorus.Gateway` 宿主已移除（`48623a5`）。详见[独立网关部署](docs/guide/independent-gateways.md)。
 - EngineHost：运行权威 tick + 快照，通过本机 IPC 与 Gateway 通信（优先 UDS，失败降级 NamedPipe）
 
 ## 架构概览

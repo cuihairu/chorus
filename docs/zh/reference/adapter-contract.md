@@ -203,7 +203,7 @@ public sealed class MyPlatformVerifier : IPlatformNamedEventVerifier
 
 ## 注册
 
-以 `Chorus.Server` / `Chorus.Gateway` 现有的抖音注册为模板（两个宿主同构）：
+以 `Chorus.Server` 现有的抖音注册为模板：
 
 ```csharp
 // 1. 具名验证器：先注册具体类型，再以 IPlatformNamedEventVerifier 暴露给 Router 收集

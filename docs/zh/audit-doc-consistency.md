@@ -3,7 +3,7 @@
 > 历史审计快照。其 41 项声明的计数描述的是 2026-10-13 的代码树，而非当前欠账；
 > 双语修正与当前文档状态在根 `todo.md` 中跟踪。
 
-审计范围：README.md、README.zh.md、docs/ 下全部 30 页 + .vuepress/config.js + 公共面（GitHub About / homepageUrl / topics）。
+审计范围：README.md、README.zh.md、docs/ 下全部页面 + 站点配置（`docs/.vitepress/`）+ 公共面（GitHub About / homepageUrl / topics）。（原文 `.vuepress/config.js` 的写法早于站点迁移到 VitePress。）
 方法：枚举文档面 → 逐条提取声明 → 逐条以 `file:line` 证据核对（在断言"未实现"之前先确认搜索路径存在）→ 归入三类 → 以代码为事实源修复。
 
 ## 分桶计数
@@ -87,7 +87,7 @@
 
 ## 新 vitepress 实例
 
-不适用——本仓库已有 VuePress 1.x 站点（`docs/.vuepress/`，30 页 + mermaid 插件 + `docs.yml` 中的 Pages 自动部署）。
+不适用——本仓库已有文档站（VitePress，`docs.yml` 自动部署到 Pages）。原文描述的是旧 VuePress 1.x 站点（`docs/.vuepress/`），现已迁移。
 
 ## 修复原则
 

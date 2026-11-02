@@ -103,7 +103,7 @@ Failures at the WS layer mostly manifest as **closing the connection** rather th
 | first frame is not hello | close `NormalClosure` "first message must be hello" | `:117` |
 | hello auth failure (fail-closed) | `error` `unauthorized: {reason}` then close | `:138` |
 | subsequent message over the limit | close `MessageTooBig` "message too large" | `:175` |
-| engine unavailable / welcome timeout (split mode) | `error` `Engine unavailable` / `Engine welcome timeout` | `src/Chorus.Gateway/IpcSessionRouter.cs:44`、`:57` |
+| engine unavailable / welcome timeout (split mode) | `error` `Engine unavailable` / `Engine welcome timeout` | `src/Chorus.Gateway.Runtime/IpcSessionRouter.cs:46`、`:59` |
 
 After a successful handshake, only `ack` / `resync` / `ping` are accepted (`StreamerWsFace.cs:182-237`).
 

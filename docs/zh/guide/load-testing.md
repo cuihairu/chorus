@@ -16,7 +16,7 @@ title: 压测
 ## 运行
 
 ```bash
-dotnet run --project src/Chorus.LoadTool -- --platform test --url http://127.0.0.1:5168 --duration 60
+dotnet run --project src/Chorus.LoadTool -- --platform test --url http://127.0.0.1:5083 --duration 60
 ```
 
 前置：Gateway 或 Server 已在运行。工具构造两种载荷形态，按 `--platform` 选择：
@@ -30,8 +30,8 @@ WS 侧需要 `--token`，或在 Gateway/Server 上配置 `Faces:StreamerWs:Allow
 
 | 参数 | 默认 | 含义 |
 | --- | --- | --- |
-| `--url` | `http://127.0.0.1:5168` | 入口面地址（Gateway / Server 皆可） |
-| `--ws-url` | 由 `--url` 推导 | `/ws` 面地址。默认由 `--url` 推导（http→ws、https→wss，追加 `/ws` 路径）；在分离角色拓扑（`Gateway:Roles=platform` 与 `=streamer` 分进程）中两个面不在同一端口，用该参数显式指定承载 `/ws` 的进程 |
+| `--url` | `http://127.0.0.1:5083` | 入口面地址（单进程 `Chorus.Server`；拆分模式为 `Chorus.PlatformGateway` 的入口端口） |
+| `--ws-url` | 由 `--url` 推导 | `/ws` 面地址。默认由 `--url` 推导（http→ws、https→wss，追加 `/ws` 路径）；拆分模式下两个面在两个宿主上（`Chorus.PlatformGateway` / `Chorus.StreamerGateway`），不在同一端口——用该参数显式指定承载 `/ws` 的宿主 |
 | `--platform` | `douyin` | 入口平台名（`test` 走无签名演示管线） |
 | `--sessions` | 4 | 并发 Session 数 |
 | `--rate` | 50 | 事件/秒，**所有 Session 合计**（在生产者间摊分，轮转覆盖所有 Session）。`RatePacer` 把每个生产者的发送节奏对齐到绝对时间表（2026-10-16 之前是均分间隔，在 ≥1000/s/生产者时被截断为 0，静默禁用了 `--rate`）；生产者跟不上目标节奏时按其实际响应速度发送，长期速率逼近目标。要真正打满目标速率，生产者数必须 ≥ 目标速率 × 平均单请求延迟 |
@@ -53,10 +53,10 @@ WS 侧需要 `--token`，或在 Gateway/Server 上配置 `Faces:StreamerWs:Allow
 
 也可以用环境变量：`CHORUS_LOAD_URL`、`CHORUS_LOAD_WS_URL`、`CHORUS_LOAD_PLATFORM`、`CHORUS_LOAD_SIGN_SECRET`（别名 `CHORUS_LOAD_DOUYIN_SECRET`）、`CHORUS_WS_TOKEN`、`CHORUS_LOAD_ENGINE_METRICS`。
 
-分离角色拓扑示例（两个 gateway 共享一个 EngineHost，`Gateway:Roles`/`Gateway:Id`/`Ipc:GatewayIds` 见[分离模式](./split-mode.md)）：
+拆分边缘拓扑示例（两个网关宿主共享一个 EngineHost，`Gateway:Id`/`Ipc:GatewayIds` 见[分离模式](./split-mode.md)）：
 
 ```bash
-dotnet run --project src/Chorus.LoadTool -- --url http://127.0.0.1:5168 \
+dotnet run --project src/Chorus.LoadTool -- --url http://127.0.0.1:5083 \
   --ws-url ws://127.0.0.1:5178/ws --duration 60
 ```
 

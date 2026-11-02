@@ -5,7 +5,7 @@ title: Current Architecture Overview (Process Topology and Components)
 
 # Current Architecture Overview
 
-Code-verified topology (refreshed 2026-10-19). Standalone `Chorus.Server` runs without the control plane. Durable split mode uses `Chorus.ControlHost` as shared room authority alongside one or more `Chorus.Gateway` instances and `Chorus.EngineHost`; production multi-host failure and capacity gates remain open.
+Code-verified topology (refreshed 2026-10-19). Standalone `Chorus.Server` runs without the control plane. Durable split mode uses `Chorus.ControlHost` as shared room authority alongside the independent gateway hosts (`Chorus.PlatformGateway` / `Chorus.StreamerGateway`) and `Chorus.EngineHost` — the legacy single `Chorus.Gateway` process was removed on 2026-10-31 (`48623a5`); production multi-host failure and capacity gates remain open.
 
 ## Split Mode With ControlHost
 
@@ -16,10 +16,10 @@ flowchart TB
     C["Streamer / Live Companion client"]
   end
 
-  subgraph GW["Chorus.Gateway process (multiple instances, distinguished by Gateway:Id)"]
+  subgraph GW["Gateway edge (Chorus.PlatformGateway + Chorus.StreamerGateway)"]
     INGRESS["PlatformIngressFace<br/>POST /ingress/{platform}"]
     WS["StreamerWsFace<br/>WS /ws"]
-    OPS["/health /ready /faces /metrics"]
+    OPS["gateway diagnostics (GatewayHosting)<br/>not yet mapped by the split hosts"]
     GWIPC["GatewayIpcService<br/>eng→gw channel server (one per instance)<br/>gw→eng channel client"]
   end
 
@@ -65,13 +65,14 @@ Solid lines are realtime execution paths; dashed lines are control-plane RPCs an
 
 | Component | Location |
 |---|---|
-| Gateway routing table (/ingress, /ws, /ready, etc.) | `src/Chorus.Gateway/Program.cs:100` |
+| Platform gateway ingress listener (`POST /ingress/{platform}`) | `src/Chorus.PlatformGateway/Program.cs:147` |
+| Streamer gateway `/ws` routing | `src/Chorus.StreamerGateway/Program.cs:147` |
 | EngineHost routing table (/health, /metrics) | `src/Chorus.EngineHost/Program.cs:34` |
 | Server routing table (including /sessions, /matches) | `src/Chorus.Server/Program.cs:102` |
 | `PlatformIngressFace` (rate limiting/size/timeout/verification/deduplication/Tell) | `src/Chorus.Gateway.Core/Faces/PlatformIngressFace.cs` |
 | Bilibili open-live bridge (wss → `/ingress/bilibili` signature forwarding, started only when credentials are complete) | `src/Chorus.Adapters.Platforms/Bilibili/BilibiliOpenLiveClient.cs` |
 | `StreamerWsFace` (authentication/version gate/ACK rate limiting) | `src/Chorus.Gateway.Core/Faces/StreamerWsFace.cs` |
-| `GatewayIpcService` (eng→gw server + gw→eng client) | `src/Chorus.Gateway/GatewayIpcService.cs:149` |
+| `GatewayIpcService` (eng→gw server + gw→eng client) | `src/Chorus.Gateway.Runtime/GatewayIpcService.cs:10` |
 | `EngineIpcService` (gw→eng server + fanout client) | `src/Chorus.EngineHost/EngineIpcService.cs:88` |
 | `FanOutMessageBus` (per-gateway publishing, failure aggregation) | `src/Chorus.Messaging/FanOutMessageBus.cs` |
 | IPC channel naming (Gateway:Id suffix) | `src/Chorus.Messaging/Ipc/IpcEndpointBuilder.cs:22` |

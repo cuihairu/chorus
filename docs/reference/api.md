@@ -15,38 +15,37 @@ All claims are governed by the source code; see file:line references on each ent
 - The two surfaces with authentication are: `POST /ingress/{platform}` (platform callback signature verification, fail-closed) and `WS /ws`
   (hello token authentication, fail-closed). See [Configuration Reference](./config.md) for configuration.
 
-## Ports (launchSettings defaults)
+## Ports
 
 | Host | HTTP | Source |
 |---|---|---|
 | `Chorus.Server` (single-process) | `5083` | `src/Chorus.Server/Properties/launchSettings.json:8` |
-| `Chorus.Gateway` | `5168` | `src/Chorus.Gateway/Properties/launchSettings.json:8` |
+| `Chorus.PlatformGateway` | internal `7504` (`CHORUS_PORT`); ingress listener only when `CHORUS_INGRESS_PORT` is set | `src/Chorus.PlatformGateway/Program.cs:17`, `:24` |
+| `Chorus.StreamerGateway` | internal `7530` (`CHORUS_PORT`); client WSS `7443` (`CHORUS_WSS_PORT`) | `src/Chorus.StreamerGateway/Program.cs:15`, `:18` |
 | `Chorus.EngineHost` | `5067` | `src/Chorus.EngineHost/Properties/launchSettings.json:8` |
 
 ## HTTP Endpoints
 
-### Chorus.Gateway (`src/Chorus.Gateway/Program.cs`)
+### Chorus.PlatformGateway (`src/Chorus.PlatformGateway/Program.cs`)
 
-| Method Path | Purpose | Response | Source |
-|---|---|---|---|
-| `GET /` | Self-description | `{"name":"Chorus.Gateway","ok":true}` | `Program.cs:123` |
-| `GET /health` | Liveness probe | 200 empty | `Program.cs:124` |
-| `GET /faces` | Listener face counter JSON (ingress/ws both faces) | `FaceCounters`, see below | `Program.cs:125`, fields `Faces/FaceCounters.cs:67`, `:76` |
-| `GET /metrics` | Prometheus text (`chorus_*`) | text | `Program.cs:126`, rendering `Gateway.Core/Metrics/ChorusMetricsText.cs` |
-| `GET /ready` | Readiness probe (split Gateway only) | 200 `{"ready":true,"engineSilenceMs":n}`; silence beyond window 503 `{"ready":false,"engineSilenceMs":n}` | `Program.cs:133`, decision `Gateway/GatewayIpcService.cs:32` |
-| `POST /ingress/{platform}` | Platform event entry (platform role) | See "Ingress Error Codes" | `Program.cs:148`; endpoint not registered when `Gateway:Roles` does not select that role (404), `Program.cs:144` |
-| `WS /ws` | Streamer client (streamer role) | See "WS Protocol" | `Program.cs:156`; same role gate as above `Program.cs:151` |
+| Method Path | Purpose | Source |
+|---|---|---|
+| `POST /ingress/{platform}` | Platform event entry (rate limiting / verification / mapping / dedup, fail-closed); the public listener opens only when `CHORUS_INGRESS_PORT` is set | `Program.cs:147`, port `:24` |
+| mTLS gRPC `GatewayGrpcService` | Cluster-internal face (internal port `CHORUS_PORT`, default `7504`) | `Program.cs:142` |
 
-The gateway holds no session state, so there is no `/sessions` or `/leaderboard` (the latter is on EngineHost / Server).
+### Chorus.StreamerGateway (`src/Chorus.StreamerGateway/Program.cs`)
 
-curl examples (Gateway on 5168):
+| Method Path | Purpose | Source |
+|---|---|---|
+| `WS /ws` | Streamer client protocol (public WSS listener, `CHORUS_WSS_PORT`, default `7443`) | `Program.cs:147` |
+| mTLS gRPC `GatewayGrpcService` | Cluster-internal face (internal port `CHORUS_PORT`, default `7530`) | `Program.cs:146` |
+
+The gateway hosts hold no session state, so there is no `/sessions` or `/leaderboard` (the latter is on EngineHost / Server). The former single gateway's diagnostic endpoints (`GET /`, `/health`, `/ready`, `/faces`, `/metrics`) are implemented in `Chorus.Gateway.Runtime` (`GatewayHosting.cs:22-35`) and are currently mapped by `Chorus.Server` / `Chorus.EngineHost`, not by the split gateway hosts. The ingress request/error-code and WS-protocol semantics below are shared faces from `Chorus.Gateway.Core` and apply to both the single-process and split forms.
+
+Ingress curl example (single-process `Chorus.Server` on 5083):
 
 ```bash
-curl http://localhost:5168/health
-curl http://localhost:5168/ready
-curl http://localhost:5168/faces
-curl http://localhost:5168/metrics
-curl -X POST http://localhost:5168/ingress/test -H 'content-type: application/json' \
+curl -X POST http://localhost:5083/ingress/test -H 'content-type: application/json' \
   -d '{"sessionId":"s1","eventId":"e1","userId":"u1","kind":"comment","text":"hi"}'
 ```
 

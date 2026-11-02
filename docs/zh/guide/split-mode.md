@@ -5,18 +5,18 @@ title: 分离模式（Gateway + EngineHost）
 
 # 分离模式（Gateway + EngineHost）
 
-本指南涵盖基础的 IPC 分离与受控的多 Worker 模式。未设置 `Control:Url` 时，Gateway 按静态配置的 IPC Worker 路由；在 Gateway 与 EngineHost 上都设置 `Control:Url` 时，`Chorus.ControlHost` 提供共享的房间权威、持久检查点以及动态 owner/epoch 路由。
+本指南涵盖基础的 IPC 分离与受控的多 Worker 模式。未设置 `Control:Url` 时，网关宿主按静态配置的 IPC Worker 路由；在网关宿主与 EngineHost 上都设置 `Control:Url` 时，`Chorus.ControlHost` 提供共享的房间权威、持久检查点以及动态 owner/epoch 路由。
 
-- `Chorus.Gateway`：对外暴露 WebSocket `/ws` 与平台入口点 `/ingress/{platform}`
+- `Chorus.PlatformGateway` / `Chorus.StreamerGateway`：分别对外暴露平台入口点 `/ingress/{platform}` 与 WebSocket `/ws`
 - `Chorus.EngineHost`：运行权威 tick + 状态快照（SessionActor + GameModule），并提供 `GET /health` 与 `GET /metrics`（本地 `http://localhost:5067`）
 - 两者通过本地 IPC 通信（默认：优先 UDS，失败时回退到 NamedPipe；可选 TCP）
 
 
-> 当前部署：使用 **Chorus.PlatformGateway**（`/ingress/{platform}`）与
-> **Chorus.StreamerGateway**（`/ws`）作为独立可执行文件。两者都使用
-> `Chorus.Gateway.Runtime` 库；都不依赖另一个可执行文件，也不使用 `Gateway:Roles`。
+> 当前部署：网关边缘是 **Chorus.PlatformGateway**（`/ingress/{platform}`）与
+> **Chorus.StreamerGateway**（`/ws`）两个独立可执行文件，都使用 `Chorus.Gateway.Runtime` 库，
+> 互不依赖。
+> 旧单体 `Chorus.Gateway` 宿主已于 2026-10-31 移除（`48623a5`）；下文步骤以独立宿主为准。
 > 参见[独立网关部署](./independent-gateways.md)。
-> 下文合并的 `Chorus.Gateway` 与角色切换示例为兼容性保留。
 
 ## 1）启动 EngineHost
 
@@ -26,17 +26,18 @@ dotnet run --project src/Chorus.EngineHost
 
 默认启动 IPC 服务端：`Gateway -> Engine`（命令通道），并作为 IPC 客户端连接 `Engine -> Gateway`（事件通道）。
 
-## 2）启动 Gateway
+## 2）启动网关宿主
 
-```bash
-dotnet run --project src/Chorus.Gateway
-```
-
-Gateway 启动 IPC 服务端：`Engine -> Gateway`（事件通道），并作为 IPC 客户端连接 `Gateway -> Engine`（命令通道）。
+`src/Chorus.Gateway` 已不存在（`48623a5` 移除）。网关边缘是两个宿主：
+`Chorus.PlatformGateway` 与 `Chorus.StreamerGateway`，从环境配置启动
+（`CHORUS_CLUSTER_ID`、`CHORUS_ROOT_CA_PEM` / `CHORUS_NODE_CA_PEM`、`CHORUS_TLS_CERT_PEM` / `CHORUS_TLS_KEY_PEM`，
+端口走 `CHORUS_PORT` / `CHORUS_INGRESS_PORT` / `CHORUS_WSS_PORT`；环境面见
+`src/Chorus.PlatformGateway/Program.cs` 与 `src/Chorus.StreamerGateway/Program.cs` 顶部，以及
+[独立网关部署](./independent-gateways.md)）。
 
 ## 3）WebSocket 连接
 
-连接端口取决于 `src/Chorus.Gateway/Properties/launchSettings.json`（默认类似 `ws://localhost:5168/ws`）。
+对外端口来自宿主环境：`Chorus.StreamerGateway` 的 `/ws` 在 WSS 监听上（`CHORUS_WSS_PORT`，默认 `7443`）；`Chorus.PlatformGateway` 仅在设置 `CHORUS_INGRESS_PORT` 时开启 `/ingress/{platform}` 监听（内部 `CHORUS_PORT`，默认 `7504` / `7530`）。
 
 发送第一条消息：
 
@@ -49,7 +50,7 @@ Gateway 启动 IPC 服务端：`Engine -> Gateway`（事件通道），并作为
 ## 4）注入测试事件（模拟平台）
 
 ```bash
-curl -X POST http://localhost:5168/ingress/test \
+curl -X POST http://localhost:<ingress-port>/ingress/test \
   -H 'content-type: application/json' \
   -d '{"sessionId":"<sessionId>","userId":"u1","kind":"Like"}'
 ```

@@ -66,6 +66,6 @@ pnpm install --frozen-lockfile
 pnpm docs:build
 ```
 
-输出目录：`docs/.vuepress/dist`
+输出目录：`docs/.vitepress/dist`
 
-> **依赖锁定注意**：文档站是老的 VuePress 1.x + webpack 4 链，`package.json` 的 `overrides` 有一批安全锁。改动锁定时先本地验证 `npm ci` 与 `npm run docs:build` 都通过再提交——已踩过两个坑：形如 `"a>b"` 的 override 键是 pnpm 语法，npm 会以 `EINVALIDTAGNAME` 拒绝（嵌套对象才是 npm 形式）；webpack-log 3.0.2 声明 `nanoid: ^2.0.3` 且把 `require('nanoid')` 当函数调用，锁到 nanoid 3.x 会让构建报 `nanoid is not a function` 失败。
+> **工具链说明**：文档站用 VitePress 构建——`package.json` 脚本 `docs:dev` = `vitepress dev docs`、`docs:build` = `vitepress build docs`；Pages 部署上传 `docs/.vitepress/dist`（`.github/workflows/docs.yml`）。

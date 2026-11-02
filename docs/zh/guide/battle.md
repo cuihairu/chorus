@@ -102,7 +102,7 @@ WS 层失败大多表现为**关闭连接**而非错误码（`src/Chorus.Gateway
 | 首帧不是 hello | 关闭 `NormalClosure` "first message must be hello" | `:117` |
 | hello 鉴权失败（fail-closed） | `error` `unauthorized: {reason}` 后关闭 | `:138` |
 | 后续消息超限 | 关闭 `MessageTooBig` "message too large" | `:175` |
-| 引擎不可用 / welcome 超时（拆分模式） | `error` `Engine unavailable` / `Engine welcome timeout` | `src/Chorus.Gateway/IpcSessionRouter.cs:44`、`:57` |
+| 引擎不可用 / welcome 超时（拆分模式） | `error` `Engine unavailable` / `Engine welcome timeout` | `src/Chorus.Gateway.Runtime/IpcSessionRouter.cs:46`、`:59` |
 
 握手成功后只接受 `ack` / `resync` / `ping`（`StreamerWsFace.cs:182-237`）。
 

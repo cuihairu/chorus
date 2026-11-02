@@ -258,7 +258,7 @@ maxResyncReplayTicks = 128
 
 | 键 | 默认值 | 描述 |
 |---|---|---|
-| `Gateway:Roles`（Gateway） | `all` | 该 Gateway 进程承载的监听角色：`all`（单进程双监听，默认）、`platform`（只挂 `/ingress`，即 platform-gw）、`streamer`（只挂 `/ws`，即 streamer-gw）。未选角色的端点不注册（404）；两个监听的面实现共用一份（`PlatformIngressFace` / `StreamerWsFace`），无代码分叉；`/health`、`/faces`、`/metrics`、`/ready` 不受角色影响。非法值启动即抛（fail-fast）。单机形态不受该键影响。见[进程拓扑](../design/process-topology.md) §4 |
+| `Gateway:Roles`（已退役） | — | **当前没有宿主读取该键。** 它属于旧单体 `Chorus.Gateway` 宿主（`48623a5` 移除）——拆分边缘现在是入口固定的 `Chorus.PlatformGateway` / `Chorus.StreamerGateway`（见[独立网关部署](../guide/independent-gateways.md)）。保留此行仅为提示旧配置中的该键已无效。历史行为：`all`（单进程双监听，默认）、`platform`（只挂 `/ingress`，即 platform-gw）、`streamer`（只挂 `/ws`，即 streamer-gw）。未选角色的端点不注册（404）；两个监听的面实现共用一份（`PlatformIngressFace` / `StreamerWsFace`），无代码分叉；`/health`、`/faces`、`/metrics`、`/ready` 不受角色影响。非法值启动即抛（fail-fast）。单机形态不受该键影响。见[进程拓扑](../design/process-topology.md) §4 |
 | `Gateway:Id`（Gateway） | 空 | 本网关标识（仅 ASCII 字母/数字/`-`）：作为本进程 eng→gw 通道名的后缀，从而多个网关可共享同一 EngineHost 与同一 socket 目录。空 = 旧单网关通道名（向后兼容）。非法字符启动即抛。见[拆分模式](../guide/split-mode.md)的多网关章节 |
 
 ## IPC 与就绪（拆分模式）

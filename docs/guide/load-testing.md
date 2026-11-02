@@ -16,7 +16,7 @@ Related docs:
 ## Running
 
 ```bash
-dotnet run --project src/Chorus.LoadTool -- --platform test --url http://127.0.0.1:5168 --duration 60
+dotnet run --project src/Chorus.LoadTool -- --platform test --url http://127.0.0.1:5083 --duration 60
 ```
 
 Prerequisite: Gateway or Server is already running. The tool constructs two payload shapes, selected by `--platform`:
@@ -30,8 +30,8 @@ The WS side requires `--token`, or configuring `Faces:StreamerWs:AllowAnonymous=
 
 | Parameter | Default | Meaning |
 | --- | --- | --- |
-| `--url` | `http://127.0.0.1:5168` | ingress face address (Gateway / Server both work) |
-| `--ws-url` | derived from `--url` | `/ws` face address. Derived from `--url` by default (http→ws, https→wss, appending the `/ws` path); under the split-role topology (`Gateway:Roles=platform` and `=streamer` in separate processes) the two faces are not on the same port, use this parameter to explicitly specify the process hosting `/ws` |
+| `--url` | `http://127.0.0.1:5083` | ingress face address (single-process `Chorus.Server`; in split mode the `Chorus.PlatformGateway` ingress port) |
+| `--ws-url` | derived from `--url` | `/ws` face address. Derived from `--url` by default (http→ws, https→wss, appending the `/ws` path); in split mode the two faces are on separate hosts (`Chorus.PlatformGateway` / `Chorus.StreamerGateway`), so they are not on the same port — use this parameter to explicitly specify the host serving `/ws` |
 | `--platform` | `douyin` | ingress platform name (`test` uses the unsigned demo pipeline) |
 | `--sessions` | 4 | number of concurrent Sessions |
 | `--rate` | 50 | events/second, **total across all Sessions** (spread across producers, round-robin covering all Sessions). `RatePacer` aligns each producer's send cadence to an absolute schedule (before 2026-10-16 it was evenly divided intervals, truncated to 0 at ≥1000/s/producer, silently disabling `--rate`); when a producer can't keep up with the target cadence it sends at its actual response speed, and the long-run rate approaches the target. To actually hit the target rate, the number of producers must be ≥ target rate × average per-request latency |
@@ -53,10 +53,10 @@ The WS side requires `--token`, or configuring `Faces:StreamerWs:AllowAnonymous=
 
 Environment variables can also be used: `CHORUS_LOAD_URL`, `CHORUS_LOAD_WS_URL`, `CHORUS_LOAD_PLATFORM`, `CHORUS_LOAD_SIGN_SECRET` (alias `CHORUS_LOAD_DOUYIN_SECRET`), `CHORUS_WS_TOKEN`, `CHORUS_LOAD_ENGINE_METRICS`.
 
-Split-role topology example (two gateways sharing one EngineHost, see [Split Mode](./split-mode.md) for `Gateway:Roles`/`Gateway:Id`/`Ipc:GatewayIds`):
+Split-edge topology example (the two gateway hosts sharing one EngineHost, see [Split Mode](./split-mode.md) for `Gateway:Id`/`Ipc:GatewayIds`):
 
 ```bash
-dotnet run --project src/Chorus.LoadTool -- --url http://127.0.0.1:5168 \
+dotnet run --project src/Chorus.LoadTool -- --url http://127.0.0.1:5083 \
   --ws-url ws://127.0.0.1:5178/ws --duration 60
 ```
 

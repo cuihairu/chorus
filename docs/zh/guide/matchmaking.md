@@ -95,9 +95,9 @@ internal sealed class CountingBotFactory : IBotParticipantFactory
 
 `Matchmaker` 只负责组局。让机器人在对局里行动是另外两个类型的职责：
 
-- `IBotStrategy` / `BotWorldView` / `BotStrategyConfig`（`src/Chorus.Engine/BotStrategy.cs:66-78`、`:56`、`:6`）
+- `IBotStrategy` / `BotWorldView` / `BotStrategyConfig`（`src/Chorus.Engine/Matchmaking/BotStrategy.cs:66-78`、`:56`、`:6`）
   —— 每 tick 从世界视图算出一个 `BotAction`。
-- `BotRuntime`（`src/Chorus.Engine/BotRuntime.cs:158`）—— 每 tick 拉取策略输出，经有界队列
+- `BotRuntime`（`src/Chorus.Engine/Matchmaking/BotStrategy.cs:158`；队列辅助在 `src/Chorus.Engine/Matchmaking/BotRuntime.cs`）—— 每 tick 拉取策略输出，经有界队列
   `BotActionQueue`（`:61`）提交进会话，`Drain`/`DrainUpTo` 控制消费节奏（`:166`、`:180`）；
   内建工厂 `DefaultBotParticipantFactory` 在 `:8`。
 

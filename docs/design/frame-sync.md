@@ -116,7 +116,7 @@ The frame number **is already** delivered with snapshots (`ServerSnapshot.cs:8`)
 **P1 — Frame Number Semantics + Client Replay by Frame Number (Implemented)**
 
 - Frame number = `tickId`, delivered with snapshots; the client sorts and renders by frame number (§4.1).
-- Client replay state machine `src/Chorus.LoadTool/FramePlayer.cs`: frame number ≤ applied frame → drop (idempotent; the replayed window will not render twice); frame number > applied frame + 1 → apply and report the first gap frame number for `resync` to fetch. Unit tests `FramePlayerTests` (7); `ClientSimulation` is wired (`LoadTool` outputs the `resyncs=` count).
+- Client replay state machine `src/Chorus.Client/FramePlayer.cs`: frame number ≤ applied frame → drop (idempotent; the replayed window will not render twice); frame number > applied frame + 1 → apply and report the first gap frame number for `resync` to fetch. Unit tests `FramePlayerTests` (7); `ClientSimulation` is wired (`LoadTool` outputs the `resyncs=` count).
 - The `state.frameEvents` convention is **deprecated**: the original plan stuffed frame attribution into `state` (zero protocol changes); P2's envelope field is the better solution (a first-class protocol field, so the client need not know the `state` convention), and G1 was closed directly with P2.
 
 **P2 — Protocol Extension (Additive Optional, Implemented)**
