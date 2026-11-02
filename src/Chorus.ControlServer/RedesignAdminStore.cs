@@ -16,7 +16,8 @@ public sealed record AdminParticipantSnapshot(string ParticipantId, string? Bind
 public sealed record AdminRoomSnapshot(bool Found, string TenantId, string GameId, string Status, long Epoch,
     long LastTick, long StateVersion, OwnerStatus? Ownership, IReadOnlyList<AdminParticipantSnapshot> Participants,
     long ResultVersion, long FinalFrame, int GrantsTotal, int GrantsGranted,
-    SettleTaskState? SettleTask);
+    SettleTaskState? SettleTask,
+    string? ReleaseBlockedReason, DateTime? ReleaseBlockedSince, long ReleaseBlockedTotalMs);
 public sealed record AdminTraceEvent(long Sequence, string EventId, string Disposition, string? BindingId,
     DateTime ReceivedAtUtc, string PayloadJson);
 public sealed record AdminTraceFrame(long Tick, string CommitId, string InputRefsJson, string EffectsJson);
@@ -249,7 +250,8 @@ public sealed class RedesignAdminStore(string connectionString)
                 stateVersion = reader.GetInt64(5);
             }
         }
-        if (!found) return new AdminRoomSnapshot(false, "", "", "", 0, 0, 0, null, [], 0, 0, 0, 0, null);
+        if (!found) return new AdminRoomSnapshot(false, "", "", "", 0, 0, 0, null, [], 0, 0, 0, 0, null,
+            null, null, 0);
 
         OwnerStatus? ownership = null;
         await using (var query = new NpgsqlCommand("""
@@ -319,8 +321,32 @@ public sealed class RedesignAdminStore(string connectionString)
                     reader.IsDBNull(5) ? null : reader.GetString(5),
                     reader.IsDBNull(6) ? null : reader.GetDateTime(6));
         }
+        // The release block (FIX-SETTLE-05): the evidence reason the data plane refused,
+        // when the continuous wait began and the cumulative dwell. Null reason = not blocked
+        // right now; the total survives the release, so a settled room still reports how
+        // long it waited.
+        string? releaseBlockedReason = null;
+        DateTime? releaseBlockedSince = null;
+        long releaseBlockedTotalMs = 0;
+        await using (var query = new NpgsqlCommand("""
+            SELECT blocked_reason,blocked_since,blocked_total_ms FROM control.end_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room
+            """, connection))
+        {
+            query.Parameters.AddWithValue("tenant", tenantId);
+            query.Parameters.AddWithValue("game", gameId);
+            query.Parameters.AddWithValue("room", roomId);
+            await using var reader = await query.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                releaseBlockedReason = reader.IsDBNull(0) ? null : reader.GetString(0);
+                releaseBlockedSince = reader.IsDBNull(1) ? null : reader.GetDateTime(1);
+                releaseBlockedTotalMs = reader.GetInt64(2);
+            }
+        }
         return new AdminRoomSnapshot(true, tenantId, gameId, status, epoch, lastTick, stateVersion, ownership,
-            participants, resultVersion, finalFrame, grantsTotal, grantsGranted, settleTask);
+            participants, resultVersion, finalFrame, grantsTotal, grantsGranted, settleTask,
+            releaseBlockedReason, releaseBlockedSince, releaseBlockedTotalMs);
     }
 
     /// <summary>

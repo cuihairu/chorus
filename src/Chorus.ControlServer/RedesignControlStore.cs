@@ -82,11 +82,14 @@ public sealed record EndMountGeneration(string BindingId, long Generation, long 
 /// every end step binds itself to, the room's round generation and the mount generations
 /// that entered it, the phase the sequence stands at, and the last error. The row is
 /// progress, never authority — ownership, routing and the settlement stores stay the
-/// fences.</summary>
+/// fences. The release block (FIX-SETTLE-05) records the evidence reason the data plane
+/// refused, when the continuous block began and the cumulative dwell across all block
+/// episodes — the total freezes on the release and the reason clears.</summary>
 public sealed record EndOperation(
     string TenantId, string GameId, string EndOperationId, string RoomId, long RoundGeneration,
     IReadOnlyList<EndMountGeneration> BindingGenerations, long FinalTick, long ResultVersion,
-    string Phase, string? LastError, DateTime CreatedAt, DateTime UpdatedAt);
+    string Phase, string? LastError, DateTime CreatedAt, DateTime UpdatedAt,
+    string? BlockedReason, DateTime? BlockedSince, long BlockedTotalMs);
 
 /// <summary>Thrown when a begin names a generation the mounts have moved past (or no
 /// longer point at the room): a late request records nothing and cannot touch the newer
@@ -1222,7 +1225,10 @@ public sealed class RedesignControlStore(string connectionString)
     /// ladder advances one step at a time under the recorded business id — a skip ahead, a
     /// step back or a phase the operation never held refuses, so a late or reordered step
     /// cannot rewrite a newer operation's progress. The error column records the last
-    /// failure the phase produced without leaving the phase.
+    /// failure the phase produced without leaving the phase. The release transition
+    /// (FIX-SETTLE-05) closes the block episode in the same transaction: the dwell since
+    /// blocked_since joins the cumulative total and the reason clears — the total survives
+    /// the release, the reason only matters while the room is blocked.
     /// </summary>
     public async Task<EndOperation> AdvanceEndOperationPhaseAsync(string tenantId, string gameId,
         string endOperationId, string fromPhase, string toPhase, string? lastError = null,
@@ -1235,7 +1241,10 @@ public sealed class RedesignControlStore(string connectionString)
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
             UPDATE control.end_operation
-            SET phase=@to, last_error=@error, updated_at=clock_timestamp()
+            SET phase=@to, last_error=@error, updated_at=clock_timestamp(),
+                blocked_total_ms = blocked_total_ms +
+                    COALESCE((EXTRACT(EPOCH FROM (clock_timestamp()-blocked_since))*1000)::bigint, 0),
+                blocked_since = NULL, blocked_reason = NULL
             WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation AND phase=@from
             RETURNING room_id
             """, connection);
@@ -1250,6 +1259,38 @@ public sealed class RedesignControlStore(string connectionString)
                 $"The end operation {endOperationId} is not at the phase {fromPhase}.");
         return (await ReadEndOperationAsync(
             connection, null, tenantId, gameId, endOperationId, cancellationToken))!;
+    }
+
+    /// <summary>
+    /// Records the release block (FIX-SETTLE-05): the data plane's finalize transaction
+    /// refused because evidence is still gathering — undisposed inputs, an incomplete
+    /// manifest, a platform precondition — and the refusal's reason becomes the queryable
+    /// block. The first refusal of an episode sets blocked_since; later refusals of the
+    /// same episode keep it and refresh the reason, so the dwell measures the whole wait.
+    /// The write only lands while the row still stands at the release phase: a pass that
+    /// already released the room must not have a stale refusal paint a block onto it.
+    /// </summary>
+    public async Task RecordEndOperationBlockAsync(string tenantId, string gameId,
+        string endOperationId, string reason, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            UPDATE control.end_operation
+            SET blocked_reason=@reason,
+                blocked_since=COALESCE(blocked_since, clock_timestamp()),
+                last_error=@reason,
+                updated_at=clock_timestamp()
+            WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation
+                AND phase=@releasePhase
+            """, connection);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("operation", endOperationId);
+        command.Parameters.AddWithValue("reason", reason);
+        command.Parameters.AddWithValue("releasePhase", EndOperationPhases.PlatformClosed);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     /// <summary>Records a failure on the operation row without leaving the phase — the
@@ -1876,7 +1917,8 @@ public sealed class RedesignControlStore(string connectionString)
     {
         await using var command = new NpgsqlCommand("""
             SELECT room_id,round_generation,binding_generations,final_tick,result_version,
-                phase,last_error,created_at,updated_at
+                phase,last_error,created_at,updated_at,
+                blocked_reason,blocked_since,blocked_total_ms
             FROM control.end_operation
             WHERE tenant_id=@tenant AND game_id=@game AND end_operation_id=@operation
             """, connection, transaction);
@@ -1895,6 +1937,9 @@ public sealed class RedesignControlStore(string connectionString)
         return new EndOperation(tenantId, gameId, endOperationId, reader.GetString(0),
             reader.GetInt64(1), generations, reader.GetInt64(3), reader.GetInt64(4),
             reader.GetString(5), reader.IsDBNull(6) ? null : reader.GetString(6),
-            reader.GetDateTime(7), reader.GetDateTime(8));
+            reader.GetDateTime(7), reader.GetDateTime(8),
+            reader.IsDBNull(9) ? null : reader.GetString(9),
+            reader.IsDBNull(10) ? null : reader.GetDateTime(10),
+            reader.GetInt64(11));
     }
 }

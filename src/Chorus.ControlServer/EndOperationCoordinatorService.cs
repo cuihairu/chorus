@@ -223,10 +223,16 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
                 {
                     // The evidence is still gathering — most often the manifest mid-settle.
                     // The refusal names what the data plane's transaction found missing; the
-                    // phase parks and the next pass asks again.
+                    // phase parks and the next pass asks again. The reason becomes the
+                    // queryable block (FIX-SETTLE-05): recorded on the row with the moment
+                    // the wait began, so the room's snapshot exposes what blocks it and for
+                    // how long — the dwell accumulates on the eventual release.
                     logger.LogInformation(
                         "The release of {RoomId} waits for its evidence: {Message}",
                         current.RoomId, error.Message);
+                    await controlStore.RecordEndOperationBlockAsync(current.TenantId,
+                        current.GameId, current.EndOperationId, error.Message,
+                        cancellationToken);
                 }
                 catch (RpcException error)
                 {

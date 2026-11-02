@@ -665,6 +665,13 @@ message AdminRoomSnapshotReply {
   string settle_last_error = 19;
   int64 settle_next_attempt_unix_ms = 20;
   string settle_owner_instance_id = 21;
+  // The release block (FIX-SETTLE-05): the evidence reason the data plane refused, when the
+  // continuous wait began and the cumulative dwell. Empty release_blocked_reason = not
+  // blocked right now; release_blocked_total_ms survives the release, so a settled room
+  // still reports how long it waited.
+  string release_blocked_reason = 22;
+  int64 release_blocked_since_unix_ms = 23;
+  int64 release_blocked_total_ms = 24;
 }
 
 // The AT31 round trace: one room's whole causal chain — platform events as routed, the frames

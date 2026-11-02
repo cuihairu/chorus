@@ -93,7 +93,11 @@ public sealed class AdminGrpcService(
             SettleLastError = snapshot.SettleTask?.LastError ?? "",
             SettleNextAttemptUnixMs = snapshot.SettleTask?.NextAttempt is { } next
                 ? new DateTimeOffset(next).ToUnixTimeMilliseconds() : 0,
-            SettleOwnerInstanceId = snapshot.SettleTask?.OwnerInstanceId ?? ""
+            SettleOwnerInstanceId = snapshot.SettleTask?.OwnerInstanceId ?? "",
+            ReleaseBlockedReason = snapshot.ReleaseBlockedReason ?? "",
+            ReleaseBlockedSinceUnixMs = snapshot.ReleaseBlockedSince is { } since
+                ? new DateTimeOffset(since).ToUnixTimeMilliseconds() : 0,
+            ReleaseBlockedTotalMs = snapshot.ReleaseBlockedTotalMs
         };
     }
 
