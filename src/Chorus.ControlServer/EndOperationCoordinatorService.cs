@@ -122,14 +122,20 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
                     // barrier gathers its answers. Authorization below is safe either way —
                     // a task recorded after the barrier completed can only ever call after
                     // it completed.
-                    await TryEnqueuePlatformEndTasksAsync(command, current, cancellationToken);
+                    var recorded = await TryEnqueuePlatformEndTasksAsync(command, current, cancellationToken);
                     var responders = await controlStore.ResolveDeliveryStopBarrierAsync(
                         current.TenantId, current.GameId, current.EndOperationId,
                         BarrierStaleSeconds, cancellationToken);
                     var holders = responders
                         .Where(responder => responder.HoldsAuthorization).ToList();
                     await PushAllAsync(command, current, holders, cancellationToken);
-                    if (await controlStore.AdvanceDeliveryStoppedBarrierAsync(current.TenantId,
+                    // The authorization only follows a recording that landed: a data plane
+                    // unreachable while the barrier completed would otherwise walk the phase
+                    // past both recording legs in this very pass, and step 6 would wait
+                    // forever on tasks nobody records — the ladder wedged below the release.
+                    // Parking here holds the re-push leg, whose every pass retries the
+                    // recording (idempotent duplicates), so the outage only ever delays it.
+                    if (recorded && await controlStore.AdvanceDeliveryStoppedBarrierAsync(current.TenantId,
                         current.GameId, current.EndOperationId, BarrierStaleSeconds, cancellationToken))
                     {
                         var lapsed = responders.Count - holders.Count;
@@ -158,11 +164,12 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
             {
                 // Step 6 (FIX-END-10): the platform close's credential is the tasks' own
                 // standing — every mount's end task answered success or a grounded
-                // NotRequired. A count short of the operation's recorded mounts is the
-                // recording still in flight (the enqueue retries above), never a vacuous
-                // completion; an unknown, failed or attention task keeps the operation open —
-                // a timeout may not advance as success. A data plane the channel cannot
-                // reach holds the read, never the ladder: the next pass asks again.
+                // NotRequired. The count cannot be short of the operation's recorded
+                // mounts: the StopDeliveryIssued leg only authorizes this phase after its
+                // recording landed, and the tasks' executors drive their own retries. An
+                // unknown, failed or attention task keeps the operation open — a timeout
+                // may not advance as success. A data plane the channel cannot reach holds
+                // the read, never the ladder: the next pass asks again.
                 try
                 {
                     var close = await _tasks.GetCloseCompletionAsync(new TaskCloseRequest
@@ -362,18 +369,20 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
     /// <summary>The enqueue's transport faults are the data plane's outage, not this
     /// operation's: logged and retried on the next pass, so a dead data channel holds the
     /// platform task's recording without ever holding the delivery-stop leg hostage.</summary>
-    private async Task TryEnqueuePlatformEndTasksAsync(StopDeliveryCommand command,
+    private async Task<bool> TryEnqueuePlatformEndTasksAsync(StopDeliveryCommand command,
         EndOperation operation, CancellationToken cancellationToken)
     {
         try
         {
             await EnqueuePlatformEndTasksAsync(command, operation, cancellationToken);
+            return true;
         }
         catch (Exception error) when (error is RpcException or HttpRequestException)
         {
             logger.LogWarning(error,
                 "Platform end task recording for {RoomId} waits for the data plane: {Message}",
                 command.RoomId, error.Message);
+            return false;
         }
     }
 
