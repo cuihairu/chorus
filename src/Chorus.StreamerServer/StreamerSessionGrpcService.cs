@@ -216,6 +216,11 @@ public sealed class StreamerSessionGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "The gameplay binding is not available."));
         }
+        catch (MountInLiveRoundException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The live session still participates in a running round; finish or leave it before mounting again."));
+        }
         catch (SessionRevokedException)
         {
             throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked."));

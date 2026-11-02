@@ -190,6 +190,16 @@ public sealed class StreamerIdentityGrpcService(
         {
             throw new RpcException(new Status(StatusCode.Aborted, "The gameplay binding is not available."));
         }
+        catch (MountInLiveRoundException)
+        {
+            // FIX-END-17: a re-mount while the live session holds a live round participation is
+            // refused (architecture 6.2). ResourceExhausted is this hop's distinct wire code —
+            // FailedPrecondition is claimed by SessionReplaced on the same channel — and the
+            // StreamerServer channel translates it back to MountInLiveRoundException so the
+            // client sees the honest refusal, not "binding not available" or "session replaced".
+            throw new RpcException(new Status(StatusCode.ResourceExhausted,
+                "The live session is in a running round; finish it before mounting again."));
+        }
         catch (SessionRevokedException) { throw new RpcException(new Status(StatusCode.PermissionDenied, "Session is revoked.")); }
         catch (SessionReplacedException) { throw new RpcException(new Status(StatusCode.FailedPrecondition, "Session is replaced.")); }
         catch (IdempotencyConflictException)

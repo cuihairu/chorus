@@ -195,5 +195,11 @@ public sealed class StreamerIdentityChannel(Func<GrpcChannel> channelFactory) : 
         {
             throw new BindingDeniedException();
         }
+        catch (RpcException error) when (error.StatusCode == StatusCode.ResourceExhausted)
+        {
+            // FIX-END-17: the DataServer refused the mount because the live session is still in a
+            // running round; surface that as the domain refusal, not a generic "not available".
+            throw new MountInLiveRoundException();
+        }
     }
 }

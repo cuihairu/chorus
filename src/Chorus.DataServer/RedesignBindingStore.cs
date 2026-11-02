@@ -240,6 +240,26 @@ public sealed class RedesignBindingStore(string connectionString, Action? crashA
                 throw new BindingDeniedException();
             generation = reader.GetInt64(0) + 1;
         }
+        // FIX-END-17, the repeated-bring-up fence (architecture 6.2): a new mount generation is
+        // committed only after the previous round terminated. The active bindings are locked
+        // BEFORE the participation read — the same binding-then-participation order StartRound
+        // admission uses — so a concurrent admission and this mount serialize on the binding row:
+        // either the admission lands first and the fence below throws, or the mount lands first
+        // and the admission rejects the now-Closed binding. A re-mount can never spawn a fresh
+        // binding that walks past the binding-scoped match fences into a second room.
+        await using (var inRound = new NpgsqlCommand($"""
+            SELECT b.binding_id FROM live.binding b
+            WHERE b.live_session_id=@session AND b.state IN {ActiveStates}
+              AND EXISTS (SELECT 1 FROM game.participation p
+                          WHERE p.binding_id=b.binding_id AND p.state IN ('Active','Offline'))
+            FOR UPDATE
+            """, connection, transaction))
+        {
+            inRound.Parameters.AddWithValue("session", liveSessionId);
+            await using var reader = await inRound.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+                throw new MountInLiveRoundException();
+        }
         var bindingId = Guid.NewGuid().ToString("N");
         await using (var close = new NpgsqlCommand($"""
             UPDATE live.binding SET state='Closed'

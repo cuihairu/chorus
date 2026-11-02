@@ -9,6 +9,11 @@ public sealed class SessionReplacedException : Exception;
 /// <summary>The live session or gameplay binding is not available to this caller.</summary>
 public sealed class BindingDeniedException : Exception;
 
+/// <summary>The live session still holds a live round participation (FIX-END-17): a re-mount
+/// while the previous round is live would build a second room for a streamer already in one,
+/// so the new mount generation is refused until the round releases (architecture 6.2).</summary>
+public sealed class MountInLiveRoundException : Exception;
+
 /// <summary>Another external operation is executing on the same mount; the caller must wait.</summary>
 public sealed class TaskBusyException : Exception;
 
