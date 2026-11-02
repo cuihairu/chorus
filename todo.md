@@ -114,7 +114,9 @@
 - [x] **FIX-SETTLE-05：暴露终局阻塞原因。** 依赖：FIX-END-12。交付：未处置重要输入、未完成奖励或平台前置条件等阻塞原因可查询。验收：前置条件未满足时不能强行 Settled；条件解除后后台自动继续；记录停留时长。
   - 完成：5729017（schema 0029 `control.end_operation` 加 `blocked_reason`/`blocked_since`/`blocked_total_ms`；`RecordEndOperationBlockAsync`——释放相位守卫 + COALESCE 保留首次拒绝时刻；`AdvanceEndOperationPhaseAsync` 释放跃迁事务内累计 dwell + 清原因；协调者释放 FailedPrecondition catch 记录阻塞；`GetRoomSnapshot` 暴露 release_blocked_reason/since_unix_ms/total_ms（m3.proto 22-24）；数据面 FinalizeRound 校验零改动——不可强行 Settled 保持）。
   - 验证：RedesignEndBlockStoreTests 4/4 + RedesignSettleBlockHostTests 1/1 + 迁移 pin 1/1（迁移 28→29、表 43）；定向族 63/63（end-operation/settle/admin/coordinator/control-store/schema/END-15 链序/END-11）；全量 1516 基线共租风暴下 1513/1516，3 个不同族失败全部隔离复跑全绿判 flake，本项新测试 6 则全量皆绿；残留 0 进程 0 库。见 ledger 段。
-- [ ] **FIX-SETTLE-06：验证自动收尾后再次开局。** 依赖：FIX-SETTLE-03、FIX-SETTLE-05、FIX-END-13。交付：结算中断恢复后使用同一挂载开启下一局的宿主测试。验收：首局奖励不重复、占位无泄漏、第二局正常接收输入并结束（AT20）。
+- [x] **FIX-SETTLE-06：验证自动收尾后再次开局。** 依赖：FIX-SETTLE-03、FIX-SETTLE-05、FIX-END-13。交付：结算中断恢复后使用同一挂载开启下一局的宿主测试。验收：首局奖励不重复、占位无泄漏、第二局正常接收输入并结束（AT20）。
+  - 完成：5c28173（新 RedesignSettleRecoveryHostTests.AnInterruptedSettlementAutoRecoversAndTheSameMountOpensTheNextRound——照抄 M2-10 的结束梯子+释放+二开骨架，加 `CHORUS_SETTLE_CRASH_AFTER_GRANT=1`（结算器于首局 manifest 首笔 grant 处死，回滚留 0 笔入账）与 ControlServer 的 `CHORUS_SETTLE_EXECUTOR_INTERVAL_MS=1500`（执行者=唯一恢复方）：①首局 40×25ms 轮+两笔 gift→宿主 CommitResult 死于首 grant（数据面控制台实证 "The settler died after grant"）；②业务执行者独力补全清单→2 笔 Granted、settle_task 清空；③协调者走完梯子释放：房 Settled、participation 全 Closed（占位无泄漏）、ownership Released:epoch+1、binding.current_room_id 清空、round_generation 留 1（挂载指针释放）、outbox round.settled、control.settle_task 0 行；④首局账本恰 2 行 distinct operation_id==count（回滚的 try 与执行者的 drive 是两个执行者各一账而非双倍）；⑤同绑定开二局：room-s6-2 StartRound+PrepareRoom+两笔新 dedup gift→正常接收输入并结束（一次性的死亡已消费）、2 笔 Granted、房 Settled、binding round_generation==2、二局账本恰 2 行）。
+  - 验证：新测 1/1 绿（31s）；定向族 41/41 绿（settle-recovery/settle-executor/settle-block/settle-task/end-block/end-operation-host/M2Host 4m53s）；全量 **1517/1517 全绿**（9m、负载 18-22 窗口、零败、无 flake 甄别）；残留 0 进程 0 库。见 ledger 段。
 
 ### 22.6 实时性、容量与负载治理（P1）
 
