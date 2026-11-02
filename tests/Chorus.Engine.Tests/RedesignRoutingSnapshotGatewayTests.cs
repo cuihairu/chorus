@@ -13,9 +13,10 @@ namespace Chorus.Engine.Tests;
 /// on the streamer rows), so the gateway can resolve a platform callback's live key to the room
 /// it belongs to, and that room's owner instance, epoch and serving endpoint — without ever
 /// re-deriving the binding from the data plane. The snapshot is the gateway's only route source.
-/// FIX-END-03 tightened the publication gate: a room enters the deliverable snapshot only once
-/// its round runs — the RoomActor confirmed it serves — and the gateways confirm the version
-/// they installed before their faces push from it.
+/// FIX-END-03 had the gateways confirm the version they installed before their faces push from
+/// it. FIX-END-16 widens the publication gate: a prepared-but-not-yet-activated room publishes
+/// its route too, so the control plane can confirm the gateway installed it before it activates
+/// the battle (architecture 4.4).
 /// </summary>
 public sealed class RedesignRoutingSnapshotGatewayTests
 {
@@ -35,17 +36,23 @@ public sealed class RedesignRoutingSnapshotGatewayTests
             [new RoundParticipant(binding.BindingId, host.StreamerId, "Host")],
             "1.0.0", "cfg-1", "pkg-1", "start-gateway-1");
 
-        // FIX-END-03: a started-but-unprepared round publishes no route — the room is absent
-        // from the deliverable snapshot while it stands in Preparing, so the platform's input
-        // waits in the durable attribution leg instead of being pushed at a room whose actor
-        // is not serving. The mount itself is visible: the live key names the room it entered.
+        // FIX-END-16: a started-but-unprepared round publishes its route while it stands in
+        // Preparing, so the control plane can confirm the gateway installed it before it
+        // activates the battle (architecture 4.4 barrier). The mount is visible and names the
+        // room it entered; the room's route carries the owner facts a direct push carries.
         var preparing = await control.ReadRoutingSnapshotAsync();
         var streamer = Assert.Single(preparing.Streamers);
         Assert.Equal("simulator", streamer.Platform);
         Assert.Equal("live-key-gateway", streamer.CanonicalLiveSessionKey);
         Assert.Equal(binding.BindingId, streamer.BindingId);
         Assert.Equal("room-gateway-1", streamer.RoomId);
-        Assert.Empty(preparing.Rooms);
+        var preparingRoom = Assert.Single(preparing.Rooms, route => route.RoomId == "room-gateway-1");
+        Assert.Equal("tenant-a", preparingRoom.TenantId);
+        Assert.Equal("gs-route", preparingRoom.OwnerInstanceId);
+        Assert.Equal(claim.Epoch, preparingRoom.Epoch);
+        // The owner has not reported an endpoint, so the gateway cannot push to it yet — a
+        // callback is answered with a durable wait until the owner serves.
+        Assert.Null(preparingRoom.Endpoint);
 
         // The actor serves: the route publishes with the owner facts a direct push carries.
         await roomStore.PrepareRoundAsync("tenant-a", "game-a", "room-gateway-1", "gs-route",

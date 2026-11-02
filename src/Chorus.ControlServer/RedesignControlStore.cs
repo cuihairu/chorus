@@ -743,17 +743,20 @@ public sealed class RedesignControlStore(string connectionString)
         await connection.OpenAsync(cancellationToken);
 
         var rooms = new List<RoomRoute>();
-        // FIX-END-03: a room becomes deliverable only once its actor served — preparing and
-        // never-activated rooms publish no route, so the platform's input waits in the durable
-        // attribution leg instead of being pushed at a room that cannot receive. A completed
-        // round stays published (Finishing): late readers resolve the room until the end
-        // sequence retires its route — completion itself is not destruction.
+        // FIX-END-03: a completed round stays published (Finishing): late readers resolve the
+        // room until the end sequence retires its route — completion itself is not destruction.
+        // FIX-END-16: a prepared-but-not-yet-activated room publishes its route too (architecture
+        // 4.4 battle-start barrier) — the control plane must confirm the platform gateway
+        // installed the route BEFORE it activates the battle, so the route has to be visible and
+        // confirmable while the room still stands at Tick 0. The gateway may resolve a preparing
+        // room and push input to it; the data plane accepts Preparing (FIX-END-06) and the held
+        // actor's inbox waits for the activation start line, so input is held, not lost.
         await using (var command = new NpgsqlCommand("""
             SELECT o.entity_id,o.tenant_id,o.game_id,o.owner_process_instance_id,o.epoch,o.status,p.endpoint
             FROM control.ownership o
             JOIN game.room r ON r.room_id=o.entity_id AND r.tenant_id=o.tenant_id AND r.game_id=o.game_id
             LEFT JOIN control.process p ON p.process_instance_id=o.owner_process_instance_id
-            WHERE o.kind='room' AND r.status IN ('Running','Finishing')
+            WHERE o.kind='room' AND r.status IN ('Preparing','Running','Finishing')
             ORDER BY o.tenant_id,o.game_id,o.entity_id
             """, connection))
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
@@ -808,6 +811,68 @@ public sealed class RedesignControlStore(string connectionString)
             .Concat(instances.Select(i =>
                 $"instance|{i.ProcessInstanceId}|{i.Role}|{i.NodeId}|{i.SlotId}|{i.Endpoint ?? ""}|{i.Readiness}|{i.Admission}")));
         return new RoutingSnapshot(version, rooms, streamers, instances);
+    }
+
+    /// <summary>
+    /// FIX-END-16: waits until a platform gateway has installed and confirmed the routing
+    /// version that carries the given room (architecture 4.4 battle-start barrier). The room
+    /// publishes its route while Preparing, so once it stands in the current snapshot and a
+    /// gateway has confirmed exactly that version, the route is installed — the control plane
+    /// may then activate the battle. The confirm is a per-gateway global version (schema 0024),
+    /// so the check is "some gateway confirmed the snapshot's current version"; the room's
+    /// presence in that snapshot is what ties the version to this room. Times out false: the
+    /// route never confirmed, and the caller must not start the battle.
+    /// </summary>
+    public async Task<bool> WaitForRoomRouteConfirmedAsync(string roomId, TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            var snapshot = await ReadRoutingSnapshotAsync(cancellationToken);
+            if (snapshot.Rooms.Any(room => room.RoomId == roomId)
+                && await IsRoutingVersionConfirmedAsync(snapshot.Version, cancellationToken))
+                return true;
+            if (DateTime.UtcNow >= deadline) return false;
+            await Task.Delay(RouteConfirmPollMs, cancellationToken);
+        }
+    }
+
+    private const int RouteConfirmPollMs = 150;
+
+    private async Task<bool> IsRoutingVersionConfirmedAsync(long version,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            "SELECT 1 FROM control.routing_confirm WHERE version=@version LIMIT 1", connection);
+        command.Parameters.AddWithValue("version", version);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    /// <summary>
+    /// FIX-END-16 boundary: whether the cluster has deployed a platform gateway at all. The
+    /// battle-start barrier (architecture 4.4) waits for a gateway to confirm the room's route
+    /// before it activates the battle, because the gateway is the delivery path the battle's
+    /// input flows through — no confirmed route means a gateway might deliver input into a
+    /// battle that already ticked past it. A cluster with no gateway registered has no delivery
+    /// path to wait for (there is no input to lose, and a gateway that joins later installs the
+    /// published route and delivers from then on), so the coordinator applies the gate only
+    /// once a gateway is actually registered. A gateway registers by reporting a process whose
+    /// deployment role is the platform gateway; the report lands only under a pre-registered
+    /// node (ReportProcessAsync), so a bare cluster reports none.
+    /// </summary>
+    public async Task<bool> HasRegisteredGatewayAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT 1 FROM control.process p
+            JOIN control.deployment d ON d.slot_id=p.slot_id
+            WHERE d.role='platform-gateway' LIMIT 1
+            """, connection);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
     }
 
     /// <summary>FNV-1a over the canonical snapshot lines; collisions are acceptable — the version

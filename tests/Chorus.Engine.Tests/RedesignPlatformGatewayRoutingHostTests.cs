@@ -397,8 +397,11 @@ public sealed class RedesignPlatformGatewayRoutingHostTests
         using var http = await HttpClientAsync(environment);
 
         // The round starts but its actor never prepares: the claim exists, the mounts entered,
-        // and the deliverable snapshot still carries no room (FIX-END-03) — a room that cannot
-        // receive publishes no route.
+        // and the deliverable snapshot already carries the room (FIX-END-16) so a gateway can
+        // confirm the route before the battle is activated. The owner serves an endpoint (a
+        // live host), but it has not prepared the actor, so a delivered push bounces StaleOwner
+        // and the event still waits in the persistent inbox — the room cannot receive a routed
+        // push until its actor serves.
         const string roomC = "room-act-c";
         var claimed = await control.ClaimOwnershipAsync(new Chorus.Rpc.OwnershipRequest
         {
@@ -429,9 +432,9 @@ public sealed class RedesignPlatformGatewayRoutingHostTests
             return snapshot.Streamers.Any(streamer => streamer.RoomId == roomC)
                 && snapshot.Streamers.All(streamer => streamer.RoomId != roomC
                     || streamer.CanonicalLiveSessionKey.Length > 0)
-                && snapshot.Rooms.All(room => room.RoomId != roomC);
+                && snapshot.Rooms.Any(room => room.RoomId == roomC);
         }, TimeSpan.FromSeconds(30));
-        Assert.True(unprepared, "The preparing room published a route, or its mounts never entered.");
+        Assert.True(unprepared, "The preparing room published no route, or its mounts never entered.");
 
         // The platform's callback for that room waits durably: the routed leg never fires, so
         // the receipt is the ingest leg's durable answer and the event is not a routed push.

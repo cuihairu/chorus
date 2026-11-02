@@ -99,8 +99,12 @@ builder.Services.AddHostedService(serviceProvider => new ClusterDirectoryRefresh
     // The round length the coordinator asks for: the default keeps the demo cadence, a longer
     // window is how a test lets a client act mid-round instead of racing its settlement.
     var durationTicks = int.Parse(Environment.GetEnvironmentVariable("CHORUS_ROUND_DURATION_TICKS") ?? "40");
+    // FIX-END-16: how long the coordinator waits for a gateway to confirm the room's route
+    // before it refuses to activate the battle (the room stays Preparing at Tick 0).
+    var routeConfirmTimeoutMs = OptionalPositiveInt("CHORUS_ROUTE_CONFIRM_TIMEOUT_MS") ?? 10000;
     builder.Services.AddSingleton(
-        new MatchCoordinatorOptions(processIdentity.ProcessInstanceId, intervalMs, durationTicks));
+        new MatchCoordinatorOptions(processIdentity.ProcessInstanceId, intervalMs, durationTicks,
+            routeConfirmTimeoutMs));
     builder.Services.AddHostedService<MatchCoordinatorService>();
 }
 builder.Services.AddGrpc();

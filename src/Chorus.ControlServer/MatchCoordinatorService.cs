@@ -5,7 +5,8 @@ using Grpc.Core;
 namespace Chorus.ControlServer;
 
 /// <summary>The coordinator's identity and cadence, resolved from its certificate and configuration.</summary>
-public sealed record MatchCoordinatorOptions(string InstanceId, int IntervalMs, int DurationTicks = 40);
+public sealed record MatchCoordinatorOptions(string InstanceId, int IntervalMs, int DurationTicks = 40,
+    int RouteConfirmTimeoutMs = 10000);
 
 /// <summary>
 /// The production match coordinator (architecture 7.1-7.3, 10.1): a ControlServer background
@@ -301,6 +302,10 @@ public sealed class MatchCoordinatorService(
             // pinned — one authority, no second opinion at the loading entry.
             PackageHash = GameModuleIdentity.PackageHash,
             DurationTicks = options.DurationTicks, RandomSeed = SeedFor(roomId), TickMs = 25,
+            // FIX-END-16: prepare only creates the pre-battle entity (architecture 4.4 barrier) —
+            // the room stands Preparing at Tick 0 until the route is confirmed and the battle is
+            // activated below, so no tick runs before the platform gateway installed the route.
+            DeferredActivation = true,
             Participants = { candidates.Select(candidate => new GameParticipantProto
             {
                 BindingId = candidate.BindingId, ParticipantId = candidate.ParticipantId,
@@ -316,6 +321,25 @@ public sealed class MatchCoordinatorService(
                 prepared.Status, prepared.StateVersion, prepared.Tick
             }),
             OperationId = "mark-" + roomId
+        }, deadline: deadline, cancellationToken: cancellationToken);
+        // FIX-END-16: the battle starts only once a platform gateway installed and confirmed the
+        // room's route (architecture 4.4 barrier) — the room publishes its route while Preparing,
+        // and a gateway that never confirms means the route was never installed, so the room must
+        // not tick into a battle no one can deliver input to. A timeout throws: the reservation
+        // releases (the catch above) and the room stays Preparing at Tick 0. The gate applies
+        // only when the cluster has deployed a gateway at all: a cluster with no gateway has no
+        // delivery path to wait for, so its battles may proceed (RedesignControlStore boundary).
+        if (await controlStore.HasRegisteredGatewayAsync(cancellationToken)
+            && !await controlStore.WaitForRoomRouteConfirmedAsync(roomId,
+                TimeSpan.FromMilliseconds(options.RouteConfirmTimeoutMs), cancellationToken))
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                "The platform gateway never confirmed the room's route; the battle is not started."));
+        // A lost reply retries to a Duplicate (the host's activation is idempotent, FIX-PERF-03):
+        // the room is already Running, so the commit proceeds — a retry never double-starts.
+        await gameHost.ActivateRoomAsync(new ActivateRoomRequest
+        {
+            RoomId = roomId, GameId = gameId, OwnerInstanceId = ownership.OwnerInstanceId,
+            Epoch = ownership.Epoch, OperationId = "activate-" + roomId
         }, deadline: deadline, cancellationToken: cancellationToken);
         await _match.CommitMatchAsync(new CommitMatchRequest
         {
