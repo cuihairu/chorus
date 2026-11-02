@@ -74,7 +74,16 @@ builder.Services.AddSingleton(new StopDeliveryNotifier(serverCertificate, root, 
 builder.Services.AddHostedService<EndOperationCoordinatorService>();
 // The settlement business executor (architecture 9.3, FIX-END-11): completes committed
 // manifests' rewards when the data host cannot — the queue and the grants live on the data
-// plane; this loop only discovers and asks.
+// plane; this loop only discovers and asks. FIX-SETTLE-03 adds the claim lease and the
+// bounded retry: this instance id owns each room it works, a lease lapse makes a killed
+// holder's room re-claimable, and the attempt budget escalates a manifest that keeps
+// failing to queryable NeedsAttention instead of retrying forever.
+var processIdentity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])
+    ?? throw new InvalidOperationException("The ControlServer certificate carries no process identity.");
+builder.Services.AddSingleton(new SettlementExecutorOptions(
+    processIdentity.ProcessInstanceId,
+    TimeSpan.FromSeconds(OptionalPositiveInt("CHORUS_SETTLE_LEASE_SECONDS") ?? 60),
+    OptionalPositiveInt("CHORUS_SETTLE_MAX_ATTEMPTS") ?? 5));
 builder.Services.AddHostedService<SettlementExecutorService>();
 // The directory refresh loop (FIX-SCHED-01): the control plane's view of the game hosts
 // follows the process reports, not the startup configuration alone.
@@ -86,14 +95,12 @@ builder.Services.AddHostedService(serviceProvider => new ClusterDirectoryRefresh
 // directory holds live game hosts (FIX-SCHED-01) — seeded at startup or discovered since —
 // so a control plane that starts before its game hosts still pairs once they report.
 {
-    var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])
-        ?? throw new InvalidOperationException("The ControlServer certificate carries no process identity.");
     var intervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_MATCH_INTERVAL_MS") ?? "500");
     // The round length the coordinator asks for: the default keeps the demo cadence, a longer
     // window is how a test lets a client act mid-round instead of racing its settlement.
     var durationTicks = int.Parse(Environment.GetEnvironmentVariable("CHORUS_ROUND_DURATION_TICKS") ?? "40");
     builder.Services.AddSingleton(
-        new MatchCoordinatorOptions(identity.ProcessInstanceId, intervalMs, durationTicks));
+        new MatchCoordinatorOptions(processIdentity.ProcessInstanceId, intervalMs, durationTicks));
     builder.Services.AddHostedService<MatchCoordinatorService>();
 }
 builder.Services.AddGrpc();

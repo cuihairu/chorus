@@ -36,6 +36,7 @@
     <EmbeddedResource Include="Schema/0025_stop_delivery.sql" />
     <EmbeddedResource Include="Schema/0026_delivery_stop_ack.sql" />
     <EmbeddedResource Include="Schema/0027_platform_task_barrier.sql" />
+    <EmbeddedResource Include="Schema/0028_settle_task.sql" />
   </ItemGroup>
 
 </Project>

@@ -104,6 +104,15 @@ public sealed record UnreportedFinishingRoom(
 /// manifest — so the Finishing rooms name every domain the settle queue can hold.</summary>
 public sealed record SettleDomain(string TenantId, string GameId);
 
+/// <summary>
+/// The settlement executor's persistent task state for one room (FIX-SETTLE-03): the claim
+/// lease, the bounded retry position and the queryable failure reason. A row exists only
+/// while the room has unapplied grants — a completed settlement deletes it.
+/// </summary>
+public sealed record SettleTaskState(
+    string RoomId, string Status, string? OwnerInstanceId, DateTime? LeaseUntil,
+    int AttemptCount, string? LastError, DateTime? NextAttempt);
+
 /// <summary>Thrown when a second, different business id wants to begin the end of a
 /// round that already has its one operation.</summary>
 public sealed class EndOperationConflictException(string message) : Exception(message);
@@ -1072,6 +1081,123 @@ public sealed class RedesignControlStore(string connectionString)
             domains.Add(new SettleDomain(reader.GetString(0), reader.GetString(1)));
         return domains;
     }
+
+    /// <summary>
+    /// Atomically claims the room's settlement task for one executor (FIX-SETTLE-03). The
+    /// insert creates the task on first discovery; the conflict path re-claims only a task
+    /// that is Retryable and due, or Executing whose lease expired — a live lease, an
+    /// unexpired backoff or a NeedsAttention task is left untouched and the claim returns
+    /// null. The attempt counter bumps on every claim, so a reclaim after a killed holder
+    /// is a new attempt with the same idempotent floor under it.
+    /// </summary>
+    public async Task<SettleTaskState?> ClaimSettleTaskAsync(string tenantId, string gameId,
+        string roomId, string instanceId, TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(tenantId);
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(gameId);
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(roomId);
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(instanceId);
+        if (leaseDuration <= TimeSpan.Zero)
+            throw new ArgumentException("The lease duration must be positive.", nameof(leaseDuration));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            INSERT INTO control.settle_task
+                (room_id,tenant_id,game_id,status,owner_instance_id,lease_until,attempt_count,next_attempt,last_error)
+            VALUES (@room,@tenant,@game,'Executing',@owner,@until,1,NULL,NULL)
+            ON CONFLICT (room_id) DO UPDATE
+            SET status='Executing', owner_instance_id=@owner, lease_until=@until,
+                attempt_count=control.settle_task.attempt_count+1,
+                next_attempt=NULL, last_error=NULL, updated_at=clock_timestamp()
+            WHERE (control.settle_task.status='Retryable'
+                    AND (control.settle_task.next_attempt IS NULL
+                         OR control.settle_task.next_attempt<=clock_timestamp()))
+               OR (control.settle_task.status='Executing'
+                    AND control.settle_task.lease_until IS NOT NULL
+                    AND control.settle_task.lease_until<clock_timestamp())
+            RETURNING room_id,status,owner_instance_id,lease_until,attempt_count,last_error,next_attempt
+            """, connection);
+        command.Parameters.AddWithValue("room", roomId);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("owner", instanceId);
+        command.Parameters.AddWithValue("until", DateTime.UtcNow + leaseDuration);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadSettleTask(reader) : null;
+    }
+
+    /// <summary>
+    /// Records a failed attempt (FIX-SETTLE-03): the row becomes Retryable with a bounded
+    /// exponential next attempt, or NeedsAttention once the attempt budget is spent — the
+    /// failure reason stays on the row either way. Only the current lease holder may record
+    /// (a stale holder whose lease was reclaimed cannot overwrite the new holder's state).
+    /// </summary>
+    public async Task RecordSettleFailureAsync(string roomId, string instanceId, string error,
+        int maxAttempts, TimeSpan backoff, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(roomId);
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(instanceId);
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(error);
+        if (maxAttempts <= 0) throw new ArgumentOutOfRangeException(nameof(maxAttempts));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            UPDATE control.settle_task
+            SET status=CASE WHEN attempt_count>=@max THEN 'NeedsAttention' ELSE 'Retryable' END,
+                last_error=@error,
+                next_attempt=CASE WHEN attempt_count>=@max THEN NULL
+                                  ELSE clock_timestamp()+make_interval(secs=>@backoff) END,
+                lease_until=NULL, owner_instance_id=NULL, updated_at=clock_timestamp()
+            WHERE room_id=@room AND owner_instance_id=@owner
+            """, connection);
+        command.Parameters.AddWithValue("room", roomId);
+        command.Parameters.AddWithValue("owner", instanceId);
+        command.Parameters.AddWithValue("error", error);
+        command.Parameters.AddWithValue("max", maxAttempts);
+        command.Parameters.AddWithValue("backoff", backoff.TotalSeconds);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>The room's grants are fully applied — the task is obsolete and leaves the
+    /// table, so the settle_task set stays proportional to in-flight and failed work.</summary>
+    public async Task CompleteSettleTaskAsync(string roomId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(roomId);
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            "DELETE FROM control.settle_task WHERE room_id=@room", connection);
+        command.Parameters.AddWithValue("room", roomId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>The queryable settlement task state for a room (FIX-SETTLE-03): the status,
+    /// the attempt count, the last failure reason and the next attempt. Null when the room
+    /// has no task — either never discovered or already settled.</summary>
+    public async Task<SettleTaskState?> GetSettleTaskAsync(string roomId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(roomId);
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT room_id,status,owner_instance_id,lease_until,attempt_count,last_error,next_attempt
+            FROM control.settle_task WHERE room_id=@room
+            """, connection);
+        command.Parameters.AddWithValue("room", roomId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadSettleTask(reader) : null;
+    }
+
+    private static SettleTaskState ReadSettleTask(NpgsqlDataReader reader) => new(
+        reader.GetString(0), reader.GetString(1),
+        reader.IsDBNull(2) ? null : reader.GetString(2),
+        reader.IsDBNull(3) ? null : reader.GetDateTime(3),
+        reader.GetInt32(4),
+        reader.IsDBNull(5) ? null : reader.GetString(5),
+        reader.IsDBNull(6) ? null : reader.GetDateTime(6));
 
     /// <summary>The room's end operation, whatever phase it stands at.</summary>
     public async Task<EndOperation?> GetEndOperationAsync(string tenantId, string gameId,

@@ -15,7 +15,8 @@ public sealed record AdminStreamerSnapshot(bool Found, string StreamerId, string
 public sealed record AdminParticipantSnapshot(string ParticipantId, string? BindingId, string Role, string State);
 public sealed record AdminRoomSnapshot(bool Found, string TenantId, string GameId, string Status, long Epoch,
     long LastTick, long StateVersion, OwnerStatus? Ownership, IReadOnlyList<AdminParticipantSnapshot> Participants,
-    long ResultVersion, long FinalFrame, int GrantsTotal, int GrantsGranted);
+    long ResultVersion, long FinalFrame, int GrantsTotal, int GrantsGranted,
+    SettleTaskState? SettleTask);
 public sealed record AdminTraceEvent(long Sequence, string EventId, string Disposition, string? BindingId,
     DateTime ReceivedAtUtc, string PayloadJson);
 public sealed record AdminTraceFrame(long Tick, string CommitId, string InputRefsJson, string EffectsJson);
@@ -248,7 +249,7 @@ public sealed class RedesignAdminStore(string connectionString)
                 stateVersion = reader.GetInt64(5);
             }
         }
-        if (!found) return new AdminRoomSnapshot(false, "", "", "", 0, 0, 0, null, [], 0, 0, 0, 0);
+        if (!found) return new AdminRoomSnapshot(false, "", "", "", 0, 0, 0, null, [], 0, 0, 0, 0, null);
 
         OwnerStatus? ownership = null;
         await using (var query = new NpgsqlCommand("""
@@ -299,8 +300,27 @@ public sealed class RedesignAdminStore(string connectionString)
                 grantsGranted = Convert.ToInt32(reader.GetInt64(3));
             }
         }
+        // The settlement executor's own task state (FIX-SETTLE-03): the claim lease, the
+        // bounded retry position and the queryable failure reason. Null when the room has no
+        // task — never discovered as pending, or already settled.
+        SettleTaskState? settleTask = null;
+        await using (var query = new NpgsqlCommand("""
+            SELECT room_id,status,owner_instance_id,lease_until,attempt_count,last_error,next_attempt
+            FROM control.settle_task WHERE room_id=@room
+            """, connection))
+        {
+            query.Parameters.AddWithValue("room", roomId);
+            await using var reader = await query.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+                settleTask = new SettleTaskState(reader.GetString(0), reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2),
+                    reader.IsDBNull(3) ? null : reader.GetDateTime(3),
+                    reader.GetInt32(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.IsDBNull(6) ? null : reader.GetDateTime(6));
+        }
         return new AdminRoomSnapshot(true, tenantId, gameId, status, epoch, lastTick, stateVersion, ownership,
-            participants, resultVersion, finalFrame, grantsTotal, grantsGranted);
+            participants, resultVersion, finalFrame, grantsTotal, grantsGranted, settleTask);
     }
 
     /// <summary>

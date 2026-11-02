@@ -658,6 +658,13 @@ message AdminRoomSnapshotReply {
   int64 final_frame = 14;
   int32 grants_total = 15;
   int32 grants_granted = 16;
+  // The settlement executor's task state (FIX-SETTLE-03): an empty settle_status means the
+  // room has no task — never discovered as pending, or already settled.
+  string settle_status = 17;
+  int32 settle_attempts = 18;
+  string settle_last_error = 19;
+  int64 settle_next_attempt_unix_ms = 20;
+  string settle_owner_instance_id = 21;
 }
 
 // The AT31 round trace: one room's whole causal chain — platform events as routed, the frames

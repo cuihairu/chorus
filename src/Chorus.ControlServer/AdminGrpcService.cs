@@ -87,7 +87,13 @@ public sealed class AdminGrpcService(
                 Role = participant.Role, State = participant.State
             }) },
             ResultVersion = snapshot.ResultVersion, FinalFrame = snapshot.FinalFrame,
-            GrantsTotal = snapshot.GrantsTotal, GrantsGranted = snapshot.GrantsGranted
+            GrantsTotal = snapshot.GrantsTotal, GrantsGranted = snapshot.GrantsGranted,
+            SettleStatus = snapshot.SettleTask?.Status ?? "",
+            SettleAttempts = snapshot.SettleTask?.AttemptCount ?? 0,
+            SettleLastError = snapshot.SettleTask?.LastError ?? "",
+            SettleNextAttemptUnixMs = snapshot.SettleTask?.NextAttempt is { } next
+                ? new DateTimeOffset(next).ToUnixTimeMilliseconds() : 0,
+            SettleOwnerInstanceId = snapshot.SettleTask?.OwnerInstanceId ?? ""
         };
     }
 
@@ -274,12 +280,16 @@ public sealed class AdminGrpcService(
                 Duplicate = true
             };
         // CommitResult is itself idempotent per grant receipt: already-granted lines replay as
-        // zero pending work, and only the incomplete grants are retried.
+        // zero pending work, and only the incomplete grants are retried. A returned call means
+        // the grants now all stand applied (a fault throws FailedPrecondition), so the
+        // executor's settle_task — if the failure it records was ever the reason for this
+        // repair — is obsolete and leaves the table (FIX-SETTLE-03).
         var retry = await _settlement.CommitResultAsync(new CommitResultRequest
         {
             RoomId = request.RoomId, GameId = room.GameId, TenantId = room.TenantId,
             OperationId = "admin:" + request.RequestId
         }, deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: context.CancellationToken);
+        await controlStore.CompleteSettleTaskAsync(request.RoomId, context.CancellationToken);
         return new AdminSettlementRetryReply
         {
             RoomId = retry.RoomId, ResultVersion = retry.ResultVersion, GrantsTotal = retry.GrantsTotal,
