@@ -158,14 +158,14 @@
 
 - [x] **FIX-AUTH-01 / P1：明确 Streamer 所有权语义。** 依赖：无。交付：对齐架构、协议和管理接口说明，区分路由 ownership 与 session 轮换写栅栏。验收：明确 TransferStreamer 与 Resume 各自何时改变路由/撤销旧权限，不声称仅转移 ownership 即撤销会话。（a3f3df7：architecture.md 4.2/5.1/10.3、redesign-contracts.md 表+锁序、redesign-operations.md 两行、glossary.md 两词条、m3.proto Takeover/Admin 注释；全库残留过度声明扫描为空；build + RedesignM3StreamerTakeover 3/3 绿）
 - [x] **FIX-AUTH-02 / P1：防止迟到声明污染 Streamer 路由。** 依赖：FIX-AUTH-01。交付：声明路由归属时校验其对应的当前 session/version，或采用同等有版本投影规则。验收：新会话在 B 生效后，A 的迟到 Claim 不把路由改回 A；合法的新登录仍可接管。（bb1f040：OwnershipRequest 增 session_id/session_version；streamer 声明事务 FOR UPDATE 锁 streamer_state 校验当前会话，不同/缺席具名拒；迟到声明 FailedPrecondition；store +1 改 1、host +1；全量 pin 门 1416/1416）
-- [ ] **FIX-ENV-01 / P2：独立机器分区接管验收。** 依赖：FIX-TAKE-08、FIX-FRAME-04、FIX-ROOM-06。环境：至少两个独立故障域及可控网络。验收：旧 owner 仍能访问 Data/客户端、但无法访问 Control 时，新 owner 接管后旧 epoch 新写被拒；记录检测至恢复分布（AT24/25/28）。缺环境保持 NOT RUN，SIGSTOP 不替代此项。
-- [ ] **FIX-ENV-02 / P2：数据库主备故障验收。** 依赖：无；环境：独立同步备库及可隔离旧主的操作能力。验收：主库故障、同步备库失联、旧主恢复分别验证已确认事务保留与无双写；记录实际 RPO/RTO（AT26），复用 `docs/architecture/room-multihost-acceptance.md` 的环境准备证据，但必须按当前角色与 AT26 实测。
-- [ ] **FIX-ENV-03 / P2：Linux/Windows 双向重放验收。** 依赖：FIX-MODULE-02；环境：两个真实运行环境。验收：同一模块版本快照/日志双向重放哈希一致；不通过的模块明确限制恢复域或使用 FullCheckpoint，不能标为跨 OS 确定性通过（AT16）。
-- [ ] **FIX-ENV-04 / P2：Windows 进程树实机验收。** 依赖：无；环境：Windows 目标节点。验收：Agent 崩溃重启后回收子孙进程，不误杀 PID 复用进程；输出安装/启动/回收证据（AT29；双 OS 安装与升级分别见 FIX-ENV-07、FIX-ENV-08）。
+- [ ] **FIX-ENV-01 / P2：独立机器分区接管验收。** 依赖：FIX-TAKE-08、FIX-FRAME-04、FIX-ROOM-06。环境：至少两个独立故障域及可控网络。验收：旧 owner 仍能访问 Data/客户端、但无法访问 Control 时，新 owner 接管后旧 epoch 新写被拒；记录检测至恢复分布（AT24/25/28）。缺环境保持 NOT RUN，SIGSTOP 不替代此项。 BLOCKED(2026-11-02)：缺至少两台独立故障域机器+可控网络分区，环境内保持 NOT RUN，不伪造。
+- [ ] **FIX-ENV-02 / P2：数据库主备故障验收。** 依赖：无；环境：独立同步备库及可隔离旧主的操作能力。验收：主库故障、同步备库失联、旧主恢复分别验证已确认事务保留与无双写；记录实际 RPO/RTO（AT26），复用 `docs/architecture/room-multihost-acceptance.md` 的环境准备证据，但必须按当前角色与 AT26 实测。 BLOCKED(2026-11-02)：缺独立同步备库+可隔离旧主的运维能力，环境内保持 NOT RUN。
+- [ ] **FIX-ENV-03 / P2：Linux/Windows 双向重放验收。** 依赖：FIX-MODULE-02；环境：两个真实运行环境。验收：同一模块版本快照/日志双向重放哈希一致；不通过的模块明确限制恢复域或使用 FullCheckpoint，不能标为跨 OS 确定性通过（AT16）。 BLOCKED(2026-11-02)：缺 Windows 真实运行环境（本机仅 Linux），环境内保持 NOT RUN。
+- [ ] **FIX-ENV-04 / P2：Windows 进程树实机验收。** 依赖：无；环境：Windows 目标节点。验收：Agent 崩溃重启后回收子孙进程，不误杀 PID 复用进程；输出安装/启动/回收证据（AT29；双 OS 安装与升级分别见 FIX-ENV-07、FIX-ENV-08）。 BLOCKED(2026-11-02)：缺 Windows 目标节点，环境内保持 NOT RUN。
 - [ ] **FIX-ENV-05 / P2：抖音生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。验收：独立报告覆盖登录验证、签名反例、回调回执、稳定去重键及未知外部调用结果策略；全部通过后才解除该适配器 NotProductionReady（AT02/07/09）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
 - [ ] **FIX-ENV-06 / P2：快手生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。验收：独立报告覆盖登录验证、签名反例、回调回执、稳定去重键及未知外部调用结果策略；全部通过后才解除该适配器 NotProductionReady（AT02/07/09）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
 
-- [ ] **FIX-ENV-07 / P2：Linux 实机安装与升级验收。** 依赖：无；环境：Linux 目标节点。交付：按 `deploy/linux/` 安装、启动、排空升级与失败回滚的独立记录。验收：受限账号和权限正确，原持久数据及未结束局可恢复；脚本语法检查或编译不替代实机结果（AT17/29/30）。
+- [ ] **FIX-ENV-07 / P2：Linux 实机安装与升级验收。** 依赖：无；环境：Linux 目标节点。交付：按 `deploy/linux/` 安装、启动、排空升级与失败回滚的独立记录。验收：受限账号和权限正确，原持久数据及未结束局可恢复；脚本语法检查或编译不替代实机结果（AT17/29/30）。 BLOCKED(2026-11-02)：缺独立 Linux 目标节点（可隔离安装/升级/回滚、不干扰开发机），需用户提供。
 - [ ] **FIX-ENV-08 / P2：Windows 实机安装与升级验收。** 依赖：FIX-ENV-04；环境：Windows 目标节点。交付：按 `deploy/windows/` 完成服务安装、启动、升级与失败回滚的独立记录。验收：服务身份与凭据保护符合部署契约，原持久数据及未结束局可恢复；Linux 上交叉编译不替代 Windows 实跑（AT17/29/30）。 已代决:按 docs/review/2026-10-30-decisions.md 执行(2026-10-30)(需用户输入,暂缓)
 
 建议起点：先做 FIX-FRAME-01 和 FIX-ROOM-01；FIX-TAKE-01、FIX-SETTLE-01、FIX-READ-01 可独立准备。禁止用本节任务数量或单元测试总数替代 AT 出口判定。后续发现新问题追加新编号，不把新工作藏进已勾选项。
