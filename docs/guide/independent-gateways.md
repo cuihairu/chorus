@@ -14,7 +14,7 @@ The two are separate executables and can be published and scaled independently. 
 Shared code is layered:
 
 - `Chorus.Gateway.Runtime`: IPC, control-plane routing and connection coordination, shared diagnostic endpoints. No application entry point, and it registers neither platform-only nor streamer-only services.
-- `Chorus.Gateway.Core`: entry-point protocol implementations and their interfaces, shared with the monolithic host.
+- `Chorus.Gateway.Core`: entry-point protocol implementations and their interfaces — the faces shared across hosts (referenced directly by Chorus.Server / Chorus.EngineHost (via Chorus.Gateway.Core) by `Chorus.Server` / `Chorus.EngineHost`).
 - `Chorus.Control` / `Chorus.Messaging` / `Chorus.Protocol`: control-plane client, communication, and message contracts.
 
 The legacy single `Chorus.Gateway` host was removed (2026-10-31, `48623a5`); the two hosts above are the only gateway executables. The Core library still contains both faces, and platform adapter assemblies may still be copied into the publish directory. What is isolated is the host, service registration, endpoints, and configuration responsibility — not a complete removal of every transitive assembly.

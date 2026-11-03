@@ -15,7 +15,7 @@ title: Independent Gateway Hosts
 公共代码分层：
 
 - `Chorus.Gateway.Runtime`：IPC、控制面路由与连接协调、共享诊断端点。没有应用入口，也不注册平台/主播专属服务。
-- `Chorus.Gateway.Core`：入口协议实现及接口，与单体宿主共享。
+- `Chorus.Gateway.Core`：入口协议实现及接口——跨宿主共享的监听面（由 `Chorus.Server` / `Chorus.EngineHost` 直接引用 `Chorus.Gateway.Core`）。
 - `Chorus.Control` / `Chorus.Messaging` / `Chorus.Protocol`：控制面客户端、通信及消息契约。
 
 旧单体 `Chorus.Gateway` 宿主已于 2026-10-31 移除（`48623a5`）；上面两个宿主就是仅有的网关可执行文件。
