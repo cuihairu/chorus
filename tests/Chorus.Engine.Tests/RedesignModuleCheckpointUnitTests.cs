@@ -112,6 +112,7 @@ public sealed class RedesignModuleCheckpointUnitTests
             LastTick = 3, StateVersion = 4,
             TickMs = 25, ModuleVersion = "0.9.0", ConfigHash = "cfg-live-1",
             PackageHash = "pkg-live-1", RecoveryMode = RedesignGameModuleManifest.FullCheckpoint,
+            OfflinePolicy = ModuleOfflinePolicy.ProductionDefault.Canonical,
             Snapshots =
             {
                 new RecoverySnapshotProto
@@ -163,6 +164,7 @@ public sealed class RedesignModuleCheckpointUnitTests
             LastTick = 2, StateVersion = 3,
             TickMs = 25, ModuleVersion = "0.9.0", ConfigHash = "cfg-live-1",
             PackageHash = "pkg-live-1", RecoveryMode = RedesignGameModuleManifest.FullCheckpoint,
+            OfflinePolicy = ModuleOfflinePolicy.ProductionDefault.Canonical,
             Snapshots =
             {
                 new RecoverySnapshotProto

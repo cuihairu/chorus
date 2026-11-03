@@ -180,6 +180,7 @@ public sealed class RedesignModuleUpgradeUnitTests
                 ConfigHash = GameModuleIdentity.ConfigHash,
                 PackageHash = GameModuleIdentity.PackageHash,
                 RecoveryMode = GameModuleIdentity.RecoveryMode,
+                OfflinePolicy = ModuleOfflinePolicy.ProductionDefault.Canonical,
                 Snapshots =
                 {
                     new RecoverySnapshotProto

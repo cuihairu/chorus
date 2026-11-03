@@ -126,6 +126,9 @@ public sealed class RedesignRecoveryFallbackUnitTests
             TickMs = 25, ModuleVersion = GameModuleIdentity.ModuleVersion,
             ConfigHash = GameModuleIdentity.ConfigHash, PackageHash = GameModuleIdentity.PackageHash,
             RecoveryMode = GameModuleIdentity.RecoveryMode,
+            // FIX-SYNC-04: the plan carries the room's persisted offline declaration; a
+            // scripted recovery must restate the shipped package's or the pin refuses it.
+            OfflinePolicy = ModuleOfflinePolicy.ProductionDefault.Canonical,
             Snapshots =
             {
                 anchorSpecs.Select(spec =>

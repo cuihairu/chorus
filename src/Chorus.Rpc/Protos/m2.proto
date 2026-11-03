@@ -410,6 +410,10 @@ message LoadRecoveryReply {
   string config_hash = 14;
   string package_hash = 15;
   string recovery_mode = 16;
+  // The room's all-offline policy in its canonical persisted form (FIX-SYNC-04): rides on
+  // every page with the rest of the identity so the recoverer refuses a round whose
+  // declared offline behavior no longer matches the package it loads.
+  string offline_policy = 17;
 }
 
 service RoundStore {
@@ -590,6 +594,11 @@ message PrepareRoundRequest {
   // the module under the policy the room was prepared with, never under a caller-supplied
   // guess (FIX-MODULE-01). Empty = the cluster's shipped mode.
   string recovery_mode = 10;
+  // The room's all-offline policy, persisted with the room so a recovery validates the
+  // round against the exact declaration it was admitted under instead of silently adopting
+  // whatever the package ships later (FIX-SYNC-04). The canonical form is written by the
+  // game host at prepare; empty = the room predates the declaration.
+  string offline_policy = 11;
 }
 
 message ActivateRoundRequest {

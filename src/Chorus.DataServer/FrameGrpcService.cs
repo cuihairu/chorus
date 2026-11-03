@@ -191,6 +191,7 @@ public sealed class FrameGrpcService(
                 LastTick = page.LastTick, StateVersion = page.StateVersion,
                 TickMs = page.TickMs, ModuleVersion = page.ModuleVersion, ConfigHash = page.ConfigHash,
                 PackageHash = page.PackageHash, RecoveryMode = page.RecoveryMode,
+                OfflinePolicy = page.OfflinePolicy,
                 Snapshots =
                 {
                     page.Snapshots.Select(snapshot => new RecoverySnapshotProto

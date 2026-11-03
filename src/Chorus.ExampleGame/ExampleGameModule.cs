@@ -9,17 +9,22 @@ namespace Chorus.ExampleGame;
 /// checkpoint mode; a module that cannot guarantee determinism must declare FullCheckpoint —
 /// the host then checkpoints every committed tick (FIX-MODULE-03) and recovers by restoring
 /// the head checkpoint directly, never by replay: <see cref="SnapshotEveryTicks"/> is the
-/// cadence only a DeterministicReplay module runs at.
+/// cadence only a DeterministicReplay module runs at. <see cref="Offline"/> is the module's
+/// all-offline declaration (FIX-SYNC-04): null means the module declared no offline
+/// behavior, and a room under it is refused at admission — never silently defaulted.
 /// </summary>
 public sealed record RedesignGameModuleManifest(
-    string Name, string ModuleVersion, int TickMs, int SnapshotEveryTicks, string CheckpointMode)
+    string Name, string ModuleVersion, int TickMs, int SnapshotEveryTicks, string CheckpointMode,
+    ModuleOfflinePolicy? Offline = null)
 {
     public const string DeterministicReplay = "DeterministicReplay";
     public const string FullCheckpoint = "FullCheckpoint";
 
-    /// <summary>The shipped cadence: 20 Hz ticks, a full snapshot every 100 ticks.</summary>
+    /// <summary>The shipped cadence: 20 Hz ticks, a full snapshot every 100 ticks, under
+    /// the production offline policy.</summary>
     public static RedesignGameModuleManifest Default { get; } =
-        new("example-factions", "1.0.0", 50, 100, DeterministicReplay);
+        new("example-factions", "1.0.0", 50, 100, DeterministicReplay,
+            ModuleOfflinePolicy.ProductionDefault);
 
     /// <summary>A faster test variant of the same module (25 ms ticks).</summary>
     public static RedesignGameModuleManifest FastTest { get; } = Default with { TickMs = 25 };

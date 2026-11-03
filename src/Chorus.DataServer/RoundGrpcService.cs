@@ -92,6 +92,7 @@ public sealed class RoundGrpcService(
                 request.SnapshotHash.ToByteArray(), request.SnapshotSchemaVersion, request.OperationId,
                 request.TickMs > 0 ? request.TickMs : 50,
                 request.RecoveryMode.Length > 0 ? request.RecoveryMode : "DeterministicReplay",
+                request.OfflinePolicy,
                 context.CancellationToken);
             return Reply(admission);
         }

@@ -15,12 +15,15 @@ namespace Chorus.GameServer;
 public sealed record RedesignModulePackage(
     string Name, string ModuleVersion, string ConfigHash, string PackageHash,
     string RecoveryMode, int TickMs, int SnapshotEveryTicks,
+    ModuleOfflinePolicy? Offline,
     Func<RedesignGameModuleManifest, IRedesignGameModule> Load)
 {
     /// <summary>The manifest this package's module runs a room at: the package's own
-    /// facts with the room's persisted cadence.</summary>
+    /// facts with the room's persisted cadence. The offline policy rides with it
+    /// (FIX-SYNC-04): a package that declares none builds manifests whose rooms are
+    /// refused at admission — missing behavior, never a silent default.</summary>
     public RedesignGameModuleManifest ManifestAt(int tickMs) =>
-        new(Name, ModuleVersion, tickMs, SnapshotEveryTicks, RecoveryMode);
+        new(Name, ModuleVersion, tickMs, SnapshotEveryTicks, RecoveryMode, Offline);
 }
 
 /// <summary>
@@ -38,6 +41,7 @@ public static class RedesignModuleCatalog
         GameModuleIdentity.Name, GameModuleIdentity.ModuleVersion, GameModuleIdentity.ConfigHash,
         GameModuleIdentity.PackageHash, GameModuleIdentity.RecoveryMode,
         RedesignGameModuleManifest.Default.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+        ModuleOfflinePolicy.ProductionDefault,
         static manifest => new ExampleGameModule(manifest));
 
     /// <summary>The duel package (FIX-MODULE-02's loading evidence): same state family,
@@ -46,6 +50,7 @@ public static class RedesignModuleCatalog
         "example-duel", "0.9.0", "cfg-duel-1", "pkg-duel-1",
         RedesignGameModuleManifest.DeterministicReplay,
         RedesignGameModuleManifest.FastTest.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+        ModuleOfflinePolicy.ProductionDefault,
         static manifest => new DuelGameModule(manifest));
 
     /// <summary>The live package (FIX-MODULE-03's evidence): an honestly
@@ -55,6 +60,7 @@ public static class RedesignModuleCatalog
         "example-live", "0.9.0", "cfg-live-1", "pkg-live-1",
         RedesignGameModuleManifest.FullCheckpoint,
         RedesignGameModuleManifest.FastTest.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+        ModuleOfflinePolicy.ProductionDefault,
         static manifest => new LiveGameModule(manifest));
 
     /// <summary>The 1.1.0 upgrade of the default package (FIX-MODULE-04's upgrade window):
@@ -67,6 +73,7 @@ public static class RedesignModuleCatalog
         "example-factions", "1.1.0", "cfg-1-v2", "pkg-1-v2",
         RedesignGameModuleManifest.DeterministicReplay,
         RedesignGameModuleManifest.Default.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+        ModuleOfflinePolicy.ProductionDefault,
         static manifest => new ExampleGameModuleV2(manifest));
 
     /// <summary>The 1.2.0 upgrade of the default package (FIX-INPUT-09, the like rule): the
@@ -78,6 +85,7 @@ public static class RedesignModuleCatalog
         "example-factions", "1.2.0", "cfg-1-v3", "pkg-1-v3",
         RedesignGameModuleManifest.DeterministicReplay,
         RedesignGameModuleManifest.Default.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+        ModuleOfflinePolicy.ProductionDefault,
         static manifest => new ExampleGameModuleV3(manifest));
 
     /// <summary>Every package this host ships, in stable order; the hashes are what a

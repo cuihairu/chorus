@@ -165,6 +165,7 @@ public sealed class RedesignTakeoverActivationUnitTests
             TickMs = 25, ModuleVersion = GameModuleIdentity.ModuleVersion,
             ConfigHash = GameModuleIdentity.ConfigHash, PackageHash = GameModuleIdentity.PackageHash,
             RecoveryMode = GameModuleIdentity.RecoveryMode,
+            OfflinePolicy = ModuleOfflinePolicy.ProductionDefault.Canonical,
             Snapshots = { new RecoverySnapshotProto
             {
                 Tick = 0, SchemaVersion = initial.SchemaVersion,

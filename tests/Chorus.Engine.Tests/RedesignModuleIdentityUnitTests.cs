@@ -31,7 +31,7 @@ public sealed class RedesignModuleIdentityUnitTests
             Epoch = 1, TickMs = 0
         });
 
-        Assert.True(reply.Recovered);
+        Assert.True(reply.Recovered, reply.Note);
         Assert.Equal("Running", reply.Status);
         Assert.Equal(0L, reply.LastTick);
         Assert.Equal(0, reply.ReplayedFrames);
@@ -126,6 +126,47 @@ public sealed class RedesignModuleIdentityUnitTests
     }
 
     [Fact]
+    public async Task ARoomUnderAChangedOfflinePolicyIsRefused()
+    {
+        // FIX-SYNC-04: a config upgrade that changed the offline declaration since the room
+        // was admitted must not silently rewrite the live round — the recovery compares the
+        // persisted canonical against the package's current declaration and refuses.
+        await using var runtime = new RoomRuntime(new ScriptedRoundStore(),
+            new ScriptedFrameStore(() => Plan(offlinePolicy: "PauseAtBoundary|15|60|2|Buffer")),
+            new ScriptedSettlement());
+
+        var reply = await runtime.RecoverRoomAsync(new RecoverRoomRequest
+        {
+            RoomId = "room-id-1", GameId = "game-a", OwnerInstanceId = "game-1",
+            Epoch = 1, TickMs = 25
+        });
+
+        Assert.False(reply.Recovered);
+        Assert.Contains("offline policy", reply.Note, StringComparison.Ordinal);
+        Assert.Contains("PauseAtBoundary|15|60|2|Buffer", reply.Note, StringComparison.Ordinal);
+        Assert.Contains("cannot change mid-flight", reply.Note, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ARoomPredatingTheOfflineDeclarationIsRefusedNotSilentlyAssignedOne()
+    {
+        // The migration default '' marks a room admitted before the declaration existed;
+        // it is refused — fail closed — rather than given the package's policy for free.
+        await using var runtime = new RoomRuntime(new ScriptedRoundStore(),
+            new ScriptedFrameStore(() => Plan(offlinePolicy: "")),
+            new ScriptedSettlement());
+
+        var reply = await runtime.RecoverRoomAsync(new RecoverRoomRequest
+        {
+            RoomId = "room-id-1", GameId = "game-a", OwnerInstanceId = "game-1",
+            Epoch = 1, TickMs = 25
+        });
+
+        Assert.False(reply.Recovered);
+        Assert.Contains("cannot change mid-flight", reply.Note, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ADuelRoomRecoversThroughTheDuelModuleNotTheDefault()
     {
         // FIX-MODULE-02: a pkg-duel-1 room's replay only verifies under the duel rules —
@@ -147,6 +188,7 @@ public sealed class RedesignModuleIdentityUnitTests
                 LastTick = 1, StateVersion = 2,
                 TickMs = 25, ModuleVersion = "0.9.0", ConfigHash = "cfg-duel-1",
                 PackageHash = "pkg-duel-1", RecoveryMode = RedesignGameModuleManifest.DeterministicReplay,
+                OfflinePolicy = ModuleOfflinePolicy.ProductionDefault.Canonical,
                 Snapshots =
                 {
                     new RecoverySnapshotProto
@@ -187,10 +229,12 @@ public sealed class RedesignModuleIdentityUnitTests
     }
 
     /// <summary>A recoverable tick-0-at-head plan with the room's persisted identity, the
-    /// caller's fields selectable so each contract violation can be scripted alone.</summary>
+    /// caller's fields selectable so each contract violation can be scripted alone. The
+    /// offline policy defaults to the shipped package's declaration, so a matching policy
+    /// recovers and a caller that restates a different one is refused (FIX-SYNC-04).</summary>
     private static LoadRecoveryReply Plan(int tickMs = 25, string moduleVersion = "1.0.0",
         string configHash = "cfg-1", string packageHash = "pkg-1",
-        string recoveryMode = "DeterministicReplay")
+        string recoveryMode = "DeterministicReplay", string? offlinePolicy = null)
     {
         var module = new ExampleGameModule(new RedesignGameModuleManifest(
             "example-factions", "1.0.0", 25, 100, RedesignGameModuleManifest.DeterministicReplay));
@@ -204,6 +248,7 @@ public sealed class RedesignModuleIdentityUnitTests
             LastTick = 0, StateVersion = 1,
             TickMs = tickMs, ModuleVersion = moduleVersion, ConfigHash = configHash,
             PackageHash = packageHash, RecoveryMode = recoveryMode,
+            OfflinePolicy = offlinePolicy ?? ModuleOfflinePolicy.ProductionDefault.Canonical,
             Snapshots =
             {
                 new RecoverySnapshotProto

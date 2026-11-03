@@ -382,7 +382,7 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
     public async Task<RoundAdmission> PrepareRoundAsync(string tenantId, string gameId, string roomId,
         string ownerInstanceId, long epoch, byte[] snapshotPayload, byte[] snapshotHash, int schemaVersion,
         string operationId, int tickMs = 50, string recoveryMode = "DeterministicReplay",
-        CancellationToken cancellationToken = default)
+        string offlinePolicy = "", CancellationToken cancellationToken = default)
     {
         Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
         Require(ownerInstanceId, nameof(ownerInstanceId)); Require(operationId, nameof(operationId));
@@ -398,8 +398,8 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
             new OperationIdentity(tenantId, gameId, "round.prepare", roomId, operationId),
             fingerprint,
             (connection, transaction, token) => ApplyPrepareAsync(tenantId, gameId, roomId, ownerInstanceId,
-                epoch, snapshotPayload, snapshotHash, schemaVersion, tickMs, recoveryMode, connection,
-                transaction, token),
+                epoch, snapshotPayload, snapshotHash, schemaVersion, tickMs, recoveryMode, offlinePolicy,
+                connection, transaction, token),
             cancellationToken);
         var result = JsonSerializer.Deserialize<RoundAdmission>(receipt.ResultJson)
             ?? throw new InvalidOperationException("The stored prepare receipt is unreadable.");
@@ -408,8 +408,8 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
 
     private async Task<string> ApplyPrepareAsync(string tenantId, string gameId, string roomId,
         string ownerInstanceId, long epoch, byte[] snapshotPayload, byte[] snapshotHash, int schemaVersion,
-        int tickMs, string recoveryMode, NpgsqlConnection connection, NpgsqlTransaction transaction,
-        CancellationToken cancellationToken)
+        int tickMs, string recoveryMode, string offlinePolicy, NpgsqlConnection connection,
+        NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
         var ownershipEpoch = await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
             connection, transaction, cancellationToken);
@@ -442,13 +442,16 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
         // The recovery mode rides with it (FIX-MODULE-01): the same host names the
         // checkpoint policy the module was actually prepared under, so a recovery rebuilds
         // the module under the room's own identity instead of a caller-supplied guess.
+        // The offline policy rides the same way (FIX-SYNC-04): the canonical declaration
+        // the room was admitted under is what a later recovery must still match.
         await using (var cadence = new NpgsqlCommand(
-            "UPDATE game.room SET tick_ms=@tickms, recovery_mode=@mode " +
+            "UPDATE game.room SET tick_ms=@tickms, recovery_mode=@mode, offline_policy=@policy " +
             "WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game",
             connection, transaction))
         {
             cadence.Parameters.AddWithValue("tickms", tickMs);
             cadence.Parameters.AddWithValue("mode", recoveryMode);
+            cadence.Parameters.AddWithValue("policy", offlinePolicy);
             cadence.Parameters.AddWithValue("room", roomId);
             cadence.Parameters.AddWithValue("tenant", tenantId);
             cadence.Parameters.AddWithValue("game", gameId);

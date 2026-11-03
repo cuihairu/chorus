@@ -213,6 +213,20 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 // through the registry, never hand-built).
                 var manifest = package.ManifestAt(
                     request.TickMs > 0 ? request.TickMs : package.TickMs);
+                // FIX-SYNC-04: the offline policy is a declared module fact, never a host
+                // default — a package that declares none, or one whose declaration the
+                // round can never satisfy, is refused here before any data-plane work.
+                // "Missing behavior" is a refusal, not a silent baseline (authoritative-sync.md:44).
+                if (manifest.Offline is null)
+                    throw new ModulePackageException(
+                        $"The module package \"{package.PackageHash}\" declares no offline " +
+                        "policy; a room cannot be admitted without the module's declared " +
+                        "all-offline behavior (FIX-SYNC-04).");
+                var offlineError = manifest.Offline.Validate(request.Participants.Count);
+                if (offlineError is not null)
+                    throw new ModulePackageException(
+                        $"The module package \"{package.PackageHash}\" declares an illegal " +
+                        $"offline policy: {offlineError}");
                 var module = package.Load(manifest);
                 var initial = module.CreateInitialState(new GameStartConfig(request.DurationTicks,
                     request.RandomSeed,
@@ -234,7 +248,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     GameId = request.GameId, SnapshotPayload = ByteString.CopyFrom(payload),
                     SnapshotHash = ByteString.CopyFrom(hash), SnapshotSchemaVersion = initial.SchemaVersion,
                     OperationId = request.OperationId + "/prepare", TickMs = request.TickMs,
-                    RecoveryMode = package.RecoveryMode
+                    RecoveryMode = package.RecoveryMode,
+                    OfflinePolicy = manifest.Offline.Canonical
                 }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
                 // A deferred prepare holds the room — round Preparing, actor not ticking — for
                 // ActivateRoom to release across a common start line (FIX-PERF-03).
@@ -651,6 +666,21 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                            $"package \"{package.PackageHash}\" ships (\"{package.RecoveryMode}\"); " +
                            "the module is incompatible."
                 };
+            // FIX-SYNC-04: the room's offline policy is a persisted identity fact, never a
+            // caller opinion and never silently refreshed from the package. A room whose
+            // stored declaration no longer matches what the package ships — a config upgrade
+            // that changed the policy, or a room that predates the declaration — is refused
+            // by name, so a live round's offline behavior cannot change mid-flight.
+            var shippedOffline = package.ManifestAt(plan.TickMs).Offline;
+            if (shippedOffline is null || plan.OfflinePolicy != shippedOffline.Canonical)
+                return new RecoverRoomReply
+                {
+                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
+                    Note = $"The room's offline policy \"{plan.OfflinePolicy}\" is not the " +
+                           $"policy package \"{package.PackageHash}\" ships " +
+                           $"(\"{shippedOffline?.Canonical ?? "none"}\"); the round's offline " +
+                           "behavior cannot change mid-flight."
+                };
             var manifest = package.ManifestAt(plan.TickMs);
             var module = package.Load(manifest);
             // Finishing rooms recover their result and settlement tail only; battle ticks are
@@ -961,7 +991,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     LastTick = page.LastTick, StateVersion = page.StateVersion,
                     TickMs = page.TickMs, ModuleVersion = page.ModuleVersion,
                     ConfigHash = page.ConfigHash, PackageHash = page.PackageHash,
-                    RecoveryMode = page.RecoveryMode
+                    RecoveryMode = page.RecoveryMode, OfflinePolicy = page.OfflinePolicy
                 };
                 first = false;
             }

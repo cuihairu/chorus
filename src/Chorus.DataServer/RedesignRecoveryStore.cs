@@ -30,7 +30,7 @@ public sealed record RecoveryPlan(
     IReadOnlyList<RecoveryFrame> Frames, IReadOnlyList<RoundParticipantState> Participants,
     RecoveryReadStats? Reads = null,
     int TickMs = 50, string ModuleVersion = "", string ConfigHash = "",
-    string PackageHash = "", string RecoveryMode = "");
+    string PackageHash = "", string RecoveryMode = "", string OfflinePolicy = "");
 
 /// <summary>What the recovery read actually moved (FIX-READ-02): row counts per material and
 /// the payload bytes they carried, so a long round's read cost is measured, not guessed.</summary>
@@ -221,10 +221,10 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
         await using var view = await connection.BeginTransactionAsync(
             IsolationLevel.RepeatableRead, cancellationToken);
         string status; long epoch, lastTick, stateVersion;
-        int tickMs; string moduleVersion, configHash, packageHash, recoveryMode;
+        int tickMs; string moduleVersion, configHash, packageHash, recoveryMode, offlinePolicy;
         await using (var room = new NpgsqlCommand("""
             SELECT status,epoch,last_tick,state_version,tick_ms,module_version,config_hash,
-                   package_hash,recovery_mode
+                   package_hash,recovery_mode,offline_policy
             FROM game.room WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
             """, connection, view))
         {
@@ -242,6 +242,7 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
             configHash = reader.GetString(6);
             packageHash = reader.GetString(7);
             recoveryMode = reader.GetString(8);
+            offlinePolicy = reader.GetString(9);
         }
         afterHeadRead?.Invoke();
         var snapshots = new List<RecoverySnapshot>();
@@ -314,7 +315,8 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
                 + frames.Sum(frame => frame.StateHash.LongLength)
                 + deliveries.Sum(delivery => (long)delivery.PayloadJson.Length));
         var plan = new RecoveryPlan(roomId, status, epoch, lastTick, stateVersion, snapshots, deliveries,
-            frames, participants, reads, tickMs, moduleVersion, configHash, packageHash, recoveryMode);
+            frames, participants, reads, tickMs, moduleVersion, configHash, packageHash, recoveryMode,
+            offlinePolicy);
         // The read-only view closes with the plan; a rollback would answer identically, so
         // the commit is just the cheapest exit that keeps the connection reusable.
         await view.CommitAsync(cancellationToken);
