@@ -54,6 +54,12 @@ public sealed record NodeStatus(string AgentInstanceId, long ReportSequence);
 public sealed record ProcessStatus(bool Accepted, string Readiness, string EntityRecovery);
 public sealed record OwnerStatus(string OwnerInstanceId, long Epoch, DateTime LeaseUntilUtc, string Status);
 
+/// <summary>The outcome of a GM room-epoch bump (FIX-GM-02): the old and new epoch, the room's
+/// owner (unchanged by the bump) and the ownership status it was parked at — Recovering. A
+/// replay of the same operation returns the recorded outcome with <see cref="Duplicate"/> set.</summary>
+public sealed record EpochBumpOutcome(long OldEpoch, long NewEpoch, string OwnerInstanceId,
+    string OwnershipStatus, bool Duplicate);
+
 /// <summary>A persistent room-recovery operation (FIX-TAKE-04): the transfer's target and
 /// epoch, the open phase, its deadline, the committed progress and the last error.</summary>
 public sealed record RoomRecoveryOperation(
@@ -727,6 +733,163 @@ public sealed class RedesignControlStore(string connectionString)
         command.Parameters.AddWithValue("game", gameId);
         command.Parameters.AddWithValue("kind", kind);
         command.Parameters.AddWithValue("entity", entityId);
+    }
+
+    /// <summary>
+    /// GM room-epoch bump (FIX-GM-02, architecture 4.5): one transaction validates that the
+    /// ownership is Active and that BOTH epoch columns agree with the caller's expected value,
+    /// then moves both to the resolved target (unstated target = expected + 1, the FIX-GM-01
+    /// rule), keeping the owner and parking the ownership Recovering, and records the idempotent
+    /// receipt and the audit row in the same transaction. A retry by operation id returns the
+    /// recorded outcome without a second bump; a different request under the same id is an
+    /// <see cref="Chorus.Data.IdempotencyConflictException"/>. Two concurrent bumps of the same
+    /// expected epoch serialize on the ownership row, so exactly one logical operation succeeds;
+    /// a rollback leaves both columns at their pre-bump value. The room is recovered explicitly
+    /// afterwards (FIX-GM-05), never by the takeover sweep — the receipt lives apart from
+    /// <c>control.recovery_operation</c> for exactly that reason.
+    /// </summary>
+    public async Task<EpochBumpOutcome> BumpRoomEpochAsync(string tenantId, string gameId, string roomId,
+        long expectedEpoch, long targetEpoch, string operationId, string operatorId, string reason,
+        int leaseSeconds, CancellationToken cancellationToken = default)
+    {
+        RoomEpochRule.ValidateIdentifiers(tenantId, gameId, roomId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationId, nameof(operationId));
+        ArgumentException.ThrowIfNullOrWhiteSpace(operatorId, nameof(operatorId));
+        if (leaseSeconds is <= 0 or > 60) throw new ArgumentOutOfRangeException(nameof(leaseSeconds));
+        var resolvedTarget = RoomEpochRule.ResolveTarget(expectedEpoch, targetEpoch);
+
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        // Idempotency first: a replay returns the recorded outcome, never a second bump. The
+        // request shape (expected, resolved target) is the identity — the same id under a
+        // different shape is a conflict.
+        await using (var replay = new NpgsqlCommand("""
+            SELECT owner_instance_id,old_epoch,new_epoch,expected_epoch,target_epoch
+            FROM control.epoch_operation
+            WHERE tenant_id=@tenant AND game_id=@game AND operation_id=@operation
+            """, connection))
+        {
+            replay.Parameters.AddWithValue("tenant", tenantId);
+            replay.Parameters.AddWithValue("game", gameId);
+            replay.Parameters.AddWithValue("operation", operationId);
+            await using var reader = await replay.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                var owner = reader.GetString(0);
+                var old = reader.GetInt64(1);
+                var @new = reader.GetInt64(2);
+                var recordedExpected = reader.GetInt64(3);
+                var recordedTarget = reader.GetInt64(4);
+                await reader.DisposeAsync();
+                if (recordedExpected != expectedEpoch || recordedTarget != resolvedTarget)
+                    throw new Chorus.Data.IdempotencyConflictException();
+                return new EpochBumpOutcome(old, @new, owner, "Recovering", true);
+            }
+        }
+
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        string holder;
+        await using (var lockCommand = new NpgsqlCommand("""
+            SELECT owner_process_instance_id,status,epoch FROM control.ownership
+            WHERE tenant_id=@tenant AND game_id=@game AND kind='room' AND entity_id=@room
+            FOR UPDATE
+            """, connection, transaction))
+        {
+            lockCommand.Parameters.AddWithValue("tenant", tenantId);
+            lockCommand.Parameters.AddWithValue("game", gameId);
+            lockCommand.Parameters.AddWithValue("room", roomId);
+            await using var reader = await lockCommand.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new InvalidOperationException("The ownership row is missing for this room.");
+            holder = reader.GetString(0);
+            var status = reader.GetString(1);
+            var current = reader.GetInt64(2);
+            await reader.DisposeAsync();
+            if (!StringComparer.Ordinal.Equals(status, "Active"))
+                throw new InvalidOperationException($"The ownership is {status}; only an Active room bumps.");
+            if (current != expectedEpoch)
+                throw new InvalidOperationException($"The ownership epoch is {current}, not {expectedEpoch}.");
+        }
+        // Architecture 4.5: both columns must agree before the bump — an inconsistent pair is an
+        // invariant break the operator must see, never something the bump papers over.
+        await using (var roomCheck = new NpgsqlCommand("""
+            SELECT epoch FROM game.room
+            WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
+            """, connection, transaction))
+        {
+            roomCheck.Parameters.AddWithValue("room", roomId);
+            roomCheck.Parameters.AddWithValue("tenant", tenantId);
+            roomCheck.Parameters.AddWithValue("game", gameId);
+            var roomEpoch = await roomCheck.ExecuteScalarAsync(cancellationToken);
+            if (roomEpoch is null)
+                throw new InvalidOperationException("The game.room row is missing for this room.");
+            if (Convert.ToInt64(roomEpoch) != expectedEpoch)
+                throw new InvalidOperationException(
+                    $"The room epoch is {roomEpoch}, not {expectedEpoch}; ownership and room disagree.");
+        }
+        await using (var bump = new NpgsqlCommand("""
+            UPDATE control.ownership
+            SET epoch=@target, status='Recovering',
+                lease_until=clock_timestamp()+@lease*interval '1 second', version=version+1
+            WHERE tenant_id=@tenant AND game_id=@game AND kind='room' AND entity_id=@room
+              AND epoch=@expected AND status='Active'
+            """, connection, transaction))
+        {
+            bump.Parameters.AddWithValue("target", resolvedTarget);
+            bump.Parameters.AddWithValue("expected", expectedEpoch);
+            bump.Parameters.AddWithValue("lease", leaseSeconds);
+            bump.Parameters.AddWithValue("tenant", tenantId);
+            bump.Parameters.AddWithValue("game", gameId);
+            bump.Parameters.AddWithValue("room", roomId);
+            if (await bump.ExecuteNonQueryAsync(cancellationToken) != 1)
+                throw new InvalidOperationException("The ownership epoch moved concurrently; no bump applied.");
+        }
+        await using (var room = new NpgsqlCommand("""
+            UPDATE game.room SET epoch=@target, updated_at=clock_timestamp()
+            WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game
+              AND epoch=@expected AND status IN ('Running','Finishing')
+            """, connection, transaction))
+        {
+            room.Parameters.AddWithValue("target", resolvedTarget);
+            room.Parameters.AddWithValue("expected", expectedEpoch);
+            room.Parameters.AddWithValue("room", roomId);
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            if (await room.ExecuteNonQueryAsync(cancellationToken) != 1)
+                throw new InvalidOperationException("The room is not in a bumpable state; no bump applied.");
+        }
+        await using (var receipt = new NpgsqlCommand("""
+            INSERT INTO control.epoch_operation(tenant_id,game_id,operation_id,room_id,owner_instance_id,
+                expected_epoch,target_epoch,old_epoch,new_epoch,reason)
+            VALUES (@tenant,@game,@operation,@room,@owner,@expected,@target,@old,@new,@reason)
+            """, connection, transaction))
+        {
+            receipt.Parameters.AddWithValue("tenant", tenantId);
+            receipt.Parameters.AddWithValue("game", gameId);
+            receipt.Parameters.AddWithValue("operation", operationId);
+            receipt.Parameters.AddWithValue("room", roomId);
+            receipt.Parameters.AddWithValue("owner", holder);
+            receipt.Parameters.AddWithValue("expected", expectedEpoch);
+            receipt.Parameters.AddWithValue("target", resolvedTarget);
+            receipt.Parameters.AddWithValue("old", expectedEpoch);
+            receipt.Parameters.AddWithValue("new", resolvedTarget);
+            receipt.Parameters.AddWithValue("reason", reason);
+            await receipt.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var audit = new NpgsqlCommand("""
+            INSERT INTO infra.audit(actor_instance_id,operation_id,action,target,reason)
+            VALUES (@actor,@operation,'RoomEpochBump',@room,@reason)
+            """, connection, transaction))
+        {
+            audit.Parameters.AddWithValue("actor", operatorId);
+            audit.Parameters.AddWithValue("operation", operationId);
+            audit.Parameters.AddWithValue("room", roomId);
+            audit.Parameters.AddWithValue("reason", reason);
+            await audit.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return new EpochBumpOutcome(expectedEpoch, resolvedTarget, holder, "Recovering", false);
     }
 
     /// <summary>
