@@ -454,6 +454,25 @@ public sealed class RedesignControlStore(string connectionString)
             : new RoomEpochStatus(false, 0, null, null);
     }
 
+    /// <summary>The route-change publication state of one room (FIX-GM-03): the storage commit
+    /// is a separate fact from the platform gateway's confirmation of the routing version that
+    /// carries the room's new epoch. "Synced" only when a gateway confirmed the current snapshot
+    /// version (the one that includes the room); "Pending" when the storage committed and the
+    /// version moved (the room's epoch is part of the content hash) but no gateway confirmed it
+    /// yet; "Removed" when the room is no longer in the snapshot at all. A caller never sees
+    /// "Synced" before the gateway confirms, so the storage commit and the route sync are
+    /// distinct surfaces.</summary>
+    public async Task<string> GetRoomRouteSyncStatusAsync(string tenantId, string gameId, string roomId,
+        CancellationToken cancellationToken = default)
+    {
+        var snapshot = await ReadRoutingSnapshotAsync(cancellationToken);
+        var room = snapshot.Rooms.FirstOrDefault(route =>
+            route.TenantId == tenantId && route.GameId == gameId && route.RoomId == roomId);
+        if (room is null) return "Removed";
+        return await IsRoutingVersionConfirmedAsync(snapshot.Version, cancellationToken)
+            ? "Synced" : "Pending";
+    }
+
     public async Task<OwnerStatus?> GetOwnershipAsync(string tenantId, string gameId, string kind,
         string entityId, CancellationToken cancellationToken = default)
     {

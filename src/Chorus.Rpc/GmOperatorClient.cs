@@ -21,4 +21,16 @@ public sealed class GmOperatorClient(Admin.AdminClient admin, string operatorId,
         {
             TenantId = tenantId, GameId = gameId, RoomId = roomId, Operator = operatorId
         }, Credential(), cancellationToken: cancellationToken);
+
+    /// <summary>The audited, idempotent epoch bump (FIX-GM-01/02/03). The reply separates the
+    /// storage commit (old/new epoch) from the platform gateway's route confirmation
+    /// (route_sync_status); the request id is the OperationId a lost reply replays against.</summary>
+    public async Task<AdminBumpRoomEpochReply> BumpRoomEpochAsync(string tenantId, string gameId,
+        string roomId, string requestId, string reason, long expectedEpoch, long targetEpoch = 0,
+        CancellationToken cancellationToken = default) =>
+        await admin.BumpRoomEpochAsync(new AdminBumpRoomEpochRequest
+        {
+            TenantId = tenantId, GameId = gameId, RoomId = roomId, RequestId = requestId,
+            Reason = reason, Operator = operatorId, ExpectedEpoch = expectedEpoch, TargetEpoch = targetEpoch
+        }, Credential(), cancellationToken: cancellationToken);
 }

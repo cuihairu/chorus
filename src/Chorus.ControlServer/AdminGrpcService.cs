@@ -1,3 +1,4 @@
+using Chorus.Data;
 using Chorus.Rpc;
 using Grpc.Core;
 
@@ -47,6 +48,58 @@ public sealed class AdminGrpcService(
             Found = epoch.Found, Epoch = epoch.Epoch,
             OwnerInstanceId = epoch.OwnerInstanceId ?? "", Status = epoch.Status ?? "",
             TenantId = request.TenantId, GameId = request.GameId, RoomId = request.RoomId
+        };
+    }
+
+    /// <summary>The audited, idempotent epoch bump (FIX-GM-01 / FIX-GM-02 / FIX-GM-03). The
+    /// operator gate and forged-identity check mirror GetRoomEpoch; the storage transaction is
+    /// the FIX-GM-02 line. The route change is a separate surface from the storage commit: the
+    /// storage moves the epoch (old/new in the reply), the route publication moves the routing
+    /// version (the epoch is part of the snapshot content hash) and the gateway's confirmation
+    /// is what the caller sees as route_sync_status — never "Synced" before the gateway
+    /// confirms, and never an implicit platform-end or room-end side effect.</summary>
+    public override async Task<AdminBumpRoomEpochReply> BumpRoomEpoch(
+        AdminBumpRoomEpochRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId) ||
+            string.IsNullOrWhiteSpace(request.RoomId) || string.IsNullOrWhiteSpace(request.RequestId) ||
+            string.IsNullOrWhiteSpace(request.Reason))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The bump request is incomplete."));
+        var operatorIdentity = await RequireOperator(context, "gm", request.TenantId, request.GameId);
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
+
+        EpochBumpOutcome outcome;
+        try
+        {
+            outcome = await controlStore.BumpRoomEpochAsync(request.TenantId, request.GameId, request.RoomId,
+                request.ExpectedEpoch, request.TargetEpoch, request.RequestId, request.Operator, request.Reason,
+                leaseSeconds: 60, context.CancellationToken);
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.AlreadyExists,
+                "The request id is already spent by a different request."));
+        }
+        catch (ArgumentOutOfRangeException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+        catch (InvalidOperationException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        // The storage commit and the route sync are distinct surfaces; the gateway confirmation
+        // is the only thing that ever reports Synced.
+        var routeStatus = await controlStore.GetRoomRouteSyncStatusAsync(
+            request.TenantId, request.GameId, request.RoomId, context.CancellationToken);
+        return new AdminBumpRoomEpochReply
+        {
+            OperationId = request.RequestId, RoomId = request.RoomId,
+            OwnerInstanceId = outcome.OwnerInstanceId, OldEpoch = outcome.OldEpoch, NewEpoch = outcome.NewEpoch,
+            OwnershipStatus = outcome.OwnershipStatus, RouteSyncStatus = routeStatus,
+            Duplicate = outcome.Duplicate, TenantId = request.TenantId, GameId = request.GameId
         };
     }
 
