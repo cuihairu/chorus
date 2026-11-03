@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
+using Chorus.ExampleGame;
 using Chorus.GameServer;
 using Chorus.Rpc;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -79,7 +80,7 @@ if (controlEndpoint is { Length: > 0 })
 }
 builder.Services.AddSingleton(new RoomRuntime(DataChannel(), maxActiveRooms, maxDegradedRooms,
     maxConcurrentRecoveries, maxQueuedRecoveries, shippedPackages: ShippedPackages(),
-    roomEventInboundLimit, roomInboundPerRoom, endReporter));
+    roomEventInboundLimit, roomInboundPerRoom, endReporter, inputTranslator: InputTranslator()));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
 // tells the control plane itself where it serves, so routing can reach it. The certificate
 // is the identity — the report claims exactly what it proves.
@@ -140,6 +141,23 @@ static int? OptionalNonNegativeInt(string name)
 // instead of re-derived under the new arithmetic. Unknown hashes fail closed — a host
 // that names a package it cannot load must not start — and the empty selection is refused
 // the same way, so a mistyped variable never silently becomes a full catalog.
+// FIX-INPUT-08: the configured platform-event → module-command mapping. Unset or "none"
+// keeps the pre-translation behavior (delivered payloads already are module commands);
+// "audience-event" mounts the ExampleGame family's mapping. An unknown value fails closed
+// and names the valid set, so a mistyped variable never silently runs raw payloads.
+static IRoomInputTranslator? InputTranslator()
+{
+    var raw = Environment.GetEnvironmentVariable("CHORUS_INPUT_TRANSLATION");
+    if (string.IsNullOrWhiteSpace(raw) || raw == "none") return null;
+    return raw switch
+    {
+        "audience-event" => new AudienceEventModuleInputTranslator(),
+        _ => throw new InvalidOperationException(
+            $"CHORUS_INPUT_TRANSLATION names \"{raw}\", which this host does not ship " +
+            "(valid: audience-event, none).")
+    };
+}
+
 static IReadOnlyList<RedesignModulePackage> ShippedPackages()
 {
     var raw = Environment.GetEnvironmentVariable("CHORUS_MODULE_PACKAGES");

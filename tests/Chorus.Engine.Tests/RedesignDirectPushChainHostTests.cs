@@ -188,6 +188,132 @@ public sealed class RedesignDirectPushChainHostTests
     }
 
     [Fact]
+    public async Task AConfiguredGiftTranslationScoresTheRecipientFactionOnTheCommittedTick()
+    {
+        // FIX-INPUT-08, the acceptance half against real hosts: the platform gift enters through
+        // the gateway's public face, the configured audience-event mapping turns the platform
+        // payload into this module family's gift command before the tick, and the score effect
+        // is the module output the client delta carries. The same event replayed verbatim is
+        // answered Duplicate and produces no second score, and the frame record references the
+        // event once — the gift, frame, effect and client evidence all chain to the same id.
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var ingressPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var controlEndpoint = $"https://localhost:{environment.ControlPort}";
+
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort,
+            "control-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_OWNERSHIP_LEASE_SECONDS"] = "60",
+                ["CHORUS_OWNERSHIP_GATE_SECONDS"] = "15"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(CultureInfo.InvariantCulture),
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+            });
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            GameEnvironment(environment.DataPort, controlEndpoint, gamePort, "node-a/game-server",
+                inputTranslation: "audience-event"),
+            clientTenant: "tenant-a", instanceId: "game-a");
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            GatewayEnvironment(environment.DataPort, ingressPort, controlEndpoint, gatewayPort),
+            instanceId: "gateway-gift");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-gift");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var control = new Chorus.Rpc.ControlService.ControlServiceClient(controlChannel);
+        var routing = new RoutingService.RoutingClient(controlChannel);
+        using var gameCertificate = environment.Certificate("tenant-a", "game-server", "rounds-gift");
+        using var gameChannel = environment.Channel(environment.DataPort, gameCertificate, "data-server");
+        var rounds = new Chorus.Rpc.RoundStore.RoundStoreClient(gameChannel);
+
+        await RegisterHostsAsync(environment, routing, "game-a");
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "gift-open-a", "gift-host-a");
+        var guest = await MountAsync(environment, simulator, "gift-open-guest-a", "gift-guest-a");
+        const string room = "room-gift-a";
+        var (epoch, _) = await StartRoomAsync(environment, control, rounds, room,
+            "game-a", gamePort, controlCertificate, host, guest, "gift-start-a", durationTicks: 120);
+
+        var warm = await WaitForRoutingWarmAsync(routing, ["gift-host-a"], [room]);
+        Assert.True(warm, "The gateway's routing snapshot never carried the route.");
+        using var watch = new RoomWatch(environment, gamePort, room, epoch, "gift-watch-a");
+        await Task.Delay(500);
+        using var http = await HttpClientAsync(environment);
+
+        var body = """{"sessionId":"gift-host-a","eventId":"gift-in-a1","kind":"Gift","giftId":"g1","giftCount":1,"giftValue":100}""";
+        var pushed = await PostAsync(http, ingressPort, "simulator", "app-1", body);
+        await AssertDurableAsync(pushed, "gift-in-a1");
+
+        // The committed delta carries the event id and the module's score effect — the gift
+        // reached the client evidence with the value the platform stated, applied once.
+        var delivered = await WaitForAsync(
+            () => Task.FromResult(watch.Saw("gift-in-a1") && !watch.EffectPayloads.IsEmpty),
+            TimeSpan.FromSeconds(30));
+        Assert.True(delivered, "The gift never reached its room's client delta with an effect. " +
+            $"ids={string.Join(",", watch.InputIds)}; effects={string.Join(";", watch.EffectPayloads)}; " +
+            $"notes={string.Join(",", watch.Notes)}.");
+        var scoreEffect = JsonDocument.Parse(watch.EffectPayloads.First());
+        Assert.Equal("red", scoreEffect.RootElement.GetProperty("faction").GetString());
+        Assert.Equal(100L, scoreEffect.RootElement.GetProperty("delta").GetInt64());
+        Assert.Equal(100L, scoreEffect.RootElement.GetProperty("total").GetInt64());
+
+        // The platform retries the callback verbatim: Duplicate through the chain, one frame
+        // reference, one delivery row — the receipt and the effect stay distinguishable.
+        var replay = await PostAsync(http, ingressPort, "simulator", "app-1", body);
+        Assert.True(replay.StatusCode == HttpStatusCode.OK,
+            $"The retried callback was not accepted: {replay.StatusCode}");
+        var receipt = Assert.Single(ReadReceipts(await replay.Content.ReadAsStringAsync()));
+        Assert.Equal("Duplicate", receipt.GetProperty("disposition").GetString());
+        Assert.True(receipt.GetProperty("duplicate").GetBoolean());
+
+        var finished = await WaitForAsync(
+            () => Task.FromResult(watch.ResultJson is not null), TimeSpan.FromSeconds(90));
+        Assert.True(finished, "The room did not publish its result. " +
+            $"notes={string.Join(",", watch.Notes)}.");
+        using (var result = JsonDocument.Parse(watch.ResultJson!))
+        {
+            var red = result.RootElement.GetProperty("ranking").EnumerateArray()
+                .Single(entry => entry.GetProperty("faction").GetString() == "red")
+                .GetProperty("score").GetInt64();
+            Assert.Equal(100L, red);
+        }
+
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var delivery = new NpgsqlCommand(
+                "SELECT count(*),count(*) FILTER (WHERE state='Consumed') FROM input.delivery " +
+                "WHERE event_id='gift-in-a1'", connection);
+            await using var reader = await delivery.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(1L, reader.GetInt64(0)); // one delivery row, the replay added nothing
+            Assert.Equal(1L, reader.GetInt64(1)); // and it was consumed by the frame commit
+        }
+        // The reader above is disposed with its scope; only now may the same connection
+        // run the frame probe — one command in flight at a time on one Npgsql connection.
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            Assert.True(await FrameContainsAsync(connection, room, "gift-in-a1"));
+        }
+    }
+
+    [Fact]
     public async Task AKilledHostLosesNoConfirmedPushOnEitherSideOfTheCommit()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
@@ -302,6 +428,7 @@ public sealed class RedesignDirectPushChainHostTests
         private string? _resultJson;
 
         public ConcurrentQueue<string> InputIds { get; } = new();
+        public ConcurrentQueue<string> EffectPayloads { get; } = new();
         public ConcurrentQueue<string> Notes { get; } = new();
         public string? ResultJson => Volatile.Read(ref _resultJson);
 
@@ -323,6 +450,9 @@ public sealed class RedesignDirectPushChainHostTests
                     {
                         case Chorus.Rpc.SyncMessage.KindOneofCase.Delta:
                             foreach (var id in message.Delta.InputEventIds) InputIds.Enqueue(id);
+                            foreach (var effect in message.Delta.Effects)
+                                if (effect.Kind == "score")
+                                    EffectPayloads.Enqueue(effect.PayloadJson);
                             break;
                         case Chorus.Rpc.SyncMessage.KindOneofCase.RoundResult:
                             Volatile.Write(ref _resultJson, message.RoundResult.ResultJson);
@@ -468,13 +598,15 @@ public sealed class RedesignDirectPushChainHostTests
     };
 
     private static Dictionary<string, string> GameEnvironment(
-        int dataPort, string controlEndpoint, int gamePort, string slotId) => new()
+        int dataPort, string controlEndpoint, int gamePort, string slotId,
+        string? inputTranslation = null) => new()
     {
         ["CHORUS_DATA_PORT"] = dataPort.ToString(CultureInfo.InvariantCulture),
         ["CHORUS_CONTROL_ENDPOINT"] = controlEndpoint,
         ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{gamePort}",
         ["CHORUS_SLOT_ID"] = slotId,
-        ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+        ["CHORUS_REPORT_INTERVAL_MS"] = "500",
+        ["CHORUS_INPUT_TRANSLATION"] = inputTranslation ?? "none"
     };
 
     private static async Task RegisterHostsAsync(

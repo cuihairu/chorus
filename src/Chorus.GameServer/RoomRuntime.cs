@@ -58,6 +58,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     private readonly SemaphoreSlim? _roomEventGate;
     // FIX-INPUT-03: the per-room inbound seat bound every constructed actor carries.
     private readonly int _inboundBound;
+    private readonly IRoomInputTranslator? _inputTranslator;
     // FIX-END-04: the step-1 report of a frozen result; absent (no control endpoint
     // provisioned) the room's completion has no control-plane notification of its own —
     // the control plane's discovery sweep is the only reporter then.
@@ -76,14 +77,14 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
         IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
         int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024,
-        RoomEndReporter? endReporter = null)
+        RoomEndReporter? endReporter = null, IRoomInputTranslator? inputTranslator = null)
         : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
             new Settlement.SettlementClient(dataChannel), dataChannel,
             maxActiveRooms: maxActiveRooms, maxDegradedRooms: maxDegradedRooms,
             maxConcurrentRecoveries: maxConcurrentRecoveries,
             maxQueuedRecoveries: maxQueuedRecoveries, shippedPackages: shippedPackages,
             roomEventInboundLimit: roomEventInboundLimit, roomInboundPerRoom: roomInboundPerRoom,
-            endReporter: endReporter) { }
+            endReporter: endReporter, inputTranslator: inputTranslator) { }
 
     /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
     internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
@@ -93,13 +94,16 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
         IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
         int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024,
-        RoomEndReporter? endReporter = null)
+        RoomEndReporter? endReporter = null, IRoomInputTranslator? inputTranslator = null)
     {
         _rounds = rounds;
         _frames = frames;
         _settlement = settlement;
         _dataChannel = dataChannel;
         _metrics = metrics ?? RoomMetrics.Default;
+        // FIX-INPUT-08: the platform-event → module-command mapping every room and every
+        // recovery replay runs through; null means the delivered payload is a command already.
+        _inputTranslator = inputTranslator;
         _admission = new RoomAdmissionBudget(maxActiveRooms, maxDegradedRooms);
         _overBudgetFactorOverride = overBudgetFactor;
         _overBudgetWindowOverride = overBudgetWindow;
@@ -245,7 +249,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     request.OwnerInstanceId, request.Epoch, configHash, initial, bindings,
                     hangAfterTick: request.HangAfterTick, hangMs: request.HangMs, metrics: _metrics,
                     overBudgetFactor: _overBudgetFactorOverride,
-                    overBudgetWindow: _overBudgetWindowOverride, inboundBound: _inboundBound);
+                    overBudgetWindow: _overBudgetWindowOverride, inboundBound: _inboundBound,
+                    inputTranslator: _inputTranslator);
                 actor.LoopEnded = Retire;
                 if (!_actors.TryAdd(request.RoomId, actor))
                 {
@@ -740,7 +745,15 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                         if (deliveryByEvent.TryGetValue(eventId, out var delivery)
                             && delivery.BindingId is { Length: > 0 } binding
                             && participantByBinding.TryGetValue(binding, out var participant))
-                            inputs.Add(new NormalizedInput(participant, delivery.PayloadJson));
+                        {
+                            // FIX-INPUT-08: the same translation the live tick applied when it
+                            // committed this frame — a replayed room must re-derive the command
+                            // the original tick fed the module, or the state hash diverges.
+                            var command = _inputTranslator?.Translate(delivery.PayloadJson)
+                                ?? delivery.PayloadJson;
+                            if (command is not null)
+                                inputs.Add(new NormalizedInput(participant, command));
+                        }
                     TickOutcome outcome;
                     try { outcome = module.ApplyTick(state, frame.Tick, inputs); }
                     catch (Exception) { consistent = false; break; }
@@ -835,7 +848,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
             plan.LastTick, plan.StateVersion, metrics: _metrics,
             overBudgetFactor: _overBudgetFactorOverride,
-            overBudgetWindow: _overBudgetWindowOverride, inboundBound: _inboundBound);
+            overBudgetWindow: _overBudgetWindowOverride, inboundBound: _inboundBound,
+            inputTranslator: _inputTranslator);
         actor.LoopEnded = Retire;
         // FIX-PERF-07: a recovered room is real load this host must run — a recovery
         // is never refused (the scheduler assigned it here) — but it still reserves a

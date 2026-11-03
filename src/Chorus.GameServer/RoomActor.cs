@@ -84,6 +84,9 @@ internal sealed class RoomActor : IAsyncDisposable
     private readonly FrameStore.FrameStoreClient _frames;
     private readonly IRedesignGameModule _module;
     private readonly RoomMetrics _metrics;
+    // FIX-INPUT-08: the configured platform-event → module-command mapping; null means the
+    // delivered payload already is a module command (the pre-translation behavior).
+    private readonly IRoomInputTranslator? _inputTranslator;
     private readonly string _gameId;
     private readonly string _roomId;
     private readonly string _ownerInstanceId;
@@ -141,11 +144,13 @@ internal sealed class RoomActor : IAsyncDisposable
         ExampleGameState initialState, IReadOnlyDictionary<string, string> participantByBinding,
         long lastTick = 0, long stateVersion = 1, int hangAfterTick = 0, int hangMs = 0,
         RoomMetrics? metrics = null, TimeSpan? commitRetryDelay = null,
-        int overBudgetFactor = 0, int overBudgetWindow = 0, int inboundBound = 1024)
+        int overBudgetFactor = 0, int overBudgetWindow = 0, int inboundBound = 1024,
+        IRoomInputTranslator? inputTranslator = null)
     {
         _runtime = runtime;
         _frames = frames;
         _module = module;
+        _inputTranslator = inputTranslator;
         _metrics = metrics ?? RoomMetrics.Default;
         _gameId = gameId;
         _roomId = roomId;
@@ -286,12 +291,18 @@ internal sealed class RoomActor : IAsyncDisposable
             }
             // Everything acquired is consumed this tick; only bindings this host mapped at
             // prepare time become module inputs, so a foreign delivery is acknowledged into the
-            // frame record without inventing a participant.
+            // frame record without inventing a participant. A platform event is translated to
+            // the module's command shape here — exactly what the recovery replay does with the
+            // same delivery, so a replayed room re-derives the frame it originally committed.
             var inputs = new List<NormalizedInput>(items.Count);
             foreach (var item in items)
                 if (item.BindingId is { Length: > 0 } binding
                     && _participantByBinding.TryGetValue(binding, out var participant))
-                    inputs.Add(new NormalizedInput(participant, item.PayloadJson));
+                {
+                    var command = _inputTranslator?.Translate(item.PayloadJson) ?? item.PayloadJson;
+                    if (command is not null)
+                        inputs.Add(new NormalizedInput(participant, command));
+                }
 
             var tick = _lastTick + 1;
             // The seam freezes the loop before the tick is applied or committed: the head
