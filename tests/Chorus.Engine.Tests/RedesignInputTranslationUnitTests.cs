@@ -13,7 +13,9 @@ namespace Chorus.Engine.Tests;
 /// family's command shape before the tick, a gift's value lands as its recipient faction's
 /// score effect, and a payload that is not a platform shape passes through untouched. The
 /// no-translator twin documents the honest boundary FIX-INPUT-06 drew: without the mapping
-/// the same gift reaches the frame and the client delta but scores nothing.
+/// the same gift reaches the frame and the client delta but scores nothing. FIX-INPUT-09's
+/// like half is here too — a like maps to its click count, read from the reducer's merged
+/// count convention, never to a per-callback assumption.
 /// </summary>
 public sealed class RedesignInputTranslationUnitTests
 {
@@ -37,9 +39,38 @@ public sealed class RedesignInputTranslationUnitTests
         // A gift with no stated value scores nothing deterministically.
         Assert.Null(translator.Translate(
             """{"eventId":"g","platform":"simulator","sessionId":"s","userId":"u","kind":3}"""));
-        // Likes and comments are FIX-INPUT-09's own line — this family takes no command.
+        // Comments take no command from this family.
         Assert.Null(translator.Translate(
-            """{"eventId":"l","platform":"simulator","sessionId":"s","userId":"u","kind":2}"""));
+            """{"eventId":"c","platform":"simulator","sessionId":"s","userId":"u","kind":1}"""));
+    }
+
+    [Fact]
+    public void ALikePayloadMapsToItsClickCountAndCommentsDoNot()
+    {
+        var translator = new AudienceEventModuleInputTranslator();
+
+        // A single like, no stated count: one physical click — the count is one, not the
+        // callback count in the report.
+        var single = translator.Translate(
+            """{"eventId":"l1","platform":"simulator","sessionId":"s","userId":"u","kind":2}""");
+        using (var document = JsonDocument.Parse(single!))
+        {
+            Assert.Equal("like", document.RootElement.GetProperty("kind").GetString());
+            Assert.Equal(1, document.RootElement.GetProperty("count").GetInt32());
+        }
+
+        // The reducer's window merge states the merged click count in text (FIX-INPUT-09):
+        // one callback standing for five clicks reports five clicks, not one callback.
+        var merged = translator.Translate(
+            """{"eventId":"l2","platform":"simulator","sessionId":"s","userId":"u","kind":2,"text":"5"}""");
+        using (var document = JsonDocument.Parse(merged!))
+            Assert.Equal(5, document.RootElement.GetProperty("count").GetInt32());
+
+        // A non-numeric text is not a count: one click, deterministically.
+        var odd = translator.Translate(
+            """{"eventId":"l3","platform":"simulator","sessionId":"s","userId":"u","kind":2,"text":"many"}""");
+        using (var document = JsonDocument.Parse(odd!))
+            Assert.Equal(1, document.RootElement.GetProperty("count").GetInt32());
     }
 
     [Fact]

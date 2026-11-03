@@ -49,6 +49,12 @@ public sealed record GameStartConfig(
 /// collections, no floating point. Every tick copies forward (write-on-apply), so the
 /// pre-tick state stays intact for recovery while a candidate is being built.
 /// </summary>
+/// <param name="LikeByFaction">
+/// FIX-INPUT-09: the cumulative like count per faction, present only in the 1.2.0 module's
+/// states (its <see cref="ExampleGameModuleV3"/> seeds it and serializes it). The 1.0.0 and
+/// 1.1.0 modules never touch it — they leave it null and their serialized shapes and state
+/// hashes are unchanged, so the shared record's new parameter cannot disturb them.
+/// </param>
 public sealed record ExampleGameState(
     long Tick,
     long Seed,
@@ -56,7 +62,8 @@ public sealed record ExampleGameState(
     int FailAfterTick,
     IReadOnlyDictionary<string, string> FactionByParticipant,
     IReadOnlyDictionary<string, long> ScoreByFaction,
-    bool Finished)
+    bool Finished,
+    IReadOnlyDictionary<string, long>? LikeByFaction = null)
 {
     public int SchemaVersion => 1;
 }

@@ -69,12 +69,23 @@ public static class RedesignModuleCatalog
         RedesignGameModuleManifest.Default.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
         static manifest => new ExampleGameModuleV2(manifest));
 
+    /// <summary>The 1.2.0 upgrade of the default package (FIX-INPUT-09, the like rule): the
+    /// 1.1.0 rules plus per-faction like accumulation and its threshold burst, and the
+    /// round result's <c>likes</c> section. Ships beside 1.0.0 and 1.1.0 so rooms pinned to
+    /// an older hash keep their arithmetic; the like rule's new state and result shape make
+    /// loading the wrong version detectable by replay.</summary>
+    public static RedesignModulePackage DefaultLike { get; } = new(
+        "example-factions", "1.2.0", "cfg-1-v3", "pkg-1-v3",
+        RedesignGameModuleManifest.DeterministicReplay,
+        RedesignGameModuleManifest.Default.TickMs, RedesignGameModuleManifest.Default.SnapshotEveryTicks,
+        static manifest => new ExampleGameModuleV3(manifest));
+
     /// <summary>Every package this host ships, in stable order; the hashes are what a
     /// missing-package refusal lists back to the caller. A host that stages an upgrade
     /// drops the old package from its own runtime set (CHORUS_MODULE_PACKAGES) while the
     /// registry itself keeps both versions resolvable.</summary>
     public static IReadOnlyList<RedesignModulePackage> Shipped { get; } =
-        [Default, DefaultNext, Duel, Live];
+        [Default, DefaultNext, DefaultLike, Duel, Live];
 
     private static readonly IReadOnlyDictionary<string, RedesignModulePackage> ByPackageHash =
         Index(Shipped);
