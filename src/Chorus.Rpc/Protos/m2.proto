@@ -427,6 +427,13 @@ service RoundStore {
   rpc PrepareRound(PrepareRoundRequest) returns (RoundAdmissionReply);
   rpc ActivateRound(ActivateRoundRequest) returns (RoundAdmissionReply);
   rpc SuspendRound(SuspendRoundRequest) returns (RoundAdmissionReply);
+  // FIX-SYNC-06: the persistent pause. The game host parks a room at a committed boundary
+  // when every control session has been offline past the declared grace (authoritative-
+  // sync.md:42) — the freeze is a durable fact: status flips Running to Paused and the
+  // committed head (last_tick, state_version) is the frozen tick the room resumes from.
+  // A paused room accepts no frames, and a restart that loads it restores Paused — the
+  // pause is never a stopped local timer, it is the room row's status.
+  rpc PauseRound(PauseRoundRequest) returns (RoundAdmissionReply);
   // Authority handover: transfer parks the room Recovering under the new holder at a bumped
   // epoch; confirm flips it back to Active — the holder calls it once its recovery pinned
   // the verified head (contracts 6.2.1), so activation never precedes a real recovery.
@@ -616,6 +623,23 @@ message SuspendRoundRequest {
   string game_id = 4;
   string reason = 5;
   string operation_id = 6;
+}
+
+// FIX-SYNC-06: the persistent pause request. The game host parks the room at the committed
+// boundary named by tick/state_version — the frozen head a later recovery (or resume)
+// restores — and the store flips status Running to Paused under the ownership fence.
+message PauseRoundRequest {
+  string room_id = 1;
+  string owner_instance_id = 2;
+  int64 epoch = 3;
+  string game_id = 4;
+  string reason = 5;
+  string operation_id = 6;
+  // The committed boundary the room froze at (the actor's just-committed tick and the
+  // state version that tick produced). The store pins them as the pause head so a paused
+  // room never silently resumes past the boundary the clients abandoned.
+  int64 tick = 7;
+  int64 state_version = 8;
 }
 
 message GameParticipantProto {

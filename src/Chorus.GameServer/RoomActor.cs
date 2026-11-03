@@ -20,6 +20,11 @@ internal enum RoomRunState
     /// <summary>Every recent commit blew the tick budget (FIX-PERF-06): the room keeps
     /// committing — progress over silence — but no longer poses as Running.</summary>
     Degraded,
+    /// <summary>FIX-SYNC-06: the room parked itself at a committed boundary — every control
+    /// session offline past the declared grace under PauseAtBoundary. The pause is a durable
+    /// store fact (status Paused + frozen head), not a stopped local timer; the loop ended,
+    /// the head is frozen, and a restart restores Paused instead of ticking past it.</summary>
+    Paused,
     /// <summary>The final frame committed and the manifest settled.</summary>
     Completed,
     /// <summary>The loop ended without a committed result: module failure, fence
@@ -79,6 +84,11 @@ internal sealed class RoomActor : IAsyncDisposable
     // Durable client commands ride the inbox on this platform; their dedup key is the
     // command id the subscriber correlates receipts against (architecture 6.3).
     private const string ClientCommandPlatform = "@chorus";
+    // FIX-SYNC-06: the server heartbeat timeout the presence judge applies to a control
+    // session's last heartbeat. The real value is a wiring decision (the gateway's heartbeat
+    // cadence and how many misses count as dead); this is the mechanism's production default
+    // and a test passes its own. A silent connection is judged offline after this.
+    private static readonly TimeSpan DefaultPresenceTimeout = TimeSpan.FromSeconds(15);
 
     private readonly IRoomLifecycle _runtime;
     private readonly FrameStore.FrameStoreClient _frames;
@@ -93,6 +103,14 @@ internal sealed class RoomActor : IAsyncDisposable
     private readonly long _epoch;
     private readonly string _configHash;
     private readonly IReadOnlyDictionary<string, string> _participantByBinding;
+    // FIX-SYNC-06: the all-offline judge this actor feeds connection facts into. The room
+    // seeds it with its control participants at start, reports connect/disconnect/heartbeat
+    // from the host side, and samples once per tick after each commit — a PauseAtBoundary
+    // room parks itself once the verdict is AllOfflineGraceElapsed. The tracker itself is
+    // lock-free (single logical consumer); all access is serialized under _presenceGate
+    // because facts arrive from the host's RPC threads while the loop samples.
+    private readonly ControlPresenceTracker _presence;
+    private readonly object _presenceGate = new();
     private readonly CancellationTokenSource _cancellation = new();
     // Publishing and head reads share one gate: subscribers always see a coherent
     // (state, tick, version) triple of committed frames (architecture 8.3).
@@ -145,7 +163,7 @@ internal sealed class RoomActor : IAsyncDisposable
         long lastTick = 0, long stateVersion = 1, int hangAfterTick = 0, int hangMs = 0,
         RoomMetrics? metrics = null, TimeSpan? commitRetryDelay = null,
         int overBudgetFactor = 0, int overBudgetWindow = 0, int inboundBound = 1024,
-        IRoomInputTranslator? inputTranslator = null)
+        IRoomInputTranslator? inputTranslator = null, TimeSpan? presenceTimeout = null)
     {
         _runtime = runtime;
         _frames = frames;
@@ -173,6 +191,19 @@ internal sealed class RoomActor : IAsyncDisposable
         _overBudgetFactorOverride = overBudgetFactor;
         _overBudgetWindowOverride = overBudgetWindow;
         _inboundBound = inboundBound;
+        // FIX-SYNC-06: the all-offline judge is seeded with the room's control participants
+        // (the admission set — a participant with no live session is offline from the start)
+        // and judged under the module's declared offline grace. The heartbeat timeout is the
+        // mechanism's default; the wiring that feeds real connection facts sets the real
+        // value. A room whose module declares no policy is still tracked harmlessly — the
+        // pause decision gates on the PauseAtBoundary mode, never on the tracker alone.
+        var offlinePolicy = _module.Manifest.Offline;
+        var grace = offlinePolicy is not null
+            ? TimeSpan.FromSeconds(offlinePolicy.OfflineGraceSeconds)
+            : TimeSpan.FromSeconds(30);
+        _presence = new ControlPresenceTracker(presenceTimeout ?? DefaultPresenceTimeout, grace);
+        _presence.SeedControlParticipants(
+            participantByBinding.Values.Distinct(StringComparer.Ordinal), DateTimeOffset.UtcNow);
     }
 
     public void Start() => _run = Task.Run(() => RunAsync(_cancellation.Token));
@@ -437,7 +468,72 @@ internal sealed class RoomActor : IAsyncDisposable
             // host) replays the one operation if this report never lands.
             await _runtime.ReportEndAsync(_gameId, _roomId, receipt.Tick, receipt.StateVersion,
                 cancellationToken).ConfigureAwait(false);
+            return;
         }
+        // FIX-SYNC-06: a PauseAtBoundary room parks itself at this committed boundary — every
+        // control session offline past the declared grace (authoritative-sync.md:42). The
+        // freeze is a durable store fact, never a stopped local timer: the room flips Paused
+        // and persists the frozen head, so a restart restores the pause instead of ticking
+        // past the boundary the clients already abandoned.
+        if (ShouldPauseAtBoundary())
+        {
+            await PauseAtBoundaryAsync(pendingFrame.Tick, receipt.StateVersion,
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>FIX-SYNC-06: whether the room should park itself now — it declared
+    /// PauseAtBoundary and the judge says the grace has elapsed. Sampled once per tick after
+    /// each commit, under the presence gate so a concurrent connection fact is coherent.</summary>
+    private bool ShouldPauseAtBoundary()
+    {
+        var offline = _module.Manifest.Offline;
+        if (offline?.AllOffline != AllOfflinePolicy.PauseAtBoundary) return false;
+        lock (_presenceGate)
+            return _presence.Sample(DateTimeOffset.UtcNow).Verdict
+                == ControlPresenceVerdict.AllOfflineGraceElapsed;
+    }
+
+    /// <summary>FIX-SYNC-06: parks the room at the frozen boundary and persists the pause.
+    /// The loop ends after this; a failure to persist fails visible — the room stops and
+    /// suspends rather than silently ticking past a boundary it could not freeze.</summary>
+    private async Task PauseAtBoundaryAsync(long tick, long stateVersion,
+        CancellationToken cancellationToken)
+    {
+        _stopped = true;
+        lock (_publishGate)
+        {
+            _runState = RoomRunState.Paused;
+            _stopReason = null;
+        }
+        Console.Error.WriteLine($"room {_roomId} paused at tick {tick}/v{stateVersion}: " +
+            "all control sessions offline past the declared grace (FIX-SYNC-06).");
+        await _runtime.PauseRoomAsync(_gameId, _roomId, _ownerInstanceId, _epoch, tick,
+            stateVersion, "all control sessions offline past the declared grace",
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>FIX-SYNC-06: a control connection established at this generation. Fed by the
+    /// host from the gateway/streamer connection facts; an old generation or an unknown
+    /// identity is a stale fact the judge ignores.</summary>
+    public void ReportControlConnected(long generation, string identity, PresenceLinkKind kind)
+    {
+        lock (_presenceGate)
+            _presence.Connect(generation, identity, kind, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>FIX-SYNC-06: a control session ended for one of the five terminal reasons.</summary>
+    public void ReportControlDisconnected(long generation, string identity, ControlLinkReason reason)
+    {
+        lock (_presenceGate)
+            _presence.Disconnect(generation, identity, reason, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>FIX-SYNC-06: a keepalive from a live current-generation control session.</summary>
+    public void ReportControlHeartbeat(long generation, string identity)
+    {
+        lock (_presenceGate)
+            _presence.Heartbeat(generation, identity, DateTimeOffset.UtcNow);
     }
 
     private CommitFrameRequest BuildCommitRequest(long tick, IReadOnlyList<TickInputItem> items,
@@ -847,4 +943,10 @@ internal interface IRoomLifecycle
     /// the control plane's end operation is this host's to begin.</summary>
     Task ReportEndAsync(string gameId, string roomId, long finalTick, long resultVersion,
         CancellationToken cancellationToken = default);
+
+    /// <summary>FIX-SYNC-06: parks the room at the committed boundary (tick, resultVersion)
+    /// it just froze — the durable pause. The store flips the round to Paused and records
+    /// the frozen head, so a restart restores the pause instead of ticking past it.</summary>
+    Task PauseRoomAsync(string gameId, string roomId, string ownerInstanceId, long epoch,
+        long tick, long resultVersion, string reason, CancellationToken cancellationToken = default);
 }

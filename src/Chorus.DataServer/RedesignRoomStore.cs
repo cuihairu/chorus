@@ -49,6 +49,10 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
     public const string Aborted = "Aborted";
     public const string Running = "Running";
     public const string Suspended = "Suspended";
+    // FIX-SYNC-06: the room paused at a committed boundary — all control sessions offline
+    // past the declared grace. A paused room accepts no frames and a recovery restores
+    // Paused (no tick loop); a later resume (SYNC-08) restarts the tick from the frozen head.
+    public const string Paused = "Paused";
     private const string ActiveStates = "('Starting','Ready','Running','AwaitingPlatformClose')";
 
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
@@ -586,6 +590,85 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
         }, connection, transaction, cancellationToken);
         return JsonSerializer.Serialize(
             new RoundAdmission(roomId, 0, Suspended, ownershipEpoch, Duplicate: false));
+    }
+
+    /// <summary>
+    /// FIX-SYNC-06: parks a live room at the committed boundary it just froze — all control
+    /// sessions offline past the declared grace. The pause is a durable fact, not a stopped
+    /// timer: status flips Running to Paused and the frozen head (last_tick, state_version)
+    /// plus the wall-clock pause instant persist in the room row, so a process restart
+    /// restores the paused room from that head without ticking. Only a Running room pauses;
+    /// a repeated pause replays the stored receipt. A paused room accepts no frames — the
+    /// freeze is the store's, and only a resume (SYNC-08) lifts it.
+    /// </summary>
+    public async Task<RoundAdmission> PauseRoundAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, string reason, string operationId, long tick,
+        long stateVersion, CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
+        Require(ownerInstanceId, nameof(ownerInstanceId)); Require(reason, nameof(reason));
+        Require(operationId, nameof(operationId));
+        if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
+        if (tick < 0) throw new ArgumentOutOfRangeException(nameof(tick));
+        if (stateVersion < 1) throw new ArgumentOutOfRangeException(nameof(stateVersion));
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1,
+            JsonSerializer.SerializeToUtf8Bytes(new { RoomId = roomId, Reason = reason }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "round.pause", roomId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplyPauseAsync(tenantId, gameId, roomId, ownerInstanceId,
+                epoch, reason, tick, stateVersion, connection, transaction, token),
+            cancellationToken);
+        var result = JsonSerializer.Deserialize<RoundAdmission>(receipt.ResultJson)
+            ?? throw new InvalidOperationException("The stored pause receipt is unreadable.");
+        return result with { Duplicate = receipt.Duplicate };
+    }
+
+    private async Task<string> ApplyPauseAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, string reason, long tick, long stateVersion,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        var ownershipEpoch = await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
+            connection, transaction, cancellationToken);
+        await using (var room = new NpgsqlCommand("""
+            SELECT status,last_tick,state_version FROM game.room
+            WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game FOR UPDATE
+            """, connection, transaction))
+        {
+            room.Parameters.AddWithValue("room", roomId);
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            await using var reader = await room.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new RoundAdmissionException("The room does not exist.");
+            var status = reader.GetString(0);
+            if (status != Running)
+                throw new RoundAdmissionException($"A room in status {status} cannot be paused.");
+            // The frozen boundary the actor named must be the room's actual head — a pause
+            // parks the room exactly where it stopped, never ahead of or behind the truth.
+            if (reader.GetInt64(1) != tick || reader.GetInt64(2) != stateVersion)
+                throw new RoundAdmissionException(
+                    $"The pause boundary tick {tick}/v{stateVersion} is not the room's committed " +
+                    $"head (tick {reader.GetInt64(1)}/v{reader.GetInt64(2)}).");
+        }
+        await using (var pause = new NpgsqlCommand("""
+            UPDATE game.room SET status=@status, paused_at=clock_timestamp(), paused_reason=@reason,
+                updated_at=clock_timestamp()
+            WHERE room_id=@room
+            """, connection, transaction))
+        {
+            pause.Parameters.AddWithValue("status", Paused);
+            pause.Parameters.AddWithValue("reason", reason);
+            pause.Parameters.AddWithValue("room", roomId);
+            await pause.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await WriteOutboxAsync($"{roomId}/{tick}/pause", "round.paused", new
+        {
+            RoomId = roomId, TenantId = tenantId, GameId = gameId, Epoch = ownershipEpoch,
+            Reason = reason, Tick = tick, StateVersion = stateVersion
+        }, connection, transaction, cancellationToken);
+        return JsonSerializer.Serialize(
+            new RoundAdmission(roomId, tick, Paused, ownershipEpoch, Duplicate: false));
     }
 
     /// <summary>

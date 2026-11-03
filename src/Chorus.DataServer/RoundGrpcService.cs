@@ -162,6 +162,32 @@ public sealed class RoundGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    public override async Task<RoundAdmissionReply> PauseRound(PauseRoundRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "control-server", "game-server");
+        try
+        {
+            var admission = await roomStore.PauseRoundAsync(caller.TenantId, request.GameId, request.RoomId,
+                request.OwnerInstanceId, request.Epoch, request.Reason, request.OperationId,
+                request.Tick, request.StateVersion, context.CancellationToken);
+            return Reply(admission);
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The room ownership fence rejected the caller."));
+        }
+        catch (RoundAdmissionException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
     public override async Task<RoomTakeoverReply> TransferRoomOwnership(
         TransferRoomOwnershipRequest request, ServerCallContext context)
     {

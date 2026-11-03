@@ -683,6 +683,23 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 };
             var manifest = package.ManifestAt(plan.TickMs);
             var module = package.Load(manifest);
+            // FIX-SYNC-06: a paused room recovers to Paused — the freeze is a durable store
+            // fact, so the recovery confirms this host owns the paused room (the same fenced
+            // confirm a running recovery takes) but starts no tick loop and replays nothing.
+            // The frozen head stays the boundary a later resume (SYNC-08) lifts; nothing here
+            // may tick past it. The identity above is still validated: the pause never
+            // suspends the room's module facts.
+            if (plan.Status == "Paused")
+            {
+                var activation = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
+                if (activation is not null) return activation;
+                return new RecoverRoomReply
+                {
+                    RoomId = request.RoomId, Recovered = true, Status = "Paused",
+                    LastTick = plan.LastTick,
+                    Note = "The round stays paused at its committed boundary; it is frozen, not running."
+                };
+            }
             // Finishing rooms recover their result and settlement tail only; battle ticks are
             // never restarted for a round that already froze its result. FIX-TAKE-03: the
             // closing tail activates under the same fenced confirm before any settlement
@@ -1123,6 +1140,14 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 Note = "The room is held for a common start (FIX-PERF-03) and has not begun " +
                        "ticking; recover it only after the start line releases it."
             };
+        if (status.State == RoomRunState.Paused)
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = true, Status = "Paused",
+                LastTick = status.LastCommittedTick,
+                Note = "The room is paused at a committed boundary on this host (FIX-SYNC-06); " +
+                       "it is frozen, not running."
+            };
         return new RecoverRoomReply
         {
             RoomId = request.RoomId, Recovered = false, Status = DescribeRunState(status.State),
@@ -1139,6 +1164,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         RoomRunState.Running => "Running",
         RoomRunState.Degraded => "Degraded",
         RoomRunState.Completed => "Finishing",
+        RoomRunState.Paused => "Paused",
         RoomRunState.Stopped => "Stopped",
         RoomRunState.Preparing => "Preparing",
         _ => "Disposed"
@@ -1183,6 +1209,54 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         {
             // Best-effort within the bounded retry; the sweep owns what this report lost.
         }
+    }
+
+    /// <summary>
+    /// FIX-SYNC-06: parks a live room at the committed boundary it just froze — every control
+    /// session offline past the declared grace. The pause is a durable store fact, not a
+    /// stopped local timer: the round flips Paused and persists the frozen head, so a
+    /// process restart restores the paused room from that head without ticking. The operation
+    /// id is derived from the room and boundary, so a retry replays the stored receipt.
+    /// </summary>
+    public async Task PauseRoomAsync(string gameId, string roomId, string ownerInstanceId, long epoch,
+        long tick, long resultVersion, string reason, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _rounds.PauseRoundAsync(new PauseRoundRequest
+            {
+                RoomId = roomId, GameId = gameId, OwnerInstanceId = ownerInstanceId, Epoch = epoch,
+                Reason = reason, Tick = tick, StateVersion = resultVersion,
+                OperationId = $"{ownerInstanceId}/pause/{roomId}/{tick}"
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+        }
+        catch (RpcException)
+        {
+            // The pause must not silently become a stopped timer that resumes on restart —
+            // the room already stopped its loop, so a failed persist parks it visibly instead.
+            // The rethrow lets the actor's fail-visible catch suspend the room.
+            throw;
+        }
+    }
+
+    /// <summary>FIX-SYNC-06: a control connection established at this generation, routed to
+    /// the room's actor. A room this host does not hold (or already paused and retired) has
+    /// no actor to feed — the fact is dropped; the room's own state decides.</summary>
+    public void ReportControlConnected(string roomId, long generation, string identity, PresenceLinkKind kind)
+    {
+        FindRoom(roomId)?.ReportControlConnected(generation, identity, kind);
+    }
+
+    /// <summary>FIX-SYNC-06: a control session ended, routed to the room's actor.</summary>
+    public void ReportControlDisconnected(string roomId, long generation, string identity, ControlLinkReason reason)
+    {
+        FindRoom(roomId)?.ReportControlDisconnected(generation, identity, reason);
+    }
+
+    /// <summary>FIX-SYNC-06: a control keepalive, routed to the room's actor.</summary>
+    public void ReportControlHeartbeat(string roomId, long generation, string identity)
+    {
+        FindRoom(roomId)?.ReportControlHeartbeat(generation, identity);
     }
 
     /// <summary>

@@ -167,6 +167,10 @@ public sealed class RedesignRecoverEntryUnitTests
     /// <summary>The actor never reaches the real runtime in these tests.</summary>
     private sealed class NoOpLifecycle : IRoomLifecycle
     {
+        public Task PauseRoomAsync(string gameId, string roomId, string ownerInstanceId, long epoch,
+            long tick, long resultVersion, string reason, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
         public Task SuspendRoomAsync(string gameId, string roomId, string ownerInstanceId, long epoch,
             string reason, CancellationToken cancellationToken = default) => Task.CompletedTask;
 

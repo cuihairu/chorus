@@ -234,6 +234,10 @@ public sealed class RedesignTickMetricsUnitTests
     /// <summary>The lifecycle a lone actor needs: settling and suspending are no-ops.</summary>
     private sealed class IdleRuntime : IRoomLifecycle
     {
+        public Task PauseRoomAsync(string gameId, string roomId, string ownerInstanceId, long epoch,
+            long tick, long resultVersion, string reason, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
         public Task SuspendRoomAsync(string gameId, string roomId, string ownerInstanceId, long epoch,
             string reason, CancellationToken cancellationToken = default) => Task.CompletedTask;
 

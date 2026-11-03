@@ -41,6 +41,7 @@
     <EmbeddedResource Include="Schema/0030_epoch_operation.sql" />
     <EmbeddedResource Include="Schema/0031_operator.sql" />
     <EmbeddedResource Include="Schema/0032_room_offline_policy.sql" />
+    <EmbeddedResource Include="Schema/0033_room_pause.sql" />
   </ItemGroup>
 
 </Project>

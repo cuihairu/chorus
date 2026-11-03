@@ -362,6 +362,10 @@ public sealed class RedesignFrameCommitUnitTests
 
         public string SingleReason() { lock (_gate) return _suspends[0]; }
 
+        public Task PauseRoomAsync(string gameId, string roomId, string ownerInstanceId, long epoch,
+            long tick, long resultVersion, string reason, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
         public Task SuspendRoomAsync(string gameId, string roomId, string ownerInstanceId, long epoch,
             string reason, CancellationToken cancellationToken = default)
         {
