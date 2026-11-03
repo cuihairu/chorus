@@ -38,6 +38,7 @@ builder.Services.AddSingleton(trustedCertificates);
 builder.Services.AddSingleton(new RedesignControlStore(connectionString));
 builder.Services.AddSingleton(new RedesignCoordinatorStore(connectionString));
 builder.Services.AddSingleton(new RedesignAdminStore(connectionString));
+builder.Services.AddSingleton(new RedesignOperatorStore(connectionString));
 // The channel directory is always built: the control plane reaches the data plane (takeover,
 // recovery) and the configured game hosts whether or not matching is on.
 var dataEndpoint = Environment.GetEnvironmentVariable("CHORUS_DATA_ENDPOINT")

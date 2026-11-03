@@ -39,6 +39,7 @@
     <EmbeddedResource Include="Schema/0028_settle_task.sql" />
     <EmbeddedResource Include="Schema/0029_end_block.sql" />
     <EmbeddedResource Include="Schema/0030_epoch_operation.sql" />
+    <EmbeddedResource Include="Schema/0031_operator.sql" />
   </ItemGroup>
 
 </Project>

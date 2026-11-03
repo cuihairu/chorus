@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Npgsql;
 
 namespace Chorus.ControlServer;
@@ -47,8 +49,8 @@ public sealed class RedesignAdminStore(string connectionString)
         try
         {
             await using var insert = new NpgsqlCommand("""
-                INSERT INTO control.audit(request_id,operator,reason,scope,command,detail)
-                VALUES (@request,@operator,@reason,@scope,@command,@detail::jsonb)
+                INSERT INTO control.audit(request_id,operator,reason,scope,command,detail,fingerprint)
+                VALUES (@request,@operator,@reason,@scope,@command,@detail::jsonb,@fingerprint)
                 """, connection);
             insert.Parameters.AddWithValue("request", requestId);
             insert.Parameters.AddWithValue("operator", operation);
@@ -56,6 +58,10 @@ public sealed class RedesignAdminStore(string connectionString)
             insert.Parameters.AddWithValue("scope", scope);
             insert.Parameters.AddWithValue("command", command);
             insert.Parameters.AddWithValue("detail", detailJson);
+            // The request fingerprint (FIX-GM-06): the audit row is bound to the exact request
+            // shape, so the same request id under a different shape is a visible conflict and a
+            // lost reply can be matched to its recorded outcome.
+            insert.Parameters.AddWithValue("fingerprint", Fingerprint(detailJson));
             await insert.ExecuteNonQueryAsync(cancellationToken);
             return true;
         }
@@ -478,4 +484,10 @@ public sealed class RedesignAdminStore(string connectionString)
         command.Parameters.AddWithValue("instance", processInstanceId);
         return await command.ExecuteScalarAsync(cancellationToken) as string;
     }
+
+    /// <summary>The request fingerprint (FIX-GM-06): the SHA-256 of the canonical detail JSON
+    /// that names the request shape, so the same request id under a different shape is a
+    /// conflict and a lost reply can be matched to its recorded outcome.</summary>
+    private static byte[] Fingerprint(string detailJson) =>
+        SHA256.HashData(Encoding.UTF8.GetBytes(detailJson));
 }

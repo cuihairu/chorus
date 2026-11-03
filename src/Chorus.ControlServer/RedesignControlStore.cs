@@ -60,6 +60,11 @@ public sealed record OwnerStatus(string OwnerInstanceId, long Epoch, DateTime Le
 public sealed record EpochBumpOutcome(long OldEpoch, long NewEpoch, string OwnerInstanceId,
     string OwnershipStatus, bool Duplicate);
 
+/// <summary>A room's epoch as the authority reads it (FIX-GM-06): the ownership row is the
+/// fence, so its epoch and owner are authoritative; a room with no ownership row yet falls
+/// back to the room row's own epoch (the two must agree once both exist, FIX-GM-02).</summary>
+public sealed record RoomEpochStatus(bool Found, long Epoch, string? OwnerInstanceId, string? Status);
+
 /// <summary>A persistent room-recovery operation (FIX-TAKE-04): the transfer's target and
 /// epoch, the open phase, its deadline, the committed progress and the last error.</summary>
 public sealed record RoomRecoveryOperation(
@@ -413,6 +418,40 @@ public sealed class RedesignControlStore(string connectionString)
         if (!await reader.ReadAsync(cancellationToken))
             throw new InvalidOperationException("Ownership scope conflicts with an existing entity.");
         return new OwnerStatus(reader.GetString(0), reader.GetInt64(1), reader.GetDateTime(2), reader.GetString(3));
+    }
+
+    /// <summary>Reads a room's epoch for the GM entry (FIX-GM-06). The ownership row is the
+    /// authoritative fence (epoch, owner, status); a room with no ownership row yet falls back
+    /// to the room row's epoch. An unknown room reads as not found.</summary>
+    public async Task<RoomEpochStatus> GetRoomEpochAsync(string tenantId, string gameId, string roomId,
+        CancellationToken cancellationToken = default)
+    {
+        RoomEpochRule.ValidateIdentifiers(tenantId, gameId, roomId);
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var ownership = new NpgsqlCommand("""
+            SELECT owner_process_instance_id,epoch,status FROM control.ownership
+            WHERE tenant_id=@tenant AND game_id=@game AND kind='room' AND entity_id=@room
+            """, connection);
+        ownership.Parameters.AddWithValue("tenant", tenantId);
+        ownership.Parameters.AddWithValue("game", gameId);
+        ownership.Parameters.AddWithValue("room", roomId);
+        await using (var reader = await ownership.ExecuteReaderAsync(cancellationToken))
+        {
+            if (await reader.ReadAsync(cancellationToken))
+                return new RoomEpochStatus(true, reader.GetInt64(1), reader.GetString(0), reader.GetString(2));
+        }
+        await using var room = new NpgsqlCommand("""
+            SELECT epoch,status FROM game.room
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room
+            """, connection);
+        room.Parameters.AddWithValue("tenant", tenantId);
+        room.Parameters.AddWithValue("game", gameId);
+        room.Parameters.AddWithValue("room", roomId);
+        await using var roomReader = await room.ExecuteReaderAsync(cancellationToken);
+        return await roomReader.ReadAsync(cancellationToken)
+            ? new RoomEpochStatus(true, roomReader.GetInt64(0), null, roomReader.GetString(1))
+            : new RoomEpochStatus(false, 0, null, null);
     }
 
     public async Task<OwnerStatus?> GetOwnershipAsync(string tenantId, string gameId, string kind,

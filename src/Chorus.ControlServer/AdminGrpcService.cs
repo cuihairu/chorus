@@ -13,7 +13,7 @@ namespace Chorus.ControlServer;
 /// </summary>
 public sealed class AdminGrpcService(
     ClusterDirectory directory, RedesignAdminStore adminStore, RedesignControlStore controlStore,
-    TrustedProcessCertificates trustedCertificates) : Admin.AdminBase
+    RedesignOperatorStore operatorStore, TrustedProcessCertificates trustedCertificates) : Admin.AdminBase
 {
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(10);
 
@@ -24,6 +24,30 @@ public sealed class AdminGrpcService(
     {
         Require(context, "control-server");
         return Task.FromResult(new ReadyReply { Ready = true, SchemaVersion = "4" });
+    }
+
+    /// <summary>The read half of the GM room-epoch entry (FIX-GM-01 / FIX-GM-06). The operator
+    /// identity comes from the bearer credential, never the request body: an operator may read
+    /// only what their role and tenant/game scope cover, and the request's own operator field
+    /// must agree with the authenticated operator or it is a forged identity.</summary>
+    public override async Task<AdminGetRoomEpochReply> GetRoomEpoch(
+        AdminGetRoomEpochRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId) ||
+            string.IsNullOrWhiteSpace(request.RoomId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The epoch request is incomplete."));
+        var operatorIdentity = await RequireOperator(context, "gm", request.TenantId, request.GameId);
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
+        var epoch = await controlStore.GetRoomEpochAsync(
+            request.TenantId, request.GameId, request.RoomId, context.CancellationToken);
+        return new AdminGetRoomEpochReply
+        {
+            Found = epoch.Found, Epoch = epoch.Epoch,
+            OwnerInstanceId = epoch.OwnerInstanceId ?? "", Status = epoch.Status ?? "",
+            TenantId = request.TenantId, GameId = request.GameId, RoomId = request.RoomId
+        };
     }
 
     public override async Task<AdminStreamerSnapshotReply> GetStreamerSnapshot(
@@ -326,6 +350,40 @@ public sealed class AdminGrpcService(
     private static bool Incomplete(string requestId, string operation, string reason) =>
         string.IsNullOrWhiteSpace(requestId) || string.IsNullOrWhiteSpace(operation) ||
         string.IsNullOrWhiteSpace(reason);
+
+    /// <summary>Authenticates a human operator from the bearer credential in the request
+    /// metadata and authorizes the role and the target tenant/game scope (FIX-GM-06). A
+    /// process certificate never satisfies this gate — the operator identity exists only in
+    /// the operator store, so an internal process cannot impersonate an operator.</summary>
+    private async Task<OperatorIdentity> RequireOperator(ServerCallContext context, string requiredRole,
+        string tenantId, string gameId)
+    {
+        var token = ReadOperatorToken(context);
+        if (token is null)
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "Operator credentials are absent."));
+        var operatorIdentity = await operatorStore.ResolveOperatorAsync(token, context.CancellationToken);
+        if (operatorIdentity is null)
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "Operator credential is invalid."));
+        if (!OperatorAuthorizer.HasRole(operatorIdentity.Role, requiredRole))
+            throw new RpcException(new Status(StatusCode.PermissionDenied, "Operator role is not authorized."));
+        if (!OperatorAuthorizer.InScope(operatorIdentity, tenantId, gameId))
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "Operator scope does not cover the target."));
+        return operatorIdentity;
+    }
+
+    /// <summary>Reads the operator bearer token from the gRPC metadata: the standard
+    /// "Authorization: Bearer &lt;token&gt;" header or the explicit "x-operator-token" header.</summary>
+    private static string? ReadOperatorToken(ServerCallContext context)
+    {
+        var authorization = context.RequestHeaders.FirstOrDefault(header =>
+            header.Key.Equals("authorization", StringComparison.OrdinalIgnoreCase))?.Value;
+        if (authorization is not null &&
+            authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            return authorization["Bearer ".Length..];
+        return context.RequestHeaders.FirstOrDefault(header =>
+            header.Key.Equals("x-operator-token", StringComparison.OrdinalIgnoreCase))?.Value;
+    }
 
     private ProcessIdentity Require(ServerCallContext context, params string[] roles)
     {
