@@ -812,6 +812,62 @@ message AdminTaskReconcileReply {
   bool duplicate = 4;
 }
 
+// FIX-GM-01, the room epoch management contract (architecture 4.5): the epoch is the room's
+// ownership generation — never a process start, connection, mount or round generation. The GM
+// tool speaks only to this ControlServer Admin entry; it never reaches a GameServer or
+// DataServer directly. GetRoomEpoch reads the authority; BumpRoomEpoch is the audited,
+// idempotent per-request-id command that keeps the owner and moves the room to Recovering
+// (the storage transaction and the operator authorization are the FIX-GM-02 / FIX-GM-06 lines).
+message AdminGetRoomEpochRequest {
+  string request_id = 1;
+  string operator = 2;
+  string reason = 3;
+  string tenant_id = 4;
+  string game_id = 5;
+  string room_id = 6;
+}
+
+message AdminGetRoomEpochReply {
+  bool found = 1;
+  int64 epoch = 2;
+  string owner_instance_id = 3;
+  string status = 4;
+  string tenant_id = 5;
+  string game_id = 6;
+  string room_id = 7;
+}
+
+message AdminBumpRoomEpochRequest {
+  string request_id = 1;
+  string operator = 2;
+  string reason = 3;
+  string tenant_id = 4;
+  string game_id = 5;
+  string room_id = 6;
+  int64 expected_epoch = 7;
+  // 0 or absent = expected + 1; when given (> 0) must be strictly greater than expected and
+  // not overflow. The epoch is never lowered or reset, so no historical request re-validates.
+  // The sentinel 0 is safe because a room epoch is always >= 1 (the initial ownership epoch).
+  int64 target_epoch = 8;
+}
+
+message AdminBumpRoomEpochReply {
+  string operation_id = 1;
+  string room_id = 2;
+  string owner_instance_id = 3;
+  int64 old_epoch = 4;
+  int64 new_epoch = 5;
+  string ownership_status = 6;
+  // FIX-GM-03 fills this: the gateway's confirmation of the route change is a separate
+  // surface from the storage commit, so a caller never sees "route synced" before the
+  // gateway confirms.
+  string route_sync_status = 7;
+  bool duplicate = 8;
+  // The scope echo, so an OperationId replay (FIX-GM-05) returns an identifiable record.
+  string tenant_id = 9;
+  string game_id = 10;
+}
+
 service Admin {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
   // Diagnostics: the streamer's whole footprint and the room's whole footprint. In the
@@ -829,4 +885,9 @@ service Admin {
   rpc DrainProcess(AdminDrainProcessRequest) returns (AdminDrainProcessReply);
   rpc RetrySettlement(AdminSettlementRetryRequest) returns (AdminSettlementRetryReply);
   rpc ReconcilePlatformTask(AdminTaskReconcileRequest) returns (AdminTaskReconcileReply);
+  // FIX-GM-01: the room epoch entry. GetRoomEpoch is read-only; BumpRoomEpoch is the audited,
+  // idempotent command that keeps the owner and moves the room to Recovering (the storage
+  // transaction and operator authorization are the FIX-GM-02 / FIX-GM-06 lines).
+  rpc GetRoomEpoch(AdminGetRoomEpochRequest) returns (AdminGetRoomEpochReply);
+  rpc BumpRoomEpoch(AdminBumpRoomEpochRequest) returns (AdminBumpRoomEpochReply);
 }
