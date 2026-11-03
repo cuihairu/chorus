@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Chorus.Protocol\Chorus.Protocol.csproj" />
+    <ProjectReference Include="..\Chorus.Rpc\Chorus.Rpc.csproj" />
   </ItemGroup>
 
 </Project>
