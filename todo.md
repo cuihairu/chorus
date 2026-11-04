@@ -251,7 +251,8 @@
   - 证据：1aa034a
 - [x] **FIX-RANK-03 / P1：从已提交效果幂等计分。** 依赖：FIX-RANK-02。
   - 证据：b642e35
-- [ ] **FIX-RANK-04 / P1：提供 TopN 查询。** 依赖：FIX-RANK-03。
+- [x] **FIX-RANK-04 / P1：提供 TopN 查询。** 依赖：FIX-RANK-03。
+  - 证据：b4dcd84
 - [ ] **FIX-RANK-05 / P1：提供个人及附近名次。** 依赖：FIX-RANK-04。
 - [ ] **FIX-RANK-06 / P1：提供稳定分页。** 依赖：FIX-RANK-04。
 - [ ] **FIX-RANK-07 / P1：实现周期与迟到归属。** 依赖：FIX-RANK-01、FIX-RANK-03。
