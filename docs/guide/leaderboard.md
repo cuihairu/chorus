@@ -59,7 +59,7 @@ _scores?.ProjectScore(sessionId, userId, authoritativeTotal);
 ## Reading Scores: Read-Only Query Endpoint
 
 `GET /leaderboard/{scope}/{scopeId}?top=N`, exposed by the two **session-holding** hosts
-(`src/Chorus.Server/Program.cs:145`, `src/Chorus.EngineHost/Program.cs:53`;
+(`src/Chorus.Server/Program.cs:145`, `src/Chorus.EngineHost/Program.cs:54`;
 the gateway holds no session state and has no such endpoint):
 
 ```bash

@@ -72,14 +72,22 @@ CI 与本地开发按改动面三路分流——改一行文档不该全量编�
 ## 拆分模式（Gateway + EngineHost）
 
 ```bash
-# Run each command in a separate terminal (local IPC).
+# 分别在独立终端运行。网关宿主的必填配置走 CHORUS_* 环境变量
+# （PlatformGateway/Program.cs:11-15、StreamerGateway/Program.cs:9-13），Kestrel 监听不认 --urls。
 Ipc__GatewayIds=platform-gw,streamer-gw dotnet run --project src/Chorus.EngineHost
-Gateway__Id=platform-gw dotnet run --project src/Chorus.PlatformGateway -- --urls http://localhost:5168
-Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --urls http://localhost:5169
+
+CHORUS_CLUSTER_ID=local CHORUS_ROOT_CA_PEM=./certs/root-ca.pem CHORUS_NODE_CA_PEM=./certs/node-ca.pem \
+CHORUS_TLS_CERT_PEM=./certs/gw.pem CHORUS_TLS_KEY_PEM=./certs/gw.key CHORUS_DEV_PLATFORM_ENDPOINT=http://localhost:9000 \
+CHORUS_PORT=7504 CHORUS_INGRESS_PORT=5168 dotnet run --project src/Chorus.PlatformGateway
+
+CHORUS_CLUSTER_ID=local CHORUS_ROOT_CA_PEM=./certs/root-ca.pem CHORUS_NODE_CA_PEM=./certs/node-ca.pem \
+CHORUS_TLS_CERT_PEM=./certs/gw.pem CHORUS_TLS_KEY_PEM=./certs/gw.key CHORUS_TENANT_APPLICATIONS=tenant-a:app-1 \
+CHORUS_PORT=7530 CHORUS_WSS_PORT=5169 dotnet run --project src/Chorus.StreamerGateway
 ```
 
-- `Chorus.PlatformGateway`（平台网关）：只提供 `/ingress/{platform}`，本地示例端口 5168。
-- `Chorus.StreamerGateway`（主播网关）：只提供 `/ws`，本地示例端口 5169。
+- `Chorus.PlatformGateway`（平台网关）：只提供 `/ingress/{platform}`，监听 `CHORUS_INGRESS_PORT`（未设置即不开公共端口）；集群 gRPC 在 `CHORUS_PORT`（默认 `7504`）。
+- `Chorus.StreamerGateway`（主播网关）：只提供 `/ws`，监听 `CHORUS_WSS_PORT`（默认 `7443`）；集群 gRPC 在 `CHORUS_PORT`（默认 `7530`）。
+- 两个宿主都要求上述 TLS/证书环境面；实例身份来自进程证书，而非 `Gateway:Id`。
 - 公共 IPC、控制面路由、健康检查在 `Chorus.Gateway.Runtime`；共享入口协议在 `Chorus.Gateway.Core`。
 - 两个宿主独立发布、部署和扩容，不需要 `Gateway:Roles`。旧单体 `Chorus.Gateway` 宿主已移除（`48623a5`）。详见[独立网关部署](docs/guide/independent-gateways.md)。
 - EngineHost：运行权威 tick + 快照，通过本机 IPC 与 Gateway 通信（优先 UDS，失败降级 NamedPipe）

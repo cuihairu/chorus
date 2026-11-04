@@ -49,3 +49,5 @@ Follow the [streamer, player/audience and live-platform lifecycle flows](/design
 Independent flows: [client launch](/design/lifecycle-flows#streamer-client-launch-lifecycle) · [one gift event](/design/lifecycle-flows#lifecycle-of-one-gift-event) · [a like event](/design/lifecycle-flows#lifecycle-of-a-like-event).
 
 [Frame synchronization, reconnect and all-offline policy](/design/authoritative-sync) · [Built-in capabilities and leaderboards](/design/developer-capabilities)
+
+> Note: the `architecture/redesign-*` milestone records and the `research/` pages are available in English only and have no Chinese mirror yet.

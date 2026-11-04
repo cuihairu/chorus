@@ -7,10 +7,10 @@ title: "平台接入参考：B 站"
 
 > 路由：`POST /ingress/{platform}`（`platform=bilibili`，单机与 Gateway 同构）。
 > 签名校验 fail-closed；去重走 `EventDeduplicator`（`msg_id` + TTL）。
-> 与抖音/快手不同，**B 站 open-live 协议细节有已核实的来源**（blivedm 开源实现，逐字段 ✅ 对照原文核实），
+> 与抖音/快手不同，**B 站 open-live 协议细节有已核实的来源**（blivedm 开源实现，逐字段对照原文核实），
 > 本文记录已核实事实与当前实现契约；真实联调等主播授权凭据。
 
-## 1. 官方事实（open-live 开放平台，✅ 对照原文核实）
+## 1. 官方事实（open-live 开放平台，对照原文核实）
 
 核实来源：[blivedm](https://github.com/xfgryujk/blivedm)（同时接 Web 逆向与官方 open-live 的开源实现；
 设计文档调研期间对 `clients/open_live.py` / `clients/ws_base.py` / `models/open_live.py` 做了逐字段核对）。

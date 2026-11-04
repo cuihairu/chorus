@@ -49,3 +49,5 @@ StreamerServer 通过 DataServer 读写主播资料和执行资产事务：Strea
 独立流程：[直播伴侣拉起客户端](/zh/design/lifecycle-flows#主播客户端启动生命周期) · [一笔礼物消息](/zh/design/lifecycle-flows#一笔礼物消息的生命周期) · [一次点赞消息](/zh/design/lifecycle-flows#一次点赞消息的生命周期)。
 
 [帧同步、断线追赶与全员离线策略](/zh/design/authoritative-sync) · [开箱即用能力与排行榜](/zh/design/developer-capabilities)
+
+> 说明：`architecture/redesign-*` 里程碑实录与 `research/` 页面目前仅有英文版，尚无中文对照；`zh/review/luna-review-2026-10-18.md` 仅有中文版。

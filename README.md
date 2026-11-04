@@ -74,14 +74,23 @@ trigger a full build.
 ## Split Mode (Gateway + EngineHost)
 
 ```bash
-# Run each command in a separate terminal (local IPC).
+# Run each command in a separate terminal. The gateway hosts read required settings
+# from CHORUS_* environment variables (PlatformGateway/Program.cs:11-15, StreamerGateway/
+# Program.cs:9-13) and their Kestrel listeners ignore --urls.
 Ipc__GatewayIds=platform-gw,streamer-gw dotnet run --project src/Chorus.EngineHost
-Gateway__Id=platform-gw dotnet run --project src/Chorus.PlatformGateway -- --urls http://localhost:5168
-Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --urls http://localhost:5169
+
+CHORUS_CLUSTER_ID=local CHORUS_ROOT_CA_PEM=./certs/root-ca.pem CHORUS_NODE_CA_PEM=./certs/node-ca.pem \
+CHORUS_TLS_CERT_PEM=./certs/gw.pem CHORUS_TLS_KEY_PEM=./certs/gw.key CHORUS_DEV_PLATFORM_ENDPOINT=http://localhost:9000 \
+CHORUS_PORT=7504 CHORUS_INGRESS_PORT=5168 dotnet run --project src/Chorus.PlatformGateway
+
+CHORUS_CLUSTER_ID=local CHORUS_ROOT_CA_PEM=./certs/root-ca.pem CHORUS_NODE_CA_PEM=./certs/node-ca.pem \
+CHORUS_TLS_CERT_PEM=./certs/gw.pem CHORUS_TLS_KEY_PEM=./certs/gw.key CHORUS_TENANT_APPLICATIONS=tenant-a:app-1 \
+CHORUS_PORT=7530 CHORUS_WSS_PORT=5169 dotnet run --project src/Chorus.StreamerGateway
 ```
 
-- `Chorus.PlatformGateway`: platform ingress only, `/ingress/{platform}` on port 5168 in this example.
-- `Chorus.StreamerGateway`: streamer WebSocket only, `/ws` on port 5169.
+- `Chorus.PlatformGateway`: platform ingress only. `/ingress/{platform}` opens on `CHORUS_INGRESS_PORT` (unset = no public port); cluster gRPC listens on `CHORUS_PORT` (default `7504`).
+- `Chorus.StreamerGateway`: streamer WebSocket only. `/ws` opens on `CHORUS_WSS_PORT` (default `7443`); cluster gRPC listens on `CHORUS_PORT` (default `7530`).
+- Both hosts require the TLS/certificate env face above; instance identity comes from the process certificate, not `Gateway:Id`.
 - Shared transport/control discovery lives in `Chorus.Gateway.Runtime`; shared protocol faces live in `Chorus.Gateway.Core`.
 - Hosts publish and scale independently without `Gateway:Roles`. The legacy single `Chorus.Gateway` host was removed (`48623a5`). See [Independent gateways](docs/guide/independent-gateways.md).
 - EngineHost: runs the authoritative tick + snapshots, talking to the Gateway over local IPC

@@ -9,7 +9,7 @@ title: Independent Gateway Hosts
 | Platform gateway `platform-gw` | `Chorus.PlatformGateway` | `POST /ingress/{platform}` | Platform signature verification, event mapping, rate limiting, de-duplication, Bilibili Open Live bridge |
 | Streamer gateway `streamer-gw` | `Chorus.StreamerGateway` | WebSocket `/ws` | Streamer authentication, connections, snapshots, ACK, resynchronization |
 
-The two are separate executables and can be published and scaled independently. Entry points are fixed per project; `Gateway:Roles` does not change them. `Gateway:Id` is the instance identifier — multiple replicas of the same service must use distinct IDs, for example `streamer-gw-01`.
+The two are separate executables and can be published and scaled independently. Entry points are fixed per project; `Gateway:Roles` does not change them. The standalone hosts read required settings from `CHORUS_*` environment variables and take their instance identity from the process certificate; `Gateway:Id` only identifies gateways attached to an EngineHost over IPC (`GatewayIpcService.cs:71`), not replicas of these hosts — distinguish replicas by distinct process certificates.
 
 Shared code is layered:
 
@@ -21,15 +21,21 @@ The legacy single `Chorus.Gateway` host was removed (2026-10-31, `48623a5`); the
 
 ## Running locally
 
-Run these in three separate terminals:
+Run these in three separate terminals. Both gateway hosts require the certificate env face (`Program.cs:9-15`) and build their Kestrel listeners from `CHORUS_*` ports, so `--urls` does not apply:
 
 ```bash
 Ipc__GatewayIds=platform-gw,streamer-gw dotnet run --project src/Chorus.EngineHost
-Gateway__Id=platform-gw dotnet run --project src/Chorus.PlatformGateway -- --urls http://localhost:5168
-Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --urls http://localhost:5169
+
+CHORUS_CLUSTER_ID=local CHORUS_ROOT_CA_PEM=./certs/root-ca.pem CHORUS_NODE_CA_PEM=./certs/node-ca.pem \
+CHORUS_TLS_CERT_PEM=./certs/gw.pem CHORUS_TLS_KEY_PEM=./certs/gw.key CHORUS_DEV_PLATFORM_ENDPOINT=http://localhost:9000 \
+CHORUS_PORT=7504 CHORUS_INGRESS_PORT=5168 dotnet run --project src/Chorus.PlatformGateway
+
+CHORUS_CLUSTER_ID=local CHORUS_ROOT_CA_PEM=./certs/root-ca.pem CHORUS_NODE_CA_PEM=./certs/node-ca.pem \
+CHORUS_TLS_CERT_PEM=./certs/gw.pem CHORUS_TLS_KEY_PEM=./certs/gw.key CHORUS_TENANT_APPLICATIONS=tenant-a:app-1 \
+CHORUS_PORT=7530 CHORUS_WSS_PORT=5169 dotnet run --project src/Chorus.StreamerGateway
 ```
 
-The platform endpoint is `http://localhost:5168/ingress/{platform}`; the streamer endpoint is `ws://localhost:5169/ws`. Platform secrets are configured in the platform host; `Faces:StreamerWs:AuthTokens` is configured in the streamer host. Use `Ingress:AllowAll=true` or `Faces:StreamerWs:AllowAnonymous=true` only for development and testing. The shared diagnostic endpoints (`/health`, `/ready`, `/metrics`, `/faces`) are implemented in `Chorus.Gateway.Runtime` (`GatewayHosting.cs`); after the independent-host split they are still mapped only by `Chorus.Server` / `Chorus.EngineHost`, and the two gateway hosts do not expose them yet. Entry points a host does not own return 404.
+The platform endpoint is `https://localhost:5168/ingress/{platform}` (TLS with the server certificate; the listener exists only when `CHORUS_INGRESS_PORT` is set, `Program.cs:45-53`); the streamer endpoint is `wss://localhost:5169/ws`. `PlatformGateway/Program.cs:66` requires `CHORUS_DEV_PLATFORM_ENDPOINT`; `StreamerGateway/Program.cs:53` requires `CHORUS_TENANT_APPLICATIONS`. Platform secrets are configured in the platform host; `Faces:StreamerWs:AuthTokens` is configured in the streamer host. The shared diagnostic endpoints (`/health`, `/ready`, `/metrics`, `/faces`) are implemented in `Chorus.Gateway.Runtime` (`GatewayHosting.cs`); after the independent-host split they are still mapped only by `Chorus.Server` / `Chorus.EngineHost`, and the two gateway hosts do not expose them yet. Entry points a host does not own return 404.
 
 ## Multi-machine and independent publishing
 

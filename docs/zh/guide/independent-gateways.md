@@ -10,7 +10,7 @@ title: Independent Gateway Hosts
 | 主播网关 `streamer-gw` | `Chorus.StreamerGateway` | WebSocket `/ws` | 主播鉴权、连接、快照、ACK、重同步 |
 
 两者是独立可执行程序，可以单独发布和扩缩容。入口由项目固定，`Gateway:Roles` 不会改变入口。
-`Gateway:Id` 是实例标识，同一服务的多个副本必须使用不同 ID，例如 `streamer-gw-01`。
+独立宿主的必填配置走 `CHORUS_*` 环境变量，实例身份来自进程证书；`Gateway:Id` 只标识经 IPC 挂到 EngineHost 下的网关（`GatewayIpcService.cs:71`），不标识这两个宿主的副本——副本用不同进程证书区分。
 
 公共代码分层：
 
@@ -23,17 +23,22 @@ title: Independent Gateway Hosts
 
 ## 本机启动
 
-分别在三个终端运行：
+分别在三个终端运行。两个网关宿主都要求证书环境面（`Program.cs:9-15`），Kestrel 监听从 `CHORUS_*` 端口构建，`--urls` 不生效：
 
 ```bash
 Ipc__GatewayIds=platform-gw,streamer-gw dotnet run --project src/Chorus.EngineHost
-Gateway__Id=platform-gw dotnet run --project src/Chorus.PlatformGateway -- --urls http://localhost:5168
-Gateway__Id=streamer-gw dotnet run --project src/Chorus.StreamerGateway -- --urls http://localhost:5169
+
+CHORUS_CLUSTER_ID=local CHORUS_ROOT_CA_PEM=./certs/root-ca.pem CHORUS_NODE_CA_PEM=./certs/node-ca.pem \
+CHORUS_TLS_CERT_PEM=./certs/gw.pem CHORUS_TLS_KEY_PEM=./certs/gw.key CHORUS_DEV_PLATFORM_ENDPOINT=http://localhost:9000 \
+CHORUS_PORT=7504 CHORUS_INGRESS_PORT=5168 dotnet run --project src/Chorus.PlatformGateway
+
+CHORUS_CLUSTER_ID=local CHORUS_ROOT_CA_PEM=./certs/root-ca.pem CHORUS_NODE_CA_PEM=./certs/node-ca.pem \
+CHORUS_TLS_CERT_PEM=./certs/gw.pem CHORUS_TLS_KEY_PEM=./certs/gw.key CHORUS_TENANT_APPLICATIONS=tenant-a:app-1 \
+CHORUS_PORT=7530 CHORUS_WSS_PORT=5169 dotnet run --project src/Chorus.StreamerGateway
 ```
 
-平台地址为 `http://localhost:5168/ingress/{platform}`；主播地址为 `ws://localhost:5169/ws`。
+平台地址为 `https://localhost:5168/ingress/{platform}`（TLS 用服务器证书；仅设置 `CHORUS_INGRESS_PORT` 时才有该监听，`Program.cs:45-53`）；主播地址为 `wss://localhost:5169/ws`。`PlatformGateway/Program.cs:66` 要求 `CHORUS_DEV_PLATFORM_ENDPOINT`；`StreamerGateway/Program.cs:53` 要求 `CHORUS_TENANT_APPLICATIONS`。
 平台密钥配置在平台宿主；`Faces:StreamerWs:AuthTokens` 配置在主播宿主。
-开发测试才使用 `Ingress:AllowAll=true` 或 `Faces:StreamerWs:AllowAnonymous=true`。
 共享诊断端点（`/health`、`/ready`、`/metrics`、`/faces`）实现在 `Chorus.Gateway.Runtime`（`GatewayHosting.cs`）；独立宿主拆分后它们仍只由 `Chorus.Server` / `Chorus.EngineHost` 映射，两个网关宿主暂未暴露。未所属的业务入口返回 404。
 
 ## 多机与独立发布

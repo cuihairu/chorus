@@ -7,10 +7,10 @@ title: "Platform Integration Reference: Bilibili"
 
 > Routing: `POST /ingress/{platform}` (`platform=bilibili`, monolith and Gateway are isomorphic).
 > Signature verification is fail-closed; deduplication goes through `EventDeduplicator` (`msg_id` + TTL).
-> Unlike Douyin/Kuaishou, **the Bilibili open-live protocol details have a verified source** (the blivedm open-source implementation, field-by-field ✅ verified against the original),
+> Unlike Douyin/Kuaishou, **the Bilibili open-live protocol details have a verified source** (the blivedm open-source implementation, field-by-field verified against the original),
 > this document records verified facts and the current implementation contract; real joint debugging awaits the streamer's authorized credentials.
 
-## 1. Official Facts (open-live open platform, ✅ verified against the original)
+## 1. Official Facts (open-live open platform, verified against the original)
 
 Verification source: [blivedm](https://github.com/xfgryujk/blivedm) (an open-source implementation integrating both the web reverse-engineering and the official open-live;
 during the design document research period, field-by-field verification was done against `clients/open_live.py` / `clients/ws_base.py` / `models/open_live.py`).
