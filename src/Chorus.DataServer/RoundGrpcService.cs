@@ -188,6 +188,68 @@ public sealed class RoundGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    /// <summary>FIX-SYNC-08: a control participant reports its current-generation session
+    /// re-established on the paused round — the store resolves the paused room from the
+    /// streamer's open live session and fences the report on the session being the streamer's
+    /// CURRENT session, so a stale session never counts (SYNC-08 step 2). A streamer with no
+    /// paused round is a clean no-op (Paused=false). The streamer server is the only caller:
+    /// it is the readiness signal source.</summary>
+    public override async Task<ResumeReadyReply> ReportResumeReady(ReportResumeReadyRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "streamer-server");
+        try
+        {
+            var ready = await roomStore.ReportResumeReadyAsync(caller.TenantId, request.GameId,
+                request.StreamerId, request.SessionId, request.OperationId, context.CancellationToken);
+            return new ResumeReadyReply
+            {
+                RoomId = ready.RoomId, ReadyCount = ready.ReadyCount,
+                RequiredReadyCount = ready.RequiredReadyCount, Paused = ready.Paused,
+                Duplicate = ready.Duplicate
+            };
+        }
+        catch (RoundAdmissionException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
+    /// <summary>FIX-SYNC-08: the host flips a paused round back to Running once the
+    /// readiness threshold is met at the frozen baseline — a single receipt-keyed CAS so a
+    /// duplicate resume reports the already-resumed round instead of starting a second tick
+    /// loop (SYNC-08 step 3).</summary>
+    public override async Task<RoundAdmissionReply> ResumeRound(ResumeRoundRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "game-server", "control-server");
+        try
+        {
+            var admission = await roomStore.ResumeRoundAsync(caller.TenantId, request.GameId,
+                request.RoomId, request.OwnerInstanceId, request.Epoch, request.Tick,
+                request.StateVersion, request.OperationId, context.CancellationToken);
+            return Reply(admission);
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The room ownership fence rejected the caller."));
+        }
+        catch (RoundAdmissionException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
     public override async Task<RoomTakeoverReply> TransferRoomOwnership(
         TransferRoomOwnershipRequest request, ServerCallContext context)
     {

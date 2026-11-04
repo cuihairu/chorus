@@ -64,6 +64,46 @@ public sealed class FrameGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    /// <summary>FIX-SYNC-08: the host commits the terminal result of a paused round at its
+    /// frozen head — the store inserts the result document and grant plan, flips the room
+    /// Paused→Finishing (never Settled; the end-operation ladder still owns the release) and
+    /// clears the spent ready rows in one transaction (SYNC-08 step 4). The ladder is entered
+    /// by the caller immediately after; this is the only path to a paused room's terminal
+    /// result.</summary>
+    public override async Task<FrameReceiptReply> CommitPausedResult(CommitPausedResultRequest request,
+        ServerCallContext context)
+    {
+        var caller = Require(context, "game-server");
+        try
+        {
+            var receipt = await frameStore.CommitPausedResultAsync(caller.TenantId, request.GameId,
+                request.RoomId, request.OwnerInstanceId, request.Epoch, request.OperationId,
+                request.Tick, request.PlanHash.ToByteArray(), request.ResultJson,
+                request.Grants.Select(grant => new PlannedGrant(
+                    grant.PlayerId, grant.GrantKey, grant.OperationId, grant.AssetId,
+                    grant.Delta)).ToArray(), context.CancellationToken);
+            return new FrameReceiptReply
+            {
+                CommitId = receipt.CommitId, RoomId = receipt.RoomId, Tick = receipt.Tick,
+                StateVersion = receipt.StateVersion, Watermark = receipt.Watermark,
+                Duplicate = receipt.Duplicate
+            };
+        }
+        catch (RedesignStaleOwnerException)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The room ownership fence rejected the caller."));
+        }
+        catch (FrameConflictException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different result."));
+        }
+        catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
+    }
+
     public override async Task<ReadInboxReply> ReadInbox(ReadInboxRequest request, ServerCallContext context)
     {
         var caller = Require(context, "game-server", "control-server");

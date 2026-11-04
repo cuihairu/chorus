@@ -73,6 +73,10 @@ builder.Services.AddHostedService<RoomEndDiscoveryService>();
 builder.Services.AddSingleton(new StopDeliveryNotifier(serverCertificate, root, nodeAuthority,
     clusterId));
 builder.Services.AddHostedService<EndOperationCoordinatorService>();
+// FIX-SYNC-08: the pause/resume driver — lifts a paused round once its ready threshold is
+// met, and terminates one that exceeded its MaxPause by the module's freeze rule. The timeout
+// leg runs first so the deadline is honored strictly.
+builder.Services.AddHostedService<PauseResumeCoordinatorService>();
 // The settlement business executor (architecture 9.3, FIX-END-11): completes committed
 // manifests' rewards when the data host cannot — the queue and the grants live on the data
 // plane; this loop only discovers and asks. FIX-SETTLE-03 adds the claim lease and the

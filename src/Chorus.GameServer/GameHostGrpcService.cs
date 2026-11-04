@@ -83,6 +83,44 @@ public sealed class GameHostGrpcService(RoomRuntime runtime, TrustedProcessCerti
         }
     }
 
+    /// <summary>FIX-SYNC-08: the control plane lifts a paused round once the readiness
+    /// threshold is met. The runtime answers an actor this host already holds, flips the room
+    /// to Running on the data plane and adopts exactly one actor; a data-plane refusal (the
+    /// threshold moved, the head moved, the fence) bubbles with the store's own status so the
+    /// coordinator retries the room on the next sweep.</summary>
+    public override async Task<ResumeRoomReply> ResumeRoom(ResumeRoomRequest request,
+        ServerCallContext context)
+    {
+        Require(context, "control-server", "game-server");
+        try
+        {
+            return await runtime.ResumeRoomAsync(request, context.CancellationToken);
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
+    /// <summary>FIX-SYNC-08: the control plane terminates a paused round that exceeded its
+    /// MaxPause. The runtime restores the frozen head, derives the terminal result by the
+    /// module's freeze rule, commits it (Paused→Finishing, never Settled) and enters the
+    /// end-operation ladder — a pause-timeout termination never bypasses the platform closing
+    /// tail. A data-plane refusal bubbles with the store's own status.</summary>
+    public override async Task<FinishPausedRoomReply> FinishPausedRoom(FinishPausedRoomRequest request,
+        ServerCallContext context)
+    {
+        Require(context, "control-server", "game-server");
+        try
+        {
+            return await runtime.FinishPausedRoomAsync(request, context.CancellationToken);
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
     public override async Task<DestroyRoomReply> DestroyRoom(DestroyRoomRequest request,
         ServerCallContext context)
     {

@@ -21,6 +21,11 @@ public sealed record RoundParticipant(string BindingId, string ParticipantId, st
 
 public sealed record RoundAdmission(string RoomId, long RoundGeneration, string Status, long Epoch, bool Duplicate);
 
+/// <summary>FIX-SYNC-08: the answer a resume-ready report returns — how many control
+/// participants have reported ready against the frozen head and how many the declared
+/// policy requires before a resume boundary may commit.</summary>
+public sealed record ResumeReady(string RoomId, int ReadyCount, int RequiredReadyCount, bool Paused, bool Duplicate);
+
 public sealed record RoundParticipantState(string ParticipantId, string BindingId, string Role, string State);
 
 public sealed record RoundStatus(
@@ -674,6 +679,251 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
         }, connection, transaction, cancellationToken);
         return JsonSerializer.Serialize(
             new RoundAdmission(roomId, tick, Paused, ownershipEpoch, Duplicate: false));
+    }
+
+    /// <summary>FIX-SYNC-08: a control participant's declaration that its current-generation
+    /// session re-established on the paused round (authoritative-sync.md:53). The streamer
+    /// reports from its mount path — the mount is refused while the round is paused, so that
+    /// refusal is the signal that the session stands at the current generation on the paused
+    /// round. The store resolves the paused room from the streamer's open live session (its
+    /// single active binding is the paused round's admission), so the report names no room: a
+    /// streamer with no paused round is a clean no-op. The report is refused unless the
+    /// reporting session is the streamer's CURRENT session — a displaced or rotated-out
+    /// session's readiness never counts (旧会话准备不计数). The frozen head the store reads
+    /// becomes the ready's baseline, and the current binding/connection generations are read
+    /// (never reported) so a stale value cannot be smuggled in. One durable row per participant;
+    /// re-reporting refreshes it, never doubles the count.</summary>
+    public async Task<ResumeReady> ReportResumeReadyAsync(string tenantId, string gameId,
+        string streamerId, string sessionId, string operationId,
+        CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId));
+        Require(streamerId, nameof(streamerId)); Require(sessionId, nameof(sessionId));
+        Require(operationId, nameof(operationId));
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1,
+            JsonSerializer.SerializeToUtf8Bytes(new { StreamerId = streamerId, SessionId = sessionId }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "round.ready", streamerId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplyReportResumeReadyAsync(tenantId, gameId, streamerId,
+                sessionId, connection, transaction, token),
+            cancellationToken);
+        var result = JsonSerializer.Deserialize<ResumeReady>(receipt.ResultJson)
+            ?? throw new InvalidOperationException("The stored ready receipt is unreadable.");
+        return result with { Duplicate = receipt.Duplicate };
+    }
+
+    private async Task<string> ApplyReportResumeReadyAsync(string tenantId, string gameId,
+        string streamerId, string sessionId,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        // The stale-session fence: the reporting session must be the streamer's CURRENT session.
+        // A displaced connection or a rotated-out session is the "旧会话准备不计数" case — it is
+        // refused, never silently accepted as a fresh ready.
+        await using (var fence = new NpgsqlCommand(
+            "SELECT current_session_id FROM auth.streamer_state WHERE streamer_id=@streamer",
+            connection, transaction))
+        {
+            fence.Parameters.AddWithValue("streamer", streamerId);
+            var current = (string?)await fence.ExecuteScalarAsync(cancellationToken);
+            if (current is null || !StringComparer.Ordinal.Equals(current, sessionId))
+                throw new RoundAdmissionException(
+                    "The reporting session is not the streamer's current session; an old session's " +
+                    "readiness never counts.");
+        }
+        // Resolve the paused room from the streamer's open live session. The session holds one
+        // active binding (ux_live_binding_active), which participates in at most one room; the
+        // room is locked before the participation read so a concurrent resume and this report
+        // serialize on the room row. A streamer with no paused round is a clean no-op.
+        var requiredCount = 0;
+        string roomId, participantId, bindingId;
+        long epoch, baselineTick, baselineVersion;
+        await using (var room = new NpgsqlCommand($"""
+            SELECT r.room_id, p.participant_id, b.binding_id, r.epoch, r.last_tick, r.state_version,
+                   r.offline_policy
+            FROM live.session s
+            JOIN live.binding b ON b.live_session_id = s.live_session_id
+            JOIN game.participation p ON p.binding_id = b.binding_id AND p.state IN ('Active','Offline')
+            JOIN game.room r ON r.room_id = p.room_id AND r.tenant_id=@tenant AND r.game_id=@game
+            WHERE s.streamer_id=@streamer AND s.ended_at IS NULL
+              AND b.game_id=@game AND b.state IN {ActiveStates}
+              AND r.status=@paused
+            FOR UPDATE OF r
+            LIMIT 1
+            """, connection, transaction))
+        {
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            room.Parameters.AddWithValue("streamer", streamerId);
+            room.Parameters.AddWithValue("paused", Paused);
+            await using var reader = await room.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                return JsonSerializer.Serialize(new ResumeReady("", 0, 0, Paused: false, Duplicate: false));
+            roomId = reader.GetString(0);
+            participantId = reader.GetString(1);
+            bindingId = reader.GetString(2);
+            epoch = reader.GetInt64(3);
+            baselineTick = reader.GetInt64(4);
+            baselineVersion = reader.GetInt64(5);
+            // The declared threshold (canonical field 4), reported back for observability.
+            requiredCount = int.TryParse(reader.IsDBNull(6) ? "" : reader.GetString(6).Split('|')
+                .ElementAtOrDefault(3), out var declared) ? declared : 0;
+        }
+        // The current facts the ready is declared against: the binding's mount generation and the
+        // session's connection generation. Both are read here (never reported), so a stale value
+        // cannot be smuggled in — the row records exactly the current generation at the report.
+        long bindingGeneration, connectionGeneration;
+        await using (var gen = new NpgsqlCommand(
+            "SELECT generation FROM live.binding WHERE binding_id=@binding", connection, transaction))
+        {
+            gen.Parameters.AddWithValue("binding", bindingId);
+            var value = await gen.ExecuteScalarAsync(cancellationToken);
+            if (value is null) throw new RoundAdmissionException("The binding does not exist.");
+            bindingGeneration = Convert.ToInt64(value);
+        }
+        await using (var gen = new NpgsqlCommand(
+            "SELECT connection_generation FROM auth.session WHERE session_id=@session", connection, transaction))
+        {
+            gen.Parameters.AddWithValue("session", sessionId);
+            var value = await gen.ExecuteScalarAsync(cancellationToken);
+            if (value is null) throw new RoundAdmissionException("The session does not exist.");
+            connectionGeneration = Convert.ToInt64(value);
+        }
+        await using (var write = new NpgsqlCommand("""
+            INSERT INTO game.resume_ready(room_id,participant_id,binding_id,binding_generation,
+                connection_generation,epoch,baseline_tick,baseline_version,ready_at)
+            VALUES (@room,@participant,@binding,@binding_generation,@connection_generation,
+                @epoch,@baseline_tick,@baseline_version,clock_timestamp())
+            ON CONFLICT (room_id,participant_id) DO UPDATE SET
+                binding_id=EXCLUDED.binding_id,
+                binding_generation=EXCLUDED.binding_generation,
+                connection_generation=EXCLUDED.connection_generation,
+                epoch=EXCLUDED.epoch, baseline_tick=EXCLUDED.baseline_tick,
+                baseline_version=EXCLUDED.baseline_version, ready_at=clock_timestamp()
+            """, connection, transaction))
+        {
+            write.Parameters.AddWithValue("room", roomId);
+            write.Parameters.AddWithValue("participant", participantId);
+            write.Parameters.AddWithValue("binding", bindingId);
+            write.Parameters.AddWithValue("binding_generation", bindingGeneration);
+            write.Parameters.AddWithValue("connection_generation", connectionGeneration);
+            write.Parameters.AddWithValue("epoch", epoch);
+            write.Parameters.AddWithValue("baseline_tick", baselineTick);
+            write.Parameters.AddWithValue("baseline_version", baselineVersion);
+            await write.ExecuteNonQueryAsync(cancellationToken);
+        }
+        var readyCount = await ResumeReadyCountAsync(roomId, epoch, connection, transaction, cancellationToken);
+        return JsonSerializer.Serialize(new ResumeReady(roomId, readyCount, requiredCount,
+            Paused: true, Duplicate: false));
+    }
+
+    /// <summary>FIX-SYNC-08: lifts a paused room back to Running at its committed frozen
+    /// boundary once the configured number of control participants reported ready
+    /// (authoritative-sync.md:53 "followed by a committed resume boundary"). The boundary the
+    /// caller names must be the frozen head, and the ready count must reach the declared
+    /// threshold — below it the resume is refused (未达到人数不恢复). The flip is one receipt
+    /// transaction, so a retry after a lost reply replays the same transition; the room's
+    /// ready rows are cleared in the same transaction (they are spent by the resume), and the
+    /// paused-input buffer the resumed actor drains is untouched — the freeze is the store's.
+    /// </summary>
+    public async Task<RoundAdmission> ResumeRoundAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, long tick, long stateVersion, string operationId,
+        CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
+        Require(ownerInstanceId, nameof(ownerInstanceId)); Require(operationId, nameof(operationId));
+        if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
+        if (tick < 0) throw new ArgumentOutOfRangeException(nameof(tick));
+        if (stateVersion < 1) throw new ArgumentOutOfRangeException(nameof(stateVersion));
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1,
+            JsonSerializer.SerializeToUtf8Bytes(new { RoomId = roomId, Tick = tick }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "round.resume", roomId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplyResumeRoundAsync(tenantId, gameId, roomId,
+                ownerInstanceId, epoch, tick, stateVersion, connection, transaction, token),
+            cancellationToken);
+        var result = JsonSerializer.Deserialize<RoundAdmission>(receipt.ResultJson)
+            ?? throw new InvalidOperationException("The stored resume receipt is unreadable.");
+        return result with { Duplicate = receipt.Duplicate };
+    }
+
+    private async Task<string> ApplyResumeRoundAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, long tick, long stateVersion,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        var ownershipEpoch = await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
+            connection, transaction, cancellationToken);
+        var (required, readyCount, roomEpoch) = (0, 0, 0L);
+        await using (var room = new NpgsqlCommand("""
+            SELECT status,last_tick,state_version,offline_policy,epoch FROM game.room
+            WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game FOR UPDATE
+            """, connection, transaction))
+        {
+            room.Parameters.AddWithValue("room", roomId);
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            await using var reader = await room.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new RoundAdmissionException("The room does not exist.");
+            var status = reader.GetString(0);
+            if (status != Paused)
+                throw new RoundAdmissionException($"A room in status {status} cannot be resumed.");
+            // The boundary the actor names must be the room's actual frozen head — a resume
+            // lifts exactly where the pause parked it, never ahead of or behind the truth.
+            if (reader.GetInt64(1) != tick || reader.GetInt64(2) != stateVersion)
+                throw new RoundAdmissionException(
+                    $"The resume boundary tick {tick}/v{stateVersion} is not the room's frozen " +
+                    $"head (tick {reader.GetInt64(1)}/v{reader.GetInt64(2)}).");
+            // The declared ready threshold (canonical field 4). A room with no declared
+            // policy is not resumable — fail closed, never resume under an undeclared rule.
+            required = int.TryParse(reader.IsDBNull(3) ? "" : reader.GetString(3).Split('|').ElementAtOrDefault(3),
+                out var declared) ? declared : 0;
+            roomEpoch = reader.GetInt64(4);
+        }
+        // A ready binds to the room's epoch it was declared against: a takeover's epoch bump
+        // invalidates every prior ready, so an old-epoch row never pads the resume count.
+        readyCount = await ResumeReadyCountAsync(roomId, roomEpoch, connection, transaction, cancellationToken);
+        if (required < 1)
+            throw new RoundAdmissionException("The room declares no resume ready count; it cannot resume.");
+        if (readyCount < required)
+            throw new RoundAdmissionException(
+                $"The resume needs {required} ready control participant(s); only {readyCount} reported.");
+        await using (var resume = new NpgsqlCommand("""
+            UPDATE game.room SET status=@status, updated_at=clock_timestamp() WHERE room_id=@room
+            """, connection, transaction))
+        {
+            resume.Parameters.AddWithValue("status", Running);
+            resume.Parameters.AddWithValue("room", roomId);
+            await resume.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var clear = new NpgsqlCommand(
+            "DELETE FROM game.resume_ready WHERE room_id=@room", connection, transaction))
+        {
+            clear.Parameters.AddWithValue("room", roomId);
+            await clear.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await WriteOutboxAsync($"{roomId}/{tick}/resume", "round.resumed", new
+        {
+            RoomId = roomId, TenantId = tenantId, GameId = gameId, Epoch = ownershipEpoch,
+            Tick = tick, StateVersion = stateVersion, ReadyCount = readyCount
+        }, connection, transaction, cancellationToken);
+        return JsonSerializer.Serialize(
+            new RoundAdmission(roomId, tick, Running, ownershipEpoch, Duplicate: false));
+    }
+
+    private static async Task<int> ResumeReadyCountAsync(string roomId, long epoch,
+        NpgsqlConnection connection, NpgsqlTransaction transaction,
+        CancellationToken cancellationToken = default)
+    {
+        // A ready binds to the epoch it was declared against — a takeover's epoch bump invalidates
+        // every prior ready, so an old-epoch row never pads the resume count.
+        await using var count = new NpgsqlCommand(
+            "SELECT count(*) FROM game.resume_ready WHERE room_id=@room AND epoch=@epoch",
+            connection, transaction);
+        count.Parameters.AddWithValue("room", roomId);
+        count.Parameters.AddWithValue("epoch", epoch);
+        return Convert.ToInt32(await count.ExecuteScalarAsync(cancellationToken));
     }
 
     /// <summary>

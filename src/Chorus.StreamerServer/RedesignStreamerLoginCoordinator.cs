@@ -118,7 +118,8 @@ public sealed class RedesignStreamerLoginCoordinator(
     Func<DateTimeOffset>? clock = null,
     StreamerOwnershipRegistrar? ownershipRegistrar = null,
     SessionReplacedNotifier? sessionNotifier = null,
-    StreamerRouteSourceRegistrar? routeSourceRegistrar = null)
+    StreamerRouteSourceRegistrar? routeSourceRegistrar = null,
+    StreamerResumeReadyReporter? resumeReadyReporter = null)
 {
     public async Task<StreamerLoginReady> LoginAsync(string callerTenantId, LoginCommand command,
         CancellationToken cancellationToken = default)
@@ -277,8 +278,24 @@ public sealed class RedesignStreamerLoginCoordinator(
         var access = await ValidateAccessAsync(callerTenantId, accessCredential, cancellationToken);
         var liveSessionId = await identityStore.GetLiveSessionIdAsync(callerTenantId, access.StreamerId,
             cancellationToken) ?? throw new BindingDeniedException();
-        var binding = await identityStore.StartGameplayAsync(callerTenantId, liveSessionId, access.SessionId,
-            gameId, operationId, cancellationToken);
+        StreamerBinding binding;
+        try
+        {
+            binding = await identityStore.StartGameplayAsync(callerTenantId, liveSessionId, access.SessionId,
+                gameId, operationId, cancellationToken);
+        }
+        catch (MountInLiveRoundException)
+        {
+            // FIX-SYNC-08: the refusal is the readiness signal. The session stands at the
+            // current generation on its paused round (the mount is refused while the round is
+            // paused), so this is the resume-ready declaration — best-effort, never blocking
+            // the refusal it accompanies. The store resolves the paused round and no-ops when
+            // the round is not paused.
+            if (resumeReadyReporter is not null)
+                await resumeReadyReporter.ReportResumeReadyAsync(callerTenantId, gameId, access.StreamerId,
+                    access.SessionId, $"ready/{access.StreamerId}/{access.SessionId}", cancellationToken);
+            throw;
+        }
         var actor = actorRegistry.Find(callerTenantId, access.StreamerId);
         if (actor is not null) await actor.OnGameplayBindingAsync(binding, cancellationToken);
         // The mount names the game scope, so an entity that skipped the claim until now (a

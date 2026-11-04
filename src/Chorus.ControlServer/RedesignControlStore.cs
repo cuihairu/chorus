@@ -568,6 +568,61 @@ public sealed class RedesignControlStore(string connectionString)
         return expired;
     }
 
+    /// <summary>FIX-SYNC-08: a paused room whose ready count reached the declared threshold —
+    /// the resume leg's work list (authoritative-sync.md:53). The count and the threshold are
+    /// both derived in SQL so the driver never parses a canonical; a room with no declared
+    /// policy (an empty field) yields a NULL comparison and never qualifies.</summary>
+    public sealed record ResumeReadyRoom(string RoomId, string TenantId, string GameId, long Epoch);
+
+    /// <summary>FIX-SYNC-08: a paused room whose pause exceeded its declared maximum duration
+    /// — the timeout leg's work list (authoritative-sync.md:54). Any paused room with a
+    /// positive declared cap qualifies; a room with no declared cap (an empty field) never
+    /// times out.</summary>
+    public sealed record OverduePausedRoom(string RoomId, string TenantId, string GameId, long Epoch);
+
+    public async Task<List<ResumeReadyRoom>> ListResumeReadyPausedRoomsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT g.room_id,g.tenant_id,g.game_id,g.epoch
+            FROM game.room g
+            WHERE g.status='Paused'
+              AND (SELECT count(*) FROM game.resume_ready r
+                   WHERE r.room_id=g.room_id AND r.epoch=g.epoch)
+                  >= NULLIF(split_part(g.offline_policy,'|',4),'')::int
+            ORDER BY g.paused_at LIMIT 50
+            """, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rooms = new List<ResumeReadyRoom>();
+        while (await reader.ReadAsync(cancellationToken))
+            rooms.Add(new ResumeReadyRoom(reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                reader.GetInt64(3)));
+        return rooms;
+    }
+
+    public async Task<List<OverduePausedRoom>> ListOverduePausedRoomsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT g.room_id,g.tenant_id,g.game_id,g.epoch
+            FROM game.room g
+            WHERE g.status='Paused' AND g.paused_at IS NOT NULL
+              AND g.paused_at < clock_timestamp()
+                  - NULLIF(split_part(g.offline_policy,'|',3),'')::int * interval '1 second'
+            ORDER BY g.paused_at LIMIT 50
+            """, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var rooms = new List<OverduePausedRoom>();
+        while (await reader.ReadAsync(cancellationToken))
+            rooms.Add(new OverduePausedRoom(reader.GetString(0), reader.GetString(1), reader.GetString(2),
+                reader.GetInt64(3)));
+        return rooms;
+    }
+
     /// <summary>
     /// How many recovery operations a room has ever recorded — the sweep's reassignment
     /// budget. A room that keeps timing out stops being moved automatically and waits for

@@ -30,4 +30,15 @@ public interface IRedesignGameModule
     /// <summary>Control-input seam (architecture 8.2): when the host becomes unavailable
     /// the module must not invent reality from fresh reads.</summary>
     IReadOnlyList<NormalizedInput> OnHostUnavailable();
+
+    /// <summary>
+    /// FIX-SYNC-08: the module's own rule for a room whose pause exceeded its declared
+    /// maximum duration (authoritative-sync.md:54 "the pause-timeout ending is a separate
+    /// branch in flow 03"). Pure: derives a terminal result document from the frozen state
+    /// without a new tick — no state mutation, no hash change, no new frame. The host commits
+    /// the returned <see cref="TickOutcome.ResultJson"/> as the round result and enters the
+    /// end-operation ladder immediately after, so the timeout ends per the module's rule and
+    /// never bypasses platform-close confirmation.
+    /// </summary>
+    TickOutcome FinishFrozen(ExampleGameState state, long tick, string reason);
 }

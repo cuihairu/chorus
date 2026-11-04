@@ -303,6 +303,22 @@ message FrameReceiptReply {
   bool duplicate = 6;
 }
 
+// FIX-SYNC-08: the pause-timeout terminal result request (authoritative-sync.md:54). The
+// result is the module's FinishFrozen outcome — derived from the frozen state, no new frame,
+// no tick advance. The store writes game.result (result_version 1 at the frozen frame) and
+// the grant plan, flips Paused→Finishing, and clears the spent ready rows.
+message CommitPausedResultRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  string operation_id = 5;
+  int64 tick = 6;
+  bytes plan_hash = 7;
+  string result_json = 8;
+  repeated PlannedGrantProto grants = 9;
+}
+
 message ReadInboxRequest {
   string room_id = 1;
   string game_id = 2;
@@ -451,6 +467,13 @@ service RoundStore {
   // A paused room accepts no frames, and a restart that loads it restores Paused — the
   // pause is never a stopped local timer, it is the room row's status.
   rpc PauseRound(PauseRoundRequest) returns (RoundAdmissionReply);
+  // FIX-SYNC-08: resume readiness and the committed resume boundary. A control participant
+  // whose mount is refused because its round is paused reports its current-generation session
+  // (ReportResumeReady — the store resolves the paused room from the streamer's open live
+  // session); once the declared ready count is reached, the owner's ResumeRound lifts the
+  // paused room back to Running at that head.
+  rpc ReportResumeReady(ReportResumeReadyRequest) returns (ResumeReadyReply);
+  rpc ResumeRound(ResumeRoundRequest) returns (RoundAdmissionReply);
   // Authority handover: transfer parks the room Recovering under the new holder at a bumped
   // epoch; confirm flips it back to Active — the holder calls it once its recovery pinned
   // the verified head (contracts 6.2.1), so activation never precedes a real recovery.
@@ -502,6 +525,12 @@ service FrameStore {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
   rpc CommitFrame(CommitFrameRequest) returns (FrameReceiptReply);
   rpc ReadInbox(ReadInboxRequest) returns (ReadInboxReply);
+  // FIX-SYNC-08: the pause-timeout terminal result (authoritative-sync.md:54). The module's
+  // rule for a pause that exceeded its declared duration derives the result from the frozen
+  // state; this commits the game.result + grant plan and flips the room Paused→Finishing —
+  // the end-operation ladder (FIX-END-15) is entered by the caller immediately after, so the
+  // timeout never bypasses platform-close confirmation.
+  rpc CommitPausedResult(CommitPausedResultRequest) returns (FrameReceiptReply);
   // Recovery boundary: the owner persists store-verified snapshots; the owner and the
   // control plane read the recovery plan (architecture 8.2, 10.3).
   rpc PutSnapshot(PutSnapshotRequest) returns (SnapshotReceiptReply);
@@ -524,6 +553,13 @@ service GameHost {
   // Snapshot recovery (architecture 10.3): replay from the newest usable snapshot, resume
   // ticking; a Finishing room recovers its tail without restarting battle ticks.
   rpc RecoverRoom(RecoverRoomRequest) returns (RecoverRoomReply);
+  // FIX-SYNC-08: resume readiness and pause-timeout termination, driven by the control
+  // plane's coordinator. ResumeRoom lifts the paused room back to Running at its frozen head
+  // and starts the room's actor (exactly one — a repeated resume answers actor_running);
+  // FinishPausedRoom derives the module's terminal result from the frozen state, commits it,
+  // and enters the end-operation ladder — never a bypass of platform-close confirmation.
+  rpc ResumeRoom(ResumeRoomRequest) returns (ResumeRoomReply);
+  rpc FinishPausedRoom(FinishPausedRoomRequest) returns (FinishPausedRoomReply);
   // FIX-END-14: destroy a released round's runtime entities on this host. The ceiling is
   // the released ownership row's own (bumped) epoch — every actor of this room strictly
   // below it belongs to the settled round and goes; an actor at or above it is a newer
@@ -553,6 +589,47 @@ message DestroyRoomReply {
   // A newer-generation actor of this room stands at or above the ceiling and was not
   // touched: the old round's destroy is complete, the new round's entity stays.
   bool spared_new_generation = 3;
+}
+
+// FIX-SYNC-08: the control plane's coordinator asks the room's owner host to lift a paused
+// room back to Running at its frozen head. The host commits the resume boundary through the
+// data plane, then starts the room's actor from that head (the same recovery path a crash
+// uses); a repeated resume answers the existing actor — no double tick loop.
+message ResumeRoomRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string owner_instance_id = 4;
+  int64 epoch = 5;
+}
+
+message ResumeRoomReply {
+  string room_id = 1;
+  string status = 2;
+  // True when this host already ran the room's actor (a repeated resume); the caller treats
+  // it as converged, never as a second loop.
+  bool actor_running = 3;
+}
+
+// FIX-SYNC-08: the pause-timeout termination the coordinator drives. The host derives the
+// module's terminal result from the frozen state (FinishFrozen), commits it through the data
+// plane (Paused→Finishing), and enters the end-operation ladder — so the timeout ends per the
+// module's own rule and never bypasses platform-close confirmation.
+message FinishPausedRoomRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string owner_instance_id = 4;
+  int64 epoch = 5;
+  string reason = 6;
+}
+
+message FinishPausedRoomReply {
+  string room_id = 1;
+  string status = 2;
+  // The frozen frame the terminal result was derived at (the room's head).
+  int64 final_tick = 3;
+  int32 result_version = 4;
 }
 
 // FIX-INPUT-01: the direct-push room-event edge on the game host. The routing layer
@@ -657,6 +734,47 @@ message PauseRoundRequest {
   // room never silently resumes past the boundary the clients abandoned.
   int64 tick = 7;
   int64 state_version = 8;
+}
+
+// FIX-SYNC-08: a control participant's report that its current-generation session applied
+// the paused room's frozen head as its resume baseline (authoritative-sync.md:53). One
+// durable ready row per participant. The streamer reports from its session-grant path (the
+// control participant's session re-established at the current generation — the mount itself
+// is refused while the room is paused), so the store resolves the paused room from the
+// streamer's open live session and fences the report on the session being the streamer's
+// CURRENT session — an old session's readiness never counts (旧会话准备不计数). The frozen
+// head (last_tick, state_version) the store reads is the baseline a ready must be declared
+// against; a changed epoch or a room that left Paused refuses the report.
+message ReportResumeReadyRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string streamer_id = 3;
+  // The auth session that reports: it must be the streamer's current session.
+  string session_id = 4;
+  string operation_id = 5;
+}
+
+message ResumeReadyReply {
+  string room_id = 1;
+  int32 ready_count = 2;
+  // The declared threshold (canonical offline_policy field 4) a resume waits for.
+  int32 required_ready_count = 3;
+  bool paused = 4;
+  bool duplicate = 5;
+}
+
+// FIX-SYNC-08: the committed resume boundary (authoritative-sync.md:53). The owner lifts a
+// paused room back to Running at the frozen head once the declared ready count is reached;
+// below it the store refuses the resume. One receipt transaction — a retry replays the same
+// transition, never a second flip.
+message ResumeRoundRequest {
+  string room_id = 1;
+  string owner_instance_id = 2;
+  int64 epoch = 3;
+  string game_id = 4;
+  string operation_id = 5;
+  int64 tick = 6;
+  int64 state_version = 7;
 }
 
 message GameParticipantProto {

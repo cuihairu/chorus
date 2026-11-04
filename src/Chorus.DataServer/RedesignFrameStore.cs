@@ -57,6 +57,7 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
 {
     public const string Consumed = "Consumed";
     public const string Finishing = "Finishing";
+    public const string Paused = "Paused";
 
     private readonly DataMetrics _metrics = metrics ?? DataMetrics.Default;
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString, metrics);
@@ -319,6 +320,131 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
     }
 
     /// <summary>
+    /// FIX-SYNC-08: commits a paused room's terminal result — the module's rule for a pause
+    /// that exceeded its declared duration (authoritative-sync.md:54 "the pause-timeout
+    /// ending is a separate branch in flow 03"). The result is derived from the frozen state
+    /// by the module (<c>FinishFrozen</c>), so unlike a normal final frame it writes no
+    /// <c>game.frame</c> row, advances no tick, and leaves the room's state hash at the frozen
+    /// value. It inserts the <c>game.result</c> document (result_version 1 at the frozen
+    /// frame) and its grant plan, flips the room Paused→Finishing — never Settled, because
+    /// the end-operation ladder (FIX-END-15) still owns the release — and clears the room's
+    /// spent ready rows in the same transaction. This is the only path that may move a paused
+    /// room to a terminal result; the ladder is entered by the caller immediately after.
+    /// </summary>
+    public async Task<FrameReceipt> CommitPausedResultAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, string operationId, long tick, byte[] planHash,
+        string resultJson, IReadOnlyList<PlannedGrant> grants, CancellationToken cancellationToken = default)
+    {
+        Require(tenantId, nameof(tenantId)); Require(gameId, nameof(gameId)); Require(roomId, nameof(roomId));
+        Require(ownerInstanceId, nameof(ownerInstanceId)); Require(operationId, nameof(operationId));
+        ArgumentNullException.ThrowIfNull(planHash); ArgumentNullException.ThrowIfNull(grants);
+        Require(resultJson, nameof(resultJson));
+        if (epoch <= 0) throw new ArgumentOutOfRangeException(nameof(epoch));
+        if (tick < 0) throw new ArgumentOutOfRangeException(nameof(tick));
+        using (JsonDocument.Parse(resultJson)) { }
+        foreach (var grant in grants)
+        {
+            Require(grant.PlayerId, "Grants.PlayerId"); Require(grant.GrantKey, "Grants.GrantKey");
+            Require(grant.OperationId, "Grants.OperationId"); Require(grant.AssetId, "Grants.AssetId");
+            if (grant.Delta == 0)
+                throw new ArgumentException("A grant carries a non-zero amount.", nameof(grants));
+        }
+        var fingerprint = OperationFingerprint.FromCanonicalRequest(1, JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            RoomId = roomId, OwnerInstanceId = ownerInstanceId, Epoch = epoch, Tick = tick,
+            PlanHash = planHash, ResultJson = resultJson,
+            Grants = grants.Select(grant => new
+            {
+                grant.PlayerId, grant.GrantKey, grant.OperationId, grant.AssetId, grant.Delta
+            })
+        }));
+        var receipt = await _receipts.ExecuteAsync(
+            new OperationIdentity(tenantId, gameId, "round.result", roomId, operationId),
+            fingerprint,
+            (connection, transaction, token) => ApplyPausedResultAsync(tenantId, gameId, roomId,
+                ownerInstanceId, epoch, tick, planHash, resultJson, grants, operationId,
+                connection, transaction, token),
+            cancellationToken);
+        var result = JsonSerializer.Deserialize<FrameReceipt>(receipt.ResultJson)
+            ?? throw new InvalidOperationException("The stored paused-result receipt is unreadable.");
+        return result with { Duplicate = receipt.Duplicate };
+    }
+
+    private async Task<string> ApplyPausedResultAsync(string tenantId, string gameId, string roomId,
+        string ownerInstanceId, long epoch, long tick, byte[] planHash, string resultJson,
+        IReadOnlyList<PlannedGrant> grants, string operationId, NpgsqlConnection connection,
+        NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await LockRoomOwnershipAsync(tenantId, gameId, roomId, ownerInstanceId, epoch,
+            connection, transaction, cancellationToken);
+        await using (var room = new NpgsqlCommand("""
+            SELECT status,last_tick FROM game.room
+            WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game FOR UPDATE
+            """, connection, transaction))
+        {
+            room.Parameters.AddWithValue("room", roomId);
+            room.Parameters.AddWithValue("tenant", tenantId);
+            room.Parameters.AddWithValue("game", gameId);
+            await using var reader = await room.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new FrameConflictException("The room does not exist.");
+            var status = reader.GetString(0);
+            if (status != Paused)
+                throw new FrameConflictException(
+                    $"A room in status {status} has no paused result to commit.");
+            if (reader.GetInt64(1) != tick)
+                throw new FrameConflictException(
+                    $"The paused result names tick {tick}, not the room's frozen head {reader.GetInt64(1)}.");
+        }
+        await using (var result = new NpgsqlCommand("""
+            INSERT INTO game.result(room_id,result_version,final_frame,plan_hash,result)
+            VALUES (@room,1,@tick,@plan,@result::jsonb)
+            """, connection, transaction))
+        {
+            result.Parameters.AddWithValue("room", roomId);
+            result.Parameters.AddWithValue("tick", tick);
+            result.Parameters.AddWithValue("plan", planHash);
+            result.Parameters.AddWithValue("result", resultJson);
+            await result.ExecuteNonQueryAsync(cancellationToken);
+        }
+        foreach (var grant in grants)
+        {
+            await using var planned = new NpgsqlCommand("""
+                INSERT INTO settlement.grant(room_id,result_version,player_id,grant_key,status,operation_id,
+                    asset_id,delta)
+                VALUES (@room,1,@player,@key,'Planned',@operation,@asset,@delta)
+                """, connection, transaction);
+            planned.Parameters.AddWithValue("room", roomId);
+            planned.Parameters.AddWithValue("player", grant.PlayerId);
+            planned.Parameters.AddWithValue("key", grant.GrantKey);
+            planned.Parameters.AddWithValue("operation", grant.OperationId);
+            planned.Parameters.AddWithValue("asset", grant.AssetId);
+            planned.Parameters.AddWithValue("delta", grant.Delta);
+            await planned.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var finish = new NpgsqlCommand("""
+            UPDATE game.room SET status=@status, updated_at=clock_timestamp() WHERE room_id=@room
+            """, connection, transaction))
+        {
+            finish.Parameters.AddWithValue("status", Finishing);
+            finish.Parameters.AddWithValue("room", roomId);
+            await finish.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var clear = new NpgsqlCommand(
+            "DELETE FROM game.resume_ready WHERE room_id=@room", connection, transaction))
+        {
+            clear.Parameters.AddWithValue("room", roomId);
+            await clear.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await WriteOutboxAsync($"{roomId}/{tick}/finish-paused", "round.finished", new
+        {
+            RoomId = roomId, TenantId = tenantId, GameId = gameId, Epoch = epoch,
+            Tick = tick, Reason = "pause-timeout"
+        }, connection, transaction, cancellationToken);
+        return JsonSerializer.Serialize(new FrameReceipt(operationId, roomId, tick, 0, 0, Duplicate: false));
+    }
+
+    /// <summary>
     /// The round inbox (architecture 6.1.6): unconsumed deliveries of this round in routing
     /// order with their payloads, plus the contiguous watermark the actor resumes after.
     /// </summary>
@@ -391,5 +517,19 @@ public sealed class RedesignFrameStore(string connectionString, Action? crashAft
     private static void Require(string? value, string name)
     {
         if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException("Value is required.", name);
+    }
+
+    private static async Task WriteOutboxAsync(string effectId, string kind, object payload,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var outbox = new NpgsqlCommand("""
+            INSERT INTO infra.outbox(effect_id,kind,payload,status)
+            VALUES (@effect,@kind,@payload::jsonb,'Pending')
+            ON CONFLICT (effect_id) DO NOTHING
+            """, connection, transaction);
+        outbox.Parameters.AddWithValue("effect", effectId);
+        outbox.Parameters.AddWithValue("kind", kind);
+        outbox.Parameters.AddWithValue("payload", JsonSerializer.Serialize(payload));
+        await outbox.ExecuteNonQueryAsync(cancellationToken);
     }
 }

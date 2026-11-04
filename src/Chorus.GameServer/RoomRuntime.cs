@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Chorus.ExampleGame;
 using Chorus.Rpc;
@@ -599,10 +600,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         // cap, the fallback ends and the room parks.
         var depth = RecoveryFirstWindow;
         var refutedAbove = long.MaxValue; // candidates at or above this tick already failed
-        LoadRecoveryReply plan;
-        while (true)
+        var plan = await LoadWholePlanAsync(request.RoomId, request.GameId, depth, cancellationToken);
         {
-            plan = await LoadWholePlanAsync(request.RoomId, request.GameId, depth, cancellationToken);
             if (!plan.Found)
                 return new RecoverRoomReply
                 {
@@ -622,67 +621,18 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             // hardcoded literals. Validated before any module is built or replay starts.
             // FIX-MODULE-02: "what this host loads" is the package registry — every
             // package it ships, not the one hardcoded identity.
-            if (plan.TickMs is < 1 or > 1000)
+            // FIX-MODULE-01/02 and FIX-SYNC-04: the room's identity facts (package, module
+            // version, recovery mode, offline policy) are persisted facts, never caller
+            // opinions — the shared resolution below is what both a crash recovery and the
+            // pause-timeout termination use, so the two paths can never disagree about which
+            // module owns a room. A refusal names the exact fact that failed.
+            var (module, moduleRefusal) = ResolveRecoveryModule(plan, request.TickMs);
+            if (module is null)
                 return new RecoverRoomReply
                 {
                     RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The room's persisted cadence {plan.TickMs} ms is invalid."
+                    Note = moduleRefusal
                 };
-            if (request.TickMs > 0 && request.TickMs != plan.TickMs)
-                return new RecoverRoomReply
-                {
-                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The recovery cadence {request.TickMs} ms does not match the room's " +
-                           $"persisted cadence {plan.TickMs} ms; a recovery cannot change a room's tick."
-                };
-            if (!TryResolvePackage(plan.PackageHash, out var package))
-                return new RecoverRoomReply
-                {
-                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The room's package \"{PackageNameFor(plan.PackageHash)}\" is not a " +
-                           $"package this host ships (shipped: {_shippedList}); the package is " +
-                           "missing or unknown."
-                };
-            if (plan.ModuleVersion != package.ModuleVersion)
-                return new RecoverRoomReply
-                {
-                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The room's module version \"{plan.ModuleVersion}\" is not the version " +
-                           $"package \"{package.PackageHash}\" ships (\"{package.ModuleVersion}\"); " +
-                           "the module is incompatible."
-                };
-            if (plan.RecoveryMode is not (RedesignGameModuleManifest.DeterministicReplay
-                    or RedesignGameModuleManifest.FullCheckpoint))
-                return new RecoverRoomReply
-                {
-                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The room's recovery mode \"{plan.RecoveryMode}\" is not a known mode."
-                };
-            if (plan.RecoveryMode != package.RecoveryMode)
-                return new RecoverRoomReply
-                {
-                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The room's recovery mode \"{plan.RecoveryMode}\" is not the mode " +
-                           $"package \"{package.PackageHash}\" ships (\"{package.RecoveryMode}\"); " +
-                           "the module is incompatible."
-                };
-            // FIX-SYNC-04: the room's offline policy is a persisted identity fact, never a
-            // caller opinion and never silently refreshed from the package. A room whose
-            // stored declaration no longer matches what the package ships — a config upgrade
-            // that changed the policy, or a room that predates the declaration — is refused
-            // by name, so a live round's offline behavior cannot change mid-flight.
-            var shippedOffline = package.ManifestAt(plan.TickMs).Offline;
-            if (shippedOffline is null || plan.OfflinePolicy != shippedOffline.Canonical)
-                return new RecoverRoomReply
-                {
-                    RoomId = request.RoomId, Recovered = false, Status = plan.Status,
-                    Note = $"The room's offline policy \"{plan.OfflinePolicy}\" is not the " +
-                           $"policy package \"{package.PackageHash}\" ships " +
-                           $"(\"{shippedOffline?.Canonical ?? "none"}\"); the round's offline " +
-                           "behavior cannot change mid-flight."
-                };
-            var manifest = package.ManifestAt(plan.TickMs);
-            var module = package.Load(manifest);
             // FIX-SYNC-06: a paused room recovers to Paused — the freeze is a durable store
             // fact, so the recovery confirms this host owns the paused room (the same fenced
             // confirm a running recovery takes) but starts no tick loop and replays nothing.
@@ -737,40 +687,103 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 .GroupBy(delivery => delivery.EventId, StringComparer.Ordinal)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
 
-            // FIX-MODULE-03: a FullCheckpoint room recovers from its head checkpoint
-            // directly — every committed frame carried the complete state, so there is
-            // nothing to replay even when the module is non-deterministic by design. A
-            // missing, unreadable or corrupt head checkpoint cannot be repaired by
-            // replay: the room is refused by name and parked visibly.
-            if (package.RecoveryMode == RedesignGameModuleManifest.FullCheckpoint)
-            {
-                var head = plan.Snapshots.Where(candidate => candidate.Tick <= plan.LastTick)
-                    .OrderByDescending(candidate => candidate.Tick).FirstOrDefault();
-                if (head is null || head.Tick != plan.LastTick)
-                    return await RefuseAndSuspendAsync(request, plan,
-                        "The room's newest checkpoint is at tick " + (head?.Tick.ToString() ?? "none")
-                        + $", not the head tick {plan.LastTick}; a FullCheckpoint room cannot replay to the head",
-                        cancellationToken);
-                ExampleGameState checkpointed;
-                try { checkpointed = module.Restore(head.Payload.ToByteArray(), head.SchemaVersion); }
-                catch (Exception)
-                {
-                    return await RefuseAndSuspendAsync(request, plan,
-                        "The room's head checkpoint is unreadable; a FullCheckpoint room cannot replay to the head",
-                        cancellationToken);
-                }
-                if (!module.ComputeStateHash(checkpointed).AsSpan().SequenceEqual(head.PayloadHash.Span))
-                    return await RefuseAndSuspendAsync(request, plan,
-                        "The room's head checkpoint failed its hash check; a FullCheckpoint room cannot replay to the head",
-                        cancellationToken);
-                return await AdoptRecoveredStateAsync(request, plan, module, checkpointed,
-                    participantByBinding, head.Tick, replayed: 0,
-                    $"Restored the tick-{head.Tick} checkpoint; a FullCheckpoint room resumes without replay.",
-                    cancellationToken, pinHead: false);
-            }
+            // FIX-SYNC-08: the head-state derivation is the shared honest replay (a crash
+            // recovery and the pause-timeout termination restore the same verified state).
+            // A refusal names the cause and parks the room; a success hands the verified
+            // head state to adoption, which starts exactly one actor for this host.
+            var (state, replayed, snapshotTick, pinHead, note, refusal) =
+                await TryRestoreHeadAsync(plan, module, participantByBinding, deliveryByEvent,
+                    refutedAbove, depth,
+                    reloadDepth => LoadWholePlanAsync(request.RoomId, request.GameId, reloadDepth,
+                        cancellationToken),
+                    cancellationToken);
+            if (state is null)
+                return await RefuseAndSuspendAsync(request, plan, refusal!, cancellationToken);
+            return await AdoptRecoveredStateAsync(request, plan, module, state, participantByBinding,
+                snapshotTick, replayed, note, cancellationToken, pinHead: pinHead);
+        }
+    }
 
-            // Newest first, and only candidates this window newly surfaced: everything at
-            // or above the previous window's oldest was already refuted there.
+    /// <summary>
+    /// Resolves the module that owns a room from its persisted plan (FIX-MODULE-01/02,
+    /// FIX-SYNC-04): the room's identity facts — package, module version, recovery mode,
+    /// offline policy — are persisted facts, never caller opinions, so a recovery or a
+    /// pause-timeout termination cannot restate them. Returns the loaded module, or a
+    /// refusal naming the exact persisted fact that failed. <paramref name="requestedTickMs"/>
+    /// is 0 for "use the room's persisted cadence"; a positive value must match it.
+    /// </summary>
+    private (IRedesignGameModule? Module, string? Refusal) ResolveRecoveryModule(
+        LoadRecoveryReply plan, int requestedTickMs)
+    {
+        if (plan.TickMs is < 1 or > 1000)
+            return (null, $"The room's persisted cadence {plan.TickMs} ms is invalid.");
+        if (requestedTickMs > 0 && requestedTickMs != plan.TickMs)
+            return (null, $"The recovery cadence {requestedTickMs} ms does not match the room's " +
+                $"persisted cadence {plan.TickMs} ms; a recovery cannot change a room's tick.");
+        if (!TryResolvePackage(plan.PackageHash, out var package))
+            return (null, $"The room's package \"{PackageNameFor(plan.PackageHash)}\" is not a " +
+                $"package this host ships (shipped: {_shippedList}); the package is missing or unknown.");
+        if (plan.ModuleVersion != package.ModuleVersion)
+            return (null, $"The room's module version \"{plan.ModuleVersion}\" is not the version " +
+                $"package \"{package.PackageHash}\" ships (\"{package.ModuleVersion}\"); the module is incompatible.");
+        if (plan.RecoveryMode is not (RedesignGameModuleManifest.DeterministicReplay
+                or RedesignGameModuleManifest.FullCheckpoint))
+            return (null, $"The room's recovery mode \"{plan.RecoveryMode}\" is not a known mode.");
+        if (plan.RecoveryMode != package.RecoveryMode)
+            return (null, $"The room's recovery mode \"{plan.RecoveryMode}\" is not the mode " +
+                $"package \"{package.PackageHash}\" ships (\"{package.RecoveryMode}\"); the module is incompatible.");
+        // FIX-SYNC-04: the room's offline policy is a persisted identity fact, never a
+        // caller opinion and never silently refreshed from the package. A room whose stored
+        // declaration no longer matches what the package ships is refused by name, so a live
+        // round's offline behavior cannot change mid-flight.
+        var shippedOffline = package.ManifestAt(plan.TickMs).Offline;
+        if (shippedOffline is null || plan.OfflinePolicy != shippedOffline.Canonical)
+            return (null, $"The room's offline policy \"{plan.OfflinePolicy}\" is not the " +
+                $"policy package \"{package.PackageHash}\" ships " +
+                $"(\"{shippedOffline?.Canonical ?? "none"}\"); the round's offline behavior cannot change mid-flight.");
+        return (package.Load(package.ManifestAt(plan.TickMs)), null);
+    }
+
+    /// <summary>
+    /// Restores the room's head state from its committed plan (FIX-SYNC-08 hoisted the
+    /// shared derivation here so a crash recovery and the pause-timeout termination use the
+    /// same honest replay): a FullCheckpoint room restores its head checkpoint directly, a
+    /// deterministic-replay room replays the newest surviving snapshot to the head. Returns
+    /// the verified head state, the anchor snapshot tick and the replay count; a refusal (an
+    /// unreadable checkpoint, a hash mismatch, no snapshot replays) names the cause and the
+    /// caller parks the room. Never starts an actor — adoption is the caller's.
+    /// </summary>
+    private async Task<(ExampleGameState? State, int Replayed, long SnapshotTick, bool PinHead, string Note, string? Refusal)>
+        TryRestoreHeadAsync(LoadRecoveryReply plan, IRedesignGameModule module,
+        Dictionary<string, string> participantByBinding,
+        Dictionary<string, RecoveryDeliveryProto> deliveryByEvent,
+        long refutedAbove, int depth, Func<int, Task<LoadRecoveryReply>> reloadPlan,
+        CancellationToken cancellationToken)
+    {
+        if (module.Manifest.CheckpointMode == RedesignGameModuleManifest.FullCheckpoint)
+        {
+            var head = plan.Snapshots.Where(candidate => candidate.Tick <= plan.LastTick)
+                .OrderByDescending(candidate => candidate.Tick).FirstOrDefault();
+            if (head is null || head.Tick != plan.LastTick)
+                return (null, 0, 0, false, "",
+                    "The room's newest checkpoint is at tick " + (head?.Tick.ToString() ?? "none")
+                    + $", not the head tick {plan.LastTick}; a FullCheckpoint room cannot replay to the head");
+            ExampleGameState checkpointed;
+            try { checkpointed = module.Restore(head.Payload.ToByteArray(), head.SchemaVersion); }
+            catch (Exception)
+            {
+                return (null, 0, 0, false, "",
+                    "The room's head checkpoint is unreadable; a FullCheckpoint room cannot replay to the head");
+            }
+            if (!module.ComputeStateHash(checkpointed).AsSpan().SequenceEqual(head.PayloadHash.Span))
+                return (null, 0, 0, false, "",
+                    "The room's head checkpoint failed its hash check; a FullCheckpoint room cannot replay to the head");
+            return (checkpointed, 0, head.Tick, false,
+                $"Restored the tick-{head.Tick} checkpoint; a FullCheckpoint room resumes without replay.", null);
+        }
+
+        while (true)
+        {
             foreach (var candidate in plan.Snapshots.Where(candidate => candidate.Tick < refutedAbove))
             {
                 if (candidate.Tick > plan.LastTick) continue;
@@ -815,10 +828,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 _metrics.Record(_metrics.RecoveryReplay, replayStart);
                 if (!consistent || state.Tick != plan.LastTick) continue;
 
-                return await AdoptRecoveredStateAsync(request, plan, module, state,
-                    participantByBinding, candidate.Tick, replayed,
-                    $"Replayed {replayed} frames from the tick-{candidate.Tick} snapshot.",
-                    cancellationToken);
+                return (state, replayed, candidate.Tick, true,
+                    $"Replayed {replayed} frames from the tick-{candidate.Tick} snapshot.", null);
             }
 
             // This window is refuted down to its oldest loaded candidate.
@@ -827,11 +838,12 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             if (plan.Snapshots.Count < depth || depth >= RecoveryDeepestWindow)
                 break;
             depth *= 2;
+            // FIX-SYNC-08: a deeper window needs its own plan load — the original loop
+            // reloaded the whole plan at each deepening, and a reload refreshes the
+            // snapshot window the next iteration reads.
+            plan = await reloadPlan(depth);
         }
-
-        // No snapshot survived replay: park the room visibly (architecture 10.3.6).
-        return await RefuseAndSuspendAsync(request, plan,
-            "No snapshot replays to the head with matching frame hashes", cancellationToken);
+        return (null, 0, 0, false, "", "No snapshot replays to the head with matching frame hashes");
     }
 
     /// <summary>
@@ -851,7 +863,15 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         Dictionary<string, string> participantByBinding, long snapshotTick, int replayed,
         string note, CancellationToken cancellationToken, bool pinHead = true)
     {
-        byte[] headPayload;
+        var headPayload = module.Serialize(state); // the config fallback below either way
+        // Persist a fresh store-verified snapshot at the head so the next recovery starts
+        // here. FIX-TAKE-02/03: while the ownership is Recovering the pin travels the
+        // constrained recovery entry — exactly the takeover-named owner at this epoch
+        // passes — and once that entry closed (the activation already happened, say a retry
+        // after a lost reply) the normal snapshot entry carries the same payload. A resume
+        // passes a pinHead already reduced by the caller (FIX-SYNC-08): a room that paused
+        // at its own head carries the head snapshot already, so there is nothing to pin and
+        // a re-pin would collide on (room_id, tick_id, schema_version).
         if (pinHead)
         {
             // Persist a fresh store-verified snapshot at the head so the next recovery
@@ -862,7 +882,6 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             // entry carries the same payload.
             try
             {
-                headPayload = module.Serialize(state);
                 await PinHeadAsync(request, plan.LastTick, headPayload, state.SchemaVersion,
                     cancellationToken);
             }
@@ -875,10 +894,6 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     Note = $"The head snapshot was rejected: {error.Status.Detail}"
                 };
             }
-        }
-        else
-        {
-            headPayload = module.Serialize(state); // still the config fallback below
         }
         // FIX-TAKE-03: the pinned head is the activation credential — the fenced
         // confirm flips the ownership Active for exactly this owner and epoch before
@@ -1237,6 +1252,193 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             // The rethrow lets the actor's fail-visible catch suspend the room.
             throw;
         }
+    }
+
+    /// <summary>
+    /// FIX-SYNC-08: the resume leg — the control plane asks this host to lift a pause once the
+    /// readiness threshold is met. Shares the room's activation gate with recovery (a recovery
+    /// in flight must be visible before the resume decides the room is unknown), answers an
+    /// actor this host already holds (no second tick loop), flips the paused round to Running
+    /// on the data plane at the frozen baseline, and only then builds the actor from the
+    /// verified head — exactly one, by the same adoption the crash-recovery path uses. A
+    /// resume the data plane refuses leaves the room Paused for the next sweep; nothing here
+    /// claims a resume that never landed.
+    /// </summary>
+    public async Task<ResumeRoomReply> ResumeRoomAsync(ResumeRoomRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        Require(request.RoomId, "room_id"); Require(request.GameId, "game_id");
+        Require(request.OwnerInstanceId, "owner_instance_id");
+        if (request.Epoch <= 0) throw new ArgumentException("The room epoch must be positive.");
+        var activation = _activations.GetOrAdd(request.RoomId, static _ => new SemaphoreSlim(1, 1));
+        await activation.WaitAsync(cancellationToken);
+        try
+        {
+            if (_actors.TryGetValue(request.RoomId, out var known))
+            {
+                // An actor this host already holds is the room running — answering it is the
+                // no-double-loop guarantee, never a second tick loop.
+                var status = known.Status();
+                return new ResumeRoomReply
+                {
+                    RoomId = request.RoomId, Status = DescribeRunState(status.State),
+                    ActorRunning = status.State is RoomRunState.Running or RoomRunState.Degraded
+                };
+            }
+            var paused = await LoadWholePlanAsync(request.RoomId, request.GameId,
+                RecoveryFirstWindow, cancellationToken);
+            if (!paused.Found)
+                throw new InvalidOperationException($"The room {request.RoomId} does not exist on this tenant.");
+            if (paused.Status != "Paused")
+                throw new InvalidOperationException($"A room in status {paused.Status} is not resumable here.");
+            if (paused.Epoch != request.Epoch)
+                throw new InvalidOperationException($"The room head epoch is {paused.Epoch}, not {request.Epoch}.");
+            // FIX-SYNC-08: the data-plane CAS flips Paused→Running at the frozen baseline; a
+            // duplicate resume (a retry after a lost reply) replays the stored receipt and
+            // reports the already-resumed round — the adoption below is then the no-op
+            // "already running" case, never a second actor.
+            await _rounds.ResumeRoundAsync(new ResumeRoundRequest
+            {
+                RoomId = request.RoomId, GameId = request.GameId,
+                OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                Tick = paused.LastTick, StateVersion = paused.StateVersion,
+                OperationId = $"{request.OwnerInstanceId}/resume/{request.RoomId}/{paused.LastTick}"
+            }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            // The flip is durable — reload to observe Running, then adopt exactly one actor
+            // from the verified head (the same honest derivation a crash recovery uses).
+            var plan = await LoadWholePlanAsync(request.RoomId, request.GameId,
+                RecoveryFirstWindow, cancellationToken);
+            var (module, refusal) = ResolveRecoveryModule(plan, 0);
+            if (module is null) throw new InvalidOperationException(refusal);
+            var participantByBinding = plan.Participants
+                .Where(participant => participant.BindingId.Length > 0 && participant.State != "Closed")
+                .GroupBy(participant => participant.BindingId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First().ParticipantId, StringComparer.Ordinal);
+            var deliveryByEvent = plan.Deliveries
+                .Where(delivery => delivery.EventId.Length > 0)
+                .GroupBy(delivery => delivery.EventId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            var (state, replayed, snapshotTick, pinHead, note, restoreRefusal) =
+                await TryRestoreHeadAsync(plan, module, participantByBinding, deliveryByEvent,
+                    long.MaxValue, RecoveryFirstWindow,
+                    reloadDepth => LoadWholePlanAsync(request.RoomId, request.GameId, reloadDepth,
+                        cancellationToken), cancellationToken);
+            if (state is null) throw new InvalidOperationException(restoreRefusal);
+            // FIX-SYNC-08: a resume of a room that paused at its own head finds the head
+            // snapshot already standing (the pause left the room exactly at its newest
+            // checkpoint or Prepare boundary) — a re-pin of the same payload would collide
+            // on (room_id, tick_id, schema_version). The pin is only for a head tick that is
+            // genuinely new (replayed past the newest anchor); an already-pinned head needs
+            // no fresh snapshot. This is the resume's own reduction — a crash recovery's pin
+            // stays unconditional (FIX-TAKE-02/03's fenced contract).
+            var headAlreadyPinned = plan.Snapshots.Any(snapshot =>
+                snapshot.Tick == plan.LastTick && snapshot.SchemaVersion == state.SchemaVersion);
+            var adopted = await AdoptRecoveredStateAsync(new RecoverRoomRequest
+            {
+                RoomId = request.RoomId, GameId = request.GameId,
+                OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch
+            }, plan, module, state, participantByBinding, snapshotTick, replayed, note,
+                cancellationToken, pinHead: pinHead && !headAlreadyPinned);
+            if (!adopted.Recovered)
+                throw new InvalidOperationException(
+                    $"The resumed room could not be activated: {adopted.Note}");
+            return new ResumeRoomReply
+            {
+                RoomId = request.RoomId, Status = adopted.Status, ActorRunning = true
+            };
+        }
+        finally
+        {
+            activation.Release();
+        }
+    }
+
+    /// <summary>
+    /// FIX-SYNC-08: the timeout leg — a paused round exceeded its MaxPause, so the control
+    /// plane asks this host to terminate it by the module's freeze rule. The room's head is
+    /// restored by the same honest derivation a crash recovery uses, the module derives the
+    /// terminal result from the frozen state (no new frame, no tick advance), the data plane
+    /// commits that result and flips the room Paused→Finishing — never Settled — and only
+    /// then is the end-operation ladder entered (FIX-END-15), so a pause-timeout termination
+    /// never bypasses the platform's closing confirmation.
+    /// </summary>
+    public async Task<FinishPausedRoomReply> FinishPausedRoomAsync(FinishPausedRoomRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        Require(request.RoomId, "room_id"); Require(request.GameId, "game_id");
+        Require(request.OwnerInstanceId, "owner_instance_id");
+        Require(request.Reason, "reason");
+        if (request.Epoch <= 0) throw new ArgumentException("The room epoch must be positive.");
+        var plan = await LoadWholePlanAsync(request.RoomId, request.GameId, RecoveryFirstWindow,
+            cancellationToken);
+        if (!plan.Found)
+            throw new InvalidOperationException($"The room {request.RoomId} does not exist on this tenant.");
+        if (plan.Status != "Paused")
+            throw new InvalidOperationException($"A room in status {plan.Status} has no paused result to finish.");
+        if (plan.Epoch != request.Epoch)
+            throw new InvalidOperationException($"The room head epoch is {plan.Epoch}, not {request.Epoch}.");
+        var (module, refusal) = ResolveRecoveryModule(plan, 0);
+        if (module is null) throw new InvalidOperationException(refusal);
+        var participantByBinding = plan.Participants
+            .Where(participant => participant.BindingId.Length > 0 && participant.State != "Closed")
+            .GroupBy(participant => participant.BindingId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First().ParticipantId, StringComparer.Ordinal);
+        var deliveryByEvent = plan.Deliveries
+            .Where(delivery => delivery.EventId.Length > 0)
+            .GroupBy(delivery => delivery.EventId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var (state, _, _, _, _, restoreRefusal) =
+            await TryRestoreHeadAsync(plan, module, participantByBinding, deliveryByEvent,
+                long.MaxValue, RecoveryFirstWindow,
+                reloadDepth => LoadWholePlanAsync(request.RoomId, request.GameId, reloadDepth,
+                    cancellationToken), cancellationToken);
+        if (state is null) throw new InvalidOperationException(restoreRefusal);
+        // FIX-SYNC-08: the module's freeze rule derives the terminal result from the frozen
+        // state — no new frame, no state hash, no tick advance — and the paused result is the
+        // only path to a terminal result for a room that paused.
+        var outcome = module.FinishFrozen(state, plan.LastTick, request.Reason);
+        var resultJson = outcome.ResultJson
+            ?? throw new InvalidOperationException("The freeze rule produced no terminal result.");
+        var commit = new CommitPausedResultRequest
+        {
+            RoomId = request.RoomId, GameId = request.GameId,
+            OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+            OperationId = $"{request.OwnerInstanceId}/finish-paused/{request.RoomId}/{plan.LastTick}",
+            Tick = plan.LastTick,
+            PlanHash = ByteString.CopyFrom(SHA256.HashData(Encoding.UTF8.GetBytes(resultJson))),
+            ResultJson = resultJson
+        };
+        // The immutable reward manifest (architecture 9.3) — the identical derivation the
+        // final-frame branch applies: each participant earns their faction's frozen score.
+        using (var document = JsonDocument.Parse(resultJson))
+        {
+            var scoreByFaction = new Dictionary<string, long>(StringComparer.Ordinal);
+            foreach (var entry in document.RootElement.GetProperty("ranking").EnumerateArray())
+                scoreByFaction[entry.GetProperty("faction").GetString()!] =
+                    entry.GetProperty("score").GetInt64();
+            foreach (var (player, faction) in state.FactionByParticipant
+                         .OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                if (scoreByFaction.TryGetValue(faction, out var score) && score > 0)
+                    commit.Grants.Add(new PlannedGrantProto
+                    {
+                        PlayerId = player, GrantKey = "round-score",
+                        OperationId = $"{request.RoomId}/grant/{player}", AssetId = "points",
+                        Delta = score
+                    });
+        }
+        var receipt = await _frames.CommitPausedResultAsync(commit, deadline: DateTime.UtcNow.AddSeconds(10),
+            cancellationToken: cancellationToken);
+        // FIX-SYNC-08: the result is committed and the room is Finishing — now, and only now,
+        // the end-operation ladder begins (FIX-END-15): the result report is the ladder's
+        // entry, so a pause-timeout termination never bypasses the platform closing tail.
+        await ReportEndAsync(request.GameId, request.RoomId, plan.LastTick, 1, cancellationToken);
+        return new FinishPausedRoomReply
+        {
+            RoomId = request.RoomId, Status = "Finishing",
+            FinalTick = plan.LastTick, ResultVersion = 1
+        };
     }
 
     /// <summary>FIX-SYNC-06: a control connection established at this generation, routed to

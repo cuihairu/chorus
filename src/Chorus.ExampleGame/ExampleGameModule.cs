@@ -245,6 +245,19 @@ public sealed class ExampleGameModule(RedesignGameModuleManifest? manifest = nul
     /// </summary>
     public IReadOnlyList<NormalizedInput> OnHostUnavailable() => [];
 
+    /// <summary>FIX-SYNC-08: the pause-timeout rule — freeze the ranking at the scores the
+    /// round paused with. The result document is the canonical ranking/winner shape, derived
+    /// without a new tick; the state's Finished flag marks the round ended, nothing else moves.</summary>
+    public TickOutcome FinishFrozen(ExampleGameState state, long tick, string reason)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        if (tick != state.Tick) throw new InvalidOperationException(
+            $"The frozen tick {tick} does not match the state's tick {state.Tick}.");
+        var result = ModuleResult.BuildResult(state)
+            ?? throw new InvalidOperationException("The frozen state has no score map to rank.");
+        return new TickOutcome(state with { Finished = true }, [], Final: true, result);
+    }
+
     private static int GetInt32(JsonElement root, string name)
     {
         if (root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number)

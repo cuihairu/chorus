@@ -153,6 +153,18 @@ public sealed class LiveGameModule(
 
     public IReadOnlyList<NormalizedInput> OnHostUnavailable() => [];
 
+    /// <summary>FIX-SYNC-08: the pause-timeout rule — freeze the ranking at the scores the
+    /// round paused with, derived without a new tick (authoritative-sync.md:54).</summary>
+    public TickOutcome FinishFrozen(ExampleGameState state, long tick, string reason)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        if (tick != state.Tick) throw new InvalidOperationException(
+            $"The frozen tick {tick} does not match the state's tick {state.Tick}.");
+        var result = ModuleResult.BuildResult(state)
+            ?? throw new InvalidOperationException("The frozen state has no score map to rank.");
+        return new TickOutcome(state with { Finished = true }, [], Final: true, result);
+    }
+
     private static long ProcessClock() => Environment.TickCount64;
 
     private static int GetInt32(JsonElement root, string name)

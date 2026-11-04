@@ -110,7 +110,7 @@ if (controlEndpoint is { Length: > 0 })
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
 }
-builder.Services.AddSingleton(new RedesignStreamerLoginCoordinator(
+builder.Services.AddSingleton(sp => new RedesignStreamerLoginCoordinator(
     new RedesignPlatformGateway(adapters, allowNotProductionReady),
     new StreamerIdentityChannel(DataChannel),
     new StreamerProfileChannel(DataChannel),
@@ -119,7 +119,11 @@ builder.Services.AddSingleton(new RedesignStreamerLoginCoordinator(
     accessCredentialKey,
     ownershipRegistrar: ownershipRegistrar,
     sessionNotifier: sessionNotifier,
-    routeSourceRegistrar: routeSourceRegistrar));
+    routeSourceRegistrar: routeSourceRegistrar,
+    // FIX-SYNC-08: the readiness signal source — a control participant whose mount is refused
+    // because its round is paused reports its current-generation session as resume-ready.
+    resumeReadyReporter: new StreamerResumeReadyReporter(DataChannel,
+        sp.GetRequiredService<ILogger<StreamerResumeReadyReporter>>())));
 builder.Services.AddGrpc();
 
 var app = builder.Build();
