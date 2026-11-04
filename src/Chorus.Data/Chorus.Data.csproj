@@ -46,6 +46,7 @@
     <EmbeddedResource Include="Schema/0035_room_resume_ready.sql" />
     <EmbeddedResource Include="Schema/0036_client_command_rate.sql" />
     <EmbeddedResource Include="Schema/0037_leaderboard_entry.sql" />
+    <EmbeddedResource Include="Schema/0038_leaderboard_effect.sql" />
   </ItemGroup>
 
 </Project>

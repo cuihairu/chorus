@@ -76,6 +76,7 @@ builder.Services.AddSingleton(new RedesignSettlementStore(connectionString,
         }
         : null));
 builder.Services.AddSingleton(new RedesignRetentionStore(connectionString));
+builder.Services.AddSingleton(new RedesignLeaderboardStore(connectionString));
 builder.Services.AddGrpc();
 
 var app = builder.Build();
@@ -89,6 +90,7 @@ app.MapGrpcService<RoundGrpcService>();
 app.MapGrpcService<RoundInputGrpcService>();
 app.MapGrpcService<FrameGrpcService>();
 app.MapGrpcService<SettlementGrpcService>();
+app.MapGrpcService<LeaderboardGrpcService>();
 app.MapGrpcService<RetentionGrpcService>();
 await app.RunAsync();
 

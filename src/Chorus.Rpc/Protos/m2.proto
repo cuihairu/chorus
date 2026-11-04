@@ -525,6 +525,27 @@ service Settlement {
   rpc SettleGrants(SettleGrantsRequest) returns (CommitResultReply);
 }
 
+// FIX-RANK-03: idempotent score projection from committed effects (developer-capabilities.md
+// 「Score changes derive from immutable committed server effects」). The GameServer commits
+// each scoring effect with its frame (the frame commit writes it to the committed effect
+// ledger under kind 'score'); a business module within ControlServer validates the source,
+// selects the board/period/scope and drives the projection; the data plane stores. The data
+// plane never accepts a score value — it verifies, in the apply transaction, that the effect
+// is a committed score effect whose own delta matches, then applies it exactly once per
+// immutable EffectId. A client self-report, an unrelated asset change or an inflated delta
+// is refused before any projection write.
+service Leaderboard {
+  rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
+  // Reads one committed effect by its immutable EffectId (the validated source). Found and
+  // kind 'score' means the business module may project it; a client self-report names an id
+  // that never appears here.
+  rpc ReadCommittedScoreEffect(ReadCommittedScoreEffectRequest) returns (CommittedScoreEffectReply);
+  // Applies one committed score effect onto a declared board, exactly once per EffectId.
+  // The business module passes the board it selected and the subject/delta it derived from
+  // the committed payload; the data plane re-verifies the committed source and the delta.
+  rpc ApplyScoreEffect(ApplyScoreEffectRequest) returns (ApplyScoreEffectReply);
+}
+
 // Authoritative frame commits and round inbox reads (architecture 8.2, 6.1.6). Only the
 // room owner commits; reads belong to the owner and the control plane for diagnostics.
 service FrameStore {
@@ -921,6 +942,56 @@ message ReadLeaderboardRequest {
 message LeaderboardReply {
   string board_id = 1;
   repeated LeaderboardEntryProto entries = 2;
+}
+
+// FIX-RANK-03: the RANK-01 board definition as the business module selected it (the
+// business layer owns board/period/scope selection; the data plane stores under it).
+message BoardDefinitionProto {
+  string board_id = 1;
+  // RankSubject (0 Player, 1 Streamer, 2 Faction).
+  int32 subject = 2;
+  // RankAggregation (0 Sum, 1 Max).
+  int32 aggregation = 3;
+  // RankPeriodKind (0 AllTime, 1 Daily, 2 Weekly, 3 Season).
+  int32 period_kind = 4;
+  string period_id = 5;
+  string period_timezone = 6;
+  // ISO-8601 (UTC) bucket bounds; empty when unbounded (AllTime).
+  string period_start_utc = 7;
+  string period_end_utc = 8;
+  string period_version = 9;
+  string scope_id = 10;
+  int64 bounds_min = 11;
+  int64 bounds_max = 12;
+  bool bounds_allow_negative = 13;
+}
+
+message ReadCommittedScoreEffectRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string effect_id = 3;
+}
+
+message CommittedScoreEffectReply {
+  bool found = 1;
+  string kind = 2;
+  // The committed payload verbatim (the business module derives the subject and delta from
+  // its declared score-effect shape); empty when not found.
+  string payload_json = 3;
+}
+
+message ApplyScoreEffectRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string effect_id = 3;
+  BoardDefinitionProto board = 4;
+  string subject_id = 5;
+  int64 delta = 6;
+}
+
+message ApplyScoreEffectReply {
+  int64 score = 1;
+  bool duplicate = 2;
 }
 
 message ListPendingSettlementsRequest {

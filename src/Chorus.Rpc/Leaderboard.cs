@@ -322,3 +322,17 @@ public sealed record BoardKey(
     string BoardId,
     string PeriodId,
     string ScopeId);
+
+/// <summary>
+/// FIX-RANK-03: refused before any projection write (developer-capabilities.md「Score changes
+/// derive from immutable committed server effects」). The effect is not a committed
+/// <c>score</c>-kind server effect, or its requested delta differs from the committed one —
+/// a client self-report, an unrelated asset change or an inflated delta never reaches the
+/// board. This is the visible boundary the business module and the storage floor keep.</summary>
+public sealed class LeaderboardRejectedException(string message) : Exception(message);
+
+/// <summary>FIX-RANK-03: the result of projecting one committed scoring effect onto its
+/// board — the board's resulting score and whether the effect had already been applied
+/// (a concurrent, replayed or lost-response retry answers <see cref="Duplicate"/> and the
+/// stored score, never a second delta).</summary>
+public sealed record LeaderboardEffectResult(long Score, bool Duplicate);
