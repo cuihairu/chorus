@@ -76,7 +76,16 @@ Raw WS protocol (when not using the SDK): JSON text frames; the message `type` c
 
 ```json
 // 服务器 → 客户端
-{"type":"welcome","sessionId":"s1","clientId":"c1","tickDurationMs":66,"inputDelayTicks":2,"snapshotEveryTicks":1,"serverTimeMs":1760000000000,"protocolVersion":1}
+{
+  "type": "welcome",
+  "sessionId": "s1",
+  "clientId": "c1",
+  "tickDurationMs": 66,
+  "inputDelayTicks": 2,
+  "snapshotEveryTicks": 1,
+  "serverTimeMs": 1760000000000,
+  "protocolVersion": 1
+}
 {"type":"snapshot","sessionId":"s1","tickId":42,"serverTimeMs":1760000000066,"state":{...},"v":1,"frameEvents":null}
 ```
 
