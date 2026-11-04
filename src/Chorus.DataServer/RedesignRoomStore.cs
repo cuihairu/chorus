@@ -448,8 +448,13 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
         // the module under the room's own identity instead of a caller-supplied guess.
         // The offline policy rides the same way (FIX-SYNC-04): the canonical declaration
         // the room was admitted under is what a later recovery must still match.
+        // The paused-input policy is derived from that declaration's fifth field
+        // (FIX-SYNC-07): the input store branches on it per accepted event while the
+        // room is paused, so it is pinned as its own typed column here, once, from the
+        // same canonical string the admission and recovery equality contract already freeze.
         await using (var cadence = new NpgsqlCommand(
-            "UPDATE game.room SET tick_ms=@tickms, recovery_mode=@mode, offline_policy=@policy " +
+            "UPDATE game.room SET tick_ms=@tickms, recovery_mode=@mode, offline_policy=@policy, " +
+            "paused_input_policy=split_part(@policy,'|',5) " +
             "WHERE room_id=@room AND tenant_id=@tenant AND game_id=@game",
             connection, transaction))
         {

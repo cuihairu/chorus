@@ -371,7 +371,7 @@ public sealed class RoundInputGrpcService(
         try
         {
             var result = await inputStore.RouteEventsAsync(request.Platform, request.AppId,
-                request.OperationId, request.MaxEvents, context.CancellationToken);
+                request.OperationId, request.MaxEvents, request.PausedOnly, context.CancellationToken);
             return new RouteEventsReply
             {
                 Duplicate = result.Duplicate,

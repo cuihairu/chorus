@@ -29,7 +29,8 @@ public sealed class PlatformIngressEndpoint(
     Func<string, Grpc.Net.Client.GrpcChannel>? gameChannelFactory = null,
     Func<Grpc.Net.Client.GrpcChannel, RoomEvents.RoomEventsClient>? roomEventsFactory = null,
     TimeSpan[]? pushRetryBackoffs = null,
-    StopDeliveryRecord? stopDeliveries = null)
+    StopDeliveryRecord? stopDeliveries = null,
+    RoundInput.RoundInputClient? routeEvents = null)
 {
     /// <summary>The platform application the callback belongs to; per-app callbacks are how
     /// every platform console routes webhooks, so the face asks for it explicitly.</summary>
@@ -300,6 +301,34 @@ public sealed class PlatformIngressEndpoint(
             // Not committed: the platform's retry must be a fresh delivery, and the face says
             // so with the one retry posture that never acknowledges a lost event.
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+
+        // FIX-SYNC-07: the ingest leg only attributes — nothing in production routes a live
+        // room's attributed events after it (the drain pass is a closed room's work). Without
+        // this pass a paused room's buffered-input gate would never hear its events. The pass
+        // is paused-only: a live room's attributed event keeps waiting for its owner (the
+        // push leg) or a closed round's drain pass, so the trigger never changes a live
+        // room's dispositions — only a paused room's. One bounded routing attempt right
+        // here; a failure costs nothing — the event stays durably Attributed and a later
+        // webhook replays the same pass.
+        if (routeEvents is not null && closedRoom is null)
+        {
+            try
+            {
+                await routeEvents.RouteEventsAsync(new RouteEventsRequest
+                {
+                    Platform = platform,
+                    AppId = appId,
+                    OperationId = $"ingress-route:{platform}:{Guid.NewGuid():N}",
+                    MaxEvents = 64,
+                    PausedOnly = true
+                }, deadline: DateTime.UtcNow.AddSeconds(10),
+                cancellationToken: context.RequestAborted);
+            }
+            catch (RpcException)
+            {
+                // The events are durably Attributed either way; the next webhook retires the pass.
+            }
         }
 
         var receipts = committed.Receipts.Select(receipt => new

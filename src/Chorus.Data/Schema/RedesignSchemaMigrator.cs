@@ -41,7 +41,8 @@ public static class RedesignSchemaMigrator
         (30, "Chorus.Data.Schema.0030_epoch_operation.sql"),
         (31, "Chorus.Data.Schema.0031_operator.sql"),
         (32, "Chorus.Data.Schema.0032_room_offline_policy.sql"),
-        (33, "Chorus.Data.Schema.0033_room_pause.sql")
+        (33, "Chorus.Data.Schema.0033_room_pause.sql"),
+        (34, "Chorus.Data.Schema.0034_room_paused_input_policy.sql")
     ];
 
     public static async Task ApplyAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)

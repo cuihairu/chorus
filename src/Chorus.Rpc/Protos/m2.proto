@@ -117,8 +117,25 @@ message RouteEventsRequest {
   string app_id = 2;
   string operation_id = 3;
   int32 max_events = 4;
+  // FIX-SYNC-07: the gateway's post-ingest routing trigger sets this so the pass
+  // retires only events whose binding's current room stands paused — a paused room
+  // has no other production routing driver, while a live room's attributed events
+  // keep waiting for their owner (the push leg) or a closed round's drain pass.
+  bool paused_only = 5;
 }
 
+// The per-event outcome of a RouteEvents pass. Disposition is one of these strings
+// (no enum, per repo convention):
+//   Routed           — the event became one Pending delivery in the room's inbox;
+//                      sequence is its position under the consumer cursor.
+//   OutOfRound       — no current room or a terminal/non-live room; no delivery.
+//   AmbiguousRound   — the round hint is not trustable membership; held for review.
+//   Skipped          — the event stayed attributed (window/order bookkeeping).
+//   PausedBufferFull — a paused room's bounded buffer is at capacity; the event is
+//                      attributed to the room but no delivery was written (FIX-SYNC-07).
+//   PausedRejected   — the paused room's policy refused the event explicitly.
+//   Compensated      — the paused room's policy disposed the event out-of-round.
+//   PausedPolicyUnset— the paused room declared no policy; the gate failed closed.
 message RoutedEventProto {
   string event_id = 1;
   string room_id = 2;

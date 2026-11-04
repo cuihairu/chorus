@@ -1325,6 +1325,17 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 Disposition = StaleOwner,
                 Note = "This host does not own the room at the named owner instance and epoch."
             };
+        // FIX-SYNC-07: a paused actor is mid-boundary (PauseAtBoundary sets Paused before the
+        // up-to-10s PauseRoomAsync await, and the actor only retires on loop end) — answering
+        // StaleOwner sends the push to the gateway's durable ingest leg instead of the store's
+        // paused admission refusal, which the gateway would treat as terminal and the event
+        // would be lost. The paused room's policy is enforced by the ingest-side gate.
+        if (actor.Status().State == RoomRunState.Paused)
+            return new DeliverRoomEventReply
+            {
+                Disposition = StaleOwner,
+                Note = "The room is paused; its durable ingest leg handles paused inputs."
+            };
         // FIX-INPUT-03: capacity precedes persistence (architecture 6.1 step 4) — a room
         // whose seat list is full answers Overloaded before any durable write, so a refused
         // push commits nothing. An event id that already holds a seat always passes: an

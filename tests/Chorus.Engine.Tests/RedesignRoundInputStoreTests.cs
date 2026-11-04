@@ -3,6 +3,7 @@ using System.Text;
 using Chorus.ControlServer;
 using Chorus.Data;
 using Chorus.DataServer;
+using Chorus.ExampleGame;
 using Chorus.Rpc;
 using Npgsql;
 
@@ -486,6 +487,405 @@ public sealed class RedesignRoundInputStoreTests
             Assert.Equal(("Left", true), byParticipant[p1.StreamerId]);
             Assert.Equal(("Closed", true), byParticipant[p2.StreamerId]);
         }
+    }
+
+    // FIX-SYNC-07: the paused-input gate (authoritative-sync.md:52) — a room prepared to a
+    // canonical offline declaration, activated, then parked at its committed head (the
+    // prepared head is tick 0 / version 1). Every paused-room test below runs the real
+    // store ladder, so the gate is exercised against real room facts, not a stub.
+    private static async Task<(string BindingId, long Epoch)> PauseRoomAsync(
+        RedesignIdentityStore identityStore, RedesignBindingStore bindingStore,
+        RedesignControlStore control, RedesignRoomStore roomStore, string canonicalKey,
+        string canonical, string roomId, string owner)
+    {
+        var (p1, b1, _) = await MountAsync(identityStore, bindingStore, canonicalKey);
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", roomId, owner, 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", roomId, owner, claim.Epoch,
+            [new RoundParticipant(b1.BindingId, p1.StreamerId, "Host")],
+            "1.0.0", "cfg-1", "pkg-1", "start-" + roomId);
+        await roomStore.PrepareRoundAsync("tenant-a", "game-a", roomId, owner, claim.Epoch,
+            [1, 2, 3], [4, 5, 6], 1, "prepare-" + roomId, offlinePolicy: canonical);
+        await roomStore.ActivateRoundAsync("tenant-a", "game-a", roomId, owner, claim.Epoch,
+            "activate-" + roomId);
+        await roomStore.PauseRoundAsync("tenant-a", "game-a", roomId, owner, claim.Epoch,
+            "all control sessions offline", "pause-" + roomId, 0, 1);
+        return (b1.BindingId, claim.Epoch);
+    }
+
+    private static string PausedCanonical(PausedInputPolicy input) =>
+        new ModuleOfflinePolicy(AllOfflinePolicy.PauseAtBoundary, 30, 120, 1, input).Canonical;
+
+    [Fact]
+    public async Task PrepareDerivesPausedInputPolicyFromCanonicalFifthField()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var canonical = PausedCanonical(PausedInputPolicy.Compensate);
+
+        var (p1, b1, _) = await MountAsync(identityStore, bindingStore, "live-key-pd");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-pd", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-pd", "gs-1", claim.Epoch,
+            [new RoundParticipant(b1.BindingId, p1.StreamerId, "Host")],
+            "1.0.0", "cfg-1", "pkg-1", "start-pd");
+        await roomStore.PrepareRoundAsync("tenant-a", "game-a", "room-pd", "gs-1", claim.Epoch,
+            [1, 2, 3], [4, 5, 6], 1, "prepare-pd", offlinePolicy: canonical);
+
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync();
+        await using var select = new NpgsqlCommand(
+            "SELECT paused_input_policy,offline_policy FROM game.room WHERE room_id='room-pd'", connection);
+        await using var reader = await select.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("Compensate", reader.GetString(0));
+        Assert.Equal(canonical, reader.GetString(1));
+    }
+
+    [Fact]
+    public async Task APausedBufferRoomRoutesInReceiveOrderAndDrainsInBudgetWindows()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var eventStore = new RedesignInputEventStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+        var frameStore = new RedesignFrameStore(database.ConnectionString);
+        await PauseRoomAsync(identityStore, bindingStore, control, roomStore, "live-key-pb1",
+            PausedCanonical(PausedInputPolicy.Buffer), "room-pb1", "gs-1");
+
+        await eventStore.IngestAsync("simulator", "app-1", "batch-pb1",
+        [
+            new PlatformEventInput("gift-1", RedesignInputEventStore.Durable, "live-key-pb1",
+                """{"kind":"gift","amount":1}"""),
+            new PlatformEventInput("gift-2", RedesignInputEventStore.Durable, "live-key-pb1",
+                """{"kind":"gift","amount":2}"""),
+            new PlatformEventInput("gift-3", RedesignInputEventStore.Durable, "live-key-pb1",
+                """{"kind":"gift","amount":3}""")
+        ]);
+        var routed = await inputStore.RouteEventsAsync("simulator", "app-1", "route-pb1", 50);
+        Assert.False(routed.Duplicate);
+        Assert.Equal(3, routed.Events.Count);
+        Assert.All(routed.Events, item =>
+        {
+            Assert.Equal(RedesignRoundInputStore.Routed, item.Disposition);
+            Assert.Equal("room-pb1", item.RoomId);
+        });
+        Assert.Equal([1L, 2L, 3L], routed.Events.Select(item => item.Sequence!.Value).OrderBy(s => s).ToArray());
+
+        // A resumed actor drains under its per-tick budget: the bounded window returns only
+        // the first two, and a full read orders every buffered delivery by the durable accept
+        // order — never a reordering by a later platform arrival time.
+        var bounded = await frameStore.ReadInboxAsync("tenant-a", "game-a", "room-pb1", 2);
+        Assert.Equal(0L, bounded.Watermark);
+        Assert.Equal([1L, 2L], bounded.Items.Select(item => item.Sequence).ToArray());
+        var full = await frameStore.ReadInboxAsync("tenant-a", "game-a", "room-pb1", 500);
+        Assert.Equal([1L, 2L, 3L], full.Items.Select(item => item.Sequence).ToArray());
+
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var deliveries = new NpgsqlCommand("""
+                SELECT count(*),min(sequence),max(sequence) FROM input.delivery
+                WHERE consumer_scope='room:room-pb1' AND state='Pending'
+                """, connection))
+            await using (var reader = await deliveries.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal(3L, reader.GetInt64(0));
+                Assert.Equal(1L, reader.GetInt64(1));
+                Assert.Equal(3L, reader.GetInt64(2));
+            }
+            // A paused room's buffer is durable and uncommitted: no frame ever consumed it.
+            await using (var frames = new NpgsqlCommand(
+                "SELECT count(*) FROM game.frame WHERE room_id='room-pb1'", connection))
+                Assert.Equal(0L, Convert.ToInt64(await frames.ExecuteScalarAsync()));
+            await using (var events = new NpgsqlCommand(
+                "SELECT count(*) FROM input.event WHERE disposition='Routed' AND attributed_room_id='room-pb1'",
+                connection))
+                Assert.Equal(3L, Convert.ToInt64(await events.ExecuteScalarAsync()));
+        }
+    }
+
+    [Fact]
+    public async Task APausedBufferRoomOverflowIsObservableAndNeverAdvancesTheCursor()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var eventStore = new RedesignInputEventStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+        await PauseRoomAsync(identityStore, bindingStore, control, roomStore, "live-key-pb2",
+            PausedCanonical(PausedInputPolicy.Buffer), "room-pb2", "gs-1");
+
+        // Fill the bounded buffer to the cap inside one routing window.
+        var toCap = Enumerable.Range(1, RedesignRoundInputStore.MaxPausedBufferPerRoom)
+            .Select(i => new PlatformEventInput($"gift-{i}", RedesignInputEventStore.Durable,
+                "live-key-pb2", $"{{\"kind\":\"gift\",\"amount\":{i}}}")).ToArray();
+        await eventStore.IngestAsync("simulator", "app-1", "batch-cap", toCap);
+        var filled = await inputStore.RouteEventsAsync("simulator", "app-1", "route-cap", 500);
+        Assert.Equal(RedesignRoundInputStore.MaxPausedBufferPerRoom, filled.Events.Count);
+        Assert.All(filled.Events, item => Assert.Equal(RedesignRoundInputStore.Routed, item.Disposition));
+        Assert.Equal(1L, filled.Events.Select(item => item.Sequence!.Value).Min());
+        Assert.Equal(RedesignRoundInputStore.MaxPausedBufferPerRoom,
+            filled.Events.Select(item => item.Sequence!.Value).Max());
+
+        // The next event overflows visibly: the room is attributed, no delivery is written,
+        // and the cursor does not advance — no accepted event is dropped, none is silent.
+        await eventStore.IngestAsync("simulator", "app-1", "batch-cap2",
+        [
+            new PlatformEventInput("gift-501", RedesignInputEventStore.Durable, "live-key-pb2",
+                """{"kind":"gift","amount":501}""")
+        ]);
+        var overflow = await inputStore.RouteEventsAsync("simulator", "app-1", "route-cap2", 50);
+        var item = Assert.Single(overflow.Events);
+        Assert.Equal(RedesignRoundInputStore.PausedBufferFull, item.Disposition);
+        Assert.Equal("room-pb2", item.RoomId);
+        Assert.Null(item.Sequence);
+
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var deliveries = new NpgsqlCommand(
+                "SELECT count(*) FROM input.delivery WHERE consumer_scope='room:room-pb2'", connection))
+                Assert.Equal(500L, Convert.ToInt64(await deliveries.ExecuteScalarAsync()));
+            await using (var cursor = new NpgsqlCommand("""
+                SELECT next_delivery_sequence FROM input.cursor
+                WHERE consumer_scope='room:room-pb2'
+                """, connection))
+                Assert.Equal(501L, Convert.ToInt64(await cursor.ExecuteScalarAsync()));
+            await using (var attributed = new NpgsqlCommand(
+                "SELECT attributed_room_id FROM input.event WHERE source_dedup_key='gift-501'", connection))
+                Assert.Equal("room-pb2", await attributed.ExecuteScalarAsync());
+        }
+    }
+
+    [Fact]
+    public async Task APausedCompensateRoomDisposesOutOfRoundWithoutADelivery()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var eventStore = new RedesignInputEventStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+        await PauseRoomAsync(identityStore, bindingStore, control, roomStore, "live-key-pb3",
+            PausedCanonical(PausedInputPolicy.Compensate), "room-pb3", "gs-1");
+
+        await eventStore.IngestAsync("simulator", "app-1", "batch-pb3",
+        [
+            new PlatformEventInput("gift-c", RedesignInputEventStore.Durable, "live-key-pb3",
+                """{"kind":"gift","amount":10}""")
+        ]);
+        var routed = await inputStore.RouteEventsAsync("simulator", "app-1", "route-pb3", 50);
+        var item = Assert.Single(routed.Events);
+        Assert.Equal(RedesignRoundInputStore.Compensated, item.Disposition);
+        Assert.Equal("room-pb3", item.RoomId);
+        Assert.Null(item.Sequence);
+
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var deliveries = new NpgsqlCommand("SELECT count(*) FROM input.delivery", connection))
+                Assert.Equal(0L, Convert.ToInt64(await deliveries.ExecuteScalarAsync()));
+            await using (var cursors = new NpgsqlCommand("SELECT count(*) FROM input.cursor", connection))
+                Assert.Equal(0L, Convert.ToInt64(await cursors.ExecuteScalarAsync()));
+            await using (var marked = new NpgsqlCommand("""
+                SELECT count(*) FROM input.event
+                WHERE disposition='Compensated' AND attributed_room_id='room-pb3'
+                """, connection))
+                Assert.Equal(1L, Convert.ToInt64(await marked.ExecuteScalarAsync()));
+        }
+    }
+
+    [Fact]
+    public async Task APausedRejectRoomRefusesExplicitlyWithoutADelivery()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var eventStore = new RedesignInputEventStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+        await PauseRoomAsync(identityStore, bindingStore, control, roomStore, "live-key-pb4",
+            PausedCanonical(PausedInputPolicy.Reject), "room-pb4", "gs-1");
+
+        await eventStore.IngestAsync("simulator", "app-1", "batch-pb4",
+        [
+            new PlatformEventInput("gift-r", RedesignInputEventStore.Durable, "live-key-pb4",
+                """{"kind":"gift","amount":20}""")
+        ]);
+        var routed = await inputStore.RouteEventsAsync("simulator", "app-1", "route-pb4", 50);
+        var item = Assert.Single(routed.Events);
+        Assert.Equal(RedesignRoundInputStore.PausedRejected, item.Disposition);
+        Assert.Equal("room-pb4", item.RoomId);
+        Assert.Null(item.Sequence);
+
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var deliveries = new NpgsqlCommand("SELECT count(*) FROM input.delivery", connection))
+                Assert.Equal(0L, Convert.ToInt64(await deliveries.ExecuteScalarAsync()));
+            await using (var marked = new NpgsqlCommand("""
+                SELECT count(*) FROM input.event
+                WHERE disposition='PausedRejected' AND attributed_room_id='room-pb4'
+                """, connection))
+                Assert.Equal(1L, Convert.ToInt64(await marked.ExecuteScalarAsync()));
+        }
+    }
+
+    [Fact]
+    public async Task APausedRoomWithAnUndeclaredPolicyFailsClosed()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var eventStore = new RedesignInputEventStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+        // A fifth field the policy vocabulary does not name derives through prepare unchanged;
+        // the gate refuses it closed — never a silent accept, never a silent drop.
+        await PauseRoomAsync(identityStore, bindingStore, control, roomStore, "live-key-pb5",
+            "PauseAtBoundary|30|120|1|Mystery", "room-pb5", "gs-1");
+
+        await eventStore.IngestAsync("simulator", "app-1", "batch-pb5",
+        [
+            new PlatformEventInput("gift-u", RedesignInputEventStore.Durable, "live-key-pb5",
+                """{"kind":"gift","amount":30}""")
+        ]);
+        var routed = await inputStore.RouteEventsAsync("simulator", "app-1", "route-pb5", 50);
+        var item = Assert.Single(routed.Events);
+        Assert.Equal(RedesignRoundInputStore.PausedPolicyUnset, item.Disposition);
+        Assert.Equal("room-pb5", item.RoomId);
+        Assert.Null(item.Sequence);
+
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync();
+        await using var deliveries = new NpgsqlCommand("SELECT count(*) FROM input.delivery", connection);
+        Assert.Equal(0L, Convert.ToInt64(await deliveries.ExecuteScalarAsync()));
+    }
+
+    [Fact]
+    public async Task APausedBufferCountsPrePausePendingAndReplaysAnIngestDuplicate()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var eventStore = new RedesignInputEventStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+
+        // Three accepted events while the room is live, then the pause: the three Pending
+        // deliveries were accepted before the boundary and must count toward the cap.
+        var (p1, b1, _) = await MountAsync(identityStore, bindingStore, "live-key-pb6");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-pb6", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-pb6", "gs-1", claim.Epoch,
+            [new RoundParticipant(b1.BindingId, p1.StreamerId, "Host")],
+            "1.0.0", "cfg-1", "pkg-1", "start-pb6");
+        await roomStore.PrepareRoundAsync("tenant-a", "game-a", "room-pb6", "gs-1", claim.Epoch,
+            [1, 2, 3], [4, 5, 6], 1, "prepare-pb6",
+            offlinePolicy: PausedCanonical(PausedInputPolicy.Buffer));
+        await roomStore.ActivateRoundAsync("tenant-a", "game-a", "room-pb6", "gs-1", claim.Epoch,
+            "activate-pb6");
+        await eventStore.IngestAsync("simulator", "app-1", "batch-pre",
+        [
+            new PlatformEventInput("gift-1", RedesignInputEventStore.Durable, "live-key-pb6",
+                """{"kind":"gift","amount":1}"""),
+            new PlatformEventInput("gift-2", RedesignInputEventStore.Durable, "live-key-pb6",
+                """{"kind":"gift","amount":2}"""),
+            new PlatformEventInput("gift-3", RedesignInputEventStore.Durable, "live-key-pb6",
+                """{"kind":"gift","amount":3}""")
+        ]);
+        var live = await inputStore.RouteEventsAsync("simulator", "app-1", "route-pre", 50);
+        Assert.All(live.Events, item => Assert.Equal(RedesignRoundInputStore.Routed, item.Disposition));
+        await roomStore.PauseRoundAsync("tenant-a", "game-a", "room-pb6", "gs-1", claim.Epoch,
+            "all control sessions offline", "pause-pb6", 0, 1);
+
+        // A platform retry of an accepted event is a duplicate with the original attribution.
+        var redelivered = await eventStore.IngestAsync("simulator", "app-1", "batch-dup",
+        [
+            new PlatformEventInput("gift-1", RedesignInputEventStore.Durable, "live-key-pb6",
+                """{"kind":"gift","amount":1}""")
+        ]);
+        Assert.True(redelivered.Receipts[0].Duplicate);
+        Assert.Equal("room-pb6", redelivered.Receipts[0].RoomId);
+        // The already-routed event never re-enters a routing window.
+        var again = await inputStore.RouteEventsAsync("simulator", "app-1", "route-dup", 50);
+        Assert.Empty(again.Events);
+
+        // 3 pre-pause pendings + 497 more fill the 500 cap exactly; the next new event
+        // overflows — without the pre-pause count it would have fit.
+        var nearCap = Enumerable.Range(1, 497)
+            .Select(i => new PlatformEventInput($"gift-extra-{i}", RedesignInputEventStore.Durable,
+                "live-key-pb6", $"{{\"kind\":\"gift\",\"amount\":{i + 1000}}}")).ToArray();
+        await eventStore.IngestAsync("simulator", "app-1", "batch-extra", nearCap);
+        var near = await inputStore.RouteEventsAsync("simulator", "app-1", "route-extra", 500);
+        Assert.Equal(497, near.Events.Count);
+        Assert.All(near.Events, item => Assert.Equal(RedesignRoundInputStore.Routed, item.Disposition));
+        await eventStore.IngestAsync("simulator", "app-1", "batch-extra2",
+        [
+            new PlatformEventInput("gift-501", RedesignInputEventStore.Durable, "live-key-pb6",
+                """{"kind":"gift","amount":999}""")
+        ]);
+        var overflow = await inputStore.RouteEventsAsync("simulator", "app-1", "route-extra2", 50);
+        Assert.Equal(RedesignRoundInputStore.PausedBufferFull, Assert.Single(overflow.Events).Disposition);
+
+        // The duplicate never wrote a second delivery row: one accepted event, one delivery.
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var gift1 = new NpgsqlCommand("""
+                SELECT count(*) FROM input.delivery d
+                JOIN input.event e ON e.event_id=d.event_id
+                WHERE e.source_dedup_key='gift-1'
+                """, connection))
+                Assert.Equal(1L, Convert.ToInt64(await gift1.ExecuteScalarAsync()));
+            await using (var total = new NpgsqlCommand(
+                "SELECT count(*) FROM input.delivery WHERE consumer_scope='room:room-pb6'", connection))
+                Assert.Equal(500L, Convert.ToInt64(await total.ExecuteScalarAsync()));
+        }
+    }
+
+    [Fact]
+    public async Task AStandingEndOperationFencesAPausedBufferRoomBeforeItBuffers()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var eventStore = new RedesignInputEventStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+        await PauseRoomAsync(identityStore, bindingStore, control, roomStore, "live-key-pb8",
+            PausedCanonical(PausedInputPolicy.Buffer), "room-pb8", "gs-1");
+
+        // A standing end operation closes the paused room's input generation (FIX-END-06):
+        // the fence outranks the buffer — the late arrival is terminal, never a delivery.
+        await EndLadderEvidence.StandAsync(database.ConnectionString, "room-pb8");
+        await eventStore.IngestAsync("simulator", "app-1", "batch-pb8",
+        [
+            new PlatformEventInput("gift-late", RedesignInputEventStore.Durable, "live-key-pb8",
+                """{"kind":"gift","amount":5}""")
+        ]);
+        var routed = await inputStore.RouteEventsAsync("simulator", "app-1", "route-pb8", 50);
+        var item = Assert.Single(routed.Events);
+        Assert.Equal(RedesignRoundInputStore.OutOfRound, item.Disposition);
+        Assert.Equal("room-pb8", item.RoomId);
+        Assert.Null(item.Sequence);
+
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync();
+        await using var deliveries = new NpgsqlCommand("SELECT count(*) FROM input.delivery", connection);
+        Assert.Equal(0L, Convert.ToInt64(await deliveries.ExecuteScalarAsync()));
     }
 
     private static async Task<(ResolvedStreamer Streamer, BindingGrant Binding, SessionGrant Session)> MountAsync(

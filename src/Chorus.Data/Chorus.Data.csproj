@@ -42,6 +42,7 @@
     <EmbeddedResource Include="Schema/0031_operator.sql" />
     <EmbeddedResource Include="Schema/0032_room_offline_policy.sql" />
     <EmbeddedResource Include="Schema/0033_room_pause.sql" />
+    <EmbeddedResource Include="Schema/0034_room_paused_input_policy.sql" />
   </ItemGroup>
 
 </Project>

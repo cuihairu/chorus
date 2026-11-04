@@ -40,6 +40,21 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
     public const string OutOfRound = "OutOfRound";
     public const string AmbiguousRound = "AmbiguousRound";
     public const string Skipped = "Skipped";
+    // FIX-SYNC-07: terminal dispositions for inputs that reach a paused room — the room answers
+    // its declared paused-input policy instead of the live/terminal split.
+    public const string PausedBufferFull = "PausedBufferFull";
+    public const string PausedRejected = "PausedRejected";
+    public const string Compensated = "Compensated";
+    public const string PausedPolicyUnset = "PausedPolicyUnset";
+    // The policy values ride the canonical offline policy's fifth field; this store cannot
+    // reference the ExampleGame enum, so the wire names are duplicated here.
+    public const string PausedPolicyBuffer = "Buffer";
+    public const string PausedPolicyCompensate = "Compensate";
+    public const string PausedPolicyReject = "Reject";
+    /// <summary>The bounded durable buffer a paused room accepts before overflow is observable
+    /// (FIX-SYNC-07), aligned with the routing and inbox windows. A paused room has no frame
+    /// commits, so its pending count only moves under the routing cursor lock.</summary>
+    public const int MaxPausedBufferPerRoom = 500;
     public const string ClientPlatform = "@chorus";
     private const string ClusterTenantId = "@cluster";
 
@@ -52,20 +67,20 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
     /// before routing runs.
     /// </summary>
     public async Task<RouteEventsResult> RouteEventsAsync(string platform, string appId, string operationId,
-        int maxEvents, CancellationToken cancellationToken = default)
+        int maxEvents, bool pausedOnly = false, CancellationToken cancellationToken = default)
     {
         Require(platform, nameof(platform)); Require(appId, nameof(appId)); Require(operationId, nameof(operationId));
         if (maxEvents is <= 0 or > 500)
             throw new ArgumentException("The routing window is 1..500 events.", nameof(maxEvents));
         var fingerprint = OperationFingerprint.FromCanonicalRequest(1, JsonSerializer.SerializeToUtf8Bytes(new
         {
-            Platform = platform, AppId = appId, MaxEvents = maxEvents
+            Platform = platform, AppId = appId, MaxEvents = maxEvents, PausedOnly = pausedOnly
         }));
         var receipt = await _receipts.ExecuteAsync(
             new OperationIdentity(ClusterTenantId, OperationIdentity.ClusterGameId, "input.route",
                 appId, operationId),
             fingerprint,
-            (connection, transaction, token) => ApplyRoutingAsync(platform, maxEvents,
+            (connection, transaction, token) => ApplyRoutingAsync(platform, maxEvents, pausedOnly,
                 connection, transaction, token),
             cancellationToken);
         var result = JsonSerializer.Deserialize<RouteEventsItem[]>(receipt.ResultJson)
@@ -73,13 +88,26 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
         return new RouteEventsResult(result, receipt.Duplicate);
     }
 
-    private async Task<string> ApplyRoutingAsync(string platform, int maxEvents,
+    private async Task<string> ApplyRoutingAsync(string platform, int maxEvents, bool pausedOnly,
         NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
         // Pass 1 (no locks): the attributed candidate window in receive order. Pending events
-        // are reconciled into Attributed by the inbox reconciliation before routing runs.
+        // are reconciled into Attributed by the inbox reconciliation before routing runs. A
+        // paused-only pass (FIX-SYNC-07) narrows the window to events whose binding's current
+        // room stands paused — the only events the gateway's post-ingest trigger is for; a
+        // live room's attributed events keep waiting for their owner (the push leg) or a
+        // closed round's drain pass. The round-hint path is outside this filter: a webhook
+        // gift carries no hint, and a binding whose current room is elsewhere is not this
+        // pass's business.
         var candidates = new List<(string EventId, string BindingId)>();
-        await using (var select = new NpgsqlCommand("""
+        await using (var select = new NpgsqlCommand(pausedOnly ? """
+            SELECT e.event_id,e.binding_id FROM input.event e
+            JOIN live.binding b ON b.binding_id=e.binding_id
+            JOIN game.room r ON r.room_id=b.current_room_id
+            WHERE e.platform=@platform AND e.attributed_room_id IS NULL
+              AND e.disposition='Attributed' AND r.status=@paused
+            ORDER BY e.received_at,e.event_id LIMIT @max
+            """ : """
             SELECT event_id,binding_id FROM input.event
             WHERE platform=@platform AND attributed_room_id IS NULL AND disposition='Attributed'
             ORDER BY received_at,event_id LIMIT @max
@@ -87,6 +115,8 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
         {
             select.Parameters.AddWithValue("platform", platform);
             select.Parameters.AddWithValue("max", maxEvents);
+            if (pausedOnly)
+                select.Parameters.AddWithValue("paused", RedesignRoomStore.Paused);
             await using var reader = await select.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
                 candidates.Add((reader.GetString(0), reader.GetString(1)));
@@ -163,14 +193,19 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
         // commit that holds the room and wants the same cursor; the locked read also keeps a
         // room that settles mid-batch from accepting deliveries.
         var roomStatuses = new Dictionary<string, string>(StringComparer.Ordinal);
+        var pausedPolicies = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var target in resolved.Select(item => item.Target).Where(id => id is not null)
                      .Cast<string>().Distinct().OrderBy(id => id, StringComparer.Ordinal))
         {
             await using var room = new NpgsqlCommand(
-                "SELECT status FROM game.room WHERE room_id=@room FOR UPDATE", connection, transaction);
+                "SELECT status,paused_input_policy FROM game.room WHERE room_id=@room FOR UPDATE",
+                connection, transaction);
             room.Parameters.AddWithValue("room", target);
-            roomStatuses[target] = await room.ExecuteScalarAsync(cancellationToken) as string
-                ?? throw new RoundAdmissionException($"The target room {target} does not exist.");
+            await using var reader = await room.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new RoundAdmissionException($"The target room {target} does not exist.");
+            roomStatuses[target] = reader.GetString(0);
+            pausedPolicies[target] = reader.GetString(1);
         }
 
         // FIX-END-06: the standing end operations of the batch's targets, read after the room
@@ -190,6 +225,10 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
         // terminal dispositions.
         var results = new List<RouteEventsItem>();
         var cursors = new Dictionary<string, long>(StringComparer.Ordinal);
+        // FIX-SYNC-07: per-scope pending-delivery counts for buffered paused rooms, read once
+        // under the scope's cursor lock and accumulated per accepted event — a paused room has
+        // no frame commits to consume them, so the count is exact across the batch.
+        var pendingCounts = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var (eventId, bindingId, target, ambiguous) in resolved)
         {
             var bindingInfo = bindings[bindingId];
@@ -205,7 +244,35 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
                 results.Add(new RouteEventsItem(eventId, null, null, OutOfRound));
                 continue;
             }
-            if (roomStatuses[target] is not (RedesignRoomStore.Preparing or "Running"))
+            // FIX-SYNC-07: a paused room answers its declared paused-input policy instead of the
+            // live/terminal split — Buffer falls through to the normal accept path (the event
+            // lands as a Pending delivery the resumed room drains in sequence order under its
+            // per-tick budget), Compensate records a durable out-of-round disposition, Reject
+            // refuses explicitly, and an undeclared or unknown policy fails closed. Every other
+            // non-live status stays out of round.
+            var buffering = false;
+            if (roomStatuses[target] == RedesignRoomStore.Paused)
+            {
+                switch (pausedPolicies[target])
+                {
+                    case PausedPolicyBuffer:
+                        buffering = true;
+                        break;
+                    case PausedPolicyCompensate:
+                        await MarkEventAsync(connection, transaction, eventId, Compensated, target, cancellationToken);
+                        results.Add(new RouteEventsItem(eventId, target, null, Compensated));
+                        continue;
+                    case PausedPolicyReject:
+                        await MarkEventAsync(connection, transaction, eventId, PausedRejected, target, cancellationToken);
+                        results.Add(new RouteEventsItem(eventId, target, null, PausedRejected));
+                        continue;
+                    default:
+                        await MarkEventAsync(connection, transaction, eventId, PausedPolicyUnset, target, cancellationToken);
+                        results.Add(new RouteEventsItem(eventId, target, null, PausedPolicyUnset));
+                        continue;
+                }
+            }
+            if (!buffering && roomStatuses[target] is not (RedesignRoomStore.Preparing or RedesignRoomStore.Running))
             {
                 await MarkEventAsync(connection, transaction, eventId, OutOfRound, target, cancellationToken);
                 results.Add(new RouteEventsItem(eventId, target, null, OutOfRound));
@@ -242,6 +309,25 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
                     next = Convert.ToInt64(await cursor.ExecuteScalarAsync(cancellationToken));
                 }
                 cursors[scope] = next;
+                if (buffering)
+                {
+                    await using (var pending = new NpgsqlCommand(
+                        "SELECT count(*) FROM input.delivery WHERE consumer_scope=@scope AND state='Pending'",
+                        connection, transaction))
+                    {
+                        pending.Parameters.AddWithValue("scope", scope);
+                        pendingCounts[scope] = Convert.ToInt32(await pending.ExecuteScalarAsync(cancellationToken));
+                    }
+                }
+            }
+            // FIX-SYNC-07: the bounded buffer is observable, not silent — a paused room over the
+            // cap records the overflow disposition with the room attributed and no delivery, and
+            // the cursor is not advanced (no accepted event is dropped).
+            if (buffering && pendingCounts.GetValueOrDefault(scope) >= MaxPausedBufferPerRoom)
+            {
+                await MarkEventAsync(connection, transaction, eventId, PausedBufferFull, target, cancellationToken);
+                results.Add(new RouteEventsItem(eventId, target, null, PausedBufferFull));
+                continue;
             }
             var sequence = cursors[scope];
             cursors[scope] = sequence + 1;
@@ -258,6 +344,7 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
                 await delivery.ExecuteNonQueryAsync(cancellationToken);
             }
             await MarkEventAsync(connection, transaction, eventId, Routed, target, cancellationToken);
+            if (buffering) pendingCounts[scope] = pendingCounts.GetValueOrDefault(scope) + 1;
             results.Add(new RouteEventsItem(eventId, target, sequence, Routed));
         }
         foreach (var (scope, next) in cursors)

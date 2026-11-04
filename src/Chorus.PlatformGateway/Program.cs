@@ -124,7 +124,8 @@ if (ingressPort > 0)
         sp.GetService<IPlatformEventVerifier>(),
         sp.GetServices<IPlatformEventMapper>(),
         new PlatformIngest.PlatformIngestClient(DataChannel()),
-        sp.GetService<GatewayRoutingMonitor>(), gameChannelFactory, stopDeliveries: stopDeliveries));
+        sp.GetService<GatewayRoutingMonitor>(), gameChannelFactory, stopDeliveries: stopDeliveries,
+        routeEvents: new RoundInput.RoundInputClient(DataChannel())));
 }
 
 var app = builder.Build();
