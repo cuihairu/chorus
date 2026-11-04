@@ -244,7 +244,7 @@
 目标契约：`docs/zh/design/developer-capabilities.md`。已有奖励事务积分投影与 TopN 仅作为基础；下面均需独立交付，业务规则不下沉至 DataServer。
 
 - [x] **FIX-RANK-01 / P1：定义榜单元数据（7ceda26）。** 依赖：无。交付：tenant/game/board/period/scope、主体类型、Sum/Max、整数边界与并列规则。验收：跨租户键隔离；负分与溢出受控；同分稳定排序，接口不混淆主播与观众主体。
-- [ ] **FIX-RANK-02 / P1：实现默认持久 provider 与迁移。** 依赖：FIX-RANK-01。交付：默认 PostgreSQL 表/索引、schema 兼容和明确的数据读写接口。验收：空库迁移可运行，重复迁移/重启不丢榜，目标索引覆盖榜单作用域。
+- [x] **FIX-RANK-02 / P1：实现默认持久 provider 与迁移。** 依赖：FIX-RANK-01。交付：默认 PostgreSQL 表/索引、schema 兼容和明确的数据读写接口。验收：空库迁移可运行，重复迁移/重启不丢榜，目标索引覆盖榜单作用域。（1aa034a）
 - [ ] **FIX-RANK-03 / P1：从已提交效果幂等计分。** 依赖：FIX-RANK-02。交付：ControlServer 业务模块校验效果来源，按不可变 EffectId 驱动 Sum/Max 投影，DataServer 只执行存储事务。验收：并发、重放、响应丢失均不重复加分；客户端自报分数和无关资产变更不能进入榜。
 - [ ] **FIX-RANK-04 / P1：提供 TopN 查询。** 依赖：FIX-RANK-03。交付：有限页大小、明确排序、读取版本和授权。验收：分数相同仍稳定；非法作用域/越权拒绝；空榜有明确空结果。
 - [ ] **FIX-RANK-05 / P1：提供个人及附近名次。** 依赖：FIX-RANK-04。交付：GetRank/GetAroundMe，名次与分数对应同一读取视图。验收：未上榜、同分和榜变动场景正确，不输出不同快照拼接的名次。
