@@ -544,6 +544,11 @@ service Leaderboard {
   // The business module passes the board it selected and the subject/delta it derived from
   // the committed payload; the data plane re-verifies the committed source and the delta.
   rpc ApplyScoreEffect(ApplyScoreEffectRequest) returns (ApplyScoreEffectReply);
+  // FIX-RANK-04: the bounded TopN of a board in its declared order, with the board's read
+  // version at the same snapshot. The answer is bound to the read version; a paginated
+  // continuation carries it back (expected_version) and a changed board is a stale read —
+  // the caller must restart, never page across a change invisibly.
+  rpc GetTop(GetTopRequest) returns (TopNReply);
 }
 
 // Authoritative frame commits and round inbox reads (architecture 8.2, 6.1.6). Only the
@@ -992,6 +997,33 @@ message ApplyScoreEffectRequest {
 message ApplyScoreEffectReply {
   int64 score = 1;
   bool duplicate = 2;
+}
+
+// FIX-RANK-04: the bounded TopN of a board. The board definition is the RANK-01 contract
+// (the caller names the board it queries); max_entries is the bounded page size.
+message GetTopRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  int32 max_entries = 4;
+  // The read version the caller's page is bound to; empty means no staleness check. A
+  // non-empty value that differs from the board's current version is a stale read (the
+  // board changed; the caller must restart), never a cross-version page.
+  string expected_version = 5;
+}
+
+message RankEntryProto {
+  // RankSubject (0 Player, 1 Streamer, 2 Faction) — the board's single declared subject.
+  int32 subject = 1;
+  string subject_id = 2;
+  int64 score = 3;
+}
+
+message TopNReply {
+  string board_id = 1;
+  // The board's read version (ISO-8601 UTC; empty when the board has never scored).
+  string read_version = 2;
+  repeated RankEntryProto entries = 3;
 }
 
 message ListPendingSettlementsRequest {

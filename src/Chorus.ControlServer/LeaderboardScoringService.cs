@@ -162,7 +162,10 @@ public sealed class LeaderboardScoringService(ILeaderboardScoringDataPlane dataP
         }
     }
 
-    private static BoardDefinitionProto ToProto(LeaderboardBoard board) => new()
+    /// <summary>The RANK-01 board definition as the data-plane proto (FIX-RANK-03 shape,
+    /// reused by the query module of FIX-RANK-04): both business modules name the board the
+    /// same way, so a projected board and a queried board can never drift apart.</summary>
+    internal static BoardDefinitionProto ToProto(LeaderboardBoard board) => new()
     {
         BoardId = board.BoardId,
         Subject = (int)board.Subject,

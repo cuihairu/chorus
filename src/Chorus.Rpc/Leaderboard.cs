@@ -336,3 +336,33 @@ public sealed class LeaderboardRejectedException(string message) : Exception(mes
 /// (a concurrent, replayed or lost-response retry answers <see cref="Duplicate"/> and the
 /// stored score, never a second delta).</summary>
 public sealed record LeaderboardEffectResult(long Score, bool Duplicate);
+
+/// <summary>
+/// FIX-RANK-04: the bounded query page size (developer-capabilities.md「查询」「有限页大小」).
+/// One TopN read answers at most <see cref="MaxTopEntries"/> entries — a query page is bounded,
+/// never one unbounded answer over a whole board (mirrors the settlement board read's bound).
+/// </summary>
+public static class LeaderboardQueryLimits
+{
+    /// <summary>The largest TopN one read answers.</summary>
+    public const int MaxTopEntries = 1000;
+}
+
+/// <summary>
+/// FIX-RANK-04: refused because the board changed after the caller's read version
+/// (developer-capabilities.md「分页绑定榜单读取版本，榜变更时明确要求重启读取」). The caller
+/// bound a paginated read to a read version it saw; the board changed since, so the page is
+/// no longer one consistent view — the caller must restart the read from a fresh version,
+/// never page across a change invisibly.
+/// </summary>
+public sealed class LeaderboardStaleReadException(string message) : Exception(message);
+
+/// <summary>
+/// FIX-RANK-04: the answer to a TopN read (developer-capabilities.md「TopN、个人名次、附近名次；
+/// 有限页大小；分页绑定榜单读取版本」). The bounded page in the board's declared order, plus the
+/// board's read version at the same snapshot (the last write marker of the board's entries) —
+/// a paginated continuation carries <see cref="ReadVersion"/> back and a mismatch is a stale
+/// read, never a cross-version page. An empty board answers an empty page and the version
+/// sentinel (<see cref="DateTimeOffset.MinValue"/> — the board has never scored).
+/// </summary>
+public sealed record LeaderboardTopResult(IReadOnlyList<RankEntry> Entries, DateTimeOffset ReadVersion);

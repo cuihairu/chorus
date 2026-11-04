@@ -50,7 +50,7 @@ public sealed class RedesignLeaderboardStore
 
     /// <summary>The largest TopN one read answers (mirrors the settlement board read's bound):
     /// a query page is bounded, never one unbounded answer over a whole board.</summary>
-    public const int MaxTopEntries = 1000;
+    public const int MaxTopEntries = LeaderboardQueryLimits.MaxTopEntries;
 
     /// <summary>FIX-RANK-03: the committed effect kind that carries a board score (the
     /// modules emit <c>ModuleEffect("score", ...)</c>; the frame commit writes it to the
@@ -320,6 +320,55 @@ public sealed class RedesignLeaderboardStore
                 entries.Add(new RankEntry(board.Subject, reader.GetString(0), reader.GetInt64(1)));
         }
         return entries;
+    }
+
+    /// <summary>
+    /// FIX-RANK-04: reads the bounded TopN of one board together with the board's read
+    /// version at the same snapshot (developer-capabilities.md「分页绑定榜单读取版本」). One
+    /// SELECT computes the page and the version — the window <c>max(updated_at) OVER ()</c>
+    /// covers the whole board (windows run before <c>LIMIT</c>), so the answered entries and
+    /// the version are one consistent view, never a version from before or after the page.
+    /// The version is the board's last write marker: it changes whenever any entry of the
+    /// board changes, so a paginated continuation that carries it back detects a changed
+    /// board. An empty board answers an empty page and the version sentinel
+    /// (<see cref="DateTimeOffset.MinValue"/>).
+    /// </summary>
+    public async Task<LeaderboardTopResult> ReadTopWithVersionAsync(LeaderboardBoard board, int maxEntries,
+        CancellationToken cancellationToken = default)
+    {
+        board.Validate();
+        if (maxEntries is <= 0 or > MaxTopEntries)
+            throw new ArgumentOutOfRangeException(nameof(maxEntries));
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        var entries = new List<RankEntry>();
+        var version = DateTimeOffset.MinValue;
+        await using (var read = new NpgsqlCommand("""
+            SELECT subject_id, score, max(updated_at) OVER () AS board_version
+            FROM game.leaderboard_entry
+            WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
+              AND period_id=@period AND scope_id=@scope
+              AND subject_type=@subject
+            ORDER BY score DESC, subject_id ASC
+            LIMIT @max
+            """, connection))
+        {
+            AddKeyParameters(read, board, null);
+            read.Parameters.AddWithValue("max", maxEntries);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (entries.Count == 0)
+                {
+                    var stamped = reader.GetDateTime(2);
+                    version = stamped.Kind == DateTimeKind.Utc
+                        ? new DateTimeOffset(stamped)
+                        : new DateTimeOffset(DateTime.SpecifyKind(stamped, DateTimeKind.Utc), TimeSpan.Zero);
+                }
+                entries.Add(new RankEntry(board.Subject, reader.GetString(0), reader.GetInt64(1)));
+            }
+        }
+        return new LeaderboardTopResult(entries, version);
     }
 
     private static void AddKeyParameters(NpgsqlCommand command, LeaderboardBoard board, string? subjectId)

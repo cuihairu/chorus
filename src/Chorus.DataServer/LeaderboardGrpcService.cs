@@ -86,6 +86,45 @@ public sealed class LeaderboardGrpcService(
         }
     }
 
+    /// <summary>The bounded TopN of a board in its declared order, with the board's read
+    /// version at the same snapshot (FIX-RANK-04). The query authorizes by role and tenant;
+    /// a caller that bound its page to an expected version gets a stale read when the board
+    /// changed since — the answer is never a cross-version page. An empty board answers an
+    /// empty page and an empty version.</summary>
+    public override async Task<TopNReply> GetTop(GetTopRequest request, ServerCallContext context)
+    {
+        var caller = Require(context, "control-server", "game-server", "streamer-server");
+        var tenantId = ResolveTenant(caller, request.TenantId);
+        try
+        {
+            var board = ToBoard(tenantId, request.GameId, request.Board);
+            var result = await leaderboardStore.ReadTopWithVersionAsync(board, request.MaxEntries,
+                context.CancellationToken);
+            var version = VersionString(result.ReadVersion);
+            if (request.ExpectedVersion.Length > 0
+                && !string.Equals(request.ExpectedVersion, version, StringComparison.Ordinal))
+                throw new LeaderboardStaleReadException(
+                    "The board changed since the caller's read version; restart the read.");
+            var reply = new TopNReply { BoardId = board.BoardId, ReadVersion = version };
+            reply.Entries.Add(result.Entries.Select(entry => new RankEntryProto
+            {
+                Subject = (int)entry.Subject, SubjectId = entry.SubjectId, Score = entry.Score
+            }));
+            return reply;
+        }
+        catch (LeaderboardStaleReadException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
+    private static string VersionString(DateTimeOffset version) =>
+        version == DateTimeOffset.MinValue ? "" : version.ToString("O", CultureInfo.InvariantCulture);
+
     private static LeaderboardBoard ToBoard(string tenantId, string gameId, BoardDefinitionProto proto)
     {
         if (proto is null)
