@@ -11,6 +11,12 @@ public sealed class RoundAdmissionException : Exception
     public RoundAdmissionException(string message) : base(message) { }
 }
 
+/// <summary>FIX-SYNC-09: the per-participant client-command frequency cap refused this
+/// command (the anti-cheat table's 重放 row) — the command was not accepted, not queued,
+/// so it never scores. A distinct type lets the RPC surface it as a budget-exceeded
+/// status instead of a generic admission refusal.</summary>
+public sealed class ClientCommandRateExceededException(string message) : Exception(message);
+
 /// <summary>
 /// The capacity guard (architecture 9 data retention, AT21): pressure on the shared store
 /// rejects new rounds visibly with a counted reason — it never frees space by deleting.

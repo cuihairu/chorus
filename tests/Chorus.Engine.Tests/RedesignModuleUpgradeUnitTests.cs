@@ -51,7 +51,7 @@ public sealed class RedesignModuleUpgradeUnitTests
         var v1 = RedesignModuleCatalog.Default.Load(RedesignModuleCatalog.Default.ManifestAt(25));
         var v2 = RedesignModuleCatalog.DefaultNext.Load(RedesignModuleCatalog.DefaultNext.ManifestAt(25));
         var config = V1BoostChain.StartConfig();
-        var boost = new NormalizedInput("host-up", """{"action":"boost","level":3}""");
+        var boost = new NormalizedInput("host-up", """{"action":"boost","level":3}""", FromClient: false);
         var underV1 = v1.ApplyTick(v1.CreateInitialState(config), 1, [boost]);
         var underV2 = v2.ApplyTick(v2.CreateInitialState(config), 1, [boost]);
         Assert.NotEqual(
@@ -169,7 +169,7 @@ public sealed class RedesignModuleUpgradeUnitTests
             var v1 = RedesignModuleCatalog.Default.Load(RedesignModuleCatalog.Default.ManifestAt(25));
             var config = StartConfig();
             var initial = v1.CreateInitialState(config);
-            var boost = new NormalizedInput("host-up", """{"action":"boost","level":3}""");
+            var boost = new NormalizedInput("host-up", """{"action":"boost","level":3}""", FromClient: false);
             var tickOne = v1.ApplyTick(initial, 1, [boost]);
             var tickTwo = v1.ApplyTick(tickOne.State, 2, []);
             Plan = new LoadRecoveryReply

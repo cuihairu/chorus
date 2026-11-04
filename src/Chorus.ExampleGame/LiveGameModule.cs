@@ -82,7 +82,10 @@ public sealed class LiveGameModule(
             if (root.TryGetProperty("action", out var action)
                 && action.ValueKind == JsonValueKind.String && action.GetString() == "boost")
             {
-                var points = 10L * GetInt32(root, "level") + jitter;
+                // FIX-SYNC-09: action size is bounded (1..MaxBoostLevel).
+                var level = GetInt32(root, "level");
+                if (level < 1 || level > ExampleGameModule.MaxBoostLevel) continue;
+                var points = 10L * level + jitter;
                 scores[faction] += points;
                 delta[faction] = delta.GetValueOrDefault(faction) + points;
             }

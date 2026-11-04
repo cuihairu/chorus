@@ -485,6 +485,10 @@ public sealed class RoundInputGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
         }
+        catch (ClientCommandRateExceededException error)
+        {
+            throw new RpcException(new Status(StatusCode.ResourceExhausted, error.Message));
+        }
         catch (IdempotencyConflictException)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The command id was reused for a different event."));

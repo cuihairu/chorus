@@ -13,7 +13,8 @@ public sealed record RecoverySnapshot(
     long Tick, int SchemaVersion, byte[] Payload, byte[] PayloadHash, bool Verified);
 
 public sealed record RecoveryDelivery(
-    string EventId, long Sequence, string? BindingId, string PayloadJson, bool Consumed);
+    string EventId, long Sequence, string? BindingId, string PayloadJson, bool Consumed,
+    string Platform = "");
 
 public sealed record RecoveryFrame(
     long Tick, IReadOnlyList<string> InputEventIds, byte[] StateHash, string ModuleVersion, string ConfigHash);
@@ -282,7 +283,7 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
         var deliveries = new List<RecoveryDelivery>();
         if (referenced.Count > 0)
             await using (var inbox = new NpgsqlCommand("""
-                SELECT d.event_id,d.sequence,e.binding_id,e.payload::text,d.state
+                SELECT d.event_id,d.sequence,e.binding_id,e.payload::text,d.state,e.platform
                 FROM input.delivery d JOIN input.event e ON e.event_id=d.event_id
                 WHERE d.consumer_scope=@scope AND d.room_id=@room AND d.event_id=ANY(@events)
                 ORDER BY d.sequence
@@ -295,7 +296,7 @@ public sealed class RedesignRecoveryStore(string connectionString, Action? crash
                 while (await reader.ReadAsync(cancellationToken))
                     deliveries.Add(new RecoveryDelivery(reader.GetString(0), reader.GetInt64(1),
                         reader.IsDBNull(2) ? null : reader.GetString(2), reader.GetString(3),
-                        reader.GetString(4) == "Consumed"));
+                        reader.GetString(4) == "Consumed", reader.IsDBNull(5) ? "" : reader.GetString(5)));
             }
         var participants = new List<RoundParticipantState>();
         await using (var mounts = new NpgsqlCommand("""

@@ -212,9 +212,10 @@ public sealed class RedesignEnd15ChainOrderHostTests
             })).Status);
         // The fighters boost — a duel scores only its fighters' boosts, so without these
         // the round ends goalless and plans no grants at all. The host out-boosts the
-        // guest: the outcome, and with it the grant manifest, is deterministic.
-        await BoostAsync(environment, host, roomId, owner.Epoch, "boost-" + name + "-host", 5);
-        await BoostAsync(environment, guest, roomId, owner.Epoch, "boost-" + name + "-guest", 3);
+        // guest: the outcome, and with it the grant manifest, is deterministic. Both
+        // levels are within the FIX-SYNC-09 action-size cap (1..MaxBoostLevel).
+        await BoostAsync(environment, host, roomId, owner.Epoch, "boost-" + name + "-host", 3);
+        await BoostAsync(environment, guest, roomId, owner.Epoch, "boost-" + name + "-guest", 2);
         return new RoundFacts(owner.Epoch, host, guest);
     }
 

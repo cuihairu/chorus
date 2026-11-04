@@ -123,6 +123,69 @@ public sealed class RedesignFrameFaultHostTests
     }
 
     [Fact]
+    public async Task AClientCommandCarryingAPlatformFactIsAcceptedButNeverScores()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var cluster = await BootAsync(environment);
+        const string roomId = "room-sync09";
+        var (epoch, host, guest) = await OpenRoundAsync(environment, cluster, roomId);
+
+        using var gameHostCertificate = environment.Certificate("@cluster", "control-server", "control-sync09");
+        using var gameHostChannel = environment.Channel(cluster.GamePort, gameHostCertificate, "game-server");
+        var prepared = await new GameHost.GameHostClient(gameHostChannel).PrepareRoomAsync(
+            new PrepareRoomRequest
+            {
+                RoomId = roomId, GameId = "game-a", OwnerInstanceId = "game-1", Epoch = epoch,
+                OperationId = "sync09-prepare", DurationTicks = DurationTicks, RandomSeed = 777, TickMs = 25,
+                Participants =
+                {
+                    new GameParticipantProto { BindingId = host.BindingId, ParticipantId = host.StreamerId, Faction = "red" },
+                    new GameParticipantProto { BindingId = guest.BindingId, ParticipantId = guest.StreamerId, Faction = "blue" }
+                }
+            });
+        Assert.Equal("Running", prepared.Status);
+
+        using var syncCertificate = environment.Certificate("tenant-a", "streamer-server", "sync-sync09");
+        using var syncChannel = environment.Channel(cluster.GamePort, syncCertificate, "game-server");
+        using var subscriber = new RoundSync.RoundSyncClient(syncChannel).Subscribe(new SubscribeRequest
+        {
+            RoomId = roomId, GameId = "game-a", Epoch = epoch,
+            LastAppliedTick = 0, LastAppliedStateVersion = 1
+        }, deadline: DateTime.UtcNow.AddMinutes(4));
+        var messages = new List<SyncMessage>();
+        var reading = Task.Run(async () =>
+        {
+            await foreach (var message in subscriber.ResponseStream.ReadAllAsync())
+                lock (messages) messages.Add(message);
+        });
+
+        // FIX-SYNC-09: the client channel is intent-only. A forged platform fact (a gift
+        // shape) is durably accepted — the receipt means accepted, not that it scored —
+        // and an oversized action is accepted but its level is out of bounds. Only the
+        // legal intent (boost level 2) may score.
+        var forged = await PushCommandAsync(environment, host, roomId, epoch, "cmd-sync09-gift",
+            """{"kind":"gift","amount":7}""");
+        Assert.False(forged.Duplicate);
+        var oversized = await PushCommandAsync(environment, host, roomId, epoch, "cmd-sync09-big",
+            """{"action":"boost","level":4}""");
+        Assert.False(oversized.Duplicate);
+        var intent = await PushCommandAsync(environment, host, roomId, epoch, "cmd-sync09-boost",
+            """{"action":"boost","level":2}""");
+        Assert.False(intent.Duplicate);
+
+        await reading.WaitAsync(TimeSpan.FromSeconds(150));
+        var result = messages.Single(message => message.KindCase == SyncMessage.KindOneofCase.RoundResult);
+        using var document = JsonDocument.Parse(result.RoundResult.ResultJson);
+        var red = ScoreOf(document, "red");
+        // Exactly the one legal boost scored (20..24 = 10×2 plus the 0..4 seed draw); the
+        // forged gift (would add 7) and the oversized boost (would add 40+) never did.
+        Assert.InRange(red, 20, 24);
+        Assert.Equal(0L, ScoreOf(document, "blue"));
+        Assert.Equal("red", WinnerOf(document));
+        await cluster.Proxy.StopAsync();
+    }
+
+    [Fact]
     public async Task NewInputArrivingOnAHeldCommitOnlyEntersLaterFrames()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
@@ -311,10 +374,18 @@ public sealed class RedesignFrameFaultHostTests
         return reply.Status;
     }
 
-    private static async Task<ClientInputReply> PushGiftAsync(
+    private static Task<ClientInputReply> PushGiftAsync(
         RedesignM0HostTests.HostEnvironment environment,
         (string StreamerId, string SessionId, string BindingId) who, string roomId, long epoch,
-        string commandId)
+        string commandId) =>
+        PushCommandAsync(environment, who, roomId, epoch, commandId, """{"kind":"gift","amount":7}""");
+
+    /// <summary>FIX-SYNC-09: pushes one client command through the real streamer-gateway face
+    /// (platform="@chorus") — the untrusted channel the intent boundary gates.</summary>
+    private static async Task<ClientInputReply> PushCommandAsync(
+        RedesignM0HostTests.HostEnvironment environment,
+        (string StreamerId, string SessionId, string BindingId) who, string roomId, long epoch,
+        string commandId, string payloadJson)
     {
         using var certificate = environment.Certificate("tenant-a", "streamer-gateway", "input-fc");
         using var channel = environment.Channel(environment.DataPort, certificate, "data-server");
@@ -322,7 +393,7 @@ public sealed class RedesignFrameFaultHostTests
         return await input.AcceptClientInputAsync(new ClientInputRequest
         {
             SessionId = who.SessionId, RoomId = roomId, RoomEpoch = epoch, GameId = "game-a",
-            CommandId = commandId, PayloadJson = """{"kind":"gift","amount":7}"""
+            CommandId = commandId, PayloadJson = payloadJson
         }, deadline: DateTime.UtcNow.AddSeconds(30));
     }
 
@@ -422,6 +493,17 @@ public sealed class RedesignFrameFaultHostTests
     /// <summary>The database stores the committed result wrapped and normalized by the
     /// store; the client sees the module's canonical json. Both must agree on the
     /// ranking they carry.</summary>
+    private static long ScoreOf(JsonDocument result, string faction)
+    {
+        foreach (var entry in result.RootElement.GetProperty("ranking").EnumerateArray())
+            if (entry.GetProperty("faction").GetString() == faction)
+                return entry.GetProperty("score").GetInt64();
+        throw new InvalidOperationException($"The result names no {faction} faction.");
+    }
+
+    private static string WinnerOf(JsonDocument result) =>
+        result.RootElement.GetProperty("winner").GetString()!;
+
     private static void AssertSameRanking(string streamJson, string committedJson)
     {
         using var stream = JsonDocument.Parse(streamJson);

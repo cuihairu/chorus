@@ -48,6 +48,10 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// the persistent result on the data plane.</summary>
     internal int RetainedResults { get; set; } = 256;
 
+    // FIX-SYNC-09: the client command channel — same literal as RoomActor and the input
+    // store's ClientPlatform, kept local because GameServer does not reference DataServer.
+    private const string ClientCommandPlatform = "@chorus";
+
     // FIX-INPUT-01: the direct-push room-event dispositions (strings; the protos carry no
     // enums by convention) and the host's inbound bound — a saturated or closed bound
     // refuses before any durable write, so Overloaded never depends on store state.
@@ -809,10 +813,15 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                             // FIX-INPUT-08: the same translation the live tick applied when it
                             // committed this frame — a replayed room must re-derive the command
                             // the original tick fed the module, or the state hash diverges.
-                            var command = _inputTranslator?.Translate(delivery.PayloadJson)
-                                ?? delivery.PayloadJson;
+                            // FIX-SYNC-09: the origin rides with the delivery (the recovery plan
+                            // now carries the platform channel) so the replay applies the same
+                            // origin-aware gate the live tick did — a client command stays raw
+                            // and the module's intent-only rule ignores a forged platform shape.
+                            var fromClient = delivery.Platform == ClientCommandPlatform;
+                            var command = fromClient ? delivery.PayloadJson
+                                : _inputTranslator?.Translate(delivery.PayloadJson) ?? delivery.PayloadJson;
                             if (command is not null)
-                                inputs.Add(new NormalizedInput(participant, command));
+                                inputs.Add(new NormalizedInput(participant, command, fromClient));
                         }
                     TickOutcome outcome;
                     try { outcome = module.ApplyTick(state, frame.Tick, inputs); }

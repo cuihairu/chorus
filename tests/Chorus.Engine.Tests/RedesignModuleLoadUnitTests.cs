@@ -88,7 +88,7 @@ public sealed class RedesignModuleLoadUnitTests
         var duel = RedesignModuleCatalog.Duel.Load(RedesignModuleCatalog.Duel.ManifestAt(25));
         var initial = duel.CreateInitialState(StartConfig());
         var outcome = duel.ApplyTick(initial, 1,
-            [new NormalizedInput("host-load", frames.Inbox!().Items[0].PayloadJson)]);
+            [new NormalizedInput("host-load", frames.Inbox!().Items[0].PayloadJson, FromClient: false)]);
         return duel.ComputeStateHash(outcome.State);
     }
 

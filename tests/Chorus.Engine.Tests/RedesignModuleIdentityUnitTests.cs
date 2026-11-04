@@ -178,7 +178,7 @@ public sealed class RedesignModuleIdentityUnitTests
             [new GameParticipant("host-id", GameStartConfig.RedFaction),
              new GameParticipant("guest-id", GameStartConfig.BlueFaction)], 0));
         var tickOne = duel.ApplyTick(initial, 1,
-            [new NormalizedInput("host-id", """{"kind":"gift","amount":7}""")]);
+            [new NormalizedInput("host-id", """{"kind":"gift","amount":7}""", FromClient: false)]);
         Assert.Empty(tickOne.Effects); // the gift is noise to a duel — the default would score
         var payload = duel.Serialize(initial);
         await using var runtime = new RoomRuntime(new ScriptedRoundStore(),

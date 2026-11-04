@@ -67,7 +67,7 @@ public sealed class RedesignModuleCheckpointUnitTests
         var seeded = new LiveGameModule(live.Manifest, clock: () => 4L); // jitter 1, fixed
         var config = StartConfig();
         var tickOne = seeded.ApplyTick(seeded.CreateInitialState(config), 1,
-            [new NormalizedInput("host-ckpt", """{"action":"boost","level":3}""")]);
+            [new NormalizedInput("host-ckpt", """{"action":"boost","level":3}""", FromClient: false)]);
         var tickTwo = seeded.ApplyTick(tickOne.State, 2, []);
         var headPayload = seeded.Serialize(tickTwo.State);
 

@@ -304,6 +304,100 @@ public sealed class RedesignRoundInputStoreTests
     }
 
     [Fact]
+    public async Task ClientInputRateLimitRefusesTheWindowAndSlidesIt()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+
+        var (p1, b1, session) = await MountAsync(identityStore, bindingStore, "live-key-rate");
+        var claim = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-rate", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-rate", "gs-1", claim.Epoch,
+            [new RoundParticipant(b1.BindingId, p1.StreamerId, "Host")],
+            "1.0.0", "cfg-1", "pkg-1", "start-1");
+
+        const string payload = """{"action":"boost","level":2}""";
+        // FIX-SYNC-09, load-independent: the budget is MaxClientCommandsPerWindow accepted
+        // commands per rolling window. Seeding the window with exactly the cap's worth of this
+        // binding's own @chorus rows is deterministic — a sequential loop of one-hundred real
+        // RPCs would race the 10-second window on a slow shared machine, where the loop itself
+        // takes longer than the window and the count never reaches the cap. The seed writes the
+        // exact rows the store's count reads (platform, binding_id, received_at); the cap's own
+        // edge is then proven by one real command at and one real command past it.
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var seed = new NpgsqlCommand("""
+                INSERT INTO input.event(event_id,platform,app_id,source_dedup_key,payload_hash,
+                    disposition,binding_id,payload)
+                SELECT 'seed-rate-' || g, '@chorus', 'game-a', 'seed-rate-' || g,
+                    '\x0000'::bytea, 'Routed', @binding, @payload::jsonb
+                FROM generate_series(0, @cap - 1) g
+                """, connection))
+            {
+                seed.Parameters.AddWithValue("binding", b1.BindingId);
+                seed.Parameters.AddWithValue("payload", payload);
+                seed.Parameters.AddWithValue("cap", RedesignRoundInputStore.MaxClientCommandsPerWindow);
+                await seed.ExecuteNonQueryAsync();
+            }
+        }
+        // The (cap+1)th command is refused by the window before it is ever inserted — and the
+        // refusal is a rejection, not a queue: nothing of the refused command is persisted.
+        var refusedId = "cmd-" + RedesignRoundInputStore.MaxClientCommandsPerWindow;
+        await Assert.ThrowsAsync<ClientCommandRateExceededException>(() => inputStore.AcceptClientInputAsync(
+            "tenant-a", "game-a", session.SessionId, "room-rate", claim.Epoch, refusedId, payload));
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var persisted = new NpgsqlCommand(
+                "SELECT count(*) FROM input.event WHERE event_id=@id", connection))
+            {
+                persisted.Parameters.AddWithValue("id", refusedId);
+                Assert.Equal(0L, Convert.ToInt64(await persisted.ExecuteScalarAsync()));
+            }
+        }
+
+        // The window slides: backdating every seeded command beyond the window empties the
+        // count, so a command that was just refused is accepted now — the cap bounds a window,
+        // not a participant's lifetime.
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var backdate = new NpgsqlCommand("""
+                UPDATE input.event SET received_at = received_at - interval '11 seconds'
+                WHERE platform='@chorus' AND binding_id=@binding
+                """, connection))
+            {
+                backdate.Parameters.AddWithValue("binding", b1.BindingId);
+                await backdate.ExecuteNonQueryAsync();
+            }
+        }
+        var afterSlide = await inputStore.AcceptClientInputAsync("tenant-a", "game-a", session.SessionId,
+            "room-rate", claim.Epoch, "cmd-after-slide", payload);
+        Assert.False(afterSlide.Duplicate);
+
+        // The accepted command itself is a @chorus row in the window — so a real accepted
+        // command accumulates toward the cap, not just the seeded rows.
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var inWindow = new NpgsqlCommand("""
+                SELECT count(*) FROM input.event
+                WHERE platform='@chorus' AND binding_id=@binding
+                  AND received_at >= clock_timestamp() - make_interval(secs => @window)
+                """, connection))
+            {
+                inWindow.Parameters.AddWithValue("binding", b1.BindingId);
+                inWindow.Parameters.AddWithValue("window", RedesignRoundInputStore.ClientCommandWindowSeconds);
+                Assert.Equal(1L, Convert.ToInt64(await inWindow.ExecuteScalarAsync()));
+            }
+        }
+    }
+
+    [Fact]
     public async Task WithdrawalIsIdempotentAndFreesTheSeatWhileTheRoomRunsOn()
     {
         await using var database = await TemporaryDatabase.CreateAsync();

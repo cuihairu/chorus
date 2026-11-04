@@ -54,7 +54,7 @@ public sealed class RedesignModuleCatalogUnitTests
              new GameParticipant("guest-cat", GameStartConfig.BlueFaction)], 0);
 
         // A gift moves the example module and is noise to the duel.
-        var byGift = new[] { new NormalizedInput("host-cat", """{"kind":"gift","amount":7}""") };
+        var byGift = new[] { new NormalizedInput("host-cat", """{"kind":"gift","amount":7}""", FromClient: false) };
         var exampleGift = example.ApplyTick(example.CreateInitialState(config), 1, byGift);
         var duelGift = duel.ApplyTick(duel.CreateInitialState(config), 1, byGift);
         Assert.Single(exampleGift.Effects);
@@ -62,7 +62,7 @@ public sealed class RedesignModuleCatalogUnitTests
 
         // A boost scores in both, differently: the example adds its seed draw, the duel
         // is flat — the state hashes part ways on the very first tick.
-        var byBoost = new[] { new NormalizedInput("host-cat", """{"action":"boost","level":3}""") };
+        var byBoost = new[] { new NormalizedInput("host-cat", """{"action":"boost","level":3}""", FromClient: false) };
         var exampleBoost = example.ApplyTick(example.CreateInitialState(config), 1, byBoost);
         var duelBoost = duel.ApplyTick(duel.CreateInitialState(config), 1, byBoost);
         Assert.Equal(30L, duelBoost.State.ScoreByFaction[GameStartConfig.RedFaction]);
@@ -100,7 +100,7 @@ public sealed class RedesignModuleCatalogUnitTests
         var config = new GameStartConfig(200, 777,
             [new GameParticipant("host-live", GameStartConfig.RedFaction),
              new GameParticipant("guest-live", GameStartConfig.BlueFaction)], 0);
-        var boost = new[] { new NormalizedInput("host-live", """{"action":"boost","level":3}""") };
+        var boost = new[] { new NormalizedInput("host-live", """{"action":"boost","level":3}""", FromClient: false) };
         var atFour = new LiveGameModule(live.ManifestAt(25), clock: () => 4L); // jitter 1
         var atFive = new LiveGameModule(live.ManifestAt(25), clock: () => 5L); // jitter 2
 
@@ -152,7 +152,7 @@ public sealed class RedesignModuleCatalogUnitTests
         var config = new GameStartConfig(200, 777,
             [new GameParticipant("host-up", GameStartConfig.RedFaction),
              new GameParticipant("guest-up", GameStartConfig.BlueFaction)], 0);
-        var boost = new[] { new NormalizedInput("host-up", """{"action":"boost","level":3}""") };
+        var boost = new[] { new NormalizedInput("host-up", """{"action":"boost","level":3}""", FromClient: false) };
         var v1Tick = v1.ApplyTick(v1.CreateInitialState(config), 1, boost);
         var v2Tick = v2.ApplyTick(v2.CreateInitialState(config), 1, boost);
         var v1Seed = 1103515245L * 777 + 12345 & long.MaxValue; // the 1.0.0 LCG step

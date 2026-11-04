@@ -56,6 +56,14 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
     /// commits, so its pending count only moves under the routing cursor lock.</summary>
     public const int MaxPausedBufferPerRoom = 500;
     public const string ClientPlatform = "@chorus";
+    /// <summary>FIX-SYNC-09: the per-participant client-command intake budget over the rolling
+    /// <see cref="ClientCommandWindowSeconds"/> window. The store counts the binding's own
+    /// <c>@chorus</c> rows in the window before the insert — the frequency cap of the
+    /// anti-cheat table's 重放 row, bounding the abuse surface an accepted-but-untrusted
+    /// channel can occupy before the room's tick budget does.</summary>
+    public const int MaxClientCommandsPerWindow = 100;
+    /// <summary>FIX-SYNC-09: the rolling window the client-command budget counts over.</summary>
+    public const int ClientCommandWindowSeconds = 10;
     private const string ClusterTenantId = "@cluster";
 
     private readonly PostgresOperationReceiptStore _receipts = new(connectionString);
@@ -542,6 +550,26 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
             throw new RoundAdmissionException(
                 $"The round generation {routeVersion} of room {roomId} is closed by the end operation " +
                 $"{closedClientOperation.OperationId}; it no longer accepts authoritative input.");
+
+        // FIX-SYNC-09: the frequency cap — count this binding's own client commands inside the
+        // rolling window before inserting. The count runs under the binding lock taken above,
+        // so concurrent commands of one participant cannot both read the same below-budget
+        // count; the partial index keeps it a range read, not a table scan.
+        await using (var rate = new NpgsqlCommand("""
+            SELECT count(*) FROM input.event
+            WHERE platform=@platform AND binding_id=@binding
+              AND received_at >= clock_timestamp() - make_interval(secs => @window)
+            """, connection, transaction))
+        {
+            rate.Parameters.AddWithValue("platform", ClientPlatform);
+            rate.Parameters.AddWithValue("binding", participationBinding);
+            rate.Parameters.AddWithValue("window", ClientCommandWindowSeconds);
+            var inWindow = Convert.ToInt64(await rate.ExecuteScalarAsync(cancellationToken));
+            if (inWindow >= MaxClientCommandsPerWindow)
+                throw new ClientCommandRateExceededException(
+                    $"The participant binding {participationBinding} exceeded {MaxClientCommandsPerWindow} " +
+                    $"client commands in {ClientCommandWindowSeconds}s; the command is refused, not queued.");
+        }
 
         string canonicalRoomKey;
         await using (var live = new NpgsqlCommand("""

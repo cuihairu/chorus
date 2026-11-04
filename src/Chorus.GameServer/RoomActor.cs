@@ -330,9 +330,15 @@ internal sealed class RoomActor : IAsyncDisposable
                 if (item.BindingId is { Length: > 0 } binding
                     && _participantByBinding.TryGetValue(binding, out var participant))
                 {
-                    var command = _inputTranslator?.Translate(item.PayloadJson) ?? item.PayloadJson;
+                    // FIX-SYNC-09: the platform translator never touches a client command —
+                    // a client payload shaped like a platform event is not a platform fact;
+                    // it stays raw and the module's intent-only rule ignores it. The origin
+                    // rides with the input so the module holds the trust boundary.
+                    var fromClient = item.Platform == ClientCommandPlatform;
+                    var command = fromClient ? item.PayloadJson
+                        : _inputTranslator?.Translate(item.PayloadJson) ?? item.PayloadJson;
                     if (command is not null)
-                        inputs.Add(new NormalizedInput(participant, command));
+                        inputs.Add(new NormalizedInput(participant, command, fromClient));
                 }
 
             var tick = _lastTick + 1;

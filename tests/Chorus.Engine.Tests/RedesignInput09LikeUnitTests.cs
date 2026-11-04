@@ -30,13 +30,13 @@ public sealed class RedesignInput09LikeUnitTests
     private static ExampleGameModuleV3 Module(int threshold = 20, int bonus = 50) => new(null, threshold, bonus);
 
     private static NormalizedInput Like(string participant, int count) =>
-        new(participant, JsonSerializer.Serialize(new { kind = "like", count }));
+        new(participant, JsonSerializer.Serialize(new { kind = "like", count }), FromClient: false);
 
     private static NormalizedInput Gift(string participant, int amount) =>
-        new(participant, JsonSerializer.Serialize(new { kind = "gift", amount }));
+        new(participant, JsonSerializer.Serialize(new { kind = "gift", amount }), FromClient: false);
 
     private static NormalizedInput Boost(string participant, int level) =>
-        new(participant, JsonSerializer.Serialize(new { action = "boost", level }));
+        new(participant, JsonSerializer.Serialize(new { action = "boost", level }), FromClient: false);
 
     [Fact]
     public void ALikeAccumulatesItsFactionCountAndMergesTheWindowPerTick()

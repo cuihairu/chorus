@@ -83,9 +83,13 @@ public sealed record TickOutcome(
 
 /// <summary>
 /// One normalized input delivered to the module, already attributed to a participant and
-/// ordered by the routing sequence. The module never sees platform metadata or clocks.
+/// ordered by the routing sequence. The module never sees platform metadata or clocks, but
+/// it must know the trust boundary: a client command (FromClient) is an operation intent and
+/// never carries a platform fact — the module rejects fact shapes from the client channel
+/// (FIX-SYNC-09). A platform event (FromClient=false) may carry the platform fact shapes the
+/// module declares (gift, like).
 /// </summary>
-public sealed record NormalizedInput(string ParticipantId, string PayloadJson);
+public sealed record NormalizedInput(string ParticipantId, string PayloadJson, bool FromClient);
 
 /// <summary>
 /// The example gameplay module (architecture 8.4): a trusted server-side logic package with
@@ -97,6 +101,11 @@ public sealed class ExampleGameModule(RedesignGameModuleManifest? manifest = nul
     : IRedesignGameModule
 {
     public const string ScoreEffect = "score";
+
+    /// <summary>FIX-SYNC-09: the highest boost level a command may name. A level beyond
+    /// this bound is an illegal action — the module ignores it deterministically, so a
+    /// client cannot inflate a score with an unbounded action size.</summary>
+    public const int MaxBoostLevel = 3;
 
     private static readonly JsonSerializerOptions Canonical = new()
     {
@@ -158,6 +167,11 @@ public sealed class ExampleGameModule(RedesignGameModuleManifest? manifest = nul
             var root = document.RootElement;
             if (!state.FactionByParticipant.TryGetValue(input.ParticipantId, out var faction))
                 continue; // platform events can arrive for participants outside this round
+            // FIX-SYNC-09: the client channel carries operation intents only. A platform
+            // fact shape (kind) from a client is a forged report — a client command never
+            // enters the platform gift fact channel, so it is ignored deterministically.
+            if (input.FromClient && root.TryGetProperty("kind", out _))
+                continue;
             long points;
             if (root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String
                 && kind.GetString() == "gift")
@@ -167,7 +181,11 @@ public sealed class ExampleGameModule(RedesignGameModuleManifest? manifest = nul
             else if (root.TryGetProperty("action", out var action)
                 && action.ValueKind == JsonValueKind.String && action.GetString() == "boost")
             {
-                points = 10L * GetInt32(root, "level") + seed % 5;
+                // FIX-SYNC-09: action size is bounded — a level beyond the declared cap is
+                // an illegal action, ignored like an unknown shape (never an unbounded score).
+                var level = GetInt32(root, "level");
+                if (level < 1 || level > MaxBoostLevel) continue;
+                points = 10L * level + seed % 5;
             }
             else
             {

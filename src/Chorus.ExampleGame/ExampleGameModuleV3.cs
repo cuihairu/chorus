@@ -109,6 +109,10 @@ public sealed class ExampleGameModuleV3(
             var root = document.RootElement;
             if (!state.FactionByParticipant.TryGetValue(input.ParticipantId, out var faction))
                 continue; // platform events can arrive for participants outside this round
+            // FIX-SYNC-09: the client channel carries operation intents only — a platform
+            // fact shape (kind) from a client is a forged report, ignored deterministically.
+            if (input.FromClient && root.TryGetProperty("kind", out _))
+                continue;
             if (root.TryGetProperty("kind", out var kind) && kind.ValueKind == JsonValueKind.String
                 && kind.GetString() == "gift")
             {
@@ -127,7 +131,10 @@ public sealed class ExampleGameModuleV3(
             else if (root.TryGetProperty("action", out var action)
                 && action.ValueKind == JsonValueKind.String && action.GetString() == "boost")
             {
-                var points = 12L * GetInt32(root, "level");
+                // FIX-SYNC-09: action size is bounded (1..MaxBoostLevel).
+                var level = GetInt32(root, "level");
+                if (level < 1 || level > ExampleGameModule.MaxBoostLevel) continue;
+                var points = 12L * level;
                 scores[faction] += points;
                 delta[faction] = delta.GetValueOrDefault(faction) + points;
             }

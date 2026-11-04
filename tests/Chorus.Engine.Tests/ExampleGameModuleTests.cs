@@ -139,11 +139,11 @@ public sealed class ExampleGameModuleTests
     }
 
     private static NormalizedInput Gift(string participant, int amount) =>
-        new(participant, $$"""{"kind": "gift", "amount": {{amount}}}""");
+        new(participant, $$"""{"kind": "gift", "amount": {{amount}}}""", FromClient: false);
 
     private static NormalizedInput Boost(string participant, int level) =>
-        new(participant, $$"""{"action": "boost", "level": {{level}}}""");
+        new(participant, $$"""{"action": "boost", "level": {{level}}}""", FromClient: false);
 
     private static NormalizedInput Unknown(string participant) =>
-        new(participant, """{"kind": "emote", "face": "grin"}""");
+        new(participant, """{"kind": "emote", "face": "grin"}""", FromClient: false);
 }

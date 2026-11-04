@@ -27,18 +27,20 @@ public sealed class RedesignModuleLoadHostTests
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
         var cluster = await BootAsync(environment);
 
-        // The default package: a gift scores red 7.
+        // The default package: a platform gift scores red 7 (FIX-SYNC-09: the gift is a
+        // platform fact and rides the platform channel — a client command could never
+        // deliver it).
         const string roomDefault = "room-mod-default";
         var defaultResult = await RunRoundAsync(environment, cluster, roomDefault, "pkg-1",
-            """{"kind":"gift","amount":7}""");
+            """{"kind":"gift","amount":7}""", viaPlatform: true);
         Assert.Equal(7L, ScoreOf(defaultResult, "red"));
         Assert.Equal(0L, ScoreOf(defaultResult, "blue"));
         Assert.Equal("red", WinnerOf(defaultResult));
 
-        // The duel package: the same gift is noise, the fighters' boost decides — red 30.
+        // The duel package: the same gift is noise, the fighters' own boost decides — red 30.
         const string roomDuel = "room-mod-duel";
         var duelResult = await RunRoundAsync(environment, cluster, roomDuel, "pkg-duel-1",
-            """{"action":"boost","level":3}""");
+            """{"action":"boost","level":3}""", viaPlatform: false);
         Assert.Equal(30L, ScoreOf(duelResult, "red")); // 30 flat: the gift added nothing
         Assert.Equal(0L, ScoreOf(duelResult, "blue"));
         Assert.Equal("red", WinnerOf(duelResult));
@@ -52,7 +54,9 @@ public sealed class RedesignModuleLoadHostTests
         {
             var error = await Assert.ThrowsAsync<RpcException>(async () =>
                 await new GameHost.GameHostClient(refuseChannel).PrepareRoomAsync(
-                    RoomRequest(roomMissing, opened.Epoch, "pkg-gone", opened.Host, opened.Guest,
+                    RoomRequest(roomMissing, opened.Epoch, "pkg-gone",
+                        (opened.Host.StreamerId, opened.Host.SessionId, opened.Host.BindingId),
+                        (opened.Guest.StreamerId, opened.Guest.SessionId, opened.Guest.BindingId),
                         "mod-missing-prepare")));
             Assert.Equal(StatusCode.FailedPrecondition, error.Status.StatusCode);
             Assert.Contains("pkg-gone", error.Status.Detail, StringComparison.Ordinal);
@@ -65,10 +69,12 @@ public sealed class RedesignModuleLoadHostTests
     }
 
     /// <summary>Opens a round under the named package, pushes one input and returns the
-    /// module's frozen result document the stream delivered.</summary>
+    /// module's frozen result document the stream delivered. FIX-SYNC-09: a platform fact
+    /// (a gift) rides the platform ingest channel it can only come from; an operation
+    /// intent (a boost) rides the client command channel.</summary>
     private static async Task<JsonDocument> RunRoundAsync(
         RedesignM0HostTests.HostEnvironment environment, ModuleCluster cluster, string roomId,
-        string packageHash, string inputJson)
+        string packageHash, string inputJson, bool viaPlatform)
     {
         var (version, config) = packageHash switch
         {
@@ -80,7 +86,9 @@ public sealed class RedesignModuleLoadHostTests
         using var prepareCertificate = environment.Certificate("@cluster", "control-server", "mod-" + roomId);
         using var prepareChannel = environment.Channel(cluster.GamePort, prepareCertificate, "game-server");
         var prepared = await new GameHost.GameHostClient(prepareChannel).PrepareRoomAsync(
-            RoomRequest(roomId, opened.Epoch, packageHash, opened.Host, opened.Guest,
+            RoomRequest(roomId, opened.Epoch, packageHash,
+                (opened.Host.StreamerId, opened.Host.SessionId, opened.Host.BindingId),
+                (opened.Guest.StreamerId, opened.Guest.SessionId, opened.Guest.BindingId),
                 "mod-" + roomId + "-prepare"));
         Assert.Equal("Running", prepared.Status);
 
@@ -99,13 +107,32 @@ public sealed class RedesignModuleLoadHostTests
                     resultJson = message.RoundResult.ResultJson;
         });
 
-        using var inputCertificate = environment.Certificate("tenant-a", "streamer-gateway", "mod-input");
-        using var inputChannel = environment.Channel(environment.DataPort, inputCertificate, "data-server");
-        await new RoundInput.RoundInputClient(inputChannel).AcceptClientInputAsync(new ClientInputRequest
+        if (viaPlatform)
         {
-            SessionId = opened.Host.SessionId, RoomId = roomId, RoomEpoch = opened.Epoch, GameId = "game-a",
-            CommandId = "cmd-" + roomId, PayloadJson = inputJson
-        }, deadline: DateTime.UtcNow.AddSeconds(30));
+            using var gatewayCertificate = environment.Certificate("@cluster", "platform-gateway", "mod-ingest");
+            using var gatewayChannel = environment.Channel(environment.DataPort, gatewayCertificate, "data-server");
+            var batch = new IngestBatchRequest
+                { Platform = "simulator", AppId = "app-1", OperationId = "ingest-" + roomId };
+            batch.Events.Add(new IngestEvent
+            {
+                SourceDedupKey = "event-" + roomId,
+                Durability = Chorus.DataServer.RedesignInputEventStore.Durable,
+                CanonicalRoomKey = opened.HostLiveKey, PayloadJson = inputJson
+            });
+            await new PlatformIngest.PlatformIngestClient(gatewayChannel).IngestBatchAsync(batch);
+            await new RoundInput.RoundInputClient(gatewayChannel).RouteEventsAsync(new RouteEventsRequest
+                { Platform = "simulator", AppId = "app-1", OperationId = "route-" + roomId, MaxEvents = 50 });
+        }
+        else
+        {
+            using var inputCertificate = environment.Certificate("tenant-a", "streamer-gateway", "mod-input");
+            using var inputChannel = environment.Channel(environment.DataPort, inputCertificate, "data-server");
+            await new RoundInput.RoundInputClient(inputChannel).AcceptClientInputAsync(new ClientInputRequest
+            {
+                SessionId = opened.Host.SessionId, RoomId = roomId, RoomEpoch = opened.Epoch,
+                GameId = "game-a", CommandId = "cmd-" + roomId, PayloadJson = inputJson
+            }, deadline: DateTime.UtcNow.AddSeconds(30));
+        }
 
         await reading.WaitAsync(TimeSpan.FromSeconds(150));
         Assert.NotNull(resultJson);
@@ -130,7 +157,8 @@ public sealed class RedesignModuleLoadHostTests
     /// package identity, then mounts the round's two participants.</summary>
     private static async Task<(long Epoch,
         (string StreamerId, string SessionId, string BindingId) Host,
-        (string StreamerId, string SessionId, string BindingId) Guest)>
+        (string StreamerId, string SessionId, string BindingId) Guest,
+        string HostLiveKey)>
         OpenRoundAsync(RedesignM0HostTests.HostEnvironment environment, ModuleCluster cluster,
             string roomId, string moduleVersion, string configHash, string packageHash)
     {
@@ -167,7 +195,10 @@ public sealed class RedesignModuleLoadHostTests
             }
         });
         Assert.Equal("Preparing", started.Status);
-        return (claimed.Epoch, host, guest);
+        return (claimed.Epoch,
+            (host.StreamerId, host.SessionId, host.BindingId),
+            (guest.StreamerId, guest.SessionId, guest.BindingId),
+            host.LiveKey);
     }
 
     private static async Task<string> RoundStatusAsync(
@@ -236,7 +267,7 @@ public sealed class RedesignModuleLoadHostTests
         return new ModuleCluster(gamePort, new DevelopmentPlatformSimulator(simulatorKey));
     }
 
-    private static async Task<(string StreamerId, string SessionId, string BindingId)> MountAsync(
+    private static async Task<(string StreamerId, string SessionId, string BindingId, string LiveKey)> MountAsync(
         RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator, string openId)
     {
         var liveKey = "live-mod-" + openId;
@@ -255,7 +286,7 @@ public sealed class RedesignModuleLoadHostTests
         {
             AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "mount-" + openId
         });
-        return (login.StreamerId, login.SessionId, mounted.BindingId);
+        return (login.StreamerId, login.SessionId, mounted.BindingId, liveKey);
     }
 
     private sealed record ModuleCluster(int GamePort, DevelopmentPlatformSimulator Simulator);

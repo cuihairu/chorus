@@ -410,6 +410,12 @@ message RecoveryDeliveryProto {
   string binding_id = 3;
   string payload_json = 4;
   bool consumed = 5;
+  // FIX-SYNC-09: the delivery's origin channel. A recovery replay must re-derive the same
+  // command the live tick fed the module — including the origin-aware translation gate and
+  // the NormalizedInput.FromClient trust bit — so a replayed room's state hash matches.
+  // Absent on pre-upgrade wire (empty string), the replay treats it as a platform fact,
+  // which is the pre-SYNC-09 behavior for those deliveries.
+  string platform = 6;
 }
 
 message RecoveryFrameProto {

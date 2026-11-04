@@ -248,7 +248,7 @@ public sealed class FrameGrpcService(
                     {
                         EventId = delivery.EventId, Sequence = delivery.Sequence,
                         BindingId = delivery.BindingId ?? "", PayloadJson = delivery.PayloadJson,
-                        Consumed = delivery.Consumed
+                        Consumed = delivery.Consumed, Platform = delivery.Platform
                     })
                 },
                 Frames =
