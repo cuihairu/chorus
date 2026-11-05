@@ -155,9 +155,11 @@ public sealed class RoundDemoScenarioTests
     /// <summary>
     /// The demo cluster contract over the shared host environment: the same four real hosts,
     /// certificates and ports the other host tests use, so the scenario code path is the
-    /// console demo's code path. Disposal stays with the owning test.
+    /// console demo's code path. Disposal stays with the owning test. Shared with
+    /// <see cref="RedesignRank09ExampleTests"/> (FIX-RANK-09), which runs the leaderboard
+    /// example over the same cluster contract.
     /// </summary>
-    private sealed class HostEnvironmentCluster : IDemoCluster, IDisposable
+    internal sealed class HostEnvironmentCluster : IDemoCluster, IDisposable
     {
         private readonly RedesignM0HostTests.HostEnvironment _environment;
         private Chorus.Platform.DevelopmentTaskPlatform? _platform;

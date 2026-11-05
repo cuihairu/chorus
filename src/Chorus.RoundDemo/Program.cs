@@ -2,7 +2,11 @@ using Chorus.RoundDemo;
 
 // The standalone round demo: a whole cluster on localhost, one authoritative round, two
 // streamer edges, one client command, settlement and a leaderboard — the same journey the
-// test suite runs (RoundDemoScenarioTests), printed as it happens.
+// test suite runs (RoundDemoScenarioTests), printed as it happens. The round's committed
+// score effects then drive the leaderboard example (FIX-RANK-09): the business modules
+// project them onto the declared board and the example journey (scoring, TopN, personal
+// rank, duplicate settlement, period rollover with a historical-board read, and the
+// authorized client access) is printed as it happens.
 if (Environment.GetEnvironmentVariable("CHORUS_TEST_POSTGRES") is null)
 {
     Console.Error.WriteLine(
@@ -12,9 +16,13 @@ if (Environment.GetEnvironmentVariable("CHORUS_TEST_POSTGRES") is null)
 await using var cluster = new DemoCluster();
 try
 {
-    var evidence = await RoundDemoScenario.RunAsync(cluster, Console.Out);
-    Console.WriteLine($"round {evidence.RoomId} {evidence.RoomStatus.ToLowerInvariant()} " +
-        $"at epoch {evidence.Epoch}: both edges hold tick {evidence.Host.FinalTick}.");
+    // The example journey runs the round internally (RoundDemoScenario logs it as it happens),
+    // then projects the round's committed score effects and walks the deterministic example.
+    var leaderboard = await LeaderboardDemoScenario.RunAsync(cluster, Console.Out);
+    Console.WriteLine($"leaderboard example: today {leaderboard.RedScore} red / {leaderboard.BlueScore} blue, " +
+        $"top {leaderboard.TopSubject}={leaderboard.TopScore} of {leaderboard.TopEntries}, " +
+        $"ranks {leaderboard.RedRank}/{leaderboard.BlueRank}, duplicate settled={leaderboard.DuplicateSettled}, " +
+        $"historical {leaderboard.HistoricalRedScore}, client read {leaderboard.StreamerTopEntries} entries.");
     return 0;
 }
 catch (Exception error)

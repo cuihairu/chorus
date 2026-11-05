@@ -98,9 +98,16 @@ public sealed class DemoCluster : IDemoCluster
             ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
         };
         // The end ladder walks at a demo's pace: the coordinator's pass is short so the
-        // release the scenario waits for lands inside its patience.
+        // release the scenario waits for lands inside its patience. The control plane reaches
+        // the data plane (the coordinator's task and settlement legs, FIX-END-12) over the
+        // configured data endpoint — without it the directory points at a default port and the
+        // release parks at StopDeliveryIssued forever.
         await StartAsync("Chorus.ControlServer", ControlPort, "control-server",
-            new Dictionary<string, string> { ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "300" });
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{DataPort}",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "300"
+            });
         await StartAsync("Chorus.DataServer", DataPort, "data-server");
         await StartAsync("Chorus.StreamerServer", StreamerPort, "streamer-server", streamerEnvironment);
         await StartAsync("Chorus.GameServer", GamePort, "game-server",
