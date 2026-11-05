@@ -267,7 +267,7 @@
 ### 22.14 进程注册与主播业务协作闭环（P0/P1）
 
 - [x] **FIX-LINK-01 / P0：让进程自报告反映真实就绪状态。** 依赖：无。 - 证据：d15afa2。
-- [ ] **FIX-LINK-02 / P0：验收 GameServer 注册报告的身份和时效。** 依赖：无。
+- [x] **FIX-LINK-02 / P0：验收 GameServer 注册报告的身份和时效。** 依赖：无。 - 证据：4c17d3b。
 - [ ] **FIX-LINK-03 / P0：接通 StreamerServer 到 ControlServer 的匹配意图入口。** 依赖：FIX-END-02。
 - [ ] **FIX-LINK-04 / P0：可靠同步参与关系提交事件。** 依赖：FIX-LINK-03、FIX-END-16。
 - [ ] **FIX-LINK-05 / P0：恢复 StreamerServer 丢失的参与状态。** 依赖：FIX-LINK-04。
