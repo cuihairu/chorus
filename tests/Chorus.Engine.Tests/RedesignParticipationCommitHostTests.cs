@@ -94,6 +94,118 @@ public sealed class RedesignParticipationCommitHostTests
     }
 
     [Fact]
+    public async Task TheStreamerServerRecoversTheCommittedParticipationAfterARestart()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        using var platform = DevelopmentTaskPlatform.Start(
+            () => RedesignM0HostTests.HostEnvironment.FreePort());
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+                ["CHORUS_GAME_ENDPOINTS"] = $"game-a=https://localhost:{gamePort}",
+                ["CHORUS_RECOVERY_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_STALL_SWEEP_INTERVAL_MS"] = "60000",
+                ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
+                ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150",
+                ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+                // The round must stay live across the restart: a finished round releases the
+                // mounts and clears the pointer this test reads back after the restart.
+                ["CHORUS_ROUND_DURATION_TICKS"] = "2000",
+                ["CHORUS_ROUTE_CONFIRM_TIMEOUT_MS"] = "10000",
+                ["CHORUS_PARTICIPATION_DISPATCH_INTERVAL_MS"] = "300"
+            });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", StreamerEnvironment(environment, simulatorKey, accessKey));
+        await environment.StartAsync("Chorus.GameServer", gamePort, "game-server",
+            new Dictionary<string, string>
+            {
+                ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{gamePort}",
+                ["CHORUS_REPORT_INTERVAL_MS"] = "500"
+            },
+            clientTenant: "tenant-a", instanceId: "game-rel05");
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-rel05"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-rel05" });
+        }
+        await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+            new Dictionary<string, string>(RedesignEndOperationHostTests.GatewayEnvironment(
+                environment.DataPort, $"https://localhost:{environment.ControlPort}", gatewayPort))
+            {
+                ["CHORUS_DEV_PLATFORM_ENDPOINT"] = platform.Url,
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300"
+            },
+            instanceId: "gateway-rel05");
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-rel05");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var routing = new Chorus.Rpc.Routing.RoutingClient(controlChannel);
+        Assert.True(await WaitForAsync(async () =>
+            (await routing.GetRoutingSnapshotAsync(new Empty())).Instances.Any(
+                instance => instance.ProcessInstanceId == "gateway-rel05"), TimeSpan.FromSeconds(30)),
+            "The gateway never registered itself — the route gate would be skipped, not confirmed.");
+
+        // The host streamer mounts, captures its resume secret (the current secret the attach
+        // must present), and the pair commits a round — the participation pointer lands in the DB.
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountWithSecretAsync(environment, simulator, "rel05-a", "live-rel05-a");
+        var guest = await MountAsync(environment, simulator, "rel05-b", "live-rel05-b");
+        var roomId = await PairAndGetRoomAsync(environment, (host.StreamerId, host.SessionId, host.BindingId), guest);
+        Assert.True(await WaitForAsync(async () =>
+            await OutboxStatusAsync(environment, $"{roomId}/0/start") == "Done", TimeSpan.FromSeconds(30)),
+            "The round.started commit never delivered before the restart.");
+
+        // The StreamerServer dies abruptly: its in-memory actors — and the participation facts
+        // they held — are gone by construction. The committed binding still names the room.
+        environment.Kill("Chorus.StreamerServer");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort, "streamer-server",
+            StreamerEnvironment(environment, simulatorKey, accessKey));
+
+        // A gateway reconnect on the live session (no resume, no takeover) is the window
+        // FIX-LINK-05 closes: the attach re-derives the entity — and with it the participation
+        // pointer — from the committed binding instead of leaving the instance blind to the round.
+        using var attachCertificate = environment.Certificate("tenant-a", "streamer-server", "streamer-rel05");
+        using var attachChannel = environment.Channel(environment.StreamerPort, attachCertificate, "streamer-server");
+        var client = new StreamerSession.StreamerSessionClient(attachChannel);
+        var attach = await client.AttachConnectionAsync(new AttachConnectionRequest
+        {
+            SessionId = host.SessionId, OperationId = "rel05-attach",
+            CurrentSecret = Google.Protobuf.ByteString.CopyFrom(host.Secret),
+            GatewayInstanceId = "gateway-1", ConnectionId = "connection-rel05"
+        });
+        Assert.Equal(2, attach.ConnectionGeneration);
+
+        // The query fallback answers the committed participation through the real stack: the
+        // mount's room pointer and round generation survive the restart.
+        var status = await client.GameplayStatusAsync(new GameplayStatusRequest
+        {
+            AccessCredential = host.AccessCredential
+        });
+        Assert.Equal(roomId, status.CurrentRoomId);
+        Assert.Equal(1, status.RoundGeneration);
+
+        // The recovered actor takes an idempotent replay of the same round (at-least-once
+        // convergence) — the round is not applied twice, and the actor exists to accept it.
+        using var replayCertificate = environment.Certificate("@cluster", "control-server", "control-rel05r");
+        using var replayChannel = environment.Channel(environment.StreamerPort, replayCertificate, "streamer-server");
+        var replay = await new Chorus.Rpc.Participation.ParticipationClient(replayChannel).NotifyCommittedAsync(
+            new NotifyCommittedRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", RoomId = roomId, RoundGeneration = 1,
+                BindingId = host.BindingId, BindingGeneration = 1, StreamerId = host.StreamerId
+            });
+        Assert.True(replay.Applied);
+    }
+
+    [Fact]
     public async Task AnEventWhoseParticipantsTurnedMootIsRetiredWithoutDelivery()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
@@ -243,7 +355,18 @@ public sealed class RedesignParticipationCommitHostTests
         RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator,
         string openId, string liveKey)
     {
+        var mounted = await MountWithSecretAsync(environment, simulator, openId, liveKey);
+        return (mounted.StreamerId, mounted.SessionId, mounted.BindingId);
+    }
+
+    /// <summary>Mounts and also returns the resume secret (the current secret an attach must
+    /// present) and the access credential, for the FIX-LINK-05 restart-recovery flow.</summary>
+    private static async Task<(string StreamerId, string SessionId, string BindingId, byte[] Secret, string AccessCredential)>
+        MountWithSecretAsync(RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator,
+            string openId, string liveKey)
+    {
         var credential = simulator.IssueCredential("app-1", openId, liveKey, TimeSpan.FromMinutes(10));
+        var secret = RandomNumberGenerator.GetBytes(32);
         using var certificate = environment.Certificate("tenant-a", "streamer-server", "streamer-" + openId);
         using var channel = environment.Channel(environment.StreamerPort, certificate, "streamer-server");
         var session = new StreamerSession.StreamerSessionClient(channel);
@@ -251,14 +374,14 @@ public sealed class RedesignParticipationCommitHostTests
         {
             Platform = "simulator", AppId = "app-1", LaunchCredential = credential,
             LoginAttemptId = "attempt-" + openId,
-            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            NextResumeSecret = Google.Protobuf.ByteString.CopyFrom(secret),
             GatewayInstanceId = "gateway-1", ConnectionId = "connection-" + openId
         });
         var mounted = await session.StartGameplayAsync(new StartGameplayRequest
         {
             AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "mount-" + openId
         });
-        return (login.StreamerId, login.SessionId, mounted.BindingId);
+        return (login.StreamerId, login.SessionId, mounted.BindingId, secret, login.AccessCredential);
     }
 
     private static async Task<string> PairAndGetRoomAsync(

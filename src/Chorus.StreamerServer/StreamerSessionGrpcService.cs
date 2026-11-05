@@ -143,6 +143,12 @@ public sealed class StreamerSessionGrpcService(
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "Session is replaced."));
         }
+        catch (EntityRecoveryFailedException)
+        {
+            // FIX-LINK-05: an attach on an absent actor re-derives the entity; a store that cannot
+            // answer means the streamer cannot be served, matching the login/resume refusal.
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The streamer entity could not be recovered."));
+        }
         catch (ArgumentException)
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The attach request is invalid."));

@@ -226,9 +226,16 @@ public sealed class RedesignStreamerLoginCoordinator(
         var connection = await identityStore.AttachConnectionAsync(callerTenantId, command.SessionId,
             command.GatewayInstanceId, command.ConnectionId, command.OperationId, command.CurrentSecret,
             cancellationToken);
-        // The actor may be absent after a process restart; its facts are re-derived on the next recovery.
+        // An absent actor is a process restart with no login/resume since: the connection names
+        // the entity, so materialize and re-derive its facts now (FIX-LINK-05). The re-derivation
+        // reads the committed binding, so the participation pointer survives a lost round notice.
         var actor = actorRegistry.FindBySession(callerTenantId, connection.SessionId);
-        if (actor is not null) await actor.OnConnectionAttachedAsync(connection, cancellationToken);
+        if (actor is null)
+        {
+            actor = actorRegistry.GetOrAdd(callerTenantId, connection.StreamerId);
+            await actor.RecoverAsync(identityStore, connection.SessionId, cancellationToken);
+        }
+        await actor.OnConnectionAttachedAsync(connection, cancellationToken);
         return connection;
     }
 
@@ -298,7 +305,16 @@ public sealed class RedesignStreamerLoginCoordinator(
             throw;
         }
         var actor = actorRegistry.Find(callerTenantId, access.StreamerId);
-        if (actor is not null) await actor.OnGameplayBindingAsync(binding, cancellationToken);
+        if (actor is null)
+        {
+            // An absent actor is a process restart whose gateway reconnected without a resume:
+            // materialize the entity so the mount has an in-memory holder (FIX-LINK-05) — the
+            // route-source registration and the participation notice both land on it. A freshly
+            // mounted binding has no committed round, so no participation pointer is carried over.
+            actor = actorRegistry.GetOrAdd(callerTenantId, access.StreamerId);
+            await actor.RecoverAsync(identityStore, access.SessionId, cancellationToken);
+        }
+        await actor.OnGameplayBindingAsync(binding, cancellationToken);
         // The mount names the game scope, so an entity that skipped the claim until now (a
         // resume before any binding) goes on the record here.
         if (ownershipRegistrar is not null)
