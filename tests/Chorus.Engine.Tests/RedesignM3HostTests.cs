@@ -574,6 +574,25 @@ public sealed class RedesignM3HostTests
                 StartedUnixMs = 1, Role = "game-server", Endpoint = "https://localhost:1"
             }).ResponseAsync);
         Assert.Equal(StatusCode.InvalidArgument, refused.StatusCode);
+
+        // FIX-LINK-02: identity is the certificate, not the claimed words — a game-server
+        // certificate may not report ANOTHER instance's row, even with a matching role and
+        // node. The refusal is the same InvalidArgument, and the live rows are untouched.
+        using var twinImpostor = environment.Certificate("@cluster", "game-server", "impostor-m3-7b");
+        using var twinImpostorChannel = environment.Channel(environment.ControlPort, twinImpostor,
+            "control-server");
+        var twinRefused = await Assert.ThrowsAsync<RpcException>(() =>
+            new ControlService.ControlServiceClient(twinImpostorChannel).ReportProcessAsync(new ReportProcessRequest
+            {
+                NodeId = "node-a", AgentInstanceId = "game-m3-7a", SlotId = "node-a/game-server",
+                ProcessInstanceId = "game-m3-7a", ReportSequence = 99, Lifecycle = "Running",
+                Readiness = "Ready", Health = "Healthy", Admission = "Open", EntityRecovery = "Steady",
+                StartedUnixMs = 1, Role = "game-server", Endpoint = "https://localhost:1"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.InvalidArgument, twinRefused.StatusCode);
+        var afterTwin = await routing.GetRoutingSnapshotAsync(new Empty());
+        Assert.Contains(afterTwin.Instances, instance => instance.ProcessInstanceId == "game-m3-7a"
+            && instance.Endpoint == $"https://localhost:{gamePortA}");
     }
 
     [Fact]
