@@ -269,7 +269,7 @@
 - [x] **FIX-LINK-01 / P0：让进程自报告反映真实就绪状态。** 依赖：无。 - 证据：d15afa2。
 - [x] **FIX-LINK-02 / P0：验收 GameServer 注册报告的身份和时效。** 依赖：无。 - 证据：4c17d3b。
 - [x] **FIX-LINK-03 / P0：接通 StreamerServer 到 ControlServer 的匹配意图入口。** 依赖：FIX-END-02。 - 证据：0989aa6。
-- [ ] **FIX-LINK-04 / P0：可靠同步参与关系提交事件。** 依赖：FIX-LINK-03、FIX-END-16。
+- [x] **FIX-LINK-04 / P0：可靠同步参与关系提交事件。** 依赖：FIX-LINK-03、FIX-END-16。 - 证据：83844c4。
 - [ ] **FIX-LINK-05 / P0：恢复 StreamerServer 丢失的参与状态。** 依赖：FIX-LINK-04。
 - [ ] **FIX-LINK-06 / P1：验收 StreamerServer 经 DataServer 读写资料。** 依赖：无。
 - [ ] **FIX-LINK-07 / P0：验收 StreamerServer 发起幂等资产事务。** 依赖：无。
