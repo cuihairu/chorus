@@ -259,7 +259,8 @@
   - 证据：7080255
 - [x] **FIX-RANK-07 / P1：实现周期与迟到归属。** 依赖：FIX-RANK-01、FIX-RANK-03。
   - 证据：d00ea92
-- [ ] **FIX-RANK-08 / P1：实现 GM 修正与投影重建。** 依赖：FIX-RANK-03、FIX-RANK-07。
+- [x] **FIX-RANK-08 / P1：实现 GM 修正与投影重建。** 依赖：FIX-RANK-03、FIX-RANK-07。
+  - 证据：e5d97bc
 - [ ] **FIX-RANK-09 / P1：交付玩法与客户端接入示例。** 依赖：FIX-RANK-03、FIX-RANK-04、FIX-RANK-05、FIX-RANK-07。
 
 ### 22.14 进程注册与主播业务协作闭环（P0/P1）
