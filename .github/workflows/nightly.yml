@@ -109,7 +109,8 @@ jobs:
         run: |
           set -euo pipefail
           VERSION_DATE="${VERSION##*.}"
-          ROOT="packaging/rpm"
+          # rpmbuild resolves _topdir against / unless it is absolute.
+          ROOT="$PWD/packaging/rpm"
           mkdir -p "$ROOT"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
           cat > "$ROOT/SPECS/chorus-server.spec" <<EOF
           Name:           chorus-server
