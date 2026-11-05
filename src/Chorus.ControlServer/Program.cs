@@ -122,6 +122,8 @@ app.MapGrpcService<DeploymentGrpcService>();
 app.MapGrpcService<TakeoverGrpcService>();
 app.MapGrpcService<AdminGrpcService>();
 app.MapGrpcService<RoundEndGrpcService>();
+// The business path's match-intent entry (FIX-LINK-03): route-source gate, then the queue.
+app.MapGrpcService<MatchIntentGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

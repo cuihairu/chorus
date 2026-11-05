@@ -73,6 +73,26 @@ message ExpireQueuedReply { int64 expired = 1; }
 // The partitions with live candidates — the coordinator's discovery scan.
 message ListPartitionsReply { repeated string partition_keys = 1; }
 
+// The StreamerServer's match intent (FIX-LINK-03, architecture 6.4): the business path submits
+// the mount's intent through the control plane, which verifies the mount is a registered route
+// source (FIX-END-02) before forwarding the ticket to the queue the coordinator scans. The
+// streamer behind the intent is the route-source row's, never a caller field — the intent names
+// the mount (binding + generation) and the control plane joins it to the verified identity.
+message SubmitMatchIntentRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string binding_id = 3;
+  int64 binding_generation = 4;
+  string session_id = 5;
+  // The composite match partition (the same composition MatchQueue uses); the business path
+  // names its default partition, the client path its declared one — two intents only ever meet
+  // inside one partition.
+  string partition_key = 6;
+  string operation_id = 7;
+  // 0 = the queued ticket never expires on its own.
+  int64 expires_unix_ms = 8;
+}
+
 service MatchQueue {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
   rpc EnqueueTicket(EnqueueTicketRequest) returns (TicketReply);
@@ -83,6 +103,13 @@ service MatchQueue {
   rpc ExpireQueued(ExpireQueuedRequest) returns (ExpireQueuedReply);
   // The partitions a coordinator can hold terms for.
   rpc ListPartitions(chorus.m0.Empty) returns (ListPartitionsReply);
+}
+
+// The control plane's match-intent entry (FIX-LINK-03): the StreamerServer business path
+// submits a mount's intent here, the control plane verifies the registered route source, and
+// forwards the ticket to the queue. The gateway's client path stays on MatchQueue directly.
+service MatchIntent {
+  rpc SubmitMatchIntent(SubmitMatchIntentRequest) returns (TicketReply);
 }
 
 // Match coordinator terms (architecture 7.1, 10.1). One holder per partition; a takeover or

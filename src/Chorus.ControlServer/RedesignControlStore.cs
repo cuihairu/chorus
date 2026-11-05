@@ -2217,6 +2217,49 @@ public sealed class RedesignControlStore(string connectionString)
     }
 
     /// <summary>
+    /// The match-intent gate (FIX-LINK-03, architecture 6.4): a mount's intent is accepted only
+    /// while the mount is the registered route source — the row exists for the binding and still
+    /// carries the mount's current generation. An unregistered mount establishes no intent, and a
+    /// stale generation means the mount was superseded. The streamer is the row's, never a caller
+    /// field — the intent names the mount (binding + generation) and the control plane joins it to
+    /// the verified identity.
+    /// </summary>
+    public async Task<RouteSourceRecord> ValidateMatchIntentSourceAsync(
+        string tenantId, string gameId, string bindingId, long bindingGeneration,
+        CancellationToken cancellationToken = default)
+    {
+        if (bindingGeneration <= 0) throw new ArgumentOutOfRangeException(nameof(bindingGeneration));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        // binding_id is globally unique (a binding belongs to one streamer), so the row is the
+        // one source for this mount; the recorded generation is the currency check.
+        await using var read = new NpgsqlCommand("""
+            SELECT streamer_id,binding_id,binding_generation,platform,canonical_live_session_key,
+                room_id,registered_at,updated_at
+            FROM control.route_source
+            WHERE tenant_id=@tenant AND game_id=@game AND binding_id=@binding
+            """, connection);
+        read.Parameters.AddWithValue("tenant", tenantId);
+        read.Parameters.AddWithValue("game", gameId);
+        read.Parameters.AddWithValue("binding", bindingId);
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            throw new RouteSourceUnverifiedException(
+                $"The binding {bindingId} is not a registered route source for {tenantId}/{gameId}; " +
+                "the mount establishes no match intent.");
+        var streamerId = reader.GetString(0);
+        var recordedGeneration = reader.GetInt64(2);
+        if (recordedGeneration != bindingGeneration)
+            throw new StaleBindingGenerationException(
+                $"The route source for {streamerId} holds generation {recordedGeneration}, not " +
+                $"{bindingGeneration}; the intent names a superseded mount.");
+        return new RouteSourceRecord(tenantId, gameId, streamerId, reader.GetString(1),
+            reader.GetString(3), reader.GetString(4), recordedGeneration,
+            reader.IsDBNull(5) ? "" : reader.GetString(5), reader.GetDateTime(6),
+            reader.GetDateTime(7));
+    }
+
+    /// <summary>
     /// Records a PlatformGateway's installed routing version (FIX-END-03): the gateway
     /// confirms the exact version it answers resolves from, and until that confirm lands the
     /// gateway's own face refuses to push — an unconfirmed picture guesses no rooms. The

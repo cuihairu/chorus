@@ -83,6 +83,7 @@ var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOIN
 StreamerOwnershipRegistrar? ownershipRegistrar = null;
 StreamerRouteSourceRegistrar? routeSourceRegistrar = null;
 SessionReplacedNotifier? sessionNotifier = null;
+StreamerMatchIntentSubmitter? matchIntentSubmitter = null;
 if (controlEndpoint is { Length: > 0 })
 {
     var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clusterId, [nodeAuthority])
@@ -113,6 +114,15 @@ if (controlEndpoint is { Length: > 0 })
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
         readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(readinessDataChannel, cancellationToken)));
+    // The mount's match intent (FIX-LINK-03): the business path submits through the control
+    // plane, which gates on the registered route source. The wiring is the switch — the
+    // coordinator submits only when a submitter is wired — and the default keeps the mount flow
+    // exactly as it was until the round-boundary loop (FIX-LINK-04/05) completes.
+    if (string.Equals(Environment.GetEnvironmentVariable("CHORUS_MATCH_INTENT_ON_MOUNT"), "true",
+            StringComparison.OrdinalIgnoreCase))
+        matchIntentSubmitter = new StreamerMatchIntentSubmitter(
+            () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate, root,
+                nodeAuthority, clusterId, "control-server"));
 }
 builder.Services.AddSingleton(sp => new RedesignStreamerLoginCoordinator(
     new RedesignPlatformGateway(adapters, allowNotProductionReady),
@@ -124,6 +134,7 @@ builder.Services.AddSingleton(sp => new RedesignStreamerLoginCoordinator(
     ownershipRegistrar: ownershipRegistrar,
     sessionNotifier: sessionNotifier,
     routeSourceRegistrar: routeSourceRegistrar,
+    matchIntentSubmitter: matchIntentSubmitter,
     // FIX-SYNC-08: the readiness signal source — a control participant whose mount is refused
     // because its round is paused reports its current-generation session as resume-ready.
     resumeReadyReporter: new StreamerResumeReadyReporter(DataChannel,

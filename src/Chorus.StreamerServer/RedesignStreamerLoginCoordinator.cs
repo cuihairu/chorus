@@ -119,7 +119,8 @@ public sealed class RedesignStreamerLoginCoordinator(
     StreamerOwnershipRegistrar? ownershipRegistrar = null,
     SessionReplacedNotifier? sessionNotifier = null,
     StreamerRouteSourceRegistrar? routeSourceRegistrar = null,
-    StreamerResumeReadyReporter? resumeReadyReporter = null)
+    StreamerResumeReadyReporter? resumeReadyReporter = null,
+    StreamerMatchIntentSubmitter? matchIntentSubmitter = null)
 {
     public async Task<StreamerLoginReady> LoginAsync(string callerTenantId, LoginCommand command,
         CancellationToken cancellationToken = default)
@@ -309,6 +310,16 @@ public sealed class RedesignStreamerLoginCoordinator(
         if (routeSourceRegistrar is not null)
             await routeSourceRegistrar.RegisterAsync(callerTenantId, gameId, access.StreamerId,
                 binding.BindingId, binding.Generation, cancellationToken);
+        // The mount's match intent (FIX-LINK-03): the business path submits through the control
+        // plane, which gates on the registered route source above. Best-effort like the
+        // registration — a refused or lost intent never fails the mount. The partition is the
+        // business default (no client-declared rules), composed in the same shape as the
+        // gateway's EdgeQueueKeys.PartitionFor: intents only meet inside one partition, so
+        // business-path mounts meet each other, never a rules-declaring client's window.
+        if (matchIntentSubmitter is not null)
+            await matchIntentSubmitter.SubmitAsync(callerTenantId, gameId, access.StreamerId,
+                binding.BindingId, binding.Generation, access.SessionId,
+                $"{callerTenantId}/{gameId}/-/default", operationId, cancellationToken);
         return binding;
     }
 
