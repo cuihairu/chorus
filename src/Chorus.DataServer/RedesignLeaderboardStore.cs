@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Json;
 using Chorus.Rpc;
 using IdempotencyConflictException = Chorus.Data.IdempotencyConflictException;
 using Npgsql;
@@ -190,7 +192,8 @@ public sealed class RedesignLeaderboardStore
         }
 
         if (!claimed)
-            return await ReadAppliedEffectAsync(board, subjectId, effectId, delta, connection, transaction, cancellationToken);
+            return await ReadAppliedEffectAsync(board, subjectId, effectId, delta, ScoreEffectKind,
+                connection, transaction, cancellationToken);
 
         var score = await AccumulateAsync(board, subjectId, delta, connection, transaction, cancellationToken);
         await using (var record = new NpgsqlCommand("""
@@ -205,18 +208,18 @@ public sealed class RedesignLeaderboardStore
     }
 
     /// <summary>
-    /// The duplicate path of <see cref="ApplyScoreEffectAsync"/>: the effect was already
-    /// applied. The same projection (board key, subject, delta) answers the stored score
-    /// with <see cref="LeaderboardEffectResult.Duplicate"/> set; a different one is a
-    /// visible conflict — an EffectId can never be re-projected, moved to another board or
-    /// silently re-amounted.
+    /// The duplicate path of an idempotent apply: the row was already applied. The same
+    /// projection (board key, subject, delta, kind) answers the stored score with
+    /// <see cref="LeaderboardEffectResult.Duplicate"/> set; a different one is a visible
+    /// conflict — an id (an EffectId or a GM operation id) can never be re-projected, moved
+    /// to another board or silently re-amounted.
     /// </summary>
     private static async Task<LeaderboardEffectResult> ReadAppliedEffectAsync(LeaderboardBoard board,
-        string subjectId, string effectId, long delta,
+        string subjectId, string effectId, long delta, string kind,
         NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
         await using var read = new NpgsqlCommand("""
-            SELECT tenant_id,game_id,board_id,period_id,scope_id,subject_type,subject_id,delta,score
+            SELECT tenant_id,game_id,board_id,period_id,scope_id,subject_type,subject_id,delta,score,kind
             FROM game.leaderboard_effect WHERE effect_id=@effect
             """, connection, transaction);
         read.Parameters.AddWithValue("effect", effectId);
@@ -228,7 +231,8 @@ public sealed class RedesignLeaderboardStore
         var same = key == board.Key
             && (RankSubject)reader.GetInt16(5) == board.Subject
             && StringComparer.Ordinal.Equals(reader.GetString(6), subjectId)
-            && reader.GetInt64(7) == delta;
+            && reader.GetInt64(7) == delta
+            && StringComparer.Ordinal.Equals(reader.GetString(9), kind);
         if (!same)
             throw new IdempotencyConflictException();
         return new LeaderboardEffectResult(reader.GetInt64(8), Duplicate: true);
@@ -502,6 +506,266 @@ public sealed class RedesignLeaderboardStore
         }
         return entries.Count == 0 ? null : new LeaderboardAroundResult(entries, version);
     }
+
+    /// <summary>FIX-RANK-08: the GM correction ledger kind (a signed delta a GM operator
+    /// applied onto one subject's entry — a maintenance row, not a committed game effect).</summary>
+    public const string GmAdjustKind = "gm-adjust";
+
+    /// <summary>FIX-RANK-08: the GM reset ledger kind (zero one subject's entry, or the whole
+    /// board's when the row carries no subject).</summary>
+    public const string GmResetKind = "gm-reset";
+
+    /// <summary>
+    /// FIX-RANK-08: one GM correction — a signed delta onto one subject's entry of a named
+    /// board/period/scope, exactly once per operation id, under the caller's transaction
+    /// (developer-capabilities.md「GM adjustment/reset names the board, period and scope and
+    /// includes expected version, operation ID, reason and audit evidence」). The operation id
+    /// is the idempotency key and the audit anchor: a replay or a lost-response retry answers
+    /// the stored score as a duplicate, and the same id with a different projection is a
+    /// visible conflict, never a silent re-amount. The expected version refuses a correction
+    /// over a board that changed since the operator last read it. The correction row is a
+    /// ledger row (kind <see cref="GmAdjustKind"/>, with its reason and operator), so a
+    /// rebuild reproduces it — original scoring evidence stays available and a correction is
+    /// never silently lost. Returns the resulting score and whether it was already applied.
+    /// </summary>
+    public async Task<LeaderboardEffectResult> AdjustEntryAsync(LeaderboardBoard board,
+        string subjectId, long delta, string expectedVersion, string operationId, string reason,
+        string operatorId, NpgsqlConnection connection, NpgsqlTransaction transaction,
+        CancellationToken cancellationToken = default)
+    {
+        board.Validate();
+        if (string.IsNullOrWhiteSpace(subjectId))
+            throw new ArgumentException("A subject id must not be empty.", nameof(subjectId));
+        if (string.IsNullOrWhiteSpace(operationId))
+            throw new ArgumentException("A GM correction needs its operation id (the idempotency and audit anchor).", nameof(operationId));
+        await RequireVersionAsync(board, expectedVersion, connection, transaction, cancellationToken);
+
+        bool claimed;
+        await using (var claim = new NpgsqlCommand("""
+            INSERT INTO game.leaderboard_effect(effect_id,tenant_id,game_id,board_id,period_id,scope_id,
+                subject_type,subject_id,delta,score,kind,reason,operator_id)
+            VALUES (@effect,@tenant,@game,@board,@period,@scope,@subject,@subject_id,@delta,0,@kind,@reason,@operator)
+            ON CONFLICT (effect_id) DO NOTHING
+            RETURNING effect_id
+            """, connection, transaction))
+        {
+            AddEffectParameters(claim, board, subjectId, operationId, delta);
+            claim.Parameters.AddWithValue("kind", GmAdjustKind);
+            claim.Parameters.AddWithValue("reason", reason ?? "");
+            claim.Parameters.AddWithValue("operator", operatorId ?? "");
+            claimed = await claim.ExecuteScalarAsync(cancellationToken) is not null;
+        }
+        if (!claimed)
+            return await ReadAppliedEffectAsync(board, subjectId, operationId, delta, GmAdjustKind,
+                connection, transaction, cancellationToken);
+
+        var score = await AccumulateAsync(board, subjectId, delta, connection, transaction, cancellationToken);
+        await using (var record = new NpgsqlCommand("""
+            UPDATE game.leaderboard_effect SET score=@score WHERE effect_id=@effect
+            """, connection, transaction))
+        {
+            record.Parameters.AddWithValue("score", score);
+            record.Parameters.AddWithValue("effect", operationId);
+            await record.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await WriteAuditAsync(operationId, operatorId ?? "", reason ?? "", board,
+            "leaderboard.adjust", new { board.BoardId, board.Period.PeriodId, board.Scope.ScopeId, SubjectId = subjectId, Delta = delta },
+            connection, transaction, cancellationToken);
+        return new LeaderboardEffectResult(score, Duplicate: false);
+    }
+
+    /// <summary>
+    /// FIX-RANK-08: one GM reset — zero one subject's entry (or the whole board's when
+    /// <paramref name="subjectId"/> is null or empty), exactly once per operation id, under
+    /// the caller's transaction. Same idempotency, version guard, evidence and rebuild-fidelity
+    /// as <see cref="AdjustEntryAsync"/>; the reset is a ledger row (kind
+    /// <see cref="GmResetKind"/>, no subject for a whole-board reset) so a rebuild reproduces
+    /// it. Returns whether it was already applied.
+    /// </summary>
+    public async Task<LeaderboardEffectResult> ResetBoardAsync(LeaderboardBoard board,
+        string? subjectId, string expectedVersion, string operationId, string reason, string operatorId,
+        NpgsqlConnection connection, NpgsqlTransaction transaction,
+        CancellationToken cancellationToken = default)
+    {
+        board.Validate();
+        if (string.IsNullOrWhiteSpace(operationId))
+            throw new ArgumentException("A GM reset needs its operation id (the idempotency and audit anchor).", nameof(operationId));
+        await RequireVersionAsync(board, expectedVersion, connection, transaction, cancellationToken);
+        var subject = subjectId ?? "";
+
+        bool claimed;
+        await using (var claim = new NpgsqlCommand("""
+            INSERT INTO game.leaderboard_effect(effect_id,tenant_id,game_id,board_id,period_id,scope_id,
+                subject_type,subject_id,delta,score,kind,reason,operator_id)
+            VALUES (@effect,@tenant,@game,@board,@period,@scope,@subject,@subject_id,0,0,@kind,@reason,@operator)
+            ON CONFLICT (effect_id) DO NOTHING
+            RETURNING effect_id
+            """, connection, transaction))
+        {
+            AddEffectParameters(claim, board, subject, operationId, 0);
+            claim.Parameters.AddWithValue("kind", GmResetKind);
+            claim.Parameters.AddWithValue("reason", reason ?? "");
+            claim.Parameters.AddWithValue("operator", operatorId ?? "");
+            claimed = await claim.ExecuteScalarAsync(cancellationToken) is not null;
+        }
+        if (!claimed)
+            return await ReadAppliedEffectAsync(board, subject, operationId, 0, GmResetKind,
+                connection, transaction, cancellationToken);
+
+        await using (var clear = new NpgsqlCommand("""
+            DELETE FROM game.leaderboard_entry
+            WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
+              AND period_id=@period AND scope_id=@scope AND subject_type=@subject
+              AND (@subject_id = '' OR subject_id = @subject_id)
+            """, connection, transaction))
+        {
+            AddKeyParameters(clear, board, subject);
+            await clear.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await WriteAuditAsync(operationId, operatorId ?? "", reason ?? "", board,
+            "leaderboard.reset",
+            new { board.BoardId, board.Period.PeriodId, board.Scope.ScopeId, SubjectId = subject },
+            connection, transaction, cancellationToken);
+        return new LeaderboardEffectResult(0, Duplicate: false);
+    }
+
+    /// <summary>
+    /// FIX-RANK-08: the projection rebuild of one board — re-derives the board's entries from
+    /// its effect ledger (game effects and GM rows in apply order), under the caller's
+    /// transaction (developer-capabilities.md「projection rebuild cannot add the same score
+    /// twice」). The ledger is the source and the entries are the derived cache: a rebuild
+    /// never reads the entries it is about to rewrite and never touches the committed outbox
+    /// rows, so original scoring evidence is untouched and replaying cannot double-add (the
+    /// replay is a re-derivation, not a re-apply). The board's existing entry rows are locked
+    /// for update first, so a concurrent apply serializes against the rewrite: an apply that
+    /// committed before the ledger read is included; one that has not committed is invisible
+    /// to the ledger read and re-applies on top of the rebuilt rows after commit — the entries
+    /// never silently diverge from the ledger. Returns the number of rebuilt entries and the
+    /// board's new version.
+    /// </summary>
+    public async Task<LeaderboardRebuildResult> RebuildBoardAsync(LeaderboardBoard board,
+        NpgsqlConnection connection, NpgsqlTransaction transaction,
+        CancellationToken cancellationToken = default)
+    {
+        board.Validate();
+        // Lock the existing entry rows so a concurrent apply to an existing subject serializes
+        // against the rewrite (the ledger read below is the same snapshot the rewrite commits).
+        await using (var lockRows = new NpgsqlCommand("""
+            SELECT subject_id FROM game.leaderboard_entry
+            WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
+              AND period_id=@period AND scope_id=@scope AND subject_type=@subject
+            FOR UPDATE
+            """, connection, transaction))
+        {
+            AddKeyParameters(lockRows, board, null);
+            await lockRows.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var running = new Dictionary<string, long>(StringComparer.Ordinal);
+        await using (var ledger = new NpgsqlCommand("""
+            SELECT subject_id, delta, kind FROM game.leaderboard_effect
+            WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
+              AND period_id=@period AND scope_id=@scope AND subject_type=@subject
+            ORDER BY applied_at ASC, effect_id ASC
+            """, connection, transaction))
+        {
+            AddKeyParameters(ledger, board, null);
+            await using var reader = await ledger.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var subject = reader.GetString(0);
+                var delta = reader.GetInt64(1);
+                var kind = reader.GetString(2);
+                if (kind == GmResetKind)
+                {
+                    if (subject.Length == 0) running.Clear();
+                    else running.Remove(subject);
+                    continue;
+                }
+                var current = running.GetValueOrDefault(subject);
+                if (!LeaderboardScoring.TryAccumulate(current, delta, board.Aggregation, board.Bounds, out var next))
+                    throw new InvalidOperationException(
+                        $"The effect ledger for board {board.BoardId} cannot be replayed under the board's bounds (subject {subject}, delta {delta}).");
+                running[subject] = next;
+            }
+        }
+
+        await using (var clear = new NpgsqlCommand("""
+            DELETE FROM game.leaderboard_entry
+            WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
+              AND period_id=@period AND scope_id=@scope AND subject_type=@subject
+            """, connection, transaction))
+        {
+            AddKeyParameters(clear, board, null);
+            await clear.ExecuteNonQueryAsync(cancellationToken);
+        }
+        foreach (var (subject, score) in running)
+        {
+            await using var write = new NpgsqlCommand("""
+                INSERT INTO game.leaderboard_entry(tenant_id,game_id,board_id,period_id,scope_id,
+                    subject_type,subject_id,score)
+                VALUES (@tenant,@game,@board,@period,@scope,@subject,@subject_id,@score)
+                """, connection, transaction);
+            AddKeyParameters(write, board, subject);
+            write.Parameters.AddWithValue("score", score);
+            await write.ExecuteNonQueryAsync(cancellationToken);
+        }
+        var version = await ReadBoardVersionAsync(board, connection, transaction, cancellationToken);
+        return new LeaderboardRebuildResult(running.Count, version);
+    }
+
+    /// <summary>The board's read version at the caller's transaction view (an empty board answers
+    /// <see cref="DateTimeOffset.MinValue"/>).</summary>
+    public async Task<DateTimeOffset> ReadBoardVersionAsync(LeaderboardBoard board,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var read = new NpgsqlCommand("""
+            SELECT max(updated_at) FROM game.leaderboard_entry
+            WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
+              AND period_id=@period AND scope_id=@scope AND subject_type=@subject
+            """, connection, transaction);
+        AddKeyParameters(read, board, null);
+        var value = await read.ExecuteScalarAsync(cancellationToken);
+        return value is null or DBNull ? DateTimeOffset.MinValue : ToOffset(Convert.ToDateTime(value));
+    }
+
+    /// <summary>The optimistic guard: a non-empty expected version must equal the board's
+    /// current version, else the board changed since the operator last read it — the correction
+    /// or reset is refused, never silently applied over a change.</summary>
+    private async Task RequireVersionAsync(LeaderboardBoard board, string expectedVersion,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        if (expectedVersion.Length == 0) return;
+        var current = await ReadBoardVersionAsync(board, connection, transaction, cancellationToken);
+        if (!string.Equals(FormatVersion(current), expectedVersion, StringComparison.Ordinal))
+            throw new LeaderboardStaleReadException(
+                "The board changed since the operator's read version; reload the board and retry.");
+    }
+
+    /// <summary>Writes one control-plane audit row (the GM evidence) in the caller's
+    /// transaction. A duplicate (request id, command) pair would mean the operation already
+    /// acted, but the operation-id ledger claim runs first and only the first claim reaches
+    /// here, so the insert succeeds exactly once per operation.</summary>
+    private async Task WriteAuditAsync(string requestId, string operatorId, string reason,
+        LeaderboardBoard board, string command, object detail,
+        NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var insert = new NpgsqlCommand("""
+            INSERT INTO control.audit(request_id,operator,reason,scope,command,detail)
+            VALUES (@request,@operator,@reason,@scope,@command,@detail::jsonb)
+            """, connection, transaction);
+        insert.Parameters.AddWithValue("request", requestId);
+        insert.Parameters.AddWithValue("operator", operatorId);
+        insert.Parameters.AddWithValue("reason", reason);
+        insert.Parameters.AddWithValue("scope",
+            $"{board.BoardId}/{board.Period.PeriodId}/{board.Scope.ScopeId}");
+        insert.Parameters.AddWithValue("command", command);
+        insert.Parameters.AddWithValue("detail", JsonSerializer.Serialize(detail));
+        await insert.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static string FormatVersion(DateTimeOffset version) =>
+        version == DateTimeOffset.MinValue ? "" : version.ToString("O", CultureInfo.InvariantCulture);
 
     private static DateTimeOffset ToOffset(DateTime stamped) =>
         stamped.Kind == DateTimeKind.Utc

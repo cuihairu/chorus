@@ -556,6 +556,19 @@ service Leaderboard {
   // FIX-RANK-05: the entries within a bounded window of a subject's rank (the subject
   // included), in rank order, at one read view. Absent when the subject has not scored.
   rpc GetAroundMe(GetAroundMeRequest) returns (AroundReply);
+  // FIX-RANK-08: the GM correction — a signed delta onto one subject's entry of a named
+  // board/period/scope. The operation id is the idempotency key and the audit anchor; the
+  // reason and the caller identity are the audit evidence; the expected version refuses a
+  // correction over a board that changed since the operator last read it.
+  rpc AdjustBoard(AdjustBoardRequest) returns (AdjustBoardReply);
+  // FIX-RANK-08: the GM reset — zero one subject's entry (or the whole board's when no
+  // subject is named). Same guards and evidence as the adjustment.
+  rpc ResetBoard(ResetBoardRequest) returns (ResetBoardReply);
+  // FIX-RANK-08: the projection rebuild — re-derives the board's entries from its effect
+  // ledger (game effects and GM rows in apply order), never from the entries themselves.
+  // Replaying the ledger cannot add a score twice: the ledger is the source, the entries
+  // are the derived cache. Original scoring evidence stays untouched.
+  rpc RebuildBoard(RebuildBoardRequest) returns (RebuildBoardReply);
 }
 
 // Authoritative frame commits and round inbox reads (architecture 8.2, 6.1.6). Only the
@@ -1009,6 +1022,62 @@ message ApplyScoreEffectRequest {
 message ApplyScoreEffectReply {
   int64 score = 1;
   bool duplicate = 2;
+}
+
+// FIX-RANK-08: the GM correction of one subject's entry of a named board/period/scope. The
+// board definition carries the board/period/scope the operation names; the delta is the signed
+// correction; expected_version is the board's read version the operator last saw (an empty
+// board answers the empty version, so a correction over an empty board requires the empty
+// version); operation_id is the idempotency key and the audit anchor; reason is the audit
+// evidence. The data plane never invents a correction amount — it applies exactly what the
+// operation names, exactly once per operation id.
+message AdjustBoardRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  string subject_id = 4;
+  int64 delta = 5;
+  string expected_version = 6;
+  string operation_id = 7;
+  string reason = 8;
+}
+
+message AdjustBoardReply {
+  int64 score = 1;
+  bool duplicate = 2;
+  string version = 3;
+}
+
+// FIX-RANK-08: the GM reset of one subject's entry (or the whole board's when subject_id is
+// empty). Same guards and evidence as the adjustment.
+message ResetBoardRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  string subject_id = 4;
+  string expected_version = 5;
+  string operation_id = 6;
+  string reason = 7;
+}
+
+message ResetBoardReply {
+  bool duplicate = 1;
+  string version = 2;
+}
+
+// FIX-RANK-08: the projection rebuild of one board. The board definition names the
+// board/period/scope to rebuild; the data plane re-derives the entries from the effect ledger
+// (game effects and GM rows in apply order). A rebuild never reads the entries it is about to
+// rewrite and never touches the committed outbox rows — original scoring evidence remains.
+message RebuildBoardRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+}
+
+message RebuildBoardReply {
+  int32 entries = 1;
+  string version = 2;
 }
 
 // FIX-RANK-04: the bounded TopN of a board. The board definition is the RANK-01 contract

@@ -338,6 +338,10 @@ public sealed class LeaderboardRejectedException(string message) : Exception(mes
 /// stored score, never a second delta).</summary>
 public sealed record LeaderboardEffectResult(long Score, bool Duplicate);
 
+/// <summary>FIX-RANK-08: the result of rebuilding one board's projection from its effect
+/// ledger — the number of entries re-derived and the board's version at the same snapshot.</summary>
+public sealed record LeaderboardRebuildResult(int Entries, DateTimeOffset Version);
+
 /// <summary>
 /// FIX-RANK-04: the bounded query page size (developer-capabilities.md「查询」「有限页大小」).
 /// One TopN read answers at most <see cref="MaxTopEntries"/> entries — a query page is bounded,

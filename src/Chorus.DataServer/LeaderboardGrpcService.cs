@@ -195,6 +195,120 @@ public sealed class LeaderboardGrpcService(
         }
     }
 
+    /// <summary>FIX-RANK-08: the GM correction of one subject's entry of a named
+    /// board/period/scope (developer-capabilities.md 「GM adjustment names the board, period and
+    /// scope and includes expected version, operation ID, reason and audit evidence」). The
+    /// operation id is the idempotency key and the audit anchor; the expected version refuses a
+    /// correction over a board that changed since the operator last read it; the correction row
+    /// is a ledger row, so a rebuild reproduces it and original scoring evidence stays available.
+    /// The reply carries the new board version so the operator can continue.</summary>
+    public override async Task<AdjustBoardReply> AdjustBoard(AdjustBoardRequest request, ServerCallContext context)
+    {
+        var caller = Require(context, "control-server");
+        var tenantId = ResolveTenant(caller, request.TenantId);
+        try
+        {
+            var board = ToBoard(tenantId, request.GameId, request.Board);
+            await using var connection = new NpgsqlConnection(leaderboardStore.ConnectionString);
+            await connection.OpenAsync(context.CancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(context.CancellationToken);
+            var result = await leaderboardStore.AdjustEntryAsync(board, request.SubjectId, request.Delta,
+                request.ExpectedVersion, request.OperationId, request.Reason, caller.ProcessInstanceId,
+                connection, transaction, context.CancellationToken);
+            var version = await leaderboardStore.ReadBoardVersionAsync(board, connection, transaction,
+                context.CancellationToken);
+            await transaction.CommitAsync(context.CancellationToken);
+            return new AdjustBoardReply { Score = result.Score, Duplicate = result.Duplicate, Version = VersionString(version) };
+        }
+        catch (LeaderboardStaleReadException error)
+        {
+            throw new RpcException(new Status(StatusCode.Aborted, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.AlreadyExists,
+                "The operation id was already applied to a different projection."));
+        }
+        catch (LeaderboardRejectedException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
+    /// <summary>FIX-RANK-08: the GM reset of one subject's entry (or the whole board's when no
+    /// subject is named), with the same guards, evidence and rebuild fidelity as the
+    /// adjustment.</summary>
+    public override async Task<ResetBoardReply> ResetBoard(ResetBoardRequest request, ServerCallContext context)
+    {
+        var caller = Require(context, "control-server");
+        var tenantId = ResolveTenant(caller, request.TenantId);
+        try
+        {
+            var board = ToBoard(tenantId, request.GameId, request.Board);
+            await using var connection = new NpgsqlConnection(leaderboardStore.ConnectionString);
+            await connection.OpenAsync(context.CancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(context.CancellationToken);
+            var subject = request.SubjectId.Length > 0 ? request.SubjectId : null;
+            var result = await leaderboardStore.ResetBoardAsync(board, subject, request.ExpectedVersion,
+                request.OperationId, request.Reason, caller.ProcessInstanceId,
+                connection, transaction, context.CancellationToken);
+            var version = await leaderboardStore.ReadBoardVersionAsync(board, connection, transaction,
+                context.CancellationToken);
+            await transaction.CommitAsync(context.CancellationToken);
+            return new ResetBoardReply { Duplicate = result.Duplicate, Version = VersionString(version) };
+        }
+        catch (LeaderboardStaleReadException error)
+        {
+            throw new RpcException(new Status(StatusCode.Aborted, error.Message));
+        }
+        catch (IdempotencyConflictException)
+        {
+            throw new RpcException(new Status(StatusCode.AlreadyExists,
+                "The operation id was already applied to a different projection."));
+        }
+        catch (LeaderboardRejectedException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
+    /// <summary>FIX-RANK-08: the projection rebuild of one board — re-derives the entries from
+    /// the effect ledger (game effects and GM rows in apply order). Replaying the ledger cannot
+    /// add a score twice (it is a re-derivation, not a re-apply), and the committed outbox rows
+    /// are never touched — original scoring evidence remains.</summary>
+    public override async Task<RebuildBoardReply> RebuildBoard(RebuildBoardRequest request, ServerCallContext context)
+    {
+        var caller = Require(context, "control-server");
+        var tenantId = ResolveTenant(caller, request.TenantId);
+        try
+        {
+            var board = ToBoard(tenantId, request.GameId, request.Board);
+            await using var connection = new NpgsqlConnection(leaderboardStore.ConnectionString);
+            await connection.OpenAsync(context.CancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(context.CancellationToken);
+            var result = await leaderboardStore.RebuildBoardAsync(board, connection, transaction,
+                context.CancellationToken);
+            await transaction.CommitAsync(context.CancellationToken);
+            return new RebuildBoardReply { Entries = result.Entries, Version = VersionString(result.Version) };
+        }
+        catch (LeaderboardRejectedException error)
+        {
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
     private static RankEntryProto ToProto(RankEntry entry) => new()
     {
         Subject = (int)entry.Subject, SubjectId = entry.SubjectId, Score = entry.Score

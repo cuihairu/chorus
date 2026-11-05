@@ -48,6 +48,7 @@
     <EmbeddedResource Include="Schema/0037_leaderboard_entry.sql" />
     <EmbeddedResource Include="Schema/0038_leaderboard_effect.sql" />
     <EmbeddedResource Include="Schema/0039_outbox_committed_at.sql" />
+    <EmbeddedResource Include="Schema/0040_leaderboard_gm.sql" />
   </ItemGroup>
 
 </Project>
