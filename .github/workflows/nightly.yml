@@ -173,3 +173,35 @@ jobs:
               --repo "$GITHUB_REPOSITORY"
           fi
           gh release view nightly --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease -q '"nightly release: " + .tagName + " prerelease=" + (.isPrerelease|tostring)'
+
+  windows:
+    runs-on: windows-latest
+    needs: version
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore Chorus.sln
+
+      - name: Publish server (self-contained win-x64)
+        run: dotnet publish src/Chorus.Server -c Release -r win-x64 --self-contained true -o dist/chorus-server
+
+      - name: Publish node agent (self-contained win-x64)
+        run: dotnet publish src/Chorus.NodeAgent -c Release -r win-x64 --self-contained true -o dist/chorus-node-agent
+
+      - name: Package nightly zip
+        shell: pwsh
+        run: Compress-Archive -Path dist/* -DestinationPath chorus-nightly-windows-x64.zip
+
+      - name: Upload nightly artifact (windows)
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: chorus-nightly-windows
+          path: chorus-nightly-windows-x64.zip
+          retention-days: 14
+          if-no-files-found: error
