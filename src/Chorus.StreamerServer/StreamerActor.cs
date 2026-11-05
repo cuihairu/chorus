@@ -152,6 +152,35 @@ public sealed class StreamerActor(string tenantId, string streamerId)
         }
     }
 
+    /// <summary>
+    /// Fills the mount's round participation (FIX-LINK-04): the control plane's
+    /// participation-commit notice names the room the binding's round pointer advanced to. The
+    /// notice is idempotent — a repeat at the same generation is a no-op, older evidence never
+    /// regresses a newer round, and a binding that moved on (or an absent mount) ignores the
+    /// stale notice. The database stays authoritative; this is the prompt in-memory projection
+    /// the mount binds its room from without a poll.
+    /// </summary>
+    public async Task OnParticipationCommittedAsync(string bindingId, long bindingGeneration,
+        string? roomId, long roundGeneration, CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var facts = Facts;
+            var binding = facts?.ActiveBinding;
+            if (binding is null) return;
+            if (!StringComparer.Ordinal.Equals(binding.BindingId, bindingId)) return;
+            if (binding.Generation != bindingGeneration) return;
+            if (binding.RoundGeneration >= roundGeneration) return;
+            Facts = new StreamerActorFacts(facts!.SessionOnline, facts.SessionCurrent, facts.SessionVersion,
+                facts.LiveOpen, binding with { CurrentRoomId = roomId, RoundGeneration = roundGeneration });
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     /// <summary>Begins teardown; only valid from Ready or RetainingOffline.</summary>
     public async Task<bool> BeginDeactivateAsync(CancellationToken cancellationToken = default)
     {

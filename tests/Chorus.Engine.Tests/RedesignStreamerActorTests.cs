@@ -222,4 +222,47 @@ public sealed class RedesignStreamerActorTests
         Assert.True(actor.CanUnload);
         Assert.True(restarted.Remove(actor));
     }
+
+    [Fact]
+    public async Task ParticipationCommitFillsTheMountsRoomPointerIdempotently()
+    {
+        var actor = new StreamerActor("tenant-a", "streamer-fake");
+        // A freshly committed mount projects a binding with no room yet (FIX-END-13): the round
+        // participation joins the facts at the commit notice, not the next status read.
+        await actor.OnGameplayBindingAsync(new StreamerBinding("binding-1", "live-1", "game-a", 1, "Ready", false));
+        Assert.Null(actor.Facts!.ActiveBinding!.CurrentRoomId);
+        Assert.Equal(0, actor.Facts.ActiveBinding.RoundGeneration);
+
+        // The participation-commit notice (FIX-LINK-04) names the room the round pointer advanced to.
+        await actor.OnParticipationCommittedAsync("binding-1", 1, "round-1", 3);
+        Assert.Equal("round-1", actor.Facts.ActiveBinding.CurrentRoomId);
+        Assert.Equal(3, actor.Facts.ActiveBinding.RoundGeneration);
+
+        // A repeat at the same generation is a no-op: at-least-once delivery converges.
+        await actor.OnParticipationCommittedAsync("binding-1", 1, "round-1", 3);
+        Assert.Equal("round-1", actor.Facts.ActiveBinding.CurrentRoomId);
+        Assert.Equal(3, actor.Facts.ActiveBinding.RoundGeneration);
+
+        // Older evidence never regresses a newer round.
+        await actor.OnParticipationCommittedAsync("binding-1", 1, "round-0", 2);
+        Assert.Equal("round-1", actor.Facts.ActiveBinding.CurrentRoomId);
+        Assert.Equal(3, actor.Facts.ActiveBinding.RoundGeneration);
+    }
+
+    [Fact]
+    public async Task ParticipationCommitIgnoresAForeignOrSupersededMount()
+    {
+        var actor = new StreamerActor("tenant-a", "streamer-fake");
+        await actor.OnGameplayBindingAsync(new StreamerBinding("binding-1", "live-1", "game-a", 1, "Ready", false));
+        // The payload names another binding: a stale notice from a superseded mount.
+        await actor.OnParticipationCommittedAsync("binding-9", 1, "round-1", 3);
+        Assert.Null(actor.Facts!.ActiveBinding!.CurrentRoomId);
+        // The right binding but an older mount generation: the mount moved on, the notice is moot.
+        await actor.OnParticipationCommittedAsync("binding-1", 0, "round-1", 3);
+        Assert.Null(actor.Facts.ActiveBinding.CurrentRoomId);
+        // No active binding at all (the entity was not mounted): nothing to fill, no error.
+        var unmounted = new StreamerActor("tenant-a", "streamer-fake");
+        await unmounted.OnParticipationCommittedAsync("binding-1", 1, "round-1", 3);
+        Assert.Null(unmounted.Facts);
+    }
 }

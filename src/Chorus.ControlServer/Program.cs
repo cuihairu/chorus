@@ -73,6 +73,13 @@ builder.Services.AddHostedService<RoomEndDiscoveryService>();
 builder.Services.AddSingleton(new StopDeliveryNotifier(serverCertificate, root, nodeAuthority,
     clusterId));
 builder.Services.AddHostedService<EndOperationCoordinatorService>();
+// The participation-commit dispatcher (FIX-LINK-04): each round.started outbox event is
+// delivered to the StreamerServer hosting every participant — the notice the mount binds its
+// new room from, with the durable outbox row as the record and re-push as the reliability leg.
+builder.Services.AddHostedService(serviceProvider => new ParticipationCommitDispatcherService(
+    serviceProvider.GetRequiredService<RedesignControlStore>(),
+    serverCertificate, root, nodeAuthority, clusterId,
+    serviceProvider.GetRequiredService<ILogger<ParticipationCommitDispatcherService>>()));
 // FIX-SYNC-08: the pause/resume driver — lifts a paused round once its ready threshold is
 // met, and terminates one that exceeded its MaxPause by the module's freeze rule. The timeout
 // leg runs first so the deadline is honored strictly.

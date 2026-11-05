@@ -249,7 +249,10 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
         await WriteOutboxAsync($"{roomId}/0/start", "round.started", new
         {
             RoomId = roomId, TenantId = tenantId, GameId = gameId, Epoch = ownershipEpoch,
-            Participants = generations
+            // A tuple serializes as an empty object — System.Text.Json excludes tuple fields by
+            // default — so the participant facts are projected to named properties. The payload
+            // was write-only until the FIX-LINK-04 dispatcher (its first consumer) parsed it.
+            Participants = generations.Select(generation => new { generation.BindingId, generation.Generation })
         }, connection, transaction, cancellationToken);
         crashAfterPointerUpdate?.Invoke();
         return JsonSerializer.Serialize(new RoundAdmission(roomId, roundGeneration, Preparing, ownershipEpoch,

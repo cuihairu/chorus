@@ -143,6 +143,11 @@ builder.Services.AddGrpc();
 
 var app = builder.Build();
 app.MapGrpcService<StreamerSessionGrpcService>();
+// The participation-commit face (FIX-LINK-04): the control plane's dispatcher pushes a mount's
+// round.started commit here, filling the hosted streamer's in-memory binding facts with the
+// room its round pointer advanced to. The handler is idempotent — at-least-once delivery
+// converges, and a lost notice is the query fallback (FIX-LINK-05).
+app.MapGrpcService<ParticipationNotifyGrpcService>();
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
