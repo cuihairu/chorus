@@ -152,28 +152,6 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      - name: Publish rolling nightly release (linux assets)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          NOTES="Rolling nightly build of main at ${GITHUB_SHA}. Updated automatically by the nightly workflow."
-          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload nightly \
-              chorus-nightly-linux-x64.tar.gz \
-              chorus-server_*_amd64.deb \
-              chorus-server-*.x86_64.rpm \
-              --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit nightly --prerelease --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create nightly \
-              chorus-nightly-linux-x64.tar.gz \
-              chorus-server_*_amd64.deb \
-              chorus-server-*.x86_64.rpm \
-              --prerelease --title "Nightly build" --notes "$NOTES" \
-              --repo "$GITHUB_REPOSITORY"
-          fi
-          gh release view nightly --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease -q '"nightly release: " + .tagName + " prerelease=" + (.isPrerelease|tostring)'
-
   windows:
     runs-on: windows-latest
     needs: version
