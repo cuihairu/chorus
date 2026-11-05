@@ -341,25 +341,62 @@ public sealed class RedesignLeaderboardStore
     public async Task<LeaderboardTopResult> ReadTopWithVersionAsync(LeaderboardBoard board, int maxEntries,
         CancellationToken cancellationToken = default)
     {
+        var page = await ReadTopPageAsync(board, maxEntries, null, null, cancellationToken);
+        return new LeaderboardTopResult(page.Entries, page.ReadVersion);
+    }
+
+    /// <summary>
+    /// FIX-RANK-06: one bounded page of a paginated TopN walk (developer-capabilities.md
+    /// 「稳定分页」). The first page (<paramref name="afterScore"/> null) reads from the top of
+    /// the board; a continuation resumes strictly after the previous page's last entry's
+    /// keyset (<paramref name="afterScore"/>/<paramref name="afterSubjectId"/> — score
+    /// descending, subject id ascending, the RANK-01 order), so a walk never overlaps or skips
+    /// an entry. The page and the board's read version are one snapshot (single SELECT with
+    /// <c>max(updated_at) OVER ()</c>). One row past the page bound is read to know whether
+    /// more remain (so a continuation that would answer an empty page is never issued). The
+    /// page's <see cref="LeaderboardPageResult.NextCursor"/> is null here — the data plane
+    /// issues the cursor (it carries the snapshot deadline the store does not know).
+    /// </summary>
+    public async Task<LeaderboardPageResult> ReadTopPageAsync(LeaderboardBoard board, int maxEntries,
+        long? afterScore, string? afterSubjectId, CancellationToken cancellationToken = default)
+    {
         board.Validate();
         if (maxEntries is <= 0 or > MaxTopEntries)
             throw new ArgumentOutOfRangeException(nameof(maxEntries));
+        if (afterScore is null != (afterSubjectId is null))
+            throw new ArgumentException("A continuation keyset is both score and subject, or neither.");
+        var keyset = afterScore is not null;
+        var sql = keyset
+            ? """
+              SELECT subject_id, score, max(updated_at) OVER () AS board_version
+              FROM game.leaderboard_entry
+              WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
+                AND period_id=@period AND scope_id=@scope AND subject_type=@subject
+                AND (score < @after_score OR (score = @after_score AND subject_id > @after_subject))
+              ORDER BY score DESC, subject_id ASC
+              LIMIT @max
+              """
+            : """
+              SELECT subject_id, score, max(updated_at) OVER () AS board_version
+              FROM game.leaderboard_entry
+              WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
+                AND period_id=@period AND scope_id=@scope AND subject_type=@subject
+              ORDER BY score DESC, subject_id ASC
+              LIMIT @max
+              """;
         await using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
         var entries = new List<RankEntry>();
         var version = DateTimeOffset.MinValue;
-        await using (var read = new NpgsqlCommand("""
-            SELECT subject_id, score, max(updated_at) OVER () AS board_version
-            FROM game.leaderboard_entry
-            WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
-              AND period_id=@period AND scope_id=@scope
-              AND subject_type=@subject
-            ORDER BY score DESC, subject_id ASC
-            LIMIT @max
-            """, connection))
+        await using (var read = new NpgsqlCommand(sql, connection))
         {
             AddKeyParameters(read, board, null);
-            read.Parameters.AddWithValue("max", maxEntries);
+            if (keyset)
+            {
+                read.Parameters.AddWithValue("after_score", afterScore!.Value);
+                read.Parameters.AddWithValue("after_subject", afterSubjectId!);
+            }
+            read.Parameters.AddWithValue("max", maxEntries + 1);
             await using var reader = await read.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
@@ -373,7 +410,9 @@ public sealed class RedesignLeaderboardStore
                 entries.Add(new RankEntry(board.Subject, reader.GetString(0), reader.GetInt64(1)));
             }
         }
-        return new LeaderboardTopResult(entries, version);
+        var hasMore = entries.Count > maxEntries;
+        if (hasMore) entries.RemoveAt(entries.Count - 1);
+        return new LeaderboardPageResult(entries, version, hasMore, null);
     }
 
     /// <summary>

@@ -1017,6 +1017,11 @@ message GetTopRequest {
   // non-empty value that differs from the board's current version is a stale read (the
   // board changed; the caller must restart), never a cross-version page.
   string expected_version = 5;
+  // FIX-RANK-06: an opaque continuation cursor issued with the previous page (empty on a
+  // first page). It carries the snapshot's write version and its bounded lifetime — a
+  // continuation whose board changed or whose snapshot expired is a stale read (an explicit
+  // error), never a cross-version seemingly-contiguous page.
+  string cursor = 6;
 }
 
 message RankEntryProto {
@@ -1031,6 +1036,30 @@ message TopNReply {
   // The board's read version (ISO-8601 UTC; empty when the board has never scored).
   string read_version = 2;
   repeated RankEntryProto entries = 3;
+  // FIX-RANK-06: the continuation cursor for the next page of the same snapshot; empty when
+  // this page is the last (the store read one row past the page bound to know).
+  string next_cursor = 4;
+}
+
+// FIX-RANK-06: the pagination cursor — the snapshot a page belongs to (board identity +
+// write version + bounded lifetime) and where to resume (the last entry's keyset). The data
+// plane encodes it opaquely; a continuation is valid only while the board's write version is
+// unchanged and the lifetime has not expired, so a walk can never stitch pages across
+// versions.
+message LeaderboardCursorProto {
+  string tenant_id = 1;
+  string game_id = 2;
+  string board_id = 3;
+  // The snapshot's write version (the board's read version when the walk began; ISO-8601
+  // UTC, empty when the board had never scored).
+  string write_version = 4;
+  // The snapshot's expiry (Unix ms UTC). Issued at the first page; continuations keep it,
+  // so the whole walk is bounded, not refreshed per page.
+  int64 deadline_utc_ms = 5;
+  // The last entry of the page read so far — the next page resumes strictly after this
+  // keyset (score descending, subject id ascending).
+  int64 last_score = 6;
+  string last_subject_id = 7;
 }
 
 // FIX-RANK-05: one subject's position. The board definition names the queried board; the

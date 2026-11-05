@@ -91,7 +91,11 @@ public sealed class LeaderboardGrpcService(
     /// version at the same snapshot (FIX-RANK-04). The query authorizes by role and tenant;
     /// a caller that bound its page to an expected version gets a stale read when the board
     /// changed since — the answer is never a cross-version page. An empty board answers an
-    /// empty page and an empty version.</summary>
+    /// empty page and an empty version. A continuation (FIX-RANK-06) passes the cursor the
+    /// previous page issued; the cursor names the same board, the same write version and a
+    /// bounded snapshot lifetime, so a page after a board change or an expired snapshot is a
+    /// stale read — never a cross-version seemingly-contiguous page. The reply carries the
+    /// next page's cursor exactly when more entries remain.</summary>
     public override async Task<TopNReply> GetTop(GetTopRequest request, ServerCallContext context)
     {
         var caller = Require(context, "control-server", "game-server", "streamer-server");
@@ -99,18 +103,33 @@ public sealed class LeaderboardGrpcService(
         try
         {
             var board = ToBoard(tenantId, request.GameId, request.Board);
-            var result = await leaderboardStore.ReadTopWithVersionAsync(board, request.MaxEntries,
-                context.CancellationToken);
-            var version = VersionString(result.ReadVersion);
+            LeaderboardCursorProto? cursor = null;
+            if (request.Cursor.Length > 0 && !LeaderboardCursor.TryParse(request.Cursor, out cursor))
+                throw new ArgumentException("The cursor is malformed.");
+            var now = DateTimeOffset.UtcNow;
+            var page = await leaderboardStore.ReadTopPageAsync(board, request.MaxEntries,
+                cursor?.LastScore, cursor?.LastSubjectId, context.CancellationToken);
+            var version = VersionString(page.ReadVersion);
+            if (cursor is not null && !LeaderboardCursor.IsValid(cursor, tenantId, board.GameId,
+                    board.BoardId, version, now, out var cursorReason))
+                throw new LeaderboardStaleReadException(cursorReason);
             if (request.ExpectedVersion.Length > 0
                 && !string.Equals(request.ExpectedVersion, version, StringComparison.Ordinal))
                 throw new LeaderboardStaleReadException(
                     "The board changed since the caller's read version; restart the read.");
             var reply = new TopNReply { BoardId = board.BoardId, ReadVersion = version };
-            reply.Entries.Add(result.Entries.Select(entry => new RankEntryProto
+            reply.Entries.Add(page.Entries.Select(entry => new RankEntryProto
             {
                 Subject = (int)entry.Subject, SubjectId = entry.SubjectId, Score = entry.Score
             }));
+            if (page.HasMore)
+            {
+                var deadline = cursor is not null
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(cursor.DeadlineUtcMs)
+                    : now.AddSeconds(LeaderboardQueryLimits.SnapshotTtlSeconds);
+                reply.NextCursor = LeaderboardCursor.Encode(LeaderboardCursor.Make(
+                    tenantId, board.GameId, board.BoardId, version, deadline, page.Entries[^1]));
+            }
             return reply;
         }
         catch (LeaderboardStaleReadException error)

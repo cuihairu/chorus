@@ -1,4 +1,5 @@
 using System.Globalization;
+using Google.Protobuf;
 
 namespace Chorus.Rpc;
 
@@ -351,6 +352,14 @@ public static class LeaderboardQueryLimits
     /// plus this many neighbours on each side of its rank (a bounded window, never one
     /// unbounded answer over a whole board).</summary>
     public const int MaxAroundWindow = 50;
+
+    /// <summary>FIX-RANK-06: the bounded lifetime of one pagination snapshot
+    /// (developer-capabilities.md「分页实现可返回有期限的快照版本/游标」). A snapshot is issued
+    /// at a page's first read and expires this many seconds later; a continuation after the
+    /// expiry is a stale read (an explicit error), even when the board has not changed — a
+    /// caller cannot hold a snapshot open forever and page across an arbitrarily old view.
+    /// The whole walk is bounded, not refreshed per page.</summary>
+    public const int SnapshotTtlSeconds = 60;
 }
 
 /// <summary>
@@ -394,3 +403,96 @@ public sealed record LeaderboardRankResult(int Rank, RankEntry Entry, DateTimeOf
 /// board when the read answers none.
 /// </summary>
 public sealed record LeaderboardAroundResult(IReadOnlyList<RankedEntry> Entries, DateTimeOffset ReadVersion);
+
+/// <summary>
+/// FIX-RANK-06: one page of a paginated TopN walk (developer-capabilities.md「稳定分页」「分页
+/// 实现可返回有期限的快照版本/游标」) — the bounded page in the board's declared order, the
+/// board's read version at the same snapshot, whether more entries remain, and the opaque
+/// continuation cursor that carries the snapshot's write version and bounded lifetime. The
+/// <see cref="NextCursor"/> is non-empty exactly when <see cref="HasMore"/> — the store read
+/// one row past the page bound to know, so a continuation that would answer an empty page is
+/// never issued. A continuation with <see cref="NextCursor"/> is valid only while the board's
+/// version is unchanged and the snapshot lifetime has not expired; otherwise the read is a
+/// stale read (<see cref="LeaderboardStaleReadException"/>), never a cross-version
+/// seemingly-contiguous page.</summary>
+public sealed record LeaderboardPageResult(
+    IReadOnlyList<RankEntry> Entries, DateTimeOffset ReadVersion, bool HasMore, string? NextCursor);
+
+/// <summary>
+/// FIX-RANK-06: the opaque pagination cursor. The data plane issues it with a page (board
+/// identity + the snapshot's write version + its bounded lifetime + where to resume) and
+/// validates it on continuation, so a walk can only continue within one board, one write
+/// version and one lifetime window. The encode/parse/validate are pure and live in the
+/// contract layer (unit-testable without a cluster); the data plane only calls them.</summary>
+public static class LeaderboardCursor
+{
+    /// <summary>Encodes a cursor into its opaque string form (base64 of the proto bytes).</summary>
+    public static string Encode(LeaderboardCursorProto cursor) => cursor.ToByteString().ToBase64();
+
+    /// <summary>Parses a cursor's opaque string form back into its proto. Returns false when
+    /// the token is not a well-formed cursor (a malformed token is refused, never treated as a
+    /// first page — that would silently stitch a new snapshot over an old walk).</summary>
+    public static bool TryParse(string token, out LeaderboardCursorProto? cursor)
+    {
+        cursor = null;
+        if (string.IsNullOrWhiteSpace(token)) return false;
+        try
+        {
+            var bytes = Convert.FromBase64String(token);
+            var parsed = LeaderboardCursorProto.Parser.ParseFrom(bytes);
+            if (string.IsNullOrEmpty(parsed.BoardId) || string.IsNullOrEmpty(parsed.LastSubjectId))
+                return false;
+            cursor = parsed;
+            return true;
+        }
+        catch (Exception error) when (error is FormatException or InvalidProtocolBufferException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Whether a continuation is still one consistent snapshot: the cursor names the
+    /// same board, its write version equals the board's current version, and the snapshot
+    /// lifetime has not expired. The returned reason is the stale-read detail.</summary>
+    public static bool IsValid(LeaderboardCursorProto cursor, string tenantId, string gameId,
+        string boardId, string writeVersion, DateTimeOffset nowUtc, out string reason)
+    {
+        if (!string.Equals(cursor.TenantId, tenantId, StringComparison.Ordinal)
+            || !string.Equals(cursor.GameId, gameId, StringComparison.Ordinal)
+            || !string.Equals(cursor.BoardId, boardId, StringComparison.Ordinal))
+        {
+            reason = "The cursor belongs to another board.";
+            return false;
+        }
+        if (!string.Equals(cursor.WriteVersion, writeVersion, StringComparison.Ordinal))
+        {
+            reason = "The board changed since the cursor's read version; restart the read.";
+            return false;
+        }
+        var deadline = DateTimeOffset.FromUnixTimeMilliseconds(cursor.DeadlineUtcMs);
+        if (nowUtc > deadline)
+        {
+            reason = "The snapshot expired; restart the read.";
+            return false;
+        }
+        reason = "";
+        return true;
+    }
+
+    /// <summary>Makes a continuation cursor for the next page of the same snapshot: the last
+    /// entry read becomes the resume keyset, and the lifetime is the one the walk began with
+    /// (a fresh <paramref name="freshDeadlineUtc"/> on a first page, the same deadline on a
+    /// continuation) — the whole walk is bounded, never refreshed per page.</summary>
+    public static LeaderboardCursorProto Make(string tenantId, string gameId, string boardId,
+        string writeVersion, DateTimeOffset deadlineUtc, RankEntry last)
+    {
+        if (string.IsNullOrWhiteSpace(last.SubjectId))
+            throw new ArgumentException("A cursor needs a real last entry.", nameof(last));
+        return new LeaderboardCursorProto
+        {
+            TenantId = tenantId, GameId = gameId, BoardId = boardId,
+            WriteVersion = writeVersion, DeadlineUtcMs = deadlineUtc.ToUnixTimeMilliseconds(),
+            LastScore = last.Score, LastSubjectId = last.SubjectId
+        };
+    }
+}

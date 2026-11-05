@@ -79,6 +79,46 @@ public sealed class LeaderboardQueryService(ILeaderboardQueryDataPlane dataPlane
         }
     }
 
+    /// <summary>Answers one page of a paginated TopN walk (developer-capabilities.md「稳定分页」
+    /// 「分页实现可返回有期限的快照版本/游标」). <paramref name="cursor"/> is the continuation
+    /// cursor the previous page carried (null on a first page); the answer carries the next
+    /// page's cursor exactly when more entries remain. A continuation is valid only while the
+    /// board's write version is unchanged and the snapshot lifetime (<see
+    /// cref="LeaderboardQueryLimits.SnapshotTtlSeconds"/>) has not expired — otherwise a
+    /// <see cref="LeaderboardStaleReadException"/> (an explicit error, never a cross-version
+    /// seemingly-contiguous page). The data plane re-authorizes by role and tenant.</summary>
+    public async Task<LeaderboardPageResult> GetTopPageAsync(string tenantId, LeaderboardBoard board,
+        int maxEntries, string? cursor = null, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("A tenant id must not be empty.", nameof(tenantId));
+        board.Validate();
+        if (maxEntries is <= 0 or > LeaderboardQueryLimits.MaxTopEntries)
+            throw new ArgumentOutOfRangeException(nameof(maxEntries), "A query page is bounded.");
+        try
+        {
+            var reply = await dataPlane.GetTopAsync(new GetTopRequest
+            {
+                TenantId = tenantId, GameId = board.GameId,
+                Board = LeaderboardScoringService.ToProto(board), MaxEntries = maxEntries,
+                Cursor = cursor ?? ""
+            }, cancellationToken);
+            var entries = reply.Entries.Select(entry =>
+                new RankEntry((RankSubject)entry.Subject, entry.SubjectId, entry.Score)).ToList();
+            var nextCursor = reply.NextCursor.Length > 0 ? reply.NextCursor : null;
+            return new LeaderboardPageResult(entries, ParseVersion(reply.ReadVersion),
+                nextCursor is not null, nextCursor);
+        }
+        catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition)
+        {
+            throw new LeaderboardStaleReadException(error.Status.Detail);
+        }
+        catch (RpcException error) when (error.StatusCode == StatusCode.InvalidArgument)
+        {
+            throw new ArgumentException(error.Status.Detail);
+        }
+    }
+
     /// <summary>Answers one subject's position on a board — its score, its unique ordinal
     /// rank and the board's read version, at one read view (developer-capabilities.md
     /// 「实时变化榜的个人名次必须对应同一次读取视图」). The caller names the tenant, the board and
