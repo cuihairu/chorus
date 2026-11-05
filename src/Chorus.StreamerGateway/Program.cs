@@ -132,8 +132,13 @@ if (controlEndpoint is { Length: > 0 })
         ?? $"https://localhost:{port}";
     var slotId = Environment.GetEnvironmentVariable("CHORUS_SLOT_ID") ?? $"{identity.NodeId}/{identity.Role}";
     var reportIntervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_REPORT_INTERVAL_MS") ?? "2000");
+    // FIX-LINK-01: the gateway reports Ready only while the control plane its routing source
+    // watches answers — without routing it cannot resolve the rooms it fans pushes to.
+    var readinessControlChannel = ProcessGrpcClientFactory.Create(new Uri(controlEndpoint),
+        serverCertificate, root, nodeAuthority, clusterId, "control-server");
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
-        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
+        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
+        readinessProbe: cancellationToken => DependencyProbe.ProbeControlAsync(readinessControlChannel, cancellationToken)));
     builder.Services.AddHostedService(_ => new RoutingMonitorHost(routingMonitor!));
 }
 

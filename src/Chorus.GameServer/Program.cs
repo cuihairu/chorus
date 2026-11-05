@@ -78,7 +78,10 @@ if (controlEndpoint is { Length: > 0 })
                 root, nodeAuthority, clusterId, "control-server"),
             tenant);
 }
-builder.Services.AddSingleton(new RoomRuntime(DataChannel(), maxActiveRooms, maxDegradedRooms,
+// The host serves every room over one data-plane channel (architecture 9.3); capturing it
+// once lets the runtime and the readiness probe (FIX-LINK-01) share the same connection.
+var dataChannel = DataChannel();
+builder.Services.AddSingleton(new RoomRuntime(dataChannel, maxActiveRooms, maxDegradedRooms,
     maxConcurrentRecoveries, maxQueuedRecoveries, shippedPackages: ShippedPackages(),
     roomEventInboundLimit, roomInboundPerRoom, endReporter, inputTranslator: InputTranslator()));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
@@ -102,7 +105,10 @@ if (controlEndpoint is { Length: > 0 })
             entry.Status.LastCommittedAt?.ToUnixTimeMilliseconds(), entry.Status.StopReason)).ToList(),
         // The budget speaks in the report (FIX-SCHED-02): a host at cap announces Full and
         // the scheduler stops offering it rooms.
-        admission: () => runtime.AdmissionState));
+        admission: () => runtime.AdmissionState,
+        // FIX-LINK-01: the host reports Ready only while the data plane it commits frames
+        // through actually answers — an unreachable data channel must never take new rooms.
+        readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(dataChannel, cancellationToken)));
 }
 builder.Services.AddGrpc();
 

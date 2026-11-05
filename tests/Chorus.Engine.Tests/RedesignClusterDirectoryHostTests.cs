@@ -184,6 +184,55 @@ public sealed class RedesignClusterDirectoryHostTests
     }
 
     [Fact]
+    public async Task AGameHostWhoseDataPlaneIsUnreachableReportsNotReady()
+    {
+        // FIX-LINK-01: the self-report is the host's true state, never an assumed constant. A
+        // game host whose data plane is unreachable cannot commit frames, so it must not
+        // present itself as Ready — the coordinator reads the word and never routes a new
+        // room to it. Its live twin, on the real data plane, reports Ready.
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var controlEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}",
+            ["CHORUS_MATCH_INTERVAL_MS"] = "200",
+            ["CHORUS_DIRECTORY_REFRESH_MS"] = "500",
+            ["CHORUS_DIRECTORY_STALE_SECONDS"] = "15",
+            ["CHORUS_ROUND_DURATION_TICKS"] = "10000"
+        };
+        using var fleet = await FleetAsync(environment, simulatorKey, accessKey, controlEnvironment);
+        var deadPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var portA = RedesignM0HostTests.HostEnvironment.FreePort();
+        var portB = RedesignM0HostTests.HostEnvironment.FreePort();
+        var deadData = GameEnvironment(environment.DataPort, fleet.ControlEndpoint, "node-a/game-server");
+        deadData["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{deadPort}";
+        deadData["CHORUS_REPORT_INTERVAL_MS"] = "200";
+        await environment.StartAsync("Chorus.GameServer", portA, "game-server", deadData,
+            clientTenant: "tenant-a", instanceId: "game-sched-a");
+        var liveData = GameEnvironment(environment.DataPort, fleet.ControlEndpoint, "node-a/game-server#2");
+        liveData["CHORUS_REPORT_INTERVAL_MS"] = "200";
+        await environment.StartAsync("Chorus.GameServer", portB, "game-server", liveData,
+            clientTenant: "tenant-a", instanceId: "game-sched-b");
+
+        var bothReported = await WaitForAsync(async () =>
+        {
+            var instances = (await fleet.Routing.GetRoutingSnapshotAsync(new Empty())).Instances;
+            return instances.Any(instance => instance.ProcessInstanceId == "game-sched-a")
+                && instances.Any(instance => instance.ProcessInstanceId == "game-sched-b");
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(bothReported, "The two hosts never appeared in the routing snapshot.");
+
+        var snapshot = await fleet.Routing.GetRoutingSnapshotAsync(new Empty());
+        var unreachable = Assert.Single(snapshot.Instances,
+            instance => instance.ProcessInstanceId == "game-sched-a");
+        var reachable = Assert.Single(snapshot.Instances,
+            instance => instance.ProcessInstanceId == "game-sched-b");
+        Assert.NotEqual("Ready", unreachable.Readiness);
+        Assert.Equal("Ready", reachable.Readiness);
+    }
+
+    [Fact]
     public async Task FullAndDrainedHostsTakeNoNewRoomsWhileKeepingTheirOwn()
     {
         // FIX-SCHED-02's acceptance: a host full at its own budget and a host the admin

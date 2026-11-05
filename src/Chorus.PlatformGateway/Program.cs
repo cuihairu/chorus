@@ -87,8 +87,12 @@ if (controlEndpoint is { Length: > 0 })
         ?? $"https://localhost:{port}";
     var slotId = Environment.GetEnvironmentVariable("CHORUS_SLOT_ID") ?? $"{identity.NodeId}/{identity.Role}";
     var reportIntervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_REPORT_INTERVAL_MS") ?? "2000");
+    // FIX-LINK-01: the gateway reports Ready only while the data plane its task leases commit
+    // through answers — an unreachable lease channel must not present itself as servable.
+    var readinessDataChannel = DataChannel();
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
-        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
+        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
+        readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(readinessDataChannel, cancellationToken)));
 }
 // The routing watch (FIX-INPUT-02): the webhook face resolves each callback's live key to the
 // room it belongs to, and pushes straight at the owning game host. Without the control plane

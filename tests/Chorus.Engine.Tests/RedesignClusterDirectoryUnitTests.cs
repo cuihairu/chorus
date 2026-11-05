@@ -51,9 +51,11 @@ public sealed class RedesignClusterDirectoryUnitTests
     [Fact]
     public void IneligibleHostsStayReachableButNeverTakeANewRoom()
     {
-        // FIX-SCHED-02: the three states that bar a host from NEW rooms — not ready, full at
-        // its own budget, drained by the admin. Membership keeps all four (existing rooms
-        // still need channels); selection sees only the one Ready, admitting host.
+        // FIX-SCHED-02: the states that bar a host from NEW rooms — not ready, full at its
+        // own budget, drained by the admin. Membership keeps all six (existing rooms still
+        // need channels); selection sees only the one Ready, admitting host. The readiness
+        // vocabulary (FIX-LINK-01) adds Starting and Unreachable: a dependency that never
+        // answered and one that was lost both fail closed.
         using var certificates = new Certificates();
         var directory = Directory(certificates, [], TimeSpan.FromSeconds(60));
         var now = DateTime.UtcNow;
@@ -61,10 +63,12 @@ public sealed class RedesignClusterDirectoryUnitTests
         [
             Report("game-ok", "https://localhost:4004", now, "Ready", "Accepting"),
             Report("game-notready", "https://localhost:1001", now, "Preparing", "Accepting"),
+            Report("game-starting", "https://localhost:1002", now, "Starting", "Accepting"),
+            Report("game-unreachable", "https://localhost:1003", now, "Unreachable", "Accepting"),
             Report("game-full", "https://localhost:2002", now, "Ready", "Full"),
             Report("game-draining", "https://localhost:3003", now, "Ready", "Draining"),
         ], now);
-        Assert.Equal(4, directory.GameHostCount);
+        Assert.Equal(6, directory.GameHostCount);
         Assert.NotNull(directory.GameHostChannel("game-draining"));
         Assert.NotNull(directory.GameHostChannel("game-full"));
         Assert.Equal(1, directory.EligibleGameHostCount);

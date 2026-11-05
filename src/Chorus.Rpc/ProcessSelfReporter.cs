@@ -25,9 +25,24 @@ public sealed class ProcessSelfReporter(
     ProcessIdentity identity, string controlEndpoint, string endpoint, string slotId,
     int intervalMs, ILogger<ProcessSelfReporter>? logger = null,
     Func<IReadOnlyList<RoomProgressReport>>? roomProgress = null,
-    Func<string>? admission = null) : BackgroundService
+    Func<string>? admission = null,
+    // FIX-LINK-01: the host's own readiness word instead of an assumed constant. The probe
+    // answers whether the host's critical dependency serves; null keeps the historical
+    // constant report (only hosts with nothing to probe). Never throws — a failed probe
+    // reports not-Ready, it does not stall the loop.
+    Func<CancellationToken, Task<bool>>? readinessProbe = null) : BackgroundService
 {
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>The health word is informational — no consumer gates on it — but it follows
+    /// the probe so the stored row is never healthier than the readiness it reports.</summary>
+    private const string Healthy = "Healthy";
+    private const string Unhealthy = "Unhealthy";
+
+    /// <summary>Whether the probe has ever passed in this incarnation — separates the never-
+    /// answered Starting from the lost-then Unreachable word. Incarnation-scoped: a restarted
+    /// process starts a fresh reporter and a fresh Starting.</summary>
+    private bool _everReady;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -40,6 +55,7 @@ public sealed class ProcessSelfReporter(
         {
             try
             {
+                var (readiness, health) = await ReadinessAsync(stoppingToken);
                 var request = new ReportProcessRequest
                 {
                     NodeId = identity.NodeId,
@@ -48,8 +64,8 @@ public sealed class ProcessSelfReporter(
                     ProcessInstanceId = identity.ProcessInstanceId,
                     ReportSequence = sequence,
                     Lifecycle = "Running",
-                    Readiness = "Ready",
-                    Health = "Healthy",
+                    Readiness = readiness,
+                    Health = health,
                     // The host's own capacity word (FIX-SCHED-02): a GameServer at budget
                     // reports Full so the scheduler stops offering rooms before trying.
                     Admission = admission?.Invoke() ?? ProcessAdmission.Accepting,
@@ -81,5 +97,30 @@ public sealed class ProcessSelfReporter(
             try { await Task.Delay(intervalMs, stoppingToken); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
         }
+    }
+
+    /// <summary>The readiness word for this tick (FIX-LINK-01): a passing probe is Ready; a
+    /// failing one is Starting until the dependency has ever answered, then Unreachable —
+    /// the control plane reads the difference between "still coming up" and "lost what it
+    /// serves on". No probe wired keeps the historical constant report.</summary>
+    private async Task<(string Readiness, string Health)> ReadinessAsync(
+        CancellationToken stoppingToken)
+    {
+        if (readinessProbe is null)
+            return (ProcessReadiness.Ready, Healthy);
+        var ready = false;
+        try
+        {
+            ready = await readinessProbe(stoppingToken);
+        }
+        catch
+        {
+            // Fail closed: an unexpected probe error is a dependency that does not serve.
+            ready = false;
+        }
+        if (ready) _everReady = true;
+        return ready
+            ? (ProcessReadiness.Ready, Healthy)
+            : (_everReady ? ProcessReadiness.Unreachable : ProcessReadiness.Starting, Unhealthy);
     }
 }

@@ -159,7 +159,7 @@ public sealed class ClusterDirectory
         var cutoff = nowUtc - _staleAfter;
         return _hosts
             .Where(host => host.LastEvidenceUtc >= cutoff
-                && string.Equals(host.Readiness, "Ready", StringComparison.Ordinal)
+                && ProcessReadiness.Serves(host.Readiness)
                 && ProcessAdmission.AdmitsNewRooms(host.Admission))
             .ToArray();
     }

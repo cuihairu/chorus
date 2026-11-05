@@ -107,8 +107,12 @@ if (controlEndpoint is { Length: > 0 })
         () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate, root, nodeAuthority,
             clusterId, "control-server"),
         serverCertificate, root, nodeAuthority, clusterId);
+    // FIX-LINK-01: the host reports Ready only while the data plane its sessions commit
+    // through answers; one probe channel lives for the host, never per tick.
+    var readinessDataChannel = DataChannel();
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
-        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs));
+        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
+        readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(readinessDataChannel, cancellationToken)));
 }
 builder.Services.AddSingleton(sp => new RedesignStreamerLoginCoordinator(
     new RedesignPlatformGateway(adapters, allowNotProductionReady),
