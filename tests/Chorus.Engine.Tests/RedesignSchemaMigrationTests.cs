@@ -33,7 +33,7 @@ public sealed class RedesignSchemaMigrationTests
                 Assert.Equal(48, Convert.ToInt32(await count.ExecuteScalarAsync()));
 
             await using (var versions = new NpgsqlCommand("SELECT count(*) FROM infra.schema_migration", database))
-                Assert.Equal(38, Convert.ToInt32(await versions.ExecuteScalarAsync()));
+                Assert.Equal(39, Convert.ToInt32(await versions.ExecuteScalarAsync()));
 
             await using (var slot = new NpgsqlCommand("""
                 INSERT INTO live.slot(platform,canonical_live_session_key,tenant_id)

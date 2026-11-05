@@ -990,6 +990,11 @@ message CommittedScoreEffectReply {
   // The committed payload verbatim (the business module derives the subject and delta from
   // its declared score-effect shape); empty when not found.
   string payload_json = 3;
+  // The effect's immutable source time (ISO-8601 UTC, captured once when the effect was
+  // committed) — the period attribution anchor (FIX-RANK-07). A replayed or delayed
+  // delivery answers the same source time every time, so a late effect is attributed to the
+  // period of its source, never to the period of its projection or retry; empty when not found.
+  string committed_at = 4;
 }
 
 message ApplyScoreEffectRequest {

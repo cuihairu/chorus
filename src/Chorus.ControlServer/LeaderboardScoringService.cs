@@ -28,6 +28,21 @@ public class LeaderboardScoringPolicy
 
     public virtual ScoreBounds Bounds => ScoreBounds.Default;
 
+    /// <summary>The declared period shape of this family's board (FIX-RANK-07): the base
+    /// family is <see cref="RankPeriodKind.AllTime"/> and unbounded; a periodic family
+    /// overrides this with a <see cref="RankPeriodKind.Daily"/> or <see cref="RankPeriodKind.Weekly"/>
+    /// bucket plus an explicit <see cref="PeriodTimezone"/>.</summary>
+    public virtual RankPeriodKind PeriodKind => RankPeriodKind.AllTime;
+
+    /// <summary>The timezone that computes the period bucket. Only meaningful for a periodic
+    /// family; an AllTime family never buckets.</summary>
+    public virtual string PeriodTimezone => "UTC";
+
+    /// <summary>How late after a period closes a settlement may still be attributed to that
+    /// period (FIX-RANK-07). <see cref="TimeSpan.Zero"/> is the strict default: an effect
+    /// projected after its source period closed is refused, never moved to a later bucket.</summary>
+    public virtual TimeSpan LateSettlementWindow => TimeSpan.Zero;
+
     /// <summary>Reads the scoring subject id and its signed delta from a committed score
     /// payload (the declared shape: <c>{faction, delta, ...}</c>). A payload without the
     /// declared fields is not a score this family projects — the caller cannot project it.</summary>
@@ -48,11 +63,29 @@ public class LeaderboardScoringPolicy
         return true;
     }
 
+    /// <summary>Resolves the period a committed score effect belongs to (FIX-RANK-07,
+    /// developer-capabilities.md 「周期」「迟到结算有明确的周期归属」). The period is always the
+    /// bucket of the effect's immutable source time — never the projection or retry time,
+    /// which would silently move a late effect to the wrong bucket. An AllTime family is
+    /// unbounded and never late; a periodic family buckets by <see cref="PeriodKind"/> and
+    /// <see cref="PeriodTimezone"/> and refuses an effect projected after its source period
+    /// closed by more than <see cref="LateSettlementWindow"/> — it is attributed to its
+    /// original bucket or refused, never re-attributed to the moment it was processed.</summary>
+    public virtual RankPeriod ResolvePeriod(DateTimeOffset sourceTimeUtc, DateTimeOffset nowUtc)
+    {
+        var period = RankPeriod.Resolve(PeriodKind, PeriodTimezone, sourceTimeUtc);
+        if (period.EndUtc is { } end && nowUtc > end + LateSettlementWindow)
+            throw new LeaderboardRejectedException(
+                "The board period closed for late settlement; the effect is too old to be attributed to its source period.");
+        return period;
+    }
+
     /// <summary>Resolves the board for one committed score effect: the subject, aggregation,
     /// bounds and board id are the declared mapping; the scope is the effect's room (the
-    /// effect id's first segment). A period-less AllTime board is the default — period
-    /// attribution is FIX-RANK-07. An effect id without a room segment is refused.</summary>
-    public virtual LeaderboardBoard ResolveBoard(string tenantId, string gameId, string effectId)
+    /// effect id's first segment); the period is the one <see cref="ResolvePeriod"/> attributed
+    /// from the effect's source time. An effect id without a room segment is refused.</summary>
+    public virtual LeaderboardBoard ResolveBoard(string tenantId, string gameId, string effectId,
+        RankPeriod period)
     {
         var firstSlash = effectId.IndexOf('/');
         var roomId = firstSlash > 0 ? effectId[..firstSlash] : "";
@@ -60,8 +93,28 @@ public class LeaderboardScoringPolicy
             throw new LeaderboardRejectedException(
                 "The effect id does not carry its room segment; the board scope cannot be resolved.");
         return new LeaderboardBoard(tenantId, gameId, BoardId, Subject, Aggregation, Bounds,
-            RankPeriod.AllTime, new RankScope(roomId));
+            period, new RankScope(roomId));
     }
+}
+
+/// <summary>
+/// FIX-RANK-07: the example family's daily period variant (developer-capabilities.md
+/// 「周期」). The same faction score effect is attributed to the daily bucket (UTC) of its
+/// committed source time and lands on a distinct board id, so one day's scores never bleed
+/// into another day's board. A late effect (a settlement projected after its source day
+/// closed) is attributed to that original day's bucket while it arrives within the declared
+/// 48-hour late-settlement window; beyond the window it is refused, never re-attributed to
+/// the day it was processed.
+/// </summary>
+public class LeaderboardDailyFactionScoringPolicy : LeaderboardScoringPolicy
+{
+    public override string BoardId => "faction-score-daily";
+
+    public override RankPeriodKind PeriodKind => RankPeriodKind.Daily;
+
+    public override string PeriodTimezone => "UTC";
+
+    public override TimeSpan LateSettlementWindow => TimeSpan.FromHours(48);
 }
 
 /// <summary>
@@ -140,8 +193,20 @@ public sealed class LeaderboardScoringService(ILeaderboardScoringDataPlane dataP
             throw new LeaderboardRejectedException(
                 "The committed score effect does not carry the declared scoring shape.");
 
+        // The period is attributed from the effect's immutable source time (FIX-RANK-07) —
+        // never from the projection or retry time. A score effect with no source time cannot
+        // be attributed to a period and is refused; a late effect is attributed to its source
+        // bucket or refused by the policy's declared window, never moved to the moment it was
+        // processed.
+        if (string.IsNullOrWhiteSpace(committed.CommittedAt))
+            throw new LeaderboardRejectedException(
+                "The committed score effect carries no source time; it cannot be attributed to a period.");
+        var sourceTimeUtc = DateTimeOffset.Parse(committed.CommittedAt,
+            CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        var period = _policy.ResolvePeriod(sourceTimeUtc, DateTimeOffset.UtcNow);
+
         // The board is the business layer's declared mapping — never the caller's.
-        var board = _policy.ResolveBoard(tenantId, gameId, effectId);
+        var board = _policy.ResolveBoard(tenantId, gameId, effectId, period);
 
         try
         {

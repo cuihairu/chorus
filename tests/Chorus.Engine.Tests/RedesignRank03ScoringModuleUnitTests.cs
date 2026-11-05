@@ -20,7 +20,8 @@ public sealed class RedesignRank03ScoringModuleUnitTests
         var plane = new FakePlane(new CommittedScoreEffectReply
         {
             Found = true, Kind = LeaderboardScoringService.ScoreEffectKind,
-            PayloadJson = """{"faction":"red","delta":7,"total":7}"""
+            PayloadJson = """{"faction":"red","delta":7,"total":7}""",
+            CommittedAt = "2026-01-01T00:00:00+00:00"
         });
         var module = new LeaderboardScoringService(plane);
 
@@ -72,7 +73,8 @@ public sealed class RedesignRank03ScoringModuleUnitTests
         var plane = new FakePlane(new CommittedScoreEffectReply
         {
             Found = true, Kind = LeaderboardScoringService.ScoreEffectKind,
-            PayloadJson = """{"n":3}"""
+            PayloadJson = """{"n":3}""",
+            CommittedAt = "2026-01-01T00:00:00+00:00"
         });
         var module = new LeaderboardScoringService(plane);
         await Assert.ThrowsAsync<LeaderboardRejectedException>(
@@ -86,7 +88,8 @@ public sealed class RedesignRank03ScoringModuleUnitTests
         var plane = new FakePlane(new CommittedScoreEffectReply
         {
             Found = true, Kind = LeaderboardScoringService.ScoreEffectKind,
-            PayloadJson = """{"faction":"red","delta":7,"total":7}"""
+            PayloadJson = """{"faction":"red","delta":7,"total":7}""",
+            CommittedAt = "2026-01-01T00:00:00+00:00"
         });
         var module = new LeaderboardScoringService(plane);
         // The board scope is the effect's room; an id without one cannot be resolved.
@@ -104,7 +107,7 @@ public sealed class RedesignRank03ScoringModuleUnitTests
         Assert.Equal("blue", subject);
         Assert.Equal(4, delta);
 
-        var board = policy.ResolveBoard("tenant-a", "game-1", "room-42/7/1");
+        var board = policy.ResolveBoard("tenant-a", "game-1", "room-42/7/1", RankPeriod.AllTime);
         Assert.Equal("room-42", board.Scope.ScopeId);
         Assert.Equal("faction-score", board.BoardId);
         Assert.Equal(RankSubject.Faction, board.Subject);

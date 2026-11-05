@@ -40,7 +40,8 @@ public sealed class LeaderboardGrpcService(
                 ? new CommittedScoreEffectReply { Found = false }
                 : new CommittedScoreEffectReply
                 {
-                    Found = true, Kind = effect.Kind, PayloadJson = effect.PayloadJson
+                    Found = true, Kind = effect.Kind, PayloadJson = effect.PayloadJson,
+                    CommittedAt = effect.CommittedAt.ToString("O", CultureInfo.InvariantCulture)
                 };
         }
         catch (ArgumentException error)

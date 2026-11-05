@@ -33,7 +33,7 @@ namespace Chorus.DataServer;
 /// its kind and its payload verbatim. The business module derives the scoring subject and
 /// delta from the declared score-effect shape; the data plane never parses a game-specific
 /// payload, it only verifies the kind and the delta.</summary>
-public sealed record CommittedEffect(string Kind, string PayloadJson);
+public sealed record CommittedEffect(string Kind, string PayloadJson, DateTimeOffset CommittedAt);
 
 public sealed class RedesignLeaderboardStore
 {
@@ -262,12 +262,13 @@ public sealed class RedesignLeaderboardStore
         await using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var read = new NpgsqlCommand("""
-            SELECT kind,payload::text FROM infra.outbox WHERE effect_id=@effect
+            SELECT kind,payload::text,committed_at FROM infra.outbox WHERE effect_id=@effect
             """, connection);
         read.Parameters.AddWithValue("effect", effectId);
         await using var reader = await read.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken)
-            ? new CommittedEffect(reader.GetString(0), reader.GetString(1))
+            ? new CommittedEffect(reader.GetString(0), reader.GetString(1),
+                reader.GetFieldValue<DateTimeOffset>(2))
             : null;
     }
 
