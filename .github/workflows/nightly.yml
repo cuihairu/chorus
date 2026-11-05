@@ -13,9 +13,23 @@ concurrency:
   group: nightly
   cancel-in-progress: false
 
+env:
+  DOTNET_VERSION: "10.0.x"
+
 jobs:
-  nightly:
+  # One version for the whole run, computed once so every leg stamps
+  # identical package versions even across a UTC midnight boundary.
+  version:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: echo "version=0.0.0-nightly.$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+  linux:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    needs: version
     services:
       postgres:
         image: postgres:16-alpine
@@ -38,7 +52,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v6.0.0
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Restore
         run: dotnet restore Chorus.sln
@@ -49,30 +63,113 @@ jobs:
       - name: Test
         run: dotnet test Chorus.sln -c Release --no-build
 
+      # Portable tarball: self-contained, runs on any glibc x64 Linux.
       - name: Publish server (self-contained linux-x64)
         run: dotnet publish src/Chorus.Server -c Release -r linux-x64 --self-contained true -o ./publish
 
-      - name: Package nightly build
+      - name: Package nightly tarball
         run: tar -czf chorus-nightly-linux-x64.tar.gz -C publish .
+
+      # deb/rpm: framework-dependent, the package manager owns the runtime.
+      - name: Publish server (framework-dependent linux-x64)
+        run: dotnet publish src/Chorus.Server -c Release -r linux-x64 --self-contained false -o ./publish-fde
+
+      - name: Install rpm build tooling
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq rpm
+
+      - name: Build deb package (chorus-server)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          STAGE="packaging/deb/chorus-server_${VERSION}_amd64"
+          mkdir -p "$STAGE/opt/chorus-server" "$STAGE/DEBIAN" "$STAGE/usr/bin"
+          cp -r publish-fde/. "$STAGE/opt/chorus-server/"
+          ln -s /opt/chorus-server/Chorus.Server "$STAGE/usr/bin/chorus-server"
+          cat > "$STAGE/DEBIAN/control" <<EOF
+          Package: chorus-server
+          Version: ${VERSION}
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Depends: dotnet-runtime-10.0, aspnetcore-runtime-10.0
+          Maintainer: cuihairu <cuihairu@users.noreply.github.com>
+          Description: Chorus game platform server (nightly build)
+           Danmaku game framework server: session, matchmaking, gateway and
+           engine hosts in a single monolith process. Framework-dependent;
+           requires the .NET 10 runtime and ASP.NET Core runtime.
+          Homepage: https://github.com/cuihairu/chorus
+          EOF
+          dpkg-deb --build --root-owner-group "$STAGE" \
+            "chorus-server_${VERSION}_amd64.deb"
+
+      - name: Build rpm package (chorus-server)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION_DATE="${VERSION##*.}"
+          ROOT="packaging/rpm"
+          mkdir -p "$ROOT"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          cat > "$ROOT/SPECS/chorus-server.spec" <<EOF
+          Name:           chorus-server
+          Version:        0.0.0
+          Release:        1.nightly${VERSION_DATE}%{?dist}
+          Summary:        Chorus game platform server (nightly build)
+          License:        Apache-2.0
+          URL:            https://github.com/cuihairu/chorus
+          AutoReqProv:    no
+          Requires:       dotnet-runtime-10.0, aspnetcore-runtime-10.0
+          BuildArch:      x86_64
+
+          %description
+          Danmaku game framework server (framework-dependent; requires the
+          .NET 10 runtime and ASP.NET Core runtime).
+
+          %install
+          mkdir -p %{buildroot}/opt/chorus-server
+          cp -r %{stagedir}/. %{buildroot}/opt/chorus-server/
+          mkdir -p %{buildroot}/usr/bin
+          ln -s /opt/chorus-server/Chorus.Server %{buildroot}/usr/bin/chorus-server
+
+          %files
+          /opt/chorus-server
+          /usr/bin/chorus-server
+          EOF
+          rpmbuild -bb --define "_topdir $ROOT" \
+            --define "stagedir $PWD/publish-fde" \
+            "$ROOT/SPECS/chorus-server.spec"
+          cp "$ROOT/RPMS/x86_64/"*.rpm .
 
       - name: Upload nightly artifact (rolling, no tag)
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: chorus-nightly
-          path: chorus-nightly-linux-x64.tar.gz
+          name: chorus-nightly-linux
+          path: |
+            chorus-nightly-linux-x64.tar.gz
+            chorus-server_*_amd64.deb
+            chorus-server-*.x86_64.rpm
           retention-days: 14
           if-no-files-found: error
 
-      - name: Publish rolling nightly release
+      - name: Publish rolling nightly release (linux assets)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           NOTES="Rolling nightly build of main at ${GITHUB_SHA}. Updated automatically by the nightly workflow."
           if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload nightly chorus-nightly-linux-x64.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload nightly \
+              chorus-nightly-linux-x64.tar.gz \
+              chorus-server_*_amd64.deb \
+              chorus-server-*.x86_64.rpm \
+              --clobber --repo "$GITHUB_REPOSITORY"
             gh release edit nightly --prerelease --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
           else
-            gh release create nightly chorus-nightly-linux-x64.tar.gz --prerelease \
-              --title "Nightly build" --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
+            gh release create nightly \
+              chorus-nightly-linux-x64.tar.gz \
+              chorus-server_*_amd64.deb \
+              chorus-server-*.x86_64.rpm \
+              --prerelease --title "Nightly build" --notes "$NOTES" \
+              --repo "$GITHUB_REPOSITORY"
           fi
           gh release view nightly --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease -q '"nightly release: " + .tagName + " prerelease=" + (.isPrerelease|tostring)'
