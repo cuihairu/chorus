@@ -257,7 +257,8 @@
   - 证据：3c47141
 - [x] **FIX-RANK-06 / P1：提供稳定分页。** 依赖：FIX-RANK-04。
   - 证据：7080255
-- [ ] **FIX-RANK-07 / P1：实现周期与迟到归属。** 依赖：FIX-RANK-01、FIX-RANK-03。
+- [x] **FIX-RANK-07 / P1：实现周期与迟到归属。** 依赖：FIX-RANK-01、FIX-RANK-03。
+  - 证据：d00ea92
 - [ ] **FIX-RANK-08 / P1：实现 GM 修正与投影重建。** 依赖：FIX-RANK-03、FIX-RANK-07。
 - [ ] **FIX-RANK-09 / P1：交付玩法与客户端接入示例。** 依赖：FIX-RANK-03、FIX-RANK-04、FIX-RANK-05、FIX-RANK-07。
 
