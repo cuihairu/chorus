@@ -107,5 +107,12 @@ public sealed class RedesignRank04QueryModuleUnitTests
             if (Fault is not null) throw Fault;
             return Task.FromResult(Reply);
         }
+
+        // RANK-04 tests only exercise the TopN path; the rank paths are RANK-05's tests.
+        public Task<RankReply> GetRankAsync(GetRankRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<AroundReply> GetAroundMeAsync(GetAroundMeRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

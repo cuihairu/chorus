@@ -13,6 +13,10 @@ namespace Chorus.ControlServer;
 public interface ILeaderboardQueryDataPlane
 {
     Task<TopNReply> GetTopAsync(GetTopRequest request, CancellationToken cancellationToken = default);
+
+    Task<RankReply> GetRankAsync(GetRankRequest request, CancellationToken cancellationToken = default);
+
+    Task<AroundReply> GetAroundMeAsync(GetAroundMeRequest request, CancellationToken cancellationToken = default);
 }
 
 /// <summary>The production data-plane implementation: the data host's leaderboard face.</summary>
@@ -21,6 +25,12 @@ public sealed class GrpcLeaderboardQueryDataPlane(Leaderboard.LeaderboardClient 
 {
     public Task<TopNReply> GetTopAsync(GetTopRequest request, CancellationToken cancellationToken = default) =>
         client.GetTopAsync(request, cancellationToken: cancellationToken).ResponseAsync;
+
+    public Task<RankReply> GetRankAsync(GetRankRequest request, CancellationToken cancellationToken = default) =>
+        client.GetRankAsync(request, cancellationToken: cancellationToken).ResponseAsync;
+
+    public Task<AroundReply> GetAroundMeAsync(GetAroundMeRequest request, CancellationToken cancellationToken = default) =>
+        client.GetAroundMeAsync(request, cancellationToken: cancellationToken).ResponseAsync;
 }
 
 /// <summary>
@@ -62,6 +72,72 @@ public sealed class LeaderboardQueryService(ILeaderboardQueryDataPlane dataPlane
         catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition)
         {
             throw new LeaderboardStaleReadException(error.Status.Detail);
+        }
+        catch (RpcException error) when (error.StatusCode == StatusCode.InvalidArgument)
+        {
+            throw new ArgumentException(error.Status.Detail);
+        }
+    }
+
+    /// <summary>Answers one subject's position on a board — its score, its unique ordinal
+    /// rank and the board's read version, at one read view (developer-capabilities.md
+    /// 「实时变化榜的个人名次必须对应同一次读取视图」). The caller names the tenant, the board and
+    /// the subject; the rank is the board's declared order. Answers null when the subject has
+    /// not scored on the board.</summary>
+    public async Task<LeaderboardRankResult?> GetRankAsync(string tenantId, LeaderboardBoard board,
+        string subjectId, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("A tenant id must not be empty.", nameof(tenantId));
+        if (string.IsNullOrWhiteSpace(subjectId))
+            throw new ArgumentException("A subject id must not be empty.", nameof(subjectId));
+        board.Validate();
+        try
+        {
+            var reply = await dataPlane.GetRankAsync(new GetRankRequest
+            {
+                TenantId = tenantId, GameId = board.GameId,
+                Board = LeaderboardScoringService.ToProto(board), SubjectId = subjectId
+            }, cancellationToken);
+            if (!reply.Found) return null;
+            return new LeaderboardRankResult(reply.Rank,
+                new RankEntry((RankSubject)reply.Entry.Subject, reply.Entry.SubjectId, reply.Entry.Score),
+                ParseVersion(reply.ReadVersion));
+        }
+        catch (RpcException error) when (error.StatusCode == StatusCode.InvalidArgument)
+        {
+            throw new ArgumentException(error.Status.Detail);
+        }
+    }
+
+    /// <summary>Answers the entries within a bounded window of a subject's rank (the subject
+    /// included), in rank order, at one read view (developer-capabilities.md「个人名次、附近名次」).
+    /// The caller names the tenant, the board, the subject and the window size; the window is
+    /// bounded (<see cref="LeaderboardQueryLimits.MaxAroundWindow"/>). Answers null when the
+    /// subject has not scored on the board.</summary>
+    public async Task<LeaderboardAroundResult?> GetAroundMeAsync(string tenantId, LeaderboardBoard board,
+        string subjectId, int window, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("A tenant id must not be empty.", nameof(tenantId));
+        if (string.IsNullOrWhiteSpace(subjectId))
+            throw new ArgumentException("A subject id must not be empty.", nameof(subjectId));
+        board.Validate();
+        if (window is <= 0 or > LeaderboardQueryLimits.MaxAroundWindow)
+            throw new ArgumentOutOfRangeException(nameof(window), "An around-me window is bounded.");
+        try
+        {
+            var reply = await dataPlane.GetAroundMeAsync(new GetAroundMeRequest
+            {
+                TenantId = tenantId, GameId = board.GameId,
+                Board = LeaderboardScoringService.ToProto(board), SubjectId = subjectId, Window = window
+            }, cancellationToken);
+            if (!reply.Found) return null;
+            var entries = reply.Entries.Select(entry =>
+                new RankedEntry(entry.Rank,
+                    new RankEntry((RankSubject)entry.Entry.Subject, entry.Entry.SubjectId, entry.Entry.Score)))
+                .ToList();
+            return new LeaderboardAroundResult(entries, ParseVersion(reply.ReadVersion));
         }
         catch (RpcException error) when (error.StatusCode == StatusCode.InvalidArgument)
         {

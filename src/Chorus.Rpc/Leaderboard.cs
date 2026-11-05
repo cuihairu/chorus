@@ -346,6 +346,11 @@ public static class LeaderboardQueryLimits
 {
     /// <summary>The largest TopN one read answers.</summary>
     public const int MaxTopEntries = 1000;
+
+    /// <summary>FIX-RANK-05: the largest around-me window one read answers — the subject
+    /// plus this many neighbours on each side of its rank (a bounded window, never one
+    /// unbounded answer over a whole board).</summary>
+    public const int MaxAroundWindow = 50;
 }
 
 /// <summary>
@@ -366,3 +371,26 @@ public sealed class LeaderboardStaleReadException(string message) : Exception(me
 /// sentinel (<see cref="DateTimeOffset.MinValue"/> — the board has never scored).
 /// </summary>
 public sealed record LeaderboardTopResult(IReadOnlyList<RankEntry> Entries, DateTimeOffset ReadVersion);
+
+/// <summary>
+/// FIX-RANK-05: one entry with its unique ordinal rank in the board's declared order
+/// (developer-capabilities.md「排序」「个人名次」— RANK-01 <see cref="LeaderboardOrdering"/>:
+/// score descending, subject id ascending; ranks are unique and gapless 1..N).</summary>
+public sealed record RankedEntry(int Rank, RankEntry Entry);
+
+/// <summary>
+/// FIX-RANK-05: one subject's position on a board — its entry, its unique ordinal rank and
+/// the board's read version at the same snapshot (developer-capabilities.md「实时变化榜的个人
+/// 名次必须对应同一次读取视图」). The rank and the score are one consistent view, never a rank
+/// from a different version than the score. Null (the read answers none) when the subject
+/// has not scored on the board.
+/// </summary>
+public sealed record LeaderboardRankResult(int Rank, RankEntry Entry, DateTimeOffset ReadVersion);
+
+/// <summary>
+/// FIX-RANK-05: the around-me answer (developer-capabilities.md「个人名次、附近名次」) — the
+/// entries within the bounded window of a subject's rank (the subject included), in rank
+/// order, plus the read version of the same snapshot. The subject has not scored on the
+/// board when the read answers none.
+/// </summary>
+public sealed record LeaderboardAroundResult(IReadOnlyList<RankedEntry> Entries, DateTimeOffset ReadVersion);

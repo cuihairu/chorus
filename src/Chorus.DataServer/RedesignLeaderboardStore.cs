@@ -52,6 +52,11 @@ public sealed class RedesignLeaderboardStore
     /// a query page is bounded, never one unbounded answer over a whole board.</summary>
     public const int MaxTopEntries = LeaderboardQueryLimits.MaxTopEntries;
 
+    /// <summary>FIX-RANK-05: the largest around-me window one read answers (the subject plus
+    /// this many neighbours on each side of its rank) — a bounded window, never one unbounded
+    /// answer over a whole board.</summary>
+    public const int MaxAroundWindow = LeaderboardQueryLimits.MaxAroundWindow;
+
     /// <summary>FIX-RANK-03: the committed effect kind that carries a board score (the
     /// modules emit <c>ModuleEffect("score", ...)</c>; the frame commit writes it to the
     /// committed effect ledger under that kind). Only this kind projects; an asset change or
@@ -370,6 +375,98 @@ public sealed class RedesignLeaderboardStore
         }
         return new LeaderboardTopResult(entries, version);
     }
+
+    /// <summary>
+    /// FIX-RANK-05: one subject's position — its entry, its unique ordinal rank in the
+    /// board's declared order, and the board's read version at the same snapshot
+    /// (developer-capabilities.md「实时变化榜的个人名次必须对应同一次读取视图」). The rank is
+    /// 1 + the count of entries that precede it in the board order (score descending, subject
+    /// id ascending — RANK-01 <see cref="LeaderboardOrdering"/>), so equal scores get distinct
+    /// consecutive ranks; the rank, the score and the version are one consistent view (all
+    /// computed in one statement). Answers null when the subject has not scored on the board.
+    /// </summary>
+    public async Task<LeaderboardRankResult?> ReadRankAsync(LeaderboardBoard board, string subjectId,
+        CancellationToken cancellationToken = default)
+    {
+        board.Validate();
+        if (string.IsNullOrWhiteSpace(subjectId))
+            throw new ArgumentException("A subject id must not be empty.", nameof(subjectId));
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var read = new NpgsqlCommand("""
+            SELECT e.score,
+              (SELECT count(*) FROM game.leaderboard_entry e2
+                WHERE e2.tenant_id=e.tenant_id AND e2.game_id=e.game_id AND e2.board_id=e.board_id
+                  AND e2.period_id=e.period_id AND e2.scope_id=e.scope_id AND e2.subject_type=e.subject_type
+                  AND (e2.score > e.score OR (e2.score = e.score AND e2.subject_id < e.subject_id))) + 1 AS rank,
+              (SELECT max(updated_at) FROM game.leaderboard_entry e3
+                WHERE e3.tenant_id=e.tenant_id AND e3.game_id=e.game_id AND e3.board_id=e.board_id
+                  AND e3.period_id=e.period_id AND e3.scope_id=e.scope_id AND e3.subject_type=e.subject_type) AS board_version
+            FROM game.leaderboard_entry e
+            WHERE e.tenant_id=@tenant AND e.game_id=@game AND e.board_id=@board
+              AND e.period_id=@period AND e.scope_id=@scope
+              AND e.subject_type=@subject AND e.subject_id=@subject_id
+            """, connection);
+        AddKeyParameters(read, board, subjectId);
+        await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        var version = reader.IsDBNull(2) ? DateTimeOffset.MinValue : ToOffset(reader.GetDateTime(2));
+        return new LeaderboardRankResult((int)reader.GetInt64(1),
+            new RankEntry(board.Subject, subjectId, reader.GetInt64(0)), version);
+    }
+
+    /// <summary>
+    /// FIX-RANK-05: the entries within a bounded window of a subject's rank — the subject
+    /// included, in rank order, at one read view (developer-capabilities.md「个人名次、附近名次」).
+    /// One statement assigns the unique ordinal ranks (row_number over the board order), finds
+    /// the subject's rank and takes the window around it, so the window and the rank are one
+    /// consistent snapshot. Answers null when the subject has not scored on the board.
+    /// </summary>
+    public async Task<LeaderboardAroundResult?> ReadAroundAsync(LeaderboardBoard board, string subjectId,
+        int window, CancellationToken cancellationToken = default)
+    {
+        board.Validate();
+        if (string.IsNullOrWhiteSpace(subjectId))
+            throw new ArgumentException("A subject id must not be empty.", nameof(subjectId));
+        if (window is <= 0 or > MaxAroundWindow)
+            throw new ArgumentOutOfRangeException(nameof(window), "An around-me window is bounded.");
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        var entries = new List<RankedEntry>();
+        var version = DateTimeOffset.MinValue;
+        await using (var read = new NpgsqlCommand("""
+            WITH ranked AS MATERIALIZED (
+              SELECT subject_id, score,
+                     row_number() OVER (ORDER BY score DESC, subject_id ASC) AS rank,
+                     max(updated_at) OVER () AS board_version
+              FROM game.leaderboard_entry
+              WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
+                AND period_id=@period AND scope_id=@scope AND subject_type=@subject
+            ),
+            me AS (SELECT rank FROM ranked WHERE subject_id=@subject_id)
+            SELECT r.rank, r.subject_id, r.score, r.board_version
+            FROM me, ranked r
+            WHERE r.rank >= me.rank - @window AND r.rank <= me.rank + @window
+            ORDER BY r.rank ASC
+            """, connection))
+        {
+            AddKeyParameters(read, board, subjectId);
+            read.Parameters.AddWithValue("window", window);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (entries.Count == 0) version = ToOffset(reader.GetDateTime(3));
+                entries.Add(new RankedEntry((int)reader.GetInt64(0),
+                    new RankEntry(board.Subject, reader.GetString(1), reader.GetInt64(2))));
+            }
+        }
+        return entries.Count == 0 ? null : new LeaderboardAroundResult(entries, version);
+    }
+
+    private static DateTimeOffset ToOffset(DateTime stamped) =>
+        stamped.Kind == DateTimeKind.Utc
+            ? new DateTimeOffset(stamped)
+            : new DateTimeOffset(DateTime.SpecifyKind(stamped, DateTimeKind.Utc), TimeSpan.Zero);
 
     private static void AddKeyParameters(NpgsqlCommand command, LeaderboardBoard board, string? subjectId)
     {

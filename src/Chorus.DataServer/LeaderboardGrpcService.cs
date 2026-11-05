@@ -3,6 +3,7 @@ using Chorus.Data;
 using Chorus.Rpc;
 using Grpc.Core;
 using Npgsql;
+using RankEntry = Chorus.Rpc.RankEntry;
 
 namespace Chorus.DataServer;
 
@@ -121,6 +122,63 @@ public sealed class LeaderboardGrpcService(
             throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
         }
     }
+
+    /// <summary>One subject's position on a board — its score, its unique ordinal rank and
+    /// the board's read version, at one read view (FIX-RANK-05). The query authorizes by role
+    /// and tenant; an absent subject answers <c>found=false</c> (it has not scored).</summary>
+    public override async Task<RankReply> GetRank(GetRankRequest request, ServerCallContext context)
+    {
+        var caller = Require(context, "control-server", "game-server", "streamer-server");
+        var tenantId = ResolveTenant(caller, request.TenantId);
+        try
+        {
+            var board = ToBoard(tenantId, request.GameId, request.Board);
+            var result = await leaderboardStore.ReadRankAsync(board, request.SubjectId,
+                context.CancellationToken);
+            if (result is null) return new RankReply { Found = false };
+            var reply = new RankReply
+            {
+                Found = true, Rank = result.Rank, ReadVersion = VersionString(result.ReadVersion)
+            };
+            reply.Entry = ToProto(result.Entry);
+            return reply;
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
+    /// <summary>The entries within a bounded window of a subject's rank (the subject included),
+    /// in rank order, at one read view (FIX-RANK-05). An absent subject answers
+    /// <c>found=false</c>.</summary>
+    public override async Task<AroundReply> GetAroundMe(GetAroundMeRequest request, ServerCallContext context)
+    {
+        var caller = Require(context, "control-server", "game-server", "streamer-server");
+        var tenantId = ResolveTenant(caller, request.TenantId);
+        try
+        {
+            var board = ToBoard(tenantId, request.GameId, request.Board);
+            var result = await leaderboardStore.ReadAroundAsync(board, request.SubjectId, request.Window,
+                context.CancellationToken);
+            if (result is null) return new AroundReply { Found = false };
+            var reply = new AroundReply { Found = true, ReadVersion = VersionString(result.ReadVersion) };
+            reply.Entries.Add(result.Entries.Select(entry => new RankedEntryProto
+            {
+                Rank = entry.Rank, Entry = ToProto(entry.Entry)
+            }));
+            return reply;
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
+    private static RankEntryProto ToProto(RankEntry entry) => new()
+    {
+        Subject = (int)entry.Subject, SubjectId = entry.SubjectId, Score = entry.Score
+    };
 
     private static string VersionString(DateTimeOffset version) =>
         version == DateTimeOffset.MinValue ? "" : version.ToString("O", CultureInfo.InvariantCulture);

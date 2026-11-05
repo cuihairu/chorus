@@ -549,6 +549,13 @@ service Leaderboard {
   // continuation carries it back (expected_version) and a changed board is a stale read —
   // the caller must restart, never page across a change invisibly.
   rpc GetTop(GetTopRequest) returns (TopNReply);
+  // FIX-RANK-05: one subject's position on a board — its score and its unique ordinal rank
+  // in the board's declared order, at one read view. The rank and the score are never from
+  // different versions (a live board's personal rank is one consistent view).
+  rpc GetRank(GetRankRequest) returns (RankReply);
+  // FIX-RANK-05: the entries within a bounded window of a subject's rank (the subject
+  // included), in rank order, at one read view. Absent when the subject has not scored.
+  rpc GetAroundMe(GetAroundMeRequest) returns (AroundReply);
 }
 
 // Authoritative frame commits and round inbox reads (architecture 8.2, 6.1.6). Only the
@@ -1024,6 +1031,48 @@ message TopNReply {
   // The board's read version (ISO-8601 UTC; empty when the board has never scored).
   string read_version = 2;
   repeated RankEntryProto entries = 3;
+}
+
+// FIX-RANK-05: one subject's position. The board definition names the queried board; the
+// subject id names the identity whose rank is asked (the rank is unique and gapless in the
+// board's declared order).
+message GetRankRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  string subject_id = 4;
+}
+
+message RankReply {
+  // False when the subject has not scored on the board (no rank exists).
+  bool found = 1;
+  int32 rank = 2;
+  RankEntryProto entry = 3;
+  // The board's read version at the same snapshot (empty when the board has never scored).
+  string read_version = 4;
+}
+
+// FIX-RANK-05: the around-me window. The subject plus this many neighbours on each side of
+// its rank; bounded (LeaderboardQueryLimits.MaxAroundWindow).
+message GetAroundMeRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  string subject_id = 4;
+  int32 window = 5;
+}
+
+message RankedEntryProto {
+  int32 rank = 1;
+  RankEntryProto entry = 2;
+}
+
+message AroundReply {
+  // False when the subject has not scored on the board (no rank to centre on).
+  bool found = 1;
+  // The board's read version at the same snapshot (empty when the board has never scored).
+  string read_version = 2;
+  repeated RankedEntryProto entries = 3;
 }
 
 message ListPendingSettlementsRequest {
