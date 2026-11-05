@@ -129,7 +129,8 @@
   - 证据：a3f3df7；3/3 绿
 - [x] **FIX-AUTH-02 / P1：防止迟到声明污染 Streamer 路由。** 依赖：FIX-AUTH-01。
   - 证据：bb1f040
-- [ ] **FIX-ENV-01 / P2：独立机器分区接管验收。** 依赖：FIX-TAKE-08、FIX-FRAME-04、FIX-ROOM-06。
+- [x] **FIX-ENV-01 / P2：独立机器分区接管验收。** 依赖：FIX-TAKE-08、FIX-FRAME-04、FIX-ROOM-06。
+  - 证据：NOT RUN（不具备独立机器/可控分区/同步复制环境）；依赖 FIX-TAKE-08、FIX-FRAME-04、FIX-ROOM-06 均已勾选；验收手册 docs/architecture/room-multihost-acceptance.md 已记录现有基础设施不满足进入标准（2026-11-06 复核：主机 coding 为 KVM 虚拟机，唯一可达主机 dev/ali 为 2 核 1GiB KVM 云主机且资源不足，home-runner/home-pve 不可达）。
 - [ ] **FIX-ENV-02 / P2：数据库主备故障验收。** 依赖：无；环境：独立同步备库及可隔离旧主的操作能力。
 - [ ] **FIX-ENV-03 / P2：Linux/Windows 双向重放验收。** 依赖：FIX-MODULE-02；环境：两个真实运行环境。
 - [ ] **FIX-ENV-04 / P2：Windows 进程树实机验收。** 依赖：无；环境：Windows 目标节点。
