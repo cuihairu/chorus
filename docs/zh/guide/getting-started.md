@@ -10,6 +10,23 @@ title: 快速上手
 - .NET SDK：`10.0.x`（见 `global.json`）
 - Node.js：受支持的 LTS 版本（用于构建 VitePress 文档站；包管理脚本见 `package.json`）
 
+## 下载 Nightly 构建
+
+每日构建发布到滚动更新的
+[`nightly` 预发布](https://github.com/cuihairu/chorus/releases/tag/nightly)：
+
+| 资产 | 内容 | 平台 |
+|------|------|------|
+| `chorus-nightly-linux-x64.tar.gz` | `Chorus.Server`，自包含 —— 解压后直接运行 `Chorus.Server` | Linux x64 |
+| `chorus-server_<version>_amd64.deb` | `Chorus.Server`，安装到 `/opt/chorus-server`（`chorus-server` 在 PATH 上） | Debian/Ubuntu x64 |
+| `chorus-server-0.0.0-1.nightly<date>.x86_64.rpm` | `Chorus.Server`，布局与 deb 相同 | RHEL/Fedora/openSUSE x64 |
+| `chorus-nightly-windows-x64.zip` | `Chorus.Server` + `Chorus.NodeAgent`，自包含 | Windows x64 |
+| `SHA256SUMS` | 上述全部资产的 SHA-256 校验和 | — |
+
+tar.gz 与 Windows zip 为自包含（无需 .NET 运行时）。deb 与 rpm 为框架依赖包，声明依赖
+`dotnet-runtime-10.0` + `aspnetcore-runtime-10.0` —— 需先安装 .NET 10 运行时（Microsoft 包源或发行版自带）。
+下载后可用 `sha256sum -c SHA256SUMS` 校验。暂无可分发的 GUI 客户端：客户端经 WebSocket 连接服务端（见下文）。
+
 ## 本地运行服务端
 
 ```bash

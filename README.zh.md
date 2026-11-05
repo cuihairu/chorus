@@ -125,12 +125,31 @@ CHORUS_PORT=7530 CHORUS_WSS_PORT=5169 dotnet run --project src/Chorus.StreamerGa
 
 推荐使用语义化版本号打 tag：`v0.1.0`、`v0.1.1`。版本号由维护者手动给出并触发。
 没有定时/自动触发的发版：`release.yml` **仅**在维护者推 `v*` tag 时运行（tag 即版本号），据此建 GitHub Release。
-每日构建/nightly 二进制另算（上传 artifact、不打 tag），须通过验收测试。
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+### Nightly 构建
+
+`nightly` workflow 每日运行（03:30 UTC），刷新滚动更新的
+[`nightly` 预发布](https://github.com/cuihairu/chorus/releases/tag/nightly)，包含以下资产：
+
+| 资产 | 内容 | 平台 |
+|------|------|------|
+| `chorus-nightly-linux-x64.tar.gz` | `Chorus.Server`，自包含（无需 .NET 运行时），解压后直接运行 `Chorus.Server` | Linux x64 |
+| `chorus-server_<version>_amd64.deb` | `Chorus.Server`，安装到 `/opt/chorus-server` 并创建 `/usr/bin/chorus-server` 链接 | Debian/Ubuntu x64 |
+| `chorus-server-0.0.0-1.nightly<date>.x86_64.rpm` | `Chorus.Server`，布局与 deb 相同 | RHEL/Fedora/openSUSE x64 |
+| `chorus-nightly-windows-x64.zip` | `Chorus.Server` + `Chorus.NodeAgent`，自包含，各占一个顶层目录 | Windows x64 |
+| `SHA256SUMS` | 上述全部资产的 SHA-256 校验和 | — |
+
+说明：
+
+- deb 与 rpm 为框架依赖包：声明依赖 `dotnet-runtime-10.0` 与 `aspnetcore-runtime-10.0`（请安装
+  Microsoft 或发行版的 .NET 10 运行时包）。
+- 暂无可分发的 GUI 客户端：`Chorus.Client` 是协议/RPC 库，客户端经 WebSocket 接入。
+- Nightly 二进制未签名、不打 tag；依赖它之前须通过验收测试。
 
 ## 覆盖率
 

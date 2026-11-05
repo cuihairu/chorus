@@ -10,6 +10,25 @@ title: Getting Started
 - .NET SDK: `10.0.x` (see `global.json`)
 - Node.js: a supported LTS release (used to build the VitePress documentation site; see `package.json` for the package manager scripts)
 
+## Downloading Nightly Builds
+
+Daily builds are published to the rolling
+[`nightly` prerelease](https://github.com/cuihairu/chorus/releases/tag/nightly):
+
+| Asset | Contents | Platform |
+|-------|----------|----------|
+| `chorus-nightly-linux-x64.tar.gz` | `Chorus.Server`, self-contained — unpack and run `Chorus.Server` | Linux x64 |
+| `chorus-server_<version>_amd64.deb` | `Chorus.Server`, installs to `/opt/chorus-server` (`chorus-server` on PATH) | Debian/Ubuntu x64 |
+| `chorus-server-0.0.0-1.nightly<date>.x86_64.rpm` | `Chorus.Server`, same layout as the deb | RHEL/Fedora/openSUSE x64 |
+| `chorus-nightly-windows-x64.zip` | `Chorus.Server` + `Chorus.NodeAgent`, self-contained | Windows x64 |
+| `SHA256SUMS` | SHA-256 checksums for all assets above | — |
+
+The tar.gz and the Windows zip are self-contained (no .NET runtime needed). The deb and rpm are
+framework-dependent and declare `dotnet-runtime-10.0` + `aspnetcore-runtime-10.0` as dependencies —
+install a .NET 10 runtime first (Microsoft package feed or your distro's). Verify downloads with
+`sha256sum -c SHA256SUMS`. There is no GUI client to distribute: clients connect to the server over
+WebSocket (see below).
+
 ## Running the Server (Locally)
 
 ```bash

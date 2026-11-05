@@ -129,13 +129,33 @@ Chorus stays a lightweight framework and does not grow into an account/ops/payme
 
 Use semantic version tags: `v0.1.0`, `v0.1.1`. Version numbers are given and triggered manually by the
 maintainer. There is no scheduled or auto-triggered release: `release.yml` runs **only** when a `v*` tag is pushed
-(the tag supplies the version), and creates the GitHub Release from there. Daily/nightly binaries are separate
-(uploaded as artifacts, no tag), and must pass acceptance testing.
+(the tag supplies the version), and creates the GitHub Release from there.
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+### Nightly Builds
+
+The `nightly` workflow runs daily (03:30 UTC) and refreshes the rolling
+[`nightly` prerelease](https://github.com/cuihairu/chorus/releases/tag/nightly) with the following assets:
+
+| Asset | Contents | Platform |
+|-------|----------|----------|
+| `chorus-nightly-linux-x64.tar.gz` | `Chorus.Server`, self-contained (no runtime needed), unpack anywhere and run `Chorus.Server` | Linux x64 |
+| `chorus-server_<version>_amd64.deb` | `Chorus.Server`, installs to `/opt/chorus-server` with a `/usr/bin/chorus-server` symlink | Debian/Ubuntu x64 |
+| `chorus-server-0.0.0-1.nightly<date>.x86_64.rpm` | `Chorus.Server`, same layout as the deb | RHEL/Fedora/openSUSE x64 |
+| `chorus-nightly-windows-x64.zip` | `Chorus.Server` + `Chorus.NodeAgent`, self-contained, each in its own top-level folder | Windows x64 |
+| `SHA256SUMS` | SHA-256 checksums for all assets above | — |
+
+Notes:
+
+- The deb and rpm are framework-dependent: they declare `dotnet-runtime-10.0` and
+  `aspnetcore-runtime-10.0` as package dependencies (install the Microsoft or distro .NET 10 packages).
+- There is no GUI client to distribute: `Chorus.Client` is a protocol/RPC library, and clients connect
+  over WebSocket.
+- Nightly binaries are unsigned and untagged; they must pass acceptance testing before being relied upon.
 
 ## Coverage
 
