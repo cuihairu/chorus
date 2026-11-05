@@ -205,3 +205,50 @@ jobs:
           path: chorus-nightly-windows-x64.zip
           retention-days: 14
           if-no-files-found: error
+
+  release:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    needs: [linux, windows]
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Collect artifacts from all legs
+        uses: actions/download-artifact@v7.0.0
+        with:
+          pattern: chorus-nightly-*
+          merge-multiple: true
+          path: release
+
+      - name: Generate SHA256SUMS
+        working-directory: release
+        run: |
+          set -euo pipefail
+          ls -lh
+          sha256sum chorus-nightly-linux-x64.tar.gz \
+            chorus-server_*_amd64.deb \
+            chorus-server-*.x86_64.rpm \
+            chorus-nightly-windows-x64.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish rolling nightly release (all platforms)
+        run: |
+          set -euo pipefail
+          cd release
+          NOTES="Rolling nightly build of main at ${GITHUB_SHA}. Updated automatically by the nightly workflow."
+          if gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload nightly * --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit nightly --prerelease --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create nightly * --prerelease \
+              --title "Nightly build" --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
+          fi
+          # The deb/rpm carry the dated version in their filenames; drop assets
+          # from older runs so the rolling release keeps exactly one set.
+          KEEP=$(printf '%s\n' *)
+          gh release view nightly --repo "$GITHUB_REPOSITORY" --json assets \
+            -q '.assets[].name' | while read -r asset; do
+            case "$KEEP" in *"$asset"*) ;; *) gh release delete-asset nightly "$asset" --yes --repo "$GITHUB_REPOSITORY" ;; esac
+          done
+          gh release view nightly --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isPrerelease,assets \
+            -q '"nightly release: " + .tagName + " prerelease=" + (.isPrerelease|tostring) + " assets: " + ([.assets[].name] | join(", "))'
