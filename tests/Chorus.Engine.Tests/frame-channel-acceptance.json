@@ -1,0 +1,23 @@
+{
+  "unit": {
+    "rooms": 20,
+    "seatsPerRoom": 2,
+    "targetAggregateFrameRatePerSecond": 6000,
+    "runSeconds": 3.0,
+    "framePayloadBytes": 4096,
+    "aggregateFrameRateFloor": 5700,
+    "dispatchLatencyP95BudgetMs": 5.0,
+    "dispatchLatencyP99BudgetMs": 12.0,
+    "unintendedDropsBudget": 0
+  },
+  "host": {
+    "rooms": 10,
+    "tickMs": 50,
+    "ticksPerRoom": 100,
+    "warmupTicks": 10,
+    "aggregateFrameRateFloor": 180,
+    "commitToClientP95BudgetMs": 25.0,
+    "commitToClientP99BudgetMs": 50.0,
+    "unintendedRebaselinesBudget": 0
+  }
+}

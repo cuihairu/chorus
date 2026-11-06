@@ -890,7 +890,7 @@ public sealed class RedesignM4HostRoundTests
     /// <summary>The M4-4 edge cluster: the M4-3 topology plus a game host that names its
     /// instance and self-reports it — the coordinator's directory writes "game-1" into every
 
-    private static async Task<(int WssPort, DevelopmentPlatformSimulator Simulator)> StartEdgeClusterAsync(
+    internal static async Task<(int WssPort, DevelopmentPlatformSimulator Simulator)> StartEdgeClusterAsync(
         RedesignM0HostTests.HostEnvironment environment, int roundDurationTicks = 40)
     {
         var simulatorKey = RandomNumberGenerator.GetBytes(32);

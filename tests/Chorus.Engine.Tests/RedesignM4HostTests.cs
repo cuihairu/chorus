@@ -650,7 +650,7 @@ public sealed class RedesignM4HostTests
     /// interval keeps that visibility inside the test windows. With the matchmaker on, the
     /// control plane pairs queued mounts into rounds behind a game host, exactly like the M3
     /// match cluster.</summary>
-    private static async Task<(int WssPort, DevelopmentPlatformSimulator Simulator)> StartEdgeClusterAsync(
+    internal static async Task<(int WssPort, DevelopmentPlatformSimulator Simulator)> StartEdgeClusterAsync(
         RedesignM0HostTests.HostEnvironment environment, bool withMatchmaker = false)
     {
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
@@ -724,7 +724,7 @@ public sealed class RedesignM4HostTests
     /// <summary>Starts the gateway alone: the transport contract needs no cluster behind
     /// it. The internal port is a probe-only listener here; the WSS port is the one under
     /// test.</summary>
-    private static async Task<int> StartGatewayAsync(
+    internal static async Task<int> StartGatewayAsync(
         RedesignM0HostTests.HostEnvironment environment, int? preAuthSeconds = null)
     {
         var wssPort = RedesignM0HostTests.HostEnvironment.FreePort();
