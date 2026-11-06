@@ -130,7 +130,21 @@ public sealed class EdgeRoomFanout(Func<RoomStreamRequest, CancellationToken, IA
             if (room.Generation == 0
                 || baselineTick != room.LastTick || baselineVersion != room.LastVersion)
             {
-                StartStream(room, baselineTick, baselineVersion);
+                try
+                {
+                    StartStream(room, baselineTick, baselineVersion);
+                }
+                catch
+                {
+                    // The subscription never opened (a synchronous subscribe failure, e.g.
+                    // a channel the factory cannot build): roll the seat back so a dead
+                    // subscription never strands the room — its other seats keep the stream
+                    // that still runs, and an empty room is removed whole, not parked
+                    // half-alive for a later join to trip over.
+                    room.Seats.Remove(connection.ConnectionId);
+                    if (room.Seats.Count == 0) RemoveRoom(room);
+                    throw;
+                }
             }
         }
     }
@@ -214,26 +228,31 @@ public sealed class EdgeRoomFanout(Func<RoomStreamRequest, CancellationToken, IA
     /// the gate; the reader runs outside it and re-enters per dispatch.</summary>
     private void StartStream(RoomState room, long baselineTick, long baselineVersion)
     {
-        room.Generation++;
-        var generation = room.Generation;
-        room.StreamCancellation.Cancel();
-        room.StreamCancellation = new CancellationTokenSource();
-        var cancellation = room.StreamCancellation.Token;
+        // The replacement opens on its own token before the current stream is cancelled: a
+        // synchronous subscribe failure must leave the room's live stream serving its seats
+        // rather than a bumped generation with no reader — which would strand every seat,
+        // because a later join at a matching baseline would never restart it.
+        var generation = room.Generation + 1;
+        var replacement = new CancellationTokenSource();
         var request = new RoomStreamRequest(room.RoomId, room.GameId, room.Endpoint, room.Epoch,
             baselineTick, baselineVersion);
         IAsyncEnumerable<SyncMessage> stream;
         try
         {
-            stream = subscribe(request, cancellation);
+            stream = subscribe(request, replacement.Token);
         }
         catch
         {
+            replacement.Dispose();
             // The subscription never opened: the release the reader's finally would have
-            // owned happens here.
+            // owned happens here, and the previous stream (if any) keeps running.
             StreamClosed?.Invoke(room.Endpoint);
             throw;
         }
-        _ = Task.Run(() => ReadAsync(room, generation, stream, cancellation));
+        room.StreamCancellation.Cancel();
+        room.StreamCancellation = replacement;
+        room.Generation = generation;
+        _ = Task.Run(() => ReadAsync(room, generation, stream, replacement.Token));
     }
 
     private async Task ReadAsync(RoomState room, long generation,

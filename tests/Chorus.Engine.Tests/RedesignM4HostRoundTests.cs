@@ -609,6 +609,58 @@ public sealed class RedesignM4HostRoundTests
         await AssertPingWorksAsync(first);
     }
 
+    [Fact]
+    public async Task ALeavingSeatKeepsTheSharedRoomStreamAlive()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment, roundDurationTicks: 400);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var first = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        using var second = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await first.HelloAsync();
+        await second.HelloAsync();
+        await LoginAndStartAsync(first, simulator, "open-m4-link10-a");
+        await LoginAndStartAsync(second, simulator, "open-m4-link10-b");
+        await QueueAsync(first, "join-a");
+        await QueueAsync(second, "join-b");
+        var room = await AwaitMatchAsync(first);
+        await AwaitMatchAsync(second);
+
+        // Both seats hear the room on the gateway's one shared subscription.
+        await ReadUntilAsync(first, EdgeTypes.Delta, TimeSpan.FromSeconds(30));
+        await ReadUntilAsync(second, EdgeTypes.Delta, TimeSpan.FromSeconds(30));
+
+        // FIX-LINK-10: the first seat leaves. The shared subscription must survive the
+        // departure — the second seat's chain continues without a re-baseline (no second
+        // roomJoined for the same room), and the still-serving stream keeps carrying the
+        // receipts of a command the remaining seat sends after the departure.
+        first.Dispose();
+        var continued = await ReadDeltasAsync(second, 3, TimeSpan.FromSeconds(30));
+        Assert.DoesNotContain(continued, frame =>
+            frame.GetProperty("type").GetString() == EdgeTypes.RoomJoined);
+        var roomEpoch = FirstFrameOf(continued, EdgeTypes.Delta).GetProperty("roomEpoch").GetInt64();
+        await second.SendAsync(new EdgeGameCommand
+        {
+            CommandId = "cmd-link10-1", RoomId = room, RoomEpoch = roomEpoch,
+            ClientSequence = 1,
+            Payload = JsonDocument.Parse("""{"action":"boost","level":3}""").RootElement
+        });
+        // Accepted: durably in the round's input record. Applied: rides after the consuming
+        // delta — proof the still-shared stream carries both lanes to the remaining seat.
+        var toAccepted = await ReadUntilAsync(second, EdgeTypes.CommandReceipt, TimeSpan.FromSeconds(30));
+        var accepted = toAccepted[^1];
+        Assert.Equal("cmd-link10-1", accepted.GetProperty("commandId").GetString());
+        Assert.Equal("Accepted", accepted.GetProperty("status").GetString());
+        var toApplied = await ReadUntilAsync(second, EdgeTypes.CommandReceipt, TimeSpan.FromSeconds(30));
+        var applied = toApplied[^1];
+        Assert.Equal("cmd-link10-1", applied.GetProperty("commandId").GetString());
+        Assert.Equal("Applied", applied.GetProperty("status").GetString());
+        Assert.Contains(toApplied.Take(toApplied.Count - 1),
+            frame => frame.GetProperty("type").GetString() == EdgeTypes.Delta);
+        await AssertPingWorksAsync(second);
+    }
+
     /// <summary>The module's score effect is the proof the command reached the module: the
     /// delta payload is the effect array, and the boost's score entry names the credited
     /// faction (the module's shape is {faction, delta, total}, not a per-faction field).</summary>
@@ -756,6 +808,35 @@ public sealed class RedesignM4HostRoundTests
     /// the frames up to and including the result.</summary>
     private static async Task<List<JsonElement>> DrainResultAsync(RedesignM4WsClient client) =>
         await ReadUntilAsync(client, EdgeTypes.RoundResult, TimeSpan.FromSeconds(30));
+
+    /// <summary>Reads frames until the given number of deltas has arrived, returning every
+    /// frame seen on the way — the shared-stream probe needs the in-between frames too.</summary>
+    private static async Task<List<JsonElement>> ReadDeltasAsync(RedesignM4WsClient client,
+        int deltaCount, TimeSpan window)
+    {
+        var deadline = DateTime.UtcNow + window;
+        var frames = new List<JsonElement>();
+        while (DateTime.UtcNow < deadline)
+        {
+            JsonElement? frame;
+            try
+            {
+                frame = await client.ReceiveAsync(deadline - DateTime.UtcNow);
+            }
+            catch (TimeoutException)
+            {
+                break;
+            }
+            if (frame is null) break;
+            frames.Add(frame.Value);
+            var deltas = frames.Count(f => f.GetProperty("type").GetString() == EdgeTypes.Delta);
+            if (deltas >= deltaCount) return frames;
+        }
+        throw new TimeoutException($"Only saw "
+            + frames.Count(f => f.GetProperty("type").GetString() == EdgeTypes.Delta)
+            + $" deltas of {deltaCount} (saw: "
+            + string.Join(", ", frames.Select(f => f.GetProperty("type").GetString())) + ").");
+    }
 
     /// <summary>Hand-starts a round whose module fails deterministically at tick 2 (the
     /// documented fault seam) and parks the room after its strikes. Returns the epoch.</summary>
