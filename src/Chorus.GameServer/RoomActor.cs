@@ -146,7 +146,7 @@ internal sealed class RoomActor : IAsyncDisposable
     // wake is a notification only — the recoverable inbox cursor stays the consumption
     // authority, so a lost seat or a lost wake costs latency, never an event.
     private readonly object _inboundGate = new();
-    private readonly Queue<(string EventId, string? BindingId, string PayloadJson, string Platform)> _inbound = new();
+    private readonly Queue<(string EventId, string SourceDedupKey, string? BindingId, string PayloadJson, string Platform, long Sequence)> _inbound = new();
     private readonly HashSet<string> _inboundIds = new(StringComparer.Ordinal);
     private readonly int _inboundBound;
     private readonly SemaphoreSlim _wake = new(0, 1);
@@ -296,10 +296,11 @@ internal sealed class RoomActor : IAsyncDisposable
         if (_pending is null)
         {
             // FIX-INPUT-04: the seated, durably accepted pushes are this tick's inputs, and
-            // a tick with seated work does not pull — the push path needs no inbox read. A
-            // tick with no seats pulls as before: the client-command leg still rides the
-            // inbox (FIX-LINK-09 moves it later), so a command-only room's behavior is
-            // exactly what it was.
+            // a tick with seated work does not pull — the push path needs no inbox read.
+            // FIX-LINK-09: a client command is pushed straight at the host and seats like a
+            // platform event, so a command-only room's inputs ride the seat too; the pull is
+            // the recovery fallback for delivery rows a host restart or takeover left
+            // unconsumed.
             IReadOnlyList<TickInputItem> items = DrainSeats();
             if (items.Count == 0)
             {
@@ -821,14 +822,26 @@ internal sealed class RoomActor : IAsyncDisposable
     /// hands race inside that window. A full list answers false, which costs nothing: the
     /// durable delivery row is the truth, the cursor pull consumes the event, and the wake
     /// still fires. Seating never confirms anything by itself — the caller only hands
-    /// events whose durable leg already committed.</summary>
-    public bool TryHand(string eventId, string? bindingId, string payloadJson, string platform)
+    /// events whose durable leg already committed. FIX-LINK-09: a seat also carries the
+    /// durable leg's sequence, which a @chorus (client-command) seat surfaces as the Applied
+    /// word's receipt sequence — a platform seat's sequence is never exposed (platform
+    /// events are not command receipts) and rides as zero.</summary>
+    public bool TryHand(string eventId, string? bindingId, string payloadJson, string platform,
+        long sequence = 0)
+        => TryHandWithSource(eventId, eventId, bindingId, payloadJson, platform, sequence);
+
+    /// <summary>FIX-LINK-09: a @chorus (client-command) seat names the delivery row's own event
+    /// id as its event reference — the frame commit must reference the delivery the store
+    /// wrote — while its dedup key stays the client's command id, which the Applied word
+    /// surfaces. A platform seat's dedup key is its event id (the durable leg stored it so).</summary>
+    public bool TryHandWithSource(string eventId, string sourceDedupKey, string? bindingId,
+        string payloadJson, string platform, long sequence = 0)
     {
         lock (_inboundGate)
         {
             if (_inboundIds.Contains(eventId)) return true;
             if (_inbound.Count >= _inboundBound) return false;
-            _inbound.Enqueue((eventId, bindingId, payloadJson, platform));
+            _inbound.Enqueue((eventId, sourceDedupKey, bindingId, payloadJson, platform, sequence));
             _inboundIds.Add(eventId);
             return true;
         }
@@ -844,12 +857,17 @@ internal sealed class RoomActor : IAsyncDisposable
             var drained = new List<TickInputItem>(_inbound.Count);
             while (_inbound.Count > 0)
             {
-                var (eventId, bindingId, payloadJson, platform) = _inbound.Dequeue();
+                var (eventId, sourceDedupKey, bindingId, payloadJson, platform, sequence) =
+                    _inbound.Dequeue();
                 _inboundIds.Remove(eventId);
-                // A pushed event's dedup key is its event id (the durable leg stored it so);
-                // the sequence is the command receipt's concern, and a seat never holds a
-                // client command — the client leg still rides the pull.
-                drained.Add(new TickInputItem(eventId, bindingId, payloadJson, platform, eventId, 0));
+                // The dedup key is the business identity a receipt surfaces (a platform event's
+                // own id, a client command's command id), while the event reference the frame
+                // commits is the delivery the store wrote. FIX-LINK-09: a @chorus seat carries
+                // its durable leg's sequence, which the Applied word's command receipt surfaces;
+                // a platform seat's sequence is not exposed (platform events are not command
+                // receipts) and rides zero.
+                drained.Add(new TickInputItem(eventId, bindingId, payloadJson, platform,
+                    sourceDedupKey, sequence));
             }
             return drained;
         }
@@ -866,7 +884,7 @@ internal sealed class RoomActor : IAsyncDisposable
         lock (_inboundGate)
         {
             if (!_inboundIds.Overlaps(consumed)) return;
-            var kept = new List<(string EventId, string? BindingId, string PayloadJson, string Platform)>(
+            var kept = new List<(string EventId, string SourceDedupKey, string? BindingId, string PayloadJson, string Platform, long Sequence)>(
                 _inbound.Count);
             while (_inbound.Count > 0)
             {

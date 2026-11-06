@@ -470,7 +470,8 @@ public sealed class RoundInputGrpcService(
             return new ClientInputReply
             {
                 CommandId = receipt.CommandId, RoomId = receipt.RoomId, Sequence = receipt.Sequence,
-                RouteVersion = receipt.RouteVersion, Duplicate = receipt.Duplicate
+                RouteVersion = receipt.RouteVersion, Duplicate = receipt.Duplicate,
+                EventId = receipt.EventId
             };
         }
         catch (SessionRevokedException)

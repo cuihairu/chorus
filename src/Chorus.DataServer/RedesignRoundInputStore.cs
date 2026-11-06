@@ -13,7 +13,7 @@ public sealed record RouteEventsItem(string EventId, string? RoomId, long? Seque
 public sealed record RouteEventsResult(IReadOnlyList<RouteEventsItem> Events, bool Duplicate);
 
 public sealed record ClientInputReceipt(
-    string CommandId, string RoomId, long Sequence, long RouteVersion, bool Duplicate);
+    string CommandId, string RoomId, string EventId, long Sequence, long RouteVersion, bool Duplicate);
 
 public sealed record RoomEventReceipt(
     string EventId, string RoomId, long Sequence, long RouteVersion, bool Duplicate);
@@ -645,8 +645,12 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
             advance.Parameters.AddWithValue("next", next + 1);
             await advance.ExecuteNonQueryAsync(cancellationToken);
         }
-        return JsonSerializer.Serialize(new ClientInputReceipt(commandId, roomId, next, routeVersion,
-            Duplicate: false));
+        // FIX-LINK-09: the delivery's own event id is what the room's commit must reference —
+        // the client's command id is the dedup key, not the delivery row's identity, so a
+        // command id reused across rooms never collides on the event row. The seat carries the
+        // delivery id as its event reference and surfaces the command id as the Applied word.
+        return JsonSerializer.Serialize(new ClientInputReceipt(commandId, roomId, eventId, next,
+            routeVersion, Duplicate: false));
     }
 
     /// <summary>

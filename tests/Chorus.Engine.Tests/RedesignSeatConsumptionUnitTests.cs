@@ -56,6 +56,44 @@ public sealed class RedesignSeatConsumptionUnitTests
     }
 
     [Fact]
+    public async Task AChorusSeatSurfacesItsDurableSequenceAsTheAppliedWord()
+    {
+        var store = new ScriptedFrameStore();
+        var actor = NewRoom(store, durationTicks: 1);
+        var subscriber = actor.Subscribe(0, 1);
+
+        // FIX-LINK-09: a client command's seat carries the durable leg's sequence — the
+        // Applied word must name it, so the client's receipt matches the record exactly.
+        Assert.True(actor.TryHand("seat-chorus-1", "binding-seat",
+            """{"action":"boost","level":3}""", "@chorus", sequence: 42));
+        actor.Wake();
+        actor.Start();
+
+        var delta = await NextAsync(subscriber);
+        Assert.NotNull(delta);
+        Assert.Equal(SyncMessage.KindOneofCase.Delta, delta.KindCase);
+        Assert.Contains("seat-chorus-1", delta.Delta.InputEventIds);
+        // The @chorus leg consumed the boost as a client intent (no kind shape, so the
+        // intent-only rule passes it) and the Applied word names the durable sequence.
+        Assert.Contains(delta.Delta.Commands, command =>
+            command.CommandId == "seat-chorus-1" && command.Sequence == 42);
+        var result = await NextAsync(subscriber);
+        Assert.NotNull(result);
+        Assert.Equal(SyncMessage.KindOneofCase.RoundResult, result.KindCase);
+        using (var document = JsonDocument.Parse(result.RoundResult.ResultJson))
+        {
+            Assert.Equal(36L, ScoreOf(document, "red")); // the flat 12 × level 3 of 1.1.0
+        }
+        // The seat carried the command to the frame; no inbox pull answered it.
+        Assert.Equal(0, store.InboxReadCount);
+        var commits = store.CommitsSnapshot();
+        Assert.Single(commits);
+        Assert.Equal(["seat-chorus-1"], commits[0].InputEventIds);
+        await actor.DisposeAsync();
+        subscriber.Dispose();
+    }
+
+    [Fact]
     public async Task ADuplicatePushKeepsItsSingleEffect()
     {
         var store = new ScriptedFrameStore();

@@ -14,16 +14,6 @@ public sealed class EdgeInputClient(Func<GrpcChannel> channelFactory)
 {
     private readonly Lazy<GrpcChannel> _channel = new(channelFactory);
 
-    public async Task<ClientInputReply> AcceptClientInputAsync(string tenantId, string sessionId,
-        string roomId, long roomEpoch, string gameId, string commandId, string payloadJson,
-        CancellationToken cancellationToken)
-        => await new RoundInput.RoundInputClient(_channel.Value).AcceptClientInputAsync(
-            new ClientInputRequest
-            {
-                TenantId = tenantId, SessionId = sessionId, RoomId = roomId, RoomEpoch = roomEpoch,
-                GameId = gameId, CommandId = commandId, PayloadJson = payloadJson
-            }, cancellationToken: cancellationToken);
-
     public async Task<ParticipationReply> WithdrawParticipationAsync(string tenantId, string sessionId,
         string roomId, string gameId, string operationId, CancellationToken cancellationToken)
         => await new RoundInput.RoundInputClient(_channel.Value).WithdrawParticipationAsync(

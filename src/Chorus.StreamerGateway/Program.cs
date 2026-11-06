@@ -129,7 +129,23 @@ if (routingMonitor is not null)
                 ? null
                 : new EdgeRoomFanout.ResolvedRoom(route.GameId, route.Endpoint, round.Epoch, round.Status);
         },
-        StreamClosed = gameChannels.Release
+        StreamClosed = gameChannels.Release,
+        // FIX-LINK-09: the up-link — one client command pushed straight at the room's host,
+        // the game-host channel acquired for this call and released after it (the pool's
+        // subscription leg keeps its own references).
+        PushClientInput = async (endpoint, request, cancellation) =>
+        {
+            var channel = gameChannels.Acquire(endpoint);
+            try
+            {
+                return await new RoomEvents.RoomEventsClient(channel)
+                    .DeliverEventAsync(request, cancellationToken: cancellation);
+            }
+            finally
+            {
+                gameChannels.Release(endpoint);
+            }
+        }
     };
 }
 var edgeWs = new EdgeWs(edgeOptions, registry, tenantApplications, sessionClient,

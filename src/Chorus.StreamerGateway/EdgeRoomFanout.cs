@@ -87,6 +87,14 @@ public sealed class EdgeRoomFanout(Func<RoomStreamRequest, CancellationToken, IA
     /// the round store; tests drive it directly.</summary>
     public required Func<string, CancellationToken, Task<ResolvedRoom?>> ResolveRoom { get; init; }
 
+    /// <summary>FIX-LINK-09: pushes one client command (a @chorus platform event) straight at
+    /// the room's owning host — the up-link of the architecture 3.3 SG&lt;-&gt;GS channel. The
+    /// caller resolves the endpoint from the confirmed route and names the room the mount
+    /// participates in; the host answers the direct-push disposition contract. Production
+    /// acquires the game-host channel pool; tests drive it directly.</summary>
+    public Func<string, DeliverRoomEventRequest, CancellationToken, Task<DeliverRoomEventReply>>?
+        PushClientInput { get; init; }
+
     /// <summary>Seats one connection in its match's room. The facts come from the caller's
     /// own resolution (routing endpoint, round epoch, the binding's participation); the
     /// baseline comes from what the connection last acknowledged on this room. A seat at the

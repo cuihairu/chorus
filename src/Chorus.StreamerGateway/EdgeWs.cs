@@ -454,15 +454,20 @@ public sealed class EdgeWs(
         }
     }
 
-    /// <summary>GameCommand (contracts 3.1): the store's transaction is the judge — the
-    /// current session, the active participation, the live epoch. The Accepted receipt means
-    /// durably in the round's input record; the Applied word arrives on the sync stream with
-    /// the delta that consumes the command, which is why the command is tracked with the
-    /// fan-out before the store is asked.</summary>
+    /// <summary>GameCommand (contracts 3.1): the command is pushed straight at the room's
+    /// owning game host (FIX-LINK-09, the up-link of architecture 3.3), which durably accepts
+    /// it and seats it for the next tick. The gateway's upstream fence is the cheap admission
+    /// — the command must name the room the mount's confirmed route points at, so a client
+    /// cannot guess a room it does not play (architecture 6.4) — and the host's durable leg
+    /// remains the authoritative judge of session, participation and rate. The Accepted
+    /// receipt means durably in the round's input record; the Applied word arrives on the sync
+    /// stream with the delta that consumes the command, which is why the command is tracked
+    /// with the fan-out before the host is asked.</summary>
     private async Task HandleGameCommandAsync(EdgeConnection connection, EdgeGameCommand command,
         CancellationToken cancellation)
     {
-        if (inputClient is null || !connection.HasGameplay || connection.TenantId is not { Length: > 0 })
+        if (fanout is null || fanout.PushClientInput is null || routingMonitor is null
+            || !connection.HasGameplay || connection.TenantId is not { Length: > 0 })
         {
             await connection.SendJsonAsync(new EdgeError
             {
@@ -483,24 +488,68 @@ public sealed class EdgeWs(
             }, cancellation);
             return;
         }
+        // FIX-LINK-09 upstream fence: the command must name the room the mount's confirmed
+        // route points at, at the route's epoch — a client names its own participation, never
+        // a guessed placement. The one best-effort pull answers a route that just published.
+        var fenced = await TryFenceRoomAsync(connection, command.RoomId, 0);
+        if (fenced is null || fenced.Facts.Epoch != command.RoomEpoch)
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "The command names a room the mount does not play.",
+                OperationId = command.CommandId
+            }, cancellation);
+            return;
+        }
         // Registered first: a frame that consumes the command the instant the receipt returns
-        // still finds its owner. A command the store then refuses is untracked below.
-        fanout?.TrackCommand(command.RoomId, command.CommandId, connection.ConnectionId);
+        // still finds its owner. A command the host then refuses is untracked below.
+        fanout.TrackCommand(command.RoomId, command.CommandId, connection.ConnectionId);
         try
         {
-            var reply = await inputClient.AcceptClientInputAsync(connection.TenantId!,
-                connection.SessionId!, command.RoomId, command.RoomEpoch, connection.GameId!,
-                command.CommandId, command.Payload.GetRawText(), cancellation);
-            await connection.SendJsonAsync(new EdgeCommandReceipt
+            var reply = await fanout.PushClientInput(fenced.Facts.Endpoint,
+                new DeliverRoomEventRequest
+                {
+                    TenantId = connection.TenantId!,
+                    GameId = connection.GameId!,
+                    RoomId = command.RoomId,
+                    OwnerInstanceId = fenced.Facts.OwnerInstanceId,
+                    Epoch = fenced.Facts.Epoch,
+                    EventId = command.CommandId,
+                    Platform = "@chorus",
+                    // A client command names no app: the direct-push contract requires an app
+                    // id for a platform event, and the client-command leg's durable store keys
+                    // on platform + command id, so this sentinel is inert.
+                    AppId = "chorus-client",
+                    BindingId = connection.BindingId!,
+                    RoundGeneration = fenced.RoundGeneration,
+                    PayloadJson = command.Payload.GetRawText(),
+                    SessionId = connection.SessionId!
+                }, cancellation);
+            if (reply.Disposition is "DurableAccepted" or "Duplicate")
             {
-                CommandId = reply.CommandId,
-                Status = "Accepted",
-                ReceiptId = $"{reply.RoomId}:{reply.Sequence}"
-            }, cancellation);
+                await connection.SendJsonAsync(new EdgeCommandReceipt
+                {
+                    CommandId = command.CommandId,
+                    Status = "Accepted",
+                    ReceiptId = $"{command.RoomId}:{reply.Sequence}"
+                }, cancellation);
+                return;
+            }
+            // A non-accepted disposition refuses the command: a stale owner picture, a
+            // saturated host, or an unknowable durable outcome — the client retries the same
+            // command id and the durable leg deduplicates it.
+            fanout.UntrackCommand(command.RoomId, command.CommandId);
+            await RefuseAsync(connection, new RpcException(new Status(
+                reply.Disposition == "StaleOwner" ? StatusCode.FailedPrecondition
+                    : reply.Disposition == "Overloaded" ? StatusCode.ResourceExhausted
+                    : StatusCode.Unavailable, reply.Note)),
+                command.CommandId, cancellation, queueErrors: true,
+                invalidText: "The command is not valid for the mount's current round.");
         }
         catch (RpcException error)
         {
-            fanout?.UntrackCommand(command.RoomId, command.CommandId);
+            fanout.UntrackCommand(command.RoomId, command.CommandId);
             await RefuseAsync(connection, error, command.CommandId, cancellation, queueErrors: true,
                 invalidText: "The command is not valid for the mount's current round.");
         }

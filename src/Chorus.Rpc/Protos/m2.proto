@@ -181,6 +181,10 @@ message ClientInputReply {
   int64 sequence = 3;
   int64 route_version = 4;
   bool duplicate = 5;
+  // FIX-LINK-09: the delivery row's own event id, distinct from the client's command id. A
+  // room's frame commit must reference the delivery id, so the direct-push leg surfaces it
+  // for the seat while the Applied word keeps the command id (the dedup key).
+  string event_id = 6;
 }
 
 // FIX-INPUT-01: one directly pushed room event on its way to the durable store. The
@@ -243,6 +247,11 @@ message DeliverRoomEventRequest {
   // binding; forwarded as the AcceptRoomEvent claim the store checks against
   // live.binding.round_generation.
   int64 round_generation = 11;
+  // FIX-LINK-09: the client session a @chorus (client-command) push belongs to. The direct
+  // push carries the platform push's room attribution; a client command needs its session so
+  // the durable leg can run the session/participation/rate-cap fence it is authoritative for.
+  // Empty for platform events, which are room-attributed and carry no session.
+  string session_id = 12;
 }
 
 message DeliverRoomEventReply {

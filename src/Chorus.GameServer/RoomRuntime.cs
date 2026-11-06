@@ -1570,15 +1570,50 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         }
         try
         {
-            var accepted = await new RoundInput.RoundInputClient(_dataChannel).AcceptRoomEventAsync(
-                new AcceptRoomEventRequest
-                {
-                    TenantId = request.TenantId, GameId = request.GameId, RoomId = request.RoomId,
-                    OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
-                    EventId = request.EventId, Platform = request.Platform, AppId = request.AppId,
-                    BindingId = request.BindingId, RoundGeneration = request.RoundGeneration,
-                    PayloadJson = request.PayloadJson
-                }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+            // FIX-LINK-09: a @chorus push is a client command — its durable leg is the
+            // session/participation/rate-cap AcceptClientInput path (the authoritative
+            // fence), not the room-attributed AcceptRoomEvent path; both answer the same
+            // duplicate/sequence/route-version shape and hand the seat identically. The
+            // @chorus leg's seat references the delivery row the store wrote (its own event
+            // id) while surfacing the client's command id as the Applied word.
+            bool duplicate;
+            long sequence;
+            long routeVersion;
+            string seatEventId;
+            string seatDedupKey;
+            if (request.Platform == ClientCommandPlatform)
+            {
+                var accepted = await new RoundInput.RoundInputClient(_dataChannel)
+                    .AcceptClientInputAsync(new ClientInputRequest
+                    {
+                        TenantId = request.TenantId, SessionId = request.SessionId,
+                        RoomId = request.RoomId, RoomEpoch = request.Epoch,
+                        GameId = request.GameId, CommandId = request.EventId,
+                        PayloadJson = request.PayloadJson
+                    }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+                duplicate = accepted.Duplicate;
+                sequence = accepted.Sequence;
+                routeVersion = accepted.RouteVersion;
+                seatEventId = accepted.EventId;
+                seatDedupKey = request.EventId;
+            }
+            else
+            {
+                var accepted = await new RoundInput.RoundInputClient(_dataChannel)
+                    .AcceptRoomEventAsync(new AcceptRoomEventRequest
+                    {
+                        TenantId = request.TenantId, GameId = request.GameId, RoomId = request.RoomId,
+                        OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                        EventId = request.EventId, Platform = request.Platform, AppId = request.AppId,
+                        BindingId = request.BindingId, RoundGeneration = request.RoundGeneration,
+                        PayloadJson = request.PayloadJson
+                    }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+                duplicate = accepted.Duplicate;
+                sequence = accepted.Sequence;
+                routeVersion = accepted.RouteVersion;
+                seatEventId = request.EventId;
+                seatDedupKey = request.EventId;
+            }
             // FIX-INPUT-03: the handoff follows the durable verdict — an in-memory seat
             // never confirms anything by itself. Only a fresh accept hands: a duplicate's
             // event may already be consumed, and re-seating a drained id would send the
@@ -1586,15 +1621,15 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             // a capacity race, or whose reply was lost (OutcomeUnknown), costs nothing —
             // the delivery row is the truth and the cursor pull consumes it; the wake
             // still fires either way.
-            if (!accepted.Duplicate)
-                actor.TryHand(request.EventId,
+            if (!duplicate)
+                actor.TryHandWithSource(seatEventId, seatDedupKey,
                     request.BindingId is { Length: > 0 } ? request.BindingId : null,
-                    request.PayloadJson, request.Platform);
+                    request.PayloadJson, request.Platform, sequence);
             actor.Wake();
             return new DeliverRoomEventReply
             {
-                Disposition = accepted.Duplicate ? Duplicate : DurableAccepted,
-                Sequence = accepted.Sequence, RouteVersion = accepted.RouteVersion
+                Disposition = duplicate ? Duplicate : DurableAccepted,
+                Sequence = sequence, RouteVersion = routeVersion
             };
         }
         catch (RpcException error) when (error.StatusCode == StatusCode.FailedPrecondition)

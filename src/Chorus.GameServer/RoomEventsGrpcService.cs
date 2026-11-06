@@ -25,7 +25,9 @@ public sealed class RoomEventsGrpcService(RoomRuntime runtime, TrustedProcessCer
     public override async Task<DeliverRoomEventReply> DeliverEvent(DeliverRoomEventRequest request,
         ServerCallContext context)
     {
-        var caller = Require(context, "platform-gateway", "control-server");
+        // FIX-LINK-09: the streamer gateway joins the pushers — the client-command up-link
+        // (architecture 3.3) rides the same ingress, carrying platform @chorus.
+        var caller = Require(context, "platform-gateway", "control-server", "streamer-gateway");
         // The data plane authenticates the host's certificate, not the pusher's, so the
         // tenant fence lives here: a gateway may only push into its own tenant's rooms.
         if (caller.TenantId != "@cluster" &&

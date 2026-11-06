@@ -512,6 +512,117 @@ public sealed class RedesignM4HostRoundTests
         await AssertPingWorksAsync(client);
     }
 
+    [Fact]
+    public async Task AClientCommandReachesItsOwnRoomModuleAndComesBackApplied()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        // A long round: the command must land while the room still ticks, not race its end.
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment, roundDurationTicks: 400);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var first = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        using var second = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await first.HelloAsync();
+        await second.HelloAsync();
+        await LoginAndStartAsync(first, simulator, "open-m4-link09-a");
+        await LoginAndStartAsync(second, simulator, "open-m4-link09-b");
+        await QueueAsync(first, "join-a");
+        await QueueAsync(second, "join-b");
+        var room = await AwaitMatchAsync(first);
+        await AwaitMatchAsync(second);
+
+        var head = await ReadUntilAsync(first, EdgeTypes.Delta, TimeSpan.FromSeconds(30));
+        var roomEpoch = FirstFrameOf(head, EdgeTypes.RoomJoined).GetProperty("roomEpoch").GetInt64();
+        const string commandId = "cmd-link09-1";
+        // FIX-LINK-09: the command rides the gateway's direct push to the owning game host and
+        // the host's own durable client-command leg, then the host seats it for its next tick.
+        // The proof of "reaches the module" is the boost's score effect in the committed delta
+        // the Applied word follows — not merely that the command was accepted.
+        await first.SendAsync(new EdgeGameCommand
+        {
+            CommandId = commandId, RoomId = room, RoomEpoch = roomEpoch, ClientSequence = 1,
+            Payload = JsonDocument.Parse("""{"action":"boost","level":3}""").RootElement
+        });
+        var toAccepted = await ReadUntilAsync(first, EdgeTypes.CommandReceipt, TimeSpan.FromSeconds(30));
+        var accepted = toAccepted[^1];
+        Assert.Equal(commandId, accepted.GetProperty("commandId").GetString());
+        Assert.Equal("Accepted", accepted.GetProperty("status").GetString());
+        var acceptedReceiptId = accepted.GetProperty("receiptId").GetString()!;
+        Assert.True(acceptedReceiptId.StartsWith(room + ":", StringComparison.Ordinal), acceptedReceiptId);
+
+        // The delta that consumes the command carries its score effect — the module saw it.
+        var toApplied = await ReadUntilAsync(first, EdgeTypes.CommandReceipt, TimeSpan.FromSeconds(30));
+        var applied = toApplied[^1];
+        Assert.Equal(commandId, applied.GetProperty("commandId").GetString());
+        Assert.Equal("Applied", applied.GetProperty("status").GetString());
+        // The Applied word rides right after the consuming delta, and the durable sequence the
+        // Accepted receipt named is the same one the Applied word names — one command, one
+        // sequence through the whole leg.
+        var consuming = toApplied.Take(toApplied.Count - 1).Last(frame =>
+            frame.GetProperty("type").GetString() == EdgeTypes.Delta
+            && HasScoreEffect(frame.GetProperty("payload"), "red"));
+        Assert.Equal(applied.GetProperty("receiptId").GetString(), acceptedReceiptId);
+        Assert.Equal(room, consuming.GetProperty("roomId").GetString());
+
+        // The connection stays a connection after the command consumed.
+        await AssertPingWorksAsync(first);
+    }
+
+    [Fact]
+    public async Task ACommandForARoomTheMountIsNotInIsRefused()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment, roundDurationTicks: 400);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var first = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        using var second = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await first.HelloAsync();
+        await second.HelloAsync();
+        await LoginAndStartAsync(first, simulator, "open-m4-link09b-a");
+        await LoginAndStartAsync(second, simulator, "open-m4-link09b-b");
+        await QueueAsync(first, "join-a");
+        await QueueAsync(second, "join-b");
+        var room = await AwaitMatchAsync(first);
+        await AwaitMatchAsync(second);
+
+        var head = await ReadUntilAsync(first, EdgeTypes.Delta, TimeSpan.FromSeconds(30));
+        var roomEpoch = FirstFrameOf(head, EdgeTypes.RoomJoined).GetProperty("roomEpoch").GetInt64();
+        // FIX-LINK-09 upstream fence: a command names the mount's own participation — a guessed
+        // placement is refused at the gateway, never forwarded to a room the mount does not
+        // play. The connection stays open and its own room still accepts the live command.
+        await first.SendAsync(new EdgeGameCommand
+        {
+            CommandId = "cmd-link09-other", RoomId = "room-not-mine", RoomEpoch = roomEpoch,
+            ClientSequence = 1, Payload = JsonDocument.Parse("""{"action":"boost"}""").RootElement
+        });
+        var refused = await first.ExpectAsync(EdgeTypes.Error, TimeSpan.FromSeconds(30));
+        Assert.Equal(EdgeErrorCodes.InvalidMessage, refused.GetProperty("code").GetString());
+        await first.SendAsync(new EdgeGameCommand
+        {
+            CommandId = "cmd-link09-own", RoomId = room, RoomEpoch = roomEpoch, ClientSequence = 2,
+            Payload = JsonDocument.Parse("""{"action":"boost"}""").RootElement
+        });
+        var accepted = await first.ExpectAsync(EdgeTypes.CommandReceipt, TimeSpan.FromSeconds(30));
+        Assert.Equal("cmd-link09-own", accepted.GetProperty("commandId").GetString());
+        Assert.Equal("Accepted", accepted.GetProperty("status").GetString());
+        await AssertPingWorksAsync(first);
+    }
+
+    /// <summary>The module's score effect is the proof the command reached the module: the
+    /// delta payload is the effect array, and the boost's score entry names the credited
+    /// faction (the module's shape is {faction, delta, total}, not a per-faction field).</summary>
+    private static bool HasScoreEffect(JsonElement payload, string faction)
+    {
+        if (payload.ValueKind != JsonValueKind.Array) return false;
+        foreach (var effect in payload.EnumerateArray())
+            if (effect.GetProperty("kind").GetString() == "score"
+                && effect.GetProperty("payload").TryGetProperty("faction", out var credited)
+                && credited.GetString() == faction)
+                return true;
+        return false;
+    }
+
     // ---- helpers ----
 
     /// <summary>The liveness proof after any refusal: the connection is still a connection.</summary>

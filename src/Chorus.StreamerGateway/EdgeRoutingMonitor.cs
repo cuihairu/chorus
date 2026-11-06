@@ -49,7 +49,8 @@ public sealed class EdgeRoutingMonitor(
 
     /// <summary>The routing facts a room's fan-out needs: the tenant that owns it, where the
     /// owning game host serves, at which epoch, in which status.</summary>
-    public sealed record RoomFacts(string TenantId, string GameId, string Endpoint, long Epoch, string Status);
+    public sealed record RoomFacts(string TenantId, string GameId, string Endpoint, long Epoch,
+        string Status, string OwnerInstanceId);
 
     /// <summary>A room resolved for one mount, fenced to the mount's own binding facts.</summary>
     public sealed record FencedRoom(string RoomId, RoomFacts Facts, long BindingGeneration, long RoundGeneration);
@@ -157,7 +158,7 @@ public sealed class EdgeRoutingMonitor(
         {
             foreach (var room in snapshot.Rooms)
                 _roomsById[room.RoomId] = new RoomFacts(room.TenantId, room.GameId,
-                    room.Endpoint ?? "", room.Epoch, room.Status);
+                    room.Endpoint ?? "", room.Epoch, room.Status, room.OwnerInstanceId);
             foreach (var streamer in snapshot.Streamers)
                 _streamers[streamer.StreamerId] = new StreamerFacts(streamer.BindingId,
                     streamer.RoomId ?? "", streamer.BindingGeneration, streamer.RoundGeneration,
