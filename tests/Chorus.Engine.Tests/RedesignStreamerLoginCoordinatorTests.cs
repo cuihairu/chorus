@@ -78,11 +78,23 @@ public sealed class RedesignStreamerLoginCoordinatorTests
     {
         public Task EnsureLoadedAsync(string tenantId, string gameId, string streamerId,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<StreamerProfile?> LoadAsync(string tenantId, string gameId, string streamerId,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult<StreamerProfile?>(new StreamerProfile(1, 1, "{}"));
+        public Task<StreamerProfile> PatchAsync(string tenantId, string gameId, string streamerId,
+            string operationId, long expectedVersion, int schemaVersion, string dataJson,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new StreamerProfile(expectedVersion + 1, schemaVersion, dataJson));
     }
 
     private sealed class BrokenProfileStore : IStreamerProfileStore
     {
         public Task EnsureLoadedAsync(string tenantId, string gameId, string streamerId,
+            CancellationToken cancellationToken = default) => throw new InvalidOperationException("storage down");
+        public Task<StreamerProfile?> LoadAsync(string tenantId, string gameId, string streamerId,
+            CancellationToken cancellationToken = default) => throw new InvalidOperationException("storage down");
+        public Task<StreamerProfile> PatchAsync(string tenantId, string gameId, string streamerId,
+            string operationId, long expectedVersion, int schemaVersion, string dataJson,
             CancellationToken cancellationToken = default) => throw new InvalidOperationException("storage down");
     }
 
@@ -130,6 +142,79 @@ public sealed class RedesignStreamerLoginCoordinatorTests
         await Assert.ThrowsAsync<EntityNotReadyException>(
             () => rig.Coordinator.LoginAsync("tenant-a", Command(rig.IssueCredential)));
         Assert.Equal(0, rig.Store.Logins); // no session grant may exist when the entity is not ready
+    }
+
+    // FIX-LINK-06: a configurable profile store that records the login load and the patch write.
+    private sealed class RecordingProfileStore : IStreamerProfileStore
+    {
+        public int LoadCalls;
+        public Exception? LoadException;
+        public Exception? PatchException;
+        public (string OperationId, long ExpectedVersion, int SchemaVersion, string DataJson)? Patch;
+
+        public Task EnsureLoadedAsync(string tenantId, string gameId, string streamerId,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<StreamerProfile?> LoadAsync(string tenantId, string gameId, string streamerId,
+            CancellationToken cancellationToken = default)
+        {
+            LoadCalls++;
+            if (LoadException is not null) throw LoadException;
+            return Task.FromResult<StreamerProfile?>(new StreamerProfile(3, 2, """{"name":"a"}"""));
+        }
+
+        public Task<StreamerProfile> PatchAsync(string tenantId, string gameId, string streamerId,
+            string operationId, long expectedVersion, int schemaVersion, string dataJson,
+            CancellationToken cancellationToken = default)
+        {
+            Patch = (operationId, expectedVersion, schemaVersion, dataJson);
+            if (PatchException is not null) throw PatchException;
+            return Task.FromResult(new StreamerProfile(expectedVersion + 1, schemaVersion, dataJson));
+        }
+    }
+
+    [Fact]
+    public async Task LoginLoadsTheEntityProfileThroughTheProfileStore()
+    {
+        var store = new RecordingProfileStore();
+        var rig = New(profile: store);
+        var ready = await rig.Coordinator.LoginAsync("tenant-a", Command(rig.IssueCredential));
+
+        Assert.NotNull(ready);
+        Assert.Equal(1, store.LoadCalls); // AT01: 加载资料 at login
+    }
+
+    [Fact]
+    public async Task AProfileReadFailureBlocksLoginReady()
+    {
+        var store = new RecordingProfileStore { LoadException = new InvalidOperationException("storage down") };
+        var rig = New(profile: store);
+        await Assert.ThrowsAsync<EntityNotReadyException>(
+            () => rig.Coordinator.LoginAsync("tenant-a", Command(rig.IssueCredential)));
+        Assert.Equal(0, rig.Store.Logins); // the read failure joins the "no LoginReady" fence
+    }
+
+    [Fact]
+    public async Task PatchProfilePassesTheOperationAndVersionToTheStore()
+    {
+        var store = new RecordingProfileStore();
+        var rig = New(profile: store);
+        var result = await rig.Coordinator.PatchProfileAsync("tenant-a", "game-a", "streamer-fake",
+            "op-9", expectedVersion: 4, schemaVersion: 2, dataJson: """{"name":"b"}""");
+
+        Assert.Equal(("op-9", 4L, 2, """{"name":"b"}"""), store.Patch);
+        Assert.Equal(5, result.Version); // the store's next version
+        Assert.Equal(2, result.SchemaVersion);
+    }
+
+    [Fact]
+    public async Task PatchProfileSurfacesTheCasConflict()
+    {
+        var store = new RecordingProfileStore { PatchException = new StreamerProfileConflictException() };
+        var rig = New(profile: store);
+        await Assert.ThrowsAsync<StreamerProfileConflictException>(
+            () => rig.Coordinator.PatchProfileAsync("tenant-a", "game-a", "streamer-fake",
+                "op-9", expectedVersion: 4, schemaVersion: 2, dataJson: """{"name":"b"}"""));
     }
 
     [Fact]

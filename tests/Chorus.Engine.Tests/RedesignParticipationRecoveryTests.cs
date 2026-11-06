@@ -86,6 +86,13 @@ public sealed class RedesignParticipationRecoveryTests
     {
         public Task EnsureLoadedAsync(string tenantId, string gameId, string streamerId,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<StreamerProfile?> LoadAsync(string tenantId, string gameId, string streamerId,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult<StreamerProfile?>(new StreamerProfile(1, 1, "{}"));
+        public Task<StreamerProfile> PatchAsync(string tenantId, string gameId, string streamerId,
+            string operationId, long expectedVersion, int schemaVersion, string dataJson,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new StreamerProfile(expectedVersion + 1, schemaVersion, dataJson));
     }
 
     private sealed record Rig(

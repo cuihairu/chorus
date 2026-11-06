@@ -130,8 +130,16 @@ public sealed class DataGrpcService(
         return computed;
     }
 
+    /// <summary>
+    /// The tenant fence for the two caller shapes (mirror of StreamerSession.TenantFor): a
+    /// per-tenant certificate is fenced to its own tenant; a cluster-scoped caller — the
+    /// StreamerServer, this surface's designated client — names the tenant per request. The
+    /// entity's tenant binding is still enforced by the stores (auth.identity), so a named
+    /// tenant can never cross the fence.
+    /// </summary>
     private static void CheckTenant(ProcessIdentity caller, string tenantId)
     {
+        if (StringComparer.Ordinal.Equals(caller.TenantId, "@cluster")) return;
         if (!StringComparer.Ordinal.Equals(caller.TenantId, tenantId))
             throw new RpcException(new Status(StatusCode.PermissionDenied, "Tenant is not authorized."));
     }

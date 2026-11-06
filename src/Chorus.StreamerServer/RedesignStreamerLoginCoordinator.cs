@@ -97,10 +97,26 @@ public interface IStreamerIdentityStore
         CancellationToken cancellationToken = default);
 }
 
-/// <summary>Entity profile loading owned by DataServer; login succeeds only after the load.</summary>
+/// <summary>
+/// Entity profile access owned by DataServer; login succeeds only after the load. FIX-LINK-06 adds
+/// the m0 versioned read (<see cref="LoadAsync"/>) and write (<see cref="PatchAsync"/>) surface —
+/// the m0 contract names the StreamerServer as the Get/PatchProfile client.
+/// </summary>
 public interface IStreamerProfileStore
 {
     Task EnsureLoadedAsync(string tenantId, string gameId, string streamerId, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads the versioned profile (m0 GetProfile); null when no row exists.</summary>
+    Task<StreamerProfile?> LoadAsync(string tenantId, string gameId, string streamerId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Writes the versioned profile (m0 PatchProfile, versioned CAS + OperationKey idempotency).
+    /// A stale <paramref name="expectedVersion"/> throws <see cref="StreamerProfileConflictException"/>.
+    /// </summary>
+    Task<StreamerProfile> PatchAsync(string tenantId, string gameId, string streamerId,
+        string operationId, long expectedVersion, int schemaVersion, string dataJson,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -347,6 +363,18 @@ public sealed class RedesignStreamerLoginCoordinator(
         return await identityStore.GetActiveBindingAsync(callerTenantId, access.StreamerId, cancellationToken);
     }
 
+    /// <summary>
+    /// FIX-LINK-06 (AT18): the streamer-profile write seam of the 主播业务处理者 — a versioned CAS
+    /// write through the m0 surface. The trigger (GM 主播资料修正) is FIX-GM-07; the caller
+    /// supplies the full new data and the operation key for idempotency. A stale
+    /// <paramref name="expectedVersion"/> throws <see cref="StreamerProfileConflictException"/>.
+    /// </summary>
+    public async Task<StreamerProfile> PatchProfileAsync(string tenantId, string gameId, string streamerId,
+        string operationId, long expectedVersion, int schemaVersion, string dataJson,
+        CancellationToken cancellationToken = default)
+        => await profileStore.PatchAsync(tenantId, gameId, streamerId, operationId,
+            expectedVersion, schemaVersion, dataJson, cancellationToken);
+
     /// <summary>Best-effort active leg of session replacement (contracts 3.3): the old
     /// gateway is named by the grant, unless the displaced connection is the requester's
     /// own — a client that resumed in place already holds the winning session. If the old
@@ -373,7 +401,13 @@ public sealed class RedesignStreamerLoginCoordinator(
     private async Task EnsureEntityReadyAsync(string tenantId, string gameId, string streamerId,
         CancellationToken cancellationToken)
     {
-        try { await profileStore.EnsureLoadedAsync(tenantId, gameId, streamerId, cancellationToken); }
+        try
+        {
+            await profileStore.EnsureLoadedAsync(tenantId, gameId, streamerId, cancellationToken);
+            // FIX-LINK-06 (AT01): the entity loads its 资料 at login through the m0 versioned read.
+            // The row is ensured above, so a not-found is not a failure; a read error is.
+            await profileStore.LoadAsync(tenantId, gameId, streamerId, cancellationToken);
+        }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             throw new EntityNotReadyException();
