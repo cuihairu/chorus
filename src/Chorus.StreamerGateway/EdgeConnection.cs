@@ -64,6 +64,16 @@ public sealed class EdgeConnection
     public string? GameId { get; private set; }
     public string? RulesVersion { get; private set; }
 
+    /// <summary>FIX-LINK-08: the mount's generation — the incarnation of the binding this
+    /// connection's gameplay facts describe, used to fence routing rows against the mount.</summary>
+    public long MountGeneration { get; private set; }
+
+    /// <summary>FIX-LINK-08: the mount's committed participation (the StreamerServer's word):
+    /// the room the binding currently points at and its round generation. Empty and zero mean
+    /// no round — the gateway must not guess a room from anything less.</summary>
+    public string? ParticipatingRoomId { get; private set; }
+    public long ParticipatingRoundGeneration { get; private set; }
+
     /// <summary>Queue uplinks need a mount: the binding facts a startGameplay established.</summary>
     public bool HasGameplay => BindingId is { Length: > 0 };
 
@@ -92,11 +102,31 @@ public sealed class EdgeConnection
         AccessCredential = accessCredential;
     }
 
-    public void MarkGameplay(string bindingId, string gameId, string? rulesVersion)
+    public void MarkGameplay(string bindingId, string gameId, string? rulesVersion,
+        long mountGeneration = 0, string? currentRoomId = null, long roundGeneration = 0)
     {
         BindingId = bindingId;
         GameId = gameId;
         RulesVersion = rulesVersion;
+        MountGeneration = mountGeneration;
+        ParticipatingRoomId = currentRoomId is { Length: > 0 } ? currentRoomId : null;
+        ParticipatingRoundGeneration = roundGeneration;
+    }
+
+    /// <summary>FIX-LINK-08: records the participation the fenced route established — the room
+    /// this connection actually sits in after a successful fan-out join.</summary>
+    public void MarkParticipation(string roomId, long roundGeneration)
+    {
+        ParticipatingRoomId = roomId;
+        ParticipatingRoundGeneration = roundGeneration;
+    }
+
+    /// <summary>FIX-LINK-08: drops the participation facts (a leave withdrew the seat; the
+    /// mount facts stay for the next queue round).</summary>
+    public void ClearParticipation()
+    {
+        ParticipatingRoomId = null;
+        ParticipatingRoundGeneration = 0;
     }
 
     /// <summary>Claims the right to push one room notice: true only the first time this room

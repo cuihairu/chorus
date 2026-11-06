@@ -332,6 +332,10 @@ message StreamerRouteProto {
   // the claim a gateway's push carries so the receiver can refuse a stale snapshot's push
   // for a closed round. Empty while the mount is in no room.
   int64 round_generation = 10;
+  // The mount's tenant (FIX-LINK-08): a cluster-scoped streamer gateway names no tenant on a
+  // resume, but needs one to ask the StreamerServer for the mount's committed participation.
+  // The row's tenant is a mount fact, not a placement inference.
+  string tenant_id = 11;
 }
 
 message InstanceRouteProto {

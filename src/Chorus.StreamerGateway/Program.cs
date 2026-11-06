@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using Chorus.Rpc;
 using Chorus.StreamerGateway;
+using GrpcChannel = Grpc.Net.Client.GrpcChannel;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 
@@ -74,9 +75,20 @@ var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOIN
 EdgeRoutingMonitor? routingMonitor = null;
 if (controlEndpoint is { Length: > 0 })
 {
-    routingMonitor = new EdgeRoutingMonitor(
-        () => ProcessGrpcClientFactory.Create(new Uri(controlEndpoint), serverCertificate,
-            root, nodeAuthority, clusterId, "control-server"));
+    GrpcChannel ControlChannel() => ProcessGrpcClientFactory.Create(
+        new Uri(controlEndpoint), serverCertificate, root, nodeAuthority, clusterId, "control-server");
+    // FIX-LINK-08: the picture the monitor answers resolves from is only installed once the
+    // control plane acknowledges that exact version back — unconfirmed routing guesses no
+    // rooms (architecture 6.4).
+    routingMonitor = new EdgeRoutingMonitor(ControlChannel,
+        async (version, cancellation) =>
+        {
+            using var channel = ControlChannel();
+            var reply = await new Routing.RoutingClient(channel).ConfirmRoutingVersionAsync(
+                new ConfirmRoutingVersionRequest { Version = version },
+                cancellationToken: cancellation);
+            return reply.Confirmed && reply.Version == version;
+        });
 }
 // The round store names the facts a room's fan-out needs (epoch, status, participation);
 // the room's owning game host serves the sync stream itself, reached through a per-endpoint

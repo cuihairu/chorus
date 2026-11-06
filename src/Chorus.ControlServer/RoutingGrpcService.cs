@@ -42,7 +42,8 @@ public sealed class RoutingGrpcService(
                 RoomId = streamer.RoomId, State = streamer.State,
                 OwnerInstanceId = streamer.OwnerInstanceId ?? "", Epoch = streamer.Epoch,
                 Platform = streamer.Platform, CanonicalLiveSessionKey = streamer.CanonicalLiveSessionKey,
-                BindingGeneration = streamer.BindingGeneration, RoundGeneration = streamer.RoundGeneration
+                BindingGeneration = streamer.BindingGeneration, RoundGeneration = streamer.RoundGeneration,
+                TenantId = streamer.TenantId
             }) },
             Instances = { snapshot.Instances.Select(instance => new InstanceRouteProto
             {
@@ -93,14 +94,16 @@ public sealed class RoutingGrpcService(
     }
 
     /// <summary>
-    /// The gateway's installed-version confirmation (FIX-END-03): the version is the one the
-    /// gateway's own face answers resolves from, and the instance is the certificate's
-    /// process identity — no caller confirms on another gateway's behalf.
+    /// The gateway's installed-version confirmation (FIX-END-03 for the platform gateway,
+    /// FIX-LINK-08 for the streamer gateway): the version is the one the gateway's own face
+    /// answers resolves from, and the instance is the certificate's process identity — no
+    /// caller confirms on another gateway's behalf. Both gateway kinds confirm: each names the
+    /// picture it delivers from, and the confirm is keyed per instance.
     /// </summary>
     public override async Task<ConfirmRoutingVersionReply> ConfirmRoutingVersion(
         ConfirmRoutingVersionRequest request, ServerCallContext context)
     {
-        await RequireAsync(context, "platform-gateway", "control-server");
+        await RequireAsync(context, "streamer-gateway", "platform-gateway", "control-server");
         var caller = trustedCertificates.Resolve(
             context.GetHttpContext().Connection.ClientCertificate!);
         await store.ConfirmRoutingVersionAsync(caller!.ProcessInstanceId, request.Version,

@@ -504,6 +504,120 @@ public sealed class RedesignM4HostTests
         Assert.Equal("Queued", retry.GetProperty("state").GetString());
     }
 
+    // ---- FIX-LINK-08: the installed picture and the fenced room (architecture 6.4) ----
+
+    [Fact]
+    public async Task TheEdgeGatewayConfirmsItsInstalledRoutingVersion()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var _ = await StartEdgeClusterAsync(environment);
+
+        using var probeCertificate = environment.Certificate("@cluster", "control-server", "confirm-probe");
+        using var probeChannel = environment.Channel(environment.ControlPort, probeCertificate, "control-server");
+        var routing = new Chorus.Rpc.Routing.RoutingClient(probeChannel);
+
+        // The gateway acknowledges the version it answers resolves from; the role gate that
+        // refused streamer-gateway confirms before FIX-LINK-08 is the regression under test.
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        long? confirm = null;
+        long snapshotVersion = 0;
+        while (DateTime.UtcNow < deadline)
+        {
+            confirm = await ReadRoutingConfirmAsync(environment, "Chorus.StreamerGateway");
+            snapshotVersion = (await routing.GetRoutingSnapshotAsync(new Empty(),
+                deadline: DateTime.UtcNow.AddSeconds(5))).Version;
+            if (confirm is not null && confirm.Value != 0 && confirm.Value == snapshotVersion) break;
+            await Task.Delay(200);
+        }
+        Assert.NotNull(confirm);
+        Assert.NotEqual(0, snapshotVersion);
+        Assert.Equal(snapshotVersion, confirm!.Value);
+    }
+
+    [Fact]
+    public async Task AMatchedMountsMatchPushNamesTheRoomItsBindingWasCommittedTo()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment, withMatchmaker: true);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var first = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        using var second = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await first.HelloAsync();
+        await second.HelloAsync();
+        var (credentialA, streamerA) = await LoginAndStartCapturingAsync(first, simulator, "open-m4-fence-a");
+        await LoginAndStartCapturingAsync(second, simulator, "open-m4-fence-b");
+
+        await first.SendAsync(new EdgeJoinQueue { OperationId = "join-a", QueueType = "standard" });
+        await first.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        await second.SendAsync(new EdgeJoinQueue { OperationId = "join-b", QueueType = "standard" });
+        await second.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        var matchedA = await first.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        var matchedB = await second.ExpectAsync(EdgeTypes.MatchStatus, TimeSpan.FromSeconds(30));
+        Assert.Equal("Matched", matchedA.GetProperty("state").GetString());
+        Assert.Equal("Matched", matchedB.GetProperty("state").GetString());
+        var roomA = matchedA.GetProperty("roomId").GetString()!;
+        var roomB = matchedB.GetProperty("roomId").GetString()!;
+        Assert.False(string.IsNullOrEmpty(roomA));
+        Assert.Equal(roomA, roomB);
+
+        // The fence is what lets the push happen: the routing row already names the room for
+        // the mount's own binding, and the StreamerServer's committed participation agrees —
+        // the gateway never pushed a room the participation record did not name.
+        var statusA = await StreamerGameplayStatusAsync(environment, credentialA);
+        Assert.Equal(roomA, statusA.CurrentRoomId);
+        Assert.True(statusA.RoundGeneration > 0);
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "fence-probe");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var snapshot = await new Chorus.Rpc.Routing.RoutingClient(controlChannel)
+            .GetRoutingSnapshotAsync(new Empty());
+        var rowA = snapshot.Streamers.FirstOrDefault(row => row.StreamerId == streamerA);
+        Assert.NotNull(rowA);
+        Assert.Equal(roomA, rowA.RoomId);
+        Assert.False(string.IsNullOrEmpty(rowA.BindingId));
+        Assert.True(rowA.BindingGeneration > 0);
+    }
+
+    private static async Task<(string Credential, string StreamerId)> LoginAndStartCapturingAsync(
+        RedesignM4WsClient client, DevelopmentPlatformSimulator simulator, string openId)
+    {
+        var secret = RandomNumberGenerator.GetBytes(32);
+        await client.SendAsync(Login(simulator, openId, secret));
+        var ready = await client.ExpectAsync(EdgeTypes.LoginReady, TimeSpan.FromSeconds(30));
+        await client.SendAsync(new EdgeStartGameplay
+        {
+            OperationId = "start-" + openId, GameId = "game-a", RulesVersion = "rules-1"
+        });
+        await client.ExpectAsync(EdgeTypes.GameplayStatus, TimeSpan.FromSeconds(30));
+        return (ready.GetProperty("accessCredential").GetString()!,
+            ready.GetProperty("streamerId").GetString()!);
+    }
+
+    private static async Task<GameplayStatusReply> StreamerGameplayStatusAsync(
+        RedesignM0HostTests.HostEnvironment environment, string accessCredential)
+    {
+        using var certificate = environment.Certificate("tenant-a", "streamer-server", "status-probe");
+        using var channel = environment.Channel(environment.StreamerPort, certificate, "streamer-server");
+        var session = new StreamerSession.StreamerSessionClient(channel);
+        return await session.GameplayStatusAsync(new GameplayStatusRequest
+        {
+            AccessCredential = accessCredential, TenantId = "tenant-a"
+        });
+    }
+
+    private static async Task<long?> ReadRoutingConfirmAsync(
+        RedesignM0HostTests.HostEnvironment environment, string processInstanceId)
+    {
+        await using var connection = new Npgsql.NpgsqlConnection(environment.DatabaseConnectionString);
+        await connection.OpenAsync();
+        await using var command = new Npgsql.NpgsqlCommand(
+            "SELECT version FROM control.routing_confirm WHERE process_instance_id=@instance",
+            connection);
+        command.Parameters.AddWithValue("instance", processInstanceId);
+        return (long?)await command.ExecuteScalarAsync();
+    }
+
     /// <summary>Logs in over the edge and mounts the game, leaving the connection ready to
     /// queue. Returns the gameplayStatus frame.</summary>
     private static async Task<System.Text.Json.JsonElement> LoginAndStartAsync(RedesignM4WsClient client,
@@ -545,7 +659,10 @@ public sealed class RedesignM4HostTests
         if (withMatchmaker)
         {
             controlEnvironment["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}";
-            controlEnvironment["CHORUS_GAME_ENDPOINTS"] = $"https://localhost:{environment.GamePort}";
+            // No CHORUS_GAME_ENDPOINTS seed: the seed's instance id is the bare endpoint URL,
+            // which never matches the game server's reported process instance, so a room claimed
+            // for the seed owner carries no endpoint and the route fences fail. The game host
+            // reports itself (CHORUS_CONTROL_ENDPOINT below) and the directory folds the report in.
             controlEnvironment["CHORUS_MATCH_INTERVAL_MS"] = "200";
         }
         await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
@@ -563,7 +680,7 @@ public sealed class RedesignM4HostTests
                 new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-m4-edge" });
         }
 
-        var streamerPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var streamerPort = environment.StreamerPort;
         await environment.StartAsync("Chorus.StreamerServer", streamerPort, "streamer-server",
             new Dictionary<string, string>
             {
@@ -576,10 +693,16 @@ public sealed class RedesignM4HostTests
             });
         if (withMatchmaker)
         {
+            // The room's route carries the owning game host's endpoint: the host must report
+            // itself so the routing picture resolves the room the match pushes (FIX-LINK-08 D3
+            // fences the push on the fenced route, whose facts include the endpoint).
             await environment.StartAsync("Chorus.GameServer", environment.GamePort, "game-server",
                 new Dictionary<string, string>
                 {
-                    ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(CultureInfo.InvariantCulture)
+                    ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(CultureInfo.InvariantCulture),
+                    ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+                    ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{environment.GamePort}",
+                    ["CHORUS_REPORT_INTERVAL_MS"] = "500"
                 },
                 clientTenant: "tenant-a");
         }

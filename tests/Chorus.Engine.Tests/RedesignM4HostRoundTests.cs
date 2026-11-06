@@ -104,6 +104,103 @@ public sealed class RedesignM4HostRoundTests
     }
 
     [Fact]
+    public async Task ResumeMidRoundReentersTheFencedRoomAndAResumeWithNoRoomReentersNothing()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var (wssPort, simulator) = await StartEdgeClusterAsync(environment);
+        var rootPem = environment.RootCertificatePem;
+        var nodePem = environment.NodeAuthorityCertificatePem;
+        using var first = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        using var second = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await first.HelloAsync();
+        await second.HelloAsync();
+        var dropped = await LoginAndStartAsync(first, simulator, "open-m4-fence-resume");
+        await LoginAndStartAsync(second, simulator, "open-m4-fence-resume-b");
+        await QueueAsync(first, "join-a");
+        await QueueAsync(second, "join-b");
+        var room = await AwaitMatchAsync(first);
+        await AwaitMatchAsync(second);
+        var head = await ReadUntilAsync(first, EdgeTypes.Delta, TimeSpan.FromSeconds(30));
+        var appliedVersion = head[^1].GetProperty("stateVersion").GetInt64();
+        first.Dispose();
+
+        // Part 1: a mid-round resume re-enters its room through the fenced route (the same
+        // server participation record that named the push names the re-entry).
+        var resumeSecret = RandomNumberGenerator.GetBytes(32);
+        using var resumed = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await resumed.HelloAsync();
+        await resumed.SendAsync(new EdgeResume
+        {
+            ResumeOperationId = "resume-fence-drop",
+            ResumeCredential = dropped.Secret,
+            NextResumeSecret = resumeSecret,
+            PreviousSessionId = dropped.SessionId,
+            LastSeenRoomId = room,
+            LastAppliedStateVersion = appliedVersion
+        });
+        var resumedReady = await resumed.ExpectAsync(EdgeTypes.LoginReady, TimeSpan.FromSeconds(30));
+        Assert.False(string.IsNullOrEmpty(resumedReady.GetProperty("accessCredential").GetString()));
+        var rejoined = await resumed.ExpectAsync(EdgeTypes.RoomJoined, TimeSpan.FromSeconds(30));
+        Assert.Equal(room, rejoined.GetProperty("roomId").GetString());
+
+        // Part 2: a mount that holds no round resumes into nothing. The server's participation
+        // record decides — even a client-claimed lastSeenRoomId does not put the mount in a
+        // room the gateway then joins (room-recovery.md:39, architecture.md:279).
+        using var standalone = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await standalone.HelloAsync();
+        var freshMount = await LoginAndStartAsync(standalone, simulator, "open-m4-fence-noroom");
+        standalone.Dispose();
+        var freshSecret = RandomNumberGenerator.GetBytes(32);
+        using var fresh = await RedesignM4WsClient.ConnectAsync(wssPort, rootPem, nodePem);
+        await fresh.HelloAsync();
+        await fresh.SendAsync(new EdgeResume
+        {
+            ResumeOperationId = "resume-noroom",
+            ResumeCredential = freshMount.Secret,
+            NextResumeSecret = freshSecret,
+            PreviousSessionId = freshMount.SessionId,
+            LastSeenRoomId = room,
+            LastAppliedStateVersion = 0
+        });
+        await fresh.ExpectAsync(EdgeTypes.LoginReady, TimeSpan.FromSeconds(30));
+        // Nothing follows the ready frame: the strongest form of "joined nothing" is the
+        // absence of a roomJoined within the window.
+        string? unexpectedType = null;
+        try
+        {
+            unexpectedType = (await fresh.ReceiveAsync(TimeSpan.FromSeconds(5)))?
+                .GetProperty("type").GetString();
+        }
+        catch (TimeoutException)
+        {
+            // No frame at all: the mount was not seated into any room.
+        }
+        Assert.NotEqual(EdgeTypes.RoomJoined, unexpectedType);
+    }
+
+    /// <summary>Waits for the round release to clear the mount's participation room — the
+    /// release transaction is the only writer that clears it, and the eligibility opens when
+    /// its receipt commits (FIX-END-13).</summary>
+    private static async Task WaitForRoomReleaseAsync(RedesignM0HostTests.HostEnvironment environment,
+        string accessCredential)
+    {
+        using var certificate = environment.Certificate("tenant-a", "streamer-server", "release-probe");
+        using var channel = environment.Channel(environment.StreamerPort, certificate, "streamer-server");
+        var session = new StreamerSession.StreamerSessionClient(channel);
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            var status = await session.GameplayStatusAsync(new GameplayStatusRequest
+            {
+                AccessCredential = accessCredential, TenantId = "tenant-a"
+            });
+            if (status.CurrentRoomId is not { Length: > 0 }) return;
+            await Task.Delay(200);
+        }
+        throw new TimeoutException("The room release never cleared the mount's participation.");
+    }
+
+    [Fact]
     public async Task RequestSnapshotRebaselinesTheChainAndRefusesUnknownRooms()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
@@ -623,7 +720,7 @@ public sealed class RedesignM4HostRoundTests
             await new ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
                 new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-m4-room" });
         }
-        var streamerPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var streamerPort = environment.StreamerPort;
         await environment.StartAsync("Chorus.StreamerServer", streamerPort, "streamer-server",
             new Dictionary<string, string>
             {

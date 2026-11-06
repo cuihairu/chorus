@@ -323,46 +323,58 @@ public sealed class RedesignM4EdgeUnitTests
     [Fact]
     public async Task TheRoutingMonitorNotifiesEachRoomChangeOncePerSubscriber()
     {
-        var monitor = new EdgeRoutingMonitor(() => throw new InvalidOperationException(
-            "The unit test drives snapshots directly."));
+        // FIX-LINK-08: the notify leg now lives in the confirm, so the unit test wires a
+        // confirm that always lands and drives apply+confirm in the watch loop's order.
+        var monitor = new EdgeRoutingMonitor(
+            () => throw new InvalidOperationException("The unit test drives snapshots directly."),
+            (_, _) => Task.FromResult(true));
         var notices = new List<(string Connection, string Room)>();
         monitor.Subscribe("streamer-1", "connection-1",
             room => { notices.Add(("connection-1", room)); return Task.CompletedTask; });
         monitor.Subscribe("streamer-2", "connection-2",
             room => { notices.Add(("connection-2", room)); return Task.CompletedTask; });
 
-        // First apply: both subscribers learn the room as it is — including "no room yet".
-        await monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
+        // First apply + confirm: both subscribers learn the room as it is — including "no
+        // room yet" — only once the picture the control plane acknowledged is installed.
+        monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
         {
+            Version = 1,
             Streamers =
             {
                 new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "" },
                 new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
             }
         });
+        Assert.Empty(notices);
+        await monitor.ConfirmAppliedAsync(CancellationToken.None);
         Assert.Equal([("connection-1", ""), ("connection-2", "room-9")], notices);
+        Assert.Equal((1L, 1L), monitor.Versions);
 
         // An unrelated change re-notifies only the streamer whose room moved; a repeat of the
         // same snapshot notifies nobody.
         notices.Clear();
-        await monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
+        monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
         {
+            Version = 2,
             Streamers =
             {
                 new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "room-1" },
                 new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
             }
         });
+        await monitor.ConfirmAppliedAsync(CancellationToken.None);
         Assert.Equal([("connection-1", "room-1")], notices);
         notices.Clear();
-        await monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
+        monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
         {
+            Version = 2,
             Streamers =
             {
                 new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "room-1" },
                 new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-2", RoomId = "room-9" }
             }
         });
+        await monitor.ConfirmAppliedAsync(CancellationToken.None);
         Assert.Empty(notices);
         Assert.Equal("room-1", monitor.RoomFor("streamer-1"));
         Assert.Null(monitor.RoomFor("streamer-none"));
@@ -370,13 +382,15 @@ public sealed class RedesignM4EdgeUnitTests
         // Unsubscribed connections stop hearing about rooms.
         monitor.Unsubscribe("connection-1");
         notices.Clear();
-        await monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
+        monitor.ApplySnapshotAsync(new Chorus.Rpc.RoutingSnapshotReply
         {
+            Version = 3,
             Streamers =
             {
                 new Chorus.Rpc.StreamerRouteProto { StreamerId = "streamer-1", RoomId = "" }
             }
         });
+        await monitor.ConfirmAppliedAsync(CancellationToken.None);
         Assert.Empty(notices);
     }
 }

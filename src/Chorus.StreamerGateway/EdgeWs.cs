@@ -359,7 +359,10 @@ public sealed class EdgeWs(
             // the session the login established (contracts 3.1: no uplink identity is trusted).
             var status = await sessionClient.StartGameplayAsync(connection.TenantId!,
                 connection.AccessCredential!, start.GameId, start.OperationId, cancellation);
-            connection.MarkGameplay(status.BindingId, status.GameId, start.RulesVersion);
+            // FIX-LINK-08: the mount facts include the generation and the committed
+            // participation (empty at mount; the round starts after the queue joins).
+            connection.MarkGameplay(status.BindingId, status.GameId, start.RulesVersion,
+                status.Generation, status.CurrentRoomId, status.RoundGeneration);
             await connection.SendJsonAsync(new EdgeGameplayStatus
             {
                 BindingId = status.BindingId,
@@ -367,6 +370,8 @@ public sealed class EdgeWs(
                 State = status.State,
                 Reason = status.Duplicate ? "duplicate" : null
             }, cancellation);
+            if (status.CurrentRoomId is { Length: > 0 })
+                await TryRejoinRoomAsync(connection, connection.StreamerId!);
         }
         catch (RpcException error)
         {
@@ -533,6 +538,7 @@ public sealed class EdgeWs(
             await inputClient.WithdrawParticipationAsync(connection.TenantId!, connection.SessionId!,
                 leave.RoomId, connection.GameId!, leave.OperationId, cancellation);
             fanout?.Leave(connection.ConnectionId);
+            connection.ClearParticipation();
         }
         catch (RpcException error)
         {
@@ -570,6 +576,12 @@ public sealed class EdgeWs(
             if (ticket is not ({ State: "Reserved" or "Preparing" or "Committed" })) return;
             if (ticket.State == "Committed")
             {
+                // FIX-LINK-08 (D3): the room is pushed only once the fenced route names it —
+                // the routing row must be this mount's own binding at its own generation from a
+                // confirmed picture. Anything less is dropped (never a guessed room); the
+                // mount's own status/resume path delivers the fact later.
+                var fenced = await TryFenceRoomAsync(connection, room, 0);
+                if (fenced is null) return;
                 await connection.SendJsonAsync(new EdgeMatchStatus
                 {
                     TicketId = ticket.TicketId,
@@ -586,51 +598,90 @@ public sealed class EdgeWs(
         }
     }
 
-    /// <summary>A resume re-enters the room the routed record names — the server's
-    /// participation record decides, never the client's diagnostics. A fresh connection
-    /// carries no mount facts, so the binding status restores them first; the routed room
-    /// supplies the tenant the resume itself cannot name.</summary>
+    /// <summary>Re-enters the room the StreamerServer's committed participation names — the
+    /// server's participation record decides, never the client's diagnostics and never a
+    /// placement inferred from the streamer's identity (room-recovery.md). A fresh connection
+    /// carries no mount facts, so the binding status restores them first; the tenant comes from
+    /// the mount's own routing row (a resume names no tenant, and the server resolves it from
+    /// the session — the gateway cannot name it without the row).</summary>
     private async Task TryRejoinRoomAsync(EdgeConnection connection, string streamerId)
     {
         if (fanout is null || roundClient is null || routingMonitor is null) return;
-        var room = routingMonitor.RoomFor(streamerId);
-        if (room is null) return;
-        if (!connection.HasGameplay && connection.AccessCredential is { Length: > 0 })
+        var tenant = routingMonitor.TenantFor(streamerId);
+        if (tenant is null) return; // routing does not know the mount: nothing to re-enter.
+        connection.MarkTenant(tenant);
+        GameplayStatusReply status;
+        try
         {
-            var route = routingMonitor.RoomRouteFor(room);
-            if (route is not { TenantId: { Length: > 0 } }) return;
-            try
-            {
-                var status = await sessionClient.GameplayStatusAsync(route.TenantId,
-                    connection.AccessCredential!, CancellationToken.None);
-                if (status.BindingId is not { Length: > 0 }) return;
-                // The mount facts of the round the resume lands in — including the tenant
-                // every later uplink on this connection names again.
-                connection.MarkTenant(route.TenantId);
-                connection.MarkGameplay(status.BindingId, status.GameId, null);
-            }
-            catch (RpcException)
-            {
-                // No mount on record for this session: there is nothing to re-enter.
-                return;
-            }
+            status = await sessionClient.GameplayStatusAsync(tenant,
+                connection.AccessCredential!, CancellationToken.None);
         }
-        await JoinRoomFanoutAsync(connection, room);
+        catch (RpcException)
+        {
+            // No mount on record for this session: there is nothing to re-enter.
+            return;
+        }
+        if (status.BindingId is not { Length: > 0 }) return;
+        // The mount facts of the round the resume lands in. An empty participation room means
+        // the mount holds no round — there is nothing to re-enter, and the gateway must not
+        // guess a room from the routed world.
+        connection.MarkGameplay(status.BindingId, status.GameId, connection.RulesVersion,
+            status.Generation, status.CurrentRoomId, status.RoundGeneration);
+        if (status.CurrentRoomId is not { Length: > 0 }) return;
+        await JoinRoomFanoutAsync(connection, status.CurrentRoomId, status.RoundGeneration);
     }
 
-    /// <summary>Seats the connection in its match's room: the routing snapshot names the
-    /// owning host, the round store names the epoch and the side this binding plays, and the
-    /// fan-out owns the stream from there. Best-effort within a convergence window — the
-    /// facts can lag the commit by a routing beat; past the window the client still learns
-    /// the room from its matchStatus and recovers by reconnecting.</summary>
-    private async Task JoinRoomFanoutAsync(EdgeConnection connection, string roomId)
+    /// <summary>Fences a room candidate to the connection's own mount: the routing row must be
+    /// the mount's own binding at its own generation (and, when the caller knows the round, the
+    /// same round generation), and the picture must be a confirmed one. Null means "not yet
+    /// known or not this mount's room" — the caller must not push a guessed placement.</summary>
+    private EdgeRoutingMonitor.FencedRoom? FenceRoom(EdgeConnection connection, string roomId,
+        long roundGeneration)
+    {
+        if (routingMonitor is null || connection.BindingId is not { Length: > 0 }
+            || connection.MountGeneration <= 0) return null;
+        var fenced = routingMonitor.ResolveMount(connection.StreamerId!, connection.BindingId!,
+            connection.MountGeneration);
+        if (fenced is null || !StringComparer.Ordinal.Equals(fenced.RoomId, roomId)) return null;
+        if (roundGeneration > 0 && fenced.RoundGeneration != roundGeneration) return null;
+        return fenced;
+    }
+
+    /// <summary>Fence with one best-effort pull when the cached picture does not yet name the
+    /// room — a route publishes after the mount already pointed at it, so a missing fact is
+    /// answered with a re-pull rather than a guess.</summary>
+    private async Task<EdgeRoutingMonitor.FencedRoom?> TryFenceRoomAsync(
+        EdgeConnection connection, string roomId, long roundGeneration)
+    {
+        var fenced = FenceRoom(connection, roomId, roundGeneration);
+        if (fenced is not null) return fenced;
+        try
+        {
+            if (routingMonitor is not null)
+                await routingMonitor.RefreshAsync(CancellationToken.None);
+        }
+        catch (RpcException)
+        {
+            // The pull is best-effort; the watch beat still carries the fact if the plane is
+            // briefly unreachable.
+        }
+        return FenceRoom(connection, roomId, roundGeneration);
+    }
+
+    /// <summary>Seats the connection in its match's room: the fenced route names the owning
+    /// host, the round store names the epoch and the side this binding plays, and the fan-out
+    /// owns the stream from there. Best-effort within a convergence window — the facts can lag
+    /// the commit by a routing beat; past the window the client still learns the room from its
+    /// matchStatus and recovers by reconnecting.</summary>
+    private async Task JoinRoomFanoutAsync(EdgeConnection connection, string roomId,
+        long roundGeneration = 0)
     {
         if (fanout is null || roundClient is null) return;
         for (var deadline = Environment.TickCount64 + 15_000;
              Environment.TickCount64 < deadline;)
         {
-            var route = routingMonitor?.RoomRouteFor(roomId);
-            if (route is null || route.Endpoint.Length == 0)
+            var fenced = FenceRoom(connection, roomId, roundGeneration);
+            if (fenced is null)
             {
                 // The room may be deliverable before this gateway's cached world knows it
                 // (FIX-END-03: a route publishes once the actor served — after the mount
@@ -649,6 +700,7 @@ public sealed class EdgeWs(
                 await Task.Delay(200, CancellationToken.None);
                 continue;
             }
+            var route = fenced.Facts;
             RoundStatusReply? round;
             try
             {
@@ -678,6 +730,7 @@ public sealed class EdgeWs(
                 // The subscription could not open; the room's stream is not the connection's
                 // to hear. The client's requestSnapshot after a reconnect re-seats it.
             }
+            connection.MarkParticipation(roomId, fenced.RoundGeneration);
             return;
         }
     }
