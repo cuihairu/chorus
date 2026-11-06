@@ -98,11 +98,36 @@ public sealed class RedesignStreamerLoginCoordinatorTests
             CancellationToken cancellationToken = default) => throw new InvalidOperationException("storage down");
     }
 
+    private sealed class LoadedAssetStore : IStreamerAssetStore
+    {
+        public Task<AssetChangeResult> ChangeAsync(string tenantId, string gameId, string streamerId,
+            string operationId, string assetId, long delta, string reason,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new AssetChangeResult(delta, 1, Duplicate: false));
+    }
+
+    private sealed class RecordingAssetStore : IStreamerAssetStore
+    {
+        public (string OperationId, string AssetId, long Delta, string Reason)? LastChange { get; private set; }
+        public Exception? ChangeException { get; init; }
+        public bool Duplicate { get; init; }
+
+        public Task<AssetChangeResult> ChangeAsync(string tenantId, string gameId, string streamerId,
+            string operationId, string assetId, long delta, string reason,
+            CancellationToken cancellationToken = default)
+        {
+            LastChange = (operationId, assetId, delta, reason);
+            return ChangeException is not null
+                ? Task.FromException<AssetChangeResult>(ChangeException)
+                : Task.FromResult(new AssetChangeResult(delta, 1, Duplicate));
+        }
+    }
+
     private sealed record Rig(
         RedesignStreamerLoginCoordinator Coordinator, FakeIdentityStore Store,
         Func<string, string> IssueCredential);
 
-    private static Rig New(IStreamerProfileStore? profile = null)
+    private static Rig New(IStreamerProfileStore? profile = null, IStreamerAssetStore? asset = null)
     {
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
         var simulator = new DevelopmentPlatformSimulator(simulatorKey, () => Now);
@@ -111,6 +136,7 @@ public sealed class RedesignStreamerLoginCoordinatorTests
             new RedesignPlatformGateway([simulator], allowNotProductionReady: true),
             store,
             profile ?? new LoadedProfileStore(),
+            asset ?? new LoadedAssetStore(),
             new StreamerActorRegistry(),
             new Dictionary<string, IReadOnlyDictionary<string, string>>
             {
@@ -307,5 +333,37 @@ public sealed class RedesignStreamerLoginCoordinatorTests
         Assert.Null(ChorusAccessCredential.Validate(key, "garbage", () => Now));
         Assert.Throws<ArgumentException>(
             () => ChorusAccessCredential.Issue(key, "s", "sess", 3, Now.AddMinutes(-1), () => Now));
+    }
+
+    [Fact]
+    public async Task ChangeAssetPassesTheOperationAssetAndDeltaToTheStore()
+    {
+        var store = new RecordingAssetStore();
+        var rig = New(asset: store);
+        var result = await rig.Coordinator.ChangeAssetAsync("tenant-a", "game-a", "streamer-fake", "op-7",
+            "coins", 100, "grant");
+
+        Assert.Equal(("op-7", "coins", 100L, "grant"), store.LastChange!.Value);
+        Assert.Equal(100, result.Balance);
+        Assert.False(result.Duplicate);
+    }
+
+    [Fact]
+    public async Task ChangeAssetSurfacesTheBalanceConstraintConflict()
+    {
+        var rig = New(asset: new RecordingAssetStore { ChangeException = new StreamerAssetConflictException() });
+        await Assert.ThrowsAsync<StreamerAssetConflictException>(
+            () => rig.Coordinator.ChangeAssetAsync("tenant-a", "game-a", "streamer-fake", "op-8",
+                "coins", -999, "test"));
+    }
+
+    [Fact]
+    public async Task ChangeAssetSurfacesTheIdempotentReplay()
+    {
+        var rig = New(asset: new RecordingAssetStore { Duplicate = true });
+        var result = await rig.Coordinator.ChangeAssetAsync("tenant-a", "game-a", "streamer-fake", "op-9",
+            "coins", 5, "grant");
+
+        Assert.True(result.Duplicate);
     }
 }

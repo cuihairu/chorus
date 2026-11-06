@@ -128,6 +128,7 @@ builder.Services.AddSingleton(sp => new RedesignStreamerLoginCoordinator(
     new RedesignPlatformGateway(adapters, allowNotProductionReady),
     new StreamerIdentityChannel(DataChannel),
     new StreamerProfileChannel(DataChannel),
+    new StreamerAssetChannel(DataChannel),
     actorRegistry,
     readOnlyTenants,
     accessCredentialKey,

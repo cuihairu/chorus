@@ -120,6 +120,24 @@ public interface IStreamerProfileStore
 }
 
 /// <summary>
+/// Entity asset access owned by DataServer. FIX-LINK-07 adds the m0 versioned/idempotent write
+/// surface (<see cref="ChangeAsync"/>) — the m0 contract names the StreamerServer as the
+/// ChangeAsset client. Write-only: the trigger's balance read for rule validation is FIX-GM-07.
+/// </summary>
+public interface IStreamerAssetStore
+{
+    /// <summary>
+    /// Changes the entity asset balance (m0 ChangeAsset, CAS "balance + delta &gt;= 0" + OperationKey
+    /// idempotency). A change that would drive the balance negative throws
+    /// <see cref="StreamerAssetConflictException"/>; a replay of an already-committed operation id
+    /// returns the stored result with <see cref="AssetChangeResult.Duplicate"/> true.
+    /// </summary>
+    Task<AssetChangeResult> ChangeAsync(string tenantId, string gameId, string streamerId,
+        string operationId, string assetId, long delta, string reason,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// Login/Resume orchestration per the redesign chapter 5: verify the platform launch, resolve the
 /// tenant-scoped identity, load the entity profile, then take over or rotate the control session.
 /// No LoginReady is returned unless the entity load succeeds.
@@ -128,6 +146,7 @@ public sealed class RedesignStreamerLoginCoordinator(
     RedesignPlatformGateway platformGateway,
     IStreamerIdentityStore identityStore,
     IStreamerProfileStore profileStore,
+    IStreamerAssetStore assetStore,
     StreamerActorRegistry actorRegistry,
     IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> tenantApplications,
     byte[] accessCredentialKey,
@@ -374,6 +393,20 @@ public sealed class RedesignStreamerLoginCoordinator(
         CancellationToken cancellationToken = default)
         => await profileStore.PatchAsync(tenantId, gameId, streamerId, operationId,
             expectedVersion, schemaVersion, dataJson, cancellationToken);
+
+    /// <summary>
+    /// FIX-LINK-07 (AT18): the streamer asset-write seam of the 主播业务处理者 — an idempotent,
+    /// non-negative-balance-constrained change through the m0 surface. The trigger (GM 允许的资产调整)
+    /// is FIX-GM-07; the caller supplies the asset id, the signed delta, and the operation key for
+    /// idempotency. A change that would drive the balance negative throws
+    /// <see cref="StreamerAssetConflictException"/>; an idempotent replay returns
+    /// <see cref="AssetChangeResult.Duplicate"/> true with the stored balance.
+    /// </summary>
+    public async Task<AssetChangeResult> ChangeAssetAsync(string tenantId, string gameId, string streamerId,
+        string operationId, string assetId, long delta, string reason,
+        CancellationToken cancellationToken = default)
+        => await assetStore.ChangeAsync(tenantId, gameId, streamerId, operationId,
+            assetId, delta, reason, cancellationToken);
 
     /// <summary>Best-effort active leg of session replacement (contracts 3.3): the old
     /// gateway is named by the grant, unless the displaced connection is the requester's

@@ -94,6 +94,7 @@ public sealed class RedesignStreamerActorTests
             new RedesignPlatformGateway([simulator], allowNotProductionReady: true),
             store,
             new LoadedProfileStore(),
+            new LoadedAssetStore(),
             registry,
             new Dictionary<string, IReadOnlyDictionary<string, string>>
             {
@@ -120,6 +121,14 @@ public sealed class RedesignStreamerActorTests
             string operationId, long expectedVersion, int schemaVersion, string dataJson,
             CancellationToken cancellationToken = default)
             => Task.FromResult(new StreamerProfile(expectedVersion + 1, schemaVersion, dataJson));
+    }
+
+    private sealed class LoadedAssetStore : IStreamerAssetStore
+    {
+        public Task<AssetChangeResult> ChangeAsync(string tenantId, string gameId, string streamerId,
+            string operationId, string assetId, long delta, string reason,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new AssetChangeResult(delta, 1, Duplicate: false));
     }
 
     [Fact]
