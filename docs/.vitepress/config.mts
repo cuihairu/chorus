@@ -14,6 +14,7 @@ const guideLinks = [
   "/guide/quickstart-frame-sync",
 ];
 const designLinks = [
+  "/architecture/source-layers",
   "/design/room-recovery",
   "/design/authoritative-sync",
   "/design/developer-capabilities",
@@ -37,6 +38,7 @@ const designLinks = [
 ];
 const referenceLinks = [
   "/reference/glossary",
+  "/reference/source-layer-glossary",
   "/reference/protocol",
   "/reference/config",
   "/reference/operations",
@@ -84,7 +86,7 @@ export default withMermaid(defineConfig({
         ],
         sidebar: {
           "/": ["/architecture", "/decisions"],
-          "/architecture/": ["/architecture/architecture", "/architecture/redesign-contracts", "/architecture/redesign-operations", "/architecture/redesign-decisions", "/architecture/redesign-acceptance"],
+          "/architecture/": ["/architecture/source-layers", "/architecture/architecture", "/architecture/redesign-contracts", "/architecture/redesign-operations", "/architecture/redesign-decisions", "/architecture/redesign-acceptance"],
           "/guide/": guideLinks,
           "/design/": designLinks,
           "/reference/": referenceLinks,
@@ -102,6 +104,7 @@ export default withMermaid(defineConfig({
         ],
         sidebar: {
           "/zh/": ["/zh/architecture", "/zh/decisions"],
+          "/zh/architecture/": ["/zh/architecture/source-layers"],
           "/zh/guide/": prefix(guideLinks, "/zh"),
           "/zh/design/": prefix(designLinks, "/zh"),
           "/zh/reference/": prefix(referenceLinks, "/zh"),

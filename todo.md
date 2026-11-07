@@ -385,3 +385,32 @@
 
 - [ ] **FIX-REC-01 / P0：接通恢复准备、双 Gateway 路由与 Actor 激活屏障。** 依赖：FIX-TAKE-03、FIX-TAKE-04、FIX-LINK-08、FIX-END-03。
 - [ ] **FIX-REC-02 / P1：验收长局及批量房间恢复容量。** 依赖：FIX-READ-05、FIX-TAKE-08、FIX-REC-01。
+
+## 源码分层分析 2026-11-07
+
+### a) 抽象层清单
+
+- 边界接入层：把平台回调和主播 WebSocket 转成可核验、可持久接受的会话与事件入口。代表模块：src/Chorus.PlatformGateway/PlatformIngressEndpoint.cs:31。
+- 业务协调层：持有主播登录、挂载、匹配、恢复协调和停止投递等跨进程业务状态机。代表模块：src/Chorus.ControlServer/MatchCoordinatorService.cs:34。
+- 对局运行层：拥有房间生命周期、权威 tick、帧提交、快照和恢复执行。代表模块：src/Chorus.GameServer/RoomRuntime.cs:18。
+- 玩法模块层：声明模块版本、tick、检查点、离线策略，并把输入折叠成状态与结果。代表模块：src/Chorus.ExampleGame/ExampleGameModule.cs:9。
+- 持久数据层：以 PostgreSQL 事务和幂等回执承载身份、房间、帧、结算、任务与排行。代表模块：src/Chorus.DataServer/RedesignRoomStore.cs:30。
+- 平台适配层：验签、解码、映射、去重和平台出站任务，不裁决房间或业务状态。代表模块：src/Chorus.Adapters.Platforms/Bilibili/BilibiliPlatformEventVerifier.cs:17。
+- 集群监管层：签发/校验进程身份、上报节点与进程、租约续期和本机进程监管。代表模块：src/Chorus.NodeAgent/BootstrapAgent.cs:30。
+- 契约序列化层：集中承载 gRPC 契约和客户端消息模型，避免调用面散落在业务实现里。代表模块：src/Chorus.Rpc/Chorus.Rpc.csproj:13。
+- 客户端与工具层：提供协议客户端、压测驱动、演示流程和操作控制台。代表模块：src/Chorus.Client/ChorusClient.cs:19。
+- 兼容运行层：保留旧单体、旧控制台和 IPC 形态，供历史部署与迁移对照。代表模块：src/Chorus.Server/Program.cs:115。
+
+### b) 超大文件候选
+
+- [ ] LAY-001 [P1] 拆分 src/Chorus.ControlServer/RedesignControlStore.cs（2477 行）——控制面把节点、进程、所有权、房间进度、恢复、结束、路由和投递事务压入单一仓储。（src/Chorus.ControlServer/RedesignControlStore.cs:180）
+- [ ] LAY-002 [P1] 拆分 src/Chorus.GameServer/RoomRuntime.cs（1694 行）——准备、激活、事件投递、恢复重建、暂停恢复和释放策略集中在一个运行时。（src/Chorus.GameServer/RoomRuntime.cs:153）
+- [ ] LAY-003 [P1] 拆分 src/Chorus.Rpc/Protos/m2.proto（1290 行）——m2 同时声明轮次、帧、结算、排行、恢复和同步等不同领域契约。（src/Chorus.Rpc/Protos/m2.proto:467）
+- [ ] LAY-004 [P1] 拆分 src/Chorus.DataServer/RedesignRoomStore.cs（1269 行）——房间准入、所有权、恢复操作和 outbox 事务同文件堆叠。（src/Chorus.DataServer/RedesignRoomStore.cs:125）
+- [ ] LAY-005 [P2] 拆分 src/Chorus.DataServer/RedesignRoundInputStore.cs（999 行）——事件归属、席位消费、客户端命令速率和轮次恢复输入耦合在同一存储类。（src/Chorus.DataServer/RedesignRoundInputStore.cs:31）
+
+### c) 目录/分类问题
+
+- [ ] 旧 `Chorus.SampleGame` 与新 `Chorus.ExampleGame` 并存，模块目录按时代切分而非玩法域；接口差异需要同时读两个项目。（src/Chorus.SampleGame/SampleGameModule.cs:6，src/Chorus.ExampleGame/ExampleGameModule.cs:9）
+- [ ] `Chorus.Control`/`Chorus.ControlHost` 与 `Chorus.ControlServer` 都使用控制域命名，但前者是旧控制台/持久化路径，后者是重设计控制面，入口命名不足以区分。（src/Chorus.Control/ControlDatabase.cs:13，src/Chorus.ControlServer/RedesignControlStore.cs:170）
+- [ ] `Chorus.RoundDemo` 位于 src 但承担演示/验收场景，与正式服务目录和 tests 目录都存在归类歧义。（src/Chorus.RoundDemo/RoundDemoScenario.cs:40，tests/Chorus.Engine.Tests/RoundDemoScenarioTests.cs:1）
