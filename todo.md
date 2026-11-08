@@ -279,7 +279,7 @@
 - [x] **FIX-LINK-10 / P0：验收帧流直连与订阅资源回收。** 依赖：FIX-LINK-08、FIX-SYNC-01。 - 证据：94981f5。
 - [x] **FIX-LINK-11 / P1：实测帧通道的容量与延迟预算。** 依赖：FIX-LINK-10、FIX-PERF-01。 - 证据：a7fc01c。
 
-- [ ] **FIX-LINK-12 / P0：接通退出参与的业务控制入口。** 依赖：FIX-LINK-03、FIX-LINK-04。
+- [x] **FIX-LINK-12 / P0：接通退出参与的业务控制入口。** 依赖：FIX-LINK-03、FIX-LINK-04。 - 证据：ed709f7。
 
 ### 22.15 NodeAgent 本机进程监管（P1）
 
