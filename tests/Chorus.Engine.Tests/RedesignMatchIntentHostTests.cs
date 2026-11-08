@@ -165,6 +165,149 @@ public sealed class RedesignMatchIntentHostTests
         Assert.Equal(host.binding, ticket.binding);
     }
 
+    [Fact]
+    public async Task CancelMatchIntentRetiresTheQueuedTicketUnderTheSameGate()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var simulatorKey = RandomNumberGenerator.GetBytes(32);
+        var accessKey = RandomNumberGenerator.GetBytes(32);
+        var streamerEnvironment = new Dictionary<string, string>
+        {
+            ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["CHORUS_CONTROL_ENDPOINT"] = $"https://localhost:{environment.ControlPort}",
+            ["CHORUS_REPORT_ENDPOINT"] = $"https://localhost:{environment.StreamerPort}",
+            ["CHORUS_REPORT_INTERVAL_MS"] = "500",
+            ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+            ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorKey),
+            ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(accessKey),
+            ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
+        };
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server",
+            new Dictionary<string, string> { ["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}" });
+        await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
+            "streamer-server", streamerEnvironment);
+
+        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
+        var host = await MountAsync(environment, simulator, "intent-d", "live-key-intent-d", "cancel-op-0");
+        await WaitForRowAsync(environment, host.streamer);
+
+        using var streamerCertificate = environment.Certificate("tenant-a", "streamer-server",
+            "streamer-intent-d");
+        using var controlChannel = environment.Channel(environment.ControlPort, streamerCertificate,
+            "control-server");
+        var intent = new Chorus.Rpc.MatchIntent.MatchIntentClient(controlChannel);
+
+        // The face's refusals mirror the submit's: an unknown role, a foreign tenant, an
+        // incomplete intent and a stale generation never reach the queue.
+        using var dataCertificate = environment.Certificate("@cluster", "data-server", "data-intent-d");
+        using var dataChannel = environment.Channel(environment.ControlPort, dataCertificate,
+            "control-server");
+        var wrongRole = await Assert.ThrowsAsync<RpcException>(() =>
+            new Chorus.Rpc.MatchIntent.MatchIntentClient(dataChannel).CancelMatchIntentAsync(
+                new Chorus.Rpc.CancelMatchIntentRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", BindingId = host.binding,
+                    BindingGeneration = host.generation, OperationId = "cancel-op-1"
+                }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, wrongRole.StatusCode);
+
+        using var foreignCertificate = environment.Certificate("tenant-b", "streamer-server",
+            "streamer-intent-d-foreign");
+        using var foreignChannel = environment.Channel(environment.ControlPort, foreignCertificate,
+            "control-server");
+        var foreignTenant = await Assert.ThrowsAsync<RpcException>(() =>
+            new Chorus.Rpc.MatchIntent.MatchIntentClient(foreignChannel).CancelMatchIntentAsync(
+                new Chorus.Rpc.CancelMatchIntentRequest
+                {
+                    TenantId = "tenant-a", GameId = "game-a", BindingId = host.binding,
+                    BindingGeneration = host.generation, OperationId = "cancel-op-1"
+                }).ResponseAsync);
+        Assert.Equal(StatusCode.PermissionDenied, foreignTenant.StatusCode);
+
+        var incomplete = await Assert.ThrowsAsync<RpcException>(() =>
+            intent.CancelMatchIntentAsync(new Chorus.Rpc.CancelMatchIntentRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", BindingId = host.binding,
+                BindingGeneration = host.generation, OperationId = ""
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.InvalidArgument, incomplete.StatusCode);
+
+        var staleGeneration = await Assert.ThrowsAsync<RpcException>(() =>
+            intent.CancelMatchIntentAsync(new Chorus.Rpc.CancelMatchIntentRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", BindingId = host.binding,
+                BindingGeneration = host.generation + 1, OperationId = "cancel-op-1"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, staleGeneration.StatusCode);
+
+        var unregistered = await Assert.ThrowsAsync<RpcException>(() =>
+            intent.CancelMatchIntentAsync(new Chorus.Rpc.CancelMatchIntentRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", BindingId = "binding-not-registered",
+                BindingGeneration = 1, OperationId = "cancel-op-1"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, unregistered.StatusCode);
+
+        // With no ticket behind it the cancel still passes the gate — the refusal is the
+        // queue's, forwarded: the entry never guesses whether a ticket exists.
+        var empty = await Assert.ThrowsAsync<RpcException>(() =>
+            intent.CancelMatchIntentAsync(new Chorus.Rpc.CancelMatchIntentRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", BindingId = host.binding,
+                BindingGeneration = host.generation, OperationId = "cancel-op-1"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, empty.StatusCode);
+
+        // The business path submits through the entry, then cancels the queued ticket through
+        // it — the retire is the data plane's, replayed idempotently by the operation id.
+        var submitted = await intent.SubmitMatchIntentAsync(new Chorus.Rpc.SubmitMatchIntentRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", BindingId = host.binding,
+            BindingGeneration = host.generation, SessionId = host.session,
+            PartitionKey = "tenant-a/game-a/-/default", OperationId = "cancel-op-2"
+        });
+        Assert.Equal("Queued", submitted.Ticket.State);
+
+        var cancelled = await intent.CancelMatchIntentAsync(new Chorus.Rpc.CancelMatchIntentRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", BindingId = host.binding,
+            BindingGeneration = host.generation, OperationId = "cancel-op-3"
+        });
+        Assert.True(cancelled.Found);
+        Assert.False(cancelled.Duplicate);
+        Assert.Equal("Cancelled", cancelled.Ticket.State);
+        Assert.Equal(host.binding, cancelled.Ticket.BindingId);
+
+        var replayed = await intent.CancelMatchIntentAsync(new Chorus.Rpc.CancelMatchIntentRequest
+        {
+            TenantId = "tenant-a", GameId = "game-a", BindingId = host.binding,
+            BindingGeneration = host.generation, OperationId = "cancel-op-3"
+        });
+        Assert.True(replayed.Found);
+        Assert.True(replayed.Duplicate);
+        Assert.Equal(cancelled.Ticket.TicketId, replayed.Ticket.TicketId);
+
+        // The queue itself holds the retired ticket — the same fact from the data plane.
+        var queued = await ReadTicketAsync(environment, host.binding);
+        Assert.True(queued.found);
+        Assert.Equal("Cancelled", queued.state);
+
+        // A superseded mount cannot cancel what replaced it: the next mount rotates the
+        // route source's generation, and the old mount's cancel turns late evidence.
+        var next = await MountAsync(environment, simulator, "intent-d", "live-key-intent-d",
+            "cancel-op-9");
+        await WaitForRowAsync(environment, host.streamer, row => row.generation >= 2);
+        var stale = await Assert.ThrowsAsync<RpcException>(() =>
+            intent.CancelMatchIntentAsync(new Chorus.Rpc.CancelMatchIntentRequest
+            {
+                TenantId = "tenant-a", GameId = "game-a", BindingId = host.binding,
+                BindingGeneration = host.generation, OperationId = "cancel-op-4"
+            }).ResponseAsync);
+        Assert.Equal(StatusCode.FailedPrecondition, stale.StatusCode);
+        Assert.NotEqual(host.binding, next.binding);
+    }
+
     private static async Task<(string streamer, string binding, long generation, string session)> MountAsync(
         RedesignM0HostTests.HostEnvironment environment, DevelopmentPlatformSimulator simulator,
         string openId, string liveKey, string operationId)

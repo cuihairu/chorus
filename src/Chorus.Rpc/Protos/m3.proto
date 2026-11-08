@@ -93,6 +93,19 @@ message SubmitMatchIntentRequest {
   int64 expires_unix_ms = 8;
 }
 
+// The intent's exit (FIX-LINK-12): the business path cancels a mount's queued ticket through
+// the control plane under the same gate as the submit — the mount named must still be the
+// registered route source at its current generation, so a superseded mount cannot cancel the
+// new mount's ticket. Whether the ticket can actually cancel stays the data plane's answer:
+// only a Queued ticket does; one held by a reservation belongs to its round.
+message CancelMatchIntentRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string binding_id = 3;
+  int64 binding_generation = 4;
+  string operation_id = 5;
+}
+
 service MatchQueue {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
   rpc EnqueueTicket(EnqueueTicketRequest) returns (TicketReply);
@@ -108,8 +121,10 @@ service MatchQueue {
 // The control plane's match-intent entry (FIX-LINK-03): the StreamerServer business path
 // submits a mount's intent here, the control plane verifies the registered route source, and
 // forwards the ticket to the queue. The gateway's client path stays on MatchQueue directly.
+// The exit face (FIX-LINK-12) cancels under the same gate.
 service MatchIntent {
   rpc SubmitMatchIntent(SubmitMatchIntentRequest) returns (TicketReply);
+  rpc CancelMatchIntent(CancelMatchIntentRequest) returns (TicketReply);
 }
 
 // The participation-commit notice (FIX-LINK-04, architecture 7.2 step 6): the control plane
