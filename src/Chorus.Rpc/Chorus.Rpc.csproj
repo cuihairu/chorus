@@ -15,5 +15,9 @@
     <Protobuf Include="Protos/m2.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m3.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m4.proto" GrpcServices="Both" />
+    <!-- The google.api well-knowns the browser Admin contract's http annotations reference
+         (FIX-WEB-01). No services; they only carry the HttpRule messages and the extension. -->
+    <Protobuf Include="Protos/google/api/http.proto" GrpcServices="None" />
+    <Protobuf Include="Protos/google/api/annotations.proto" GrpcServices="None" />
   </ItemGroup>
 </Project>

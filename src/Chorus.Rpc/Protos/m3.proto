@@ -4,6 +4,7 @@ package chorus.m3;
 option csharp_namespace = "Chorus.Rpc";
 
 import "Protos/m0.proto";
+import "Protos/google/api/annotations.proto";
 
 // Multi-node matching and business recovery (architecture 7.1-7.3, 10.1). A mount holds at
 // most one active ticket; cancellation races the reservation transaction on the same locked
@@ -1009,33 +1010,86 @@ message AdminGetOperationStatusReply {
   string note = 5;
 }
 
+// The operator surface. FIX-WEB-01 adds the browser binding to the same contract the GM
+// client (GmOperatorClient) already speaks: every entry below carries a google.api.http
+// annotation so the browser console speaks HTTP+JSON at /admin/api/v1/<kebab-of-rpc-name>
+// with the request message as the body, while the gRPC surface stays unchanged. The route
+// rule is mechanical — kebab-case of the rpc name — so the browser client derives its paths
+// from this file, never from a hand-maintained list. Read entries answer to the viewer rank
+// and command entries to the gm rank under the FIX-GM-06 operator credential (bearer token,
+// identity from the credential, never from the body); the enforcement wiring is the
+// FIX-WEB-03 line. Ready is deliberately unannotated: it is a process-cert health word for
+// the cluster's own roles, not an operator surface — the browser's health word is whoami.
 service Admin {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
+  // FIX-WEB-01: the operator identity probe — the login surface (FIX-WEB-04) answers
+  // "which operator is this credential and what role and scope does it carry". Identity
+  // comes from the bearer credential alone; the reply never names a credential secret.
+  rpc WhoAmI(chorus.m0.Empty) returns (AdminWhoAmIReply) {
+    option (google.api.http) = { post: "/admin/api/v1/who-am-i" body: "*" };
+  }
   // Diagnostics: the streamer's whole footprint and the room's whole footprint. In the
   // streamer snapshot the owner/epoch columns are the routing picture (control.ownership);
   // session authority is the session rows' current version — the two can legitimately differ
   // between a takeover and the streamer's next rotation.
-  rpc GetStreamerSnapshot(AdminStreamerSnapshotRequest) returns (AdminStreamerSnapshotReply);
-  rpc GetRoomSnapshot(AdminRoomSnapshotRequest) returns (AdminRoomSnapshotReply);
+  rpc GetStreamerSnapshot(AdminStreamerSnapshotRequest) returns (AdminStreamerSnapshotReply) {
+    option (google.api.http) = { post: "/admin/api/v1/get-streamer-snapshot" body: "*" };
+  }
+  rpc GetRoomSnapshot(AdminRoomSnapshotRequest) returns (AdminRoomSnapshotReply) {
+    option (google.api.http) = { post: "/admin/api/v1/get-room-snapshot" body: "*" };
+  }
   // The AT31 chain: gift to frame to reward, verifiable link by link.
-  rpc TraceRound(AdminTraceRoundRequest) returns (AdminTraceRoundReply);
+  rpc TraceRound(AdminTraceRoundRequest) returns (AdminTraceRoundReply) {
+    option (google.api.http) = { post: "/admin/api/v1/trace-round" body: "*" };
+  }
   // Failure commands: audited, idempotent per request id, each a controlled recovery.
-  rpc SuspendMatchQueue(AdminQueueGateRequest) returns (AdminQueueGateReply);
-  rpc ResumeMatchQueue(AdminQueueGateRequest) returns (AdminQueueGateReply);
-  rpc RetryRoomRecovery(AdminRoomRecoveryRequest) returns (AdminRoomRecoveryReply);
-  rpc DrainProcess(AdminDrainProcessRequest) returns (AdminDrainProcessReply);
-  rpc RetrySettlement(AdminSettlementRetryRequest) returns (AdminSettlementRetryReply);
-  rpc ReconcilePlatformTask(AdminTaskReconcileRequest) returns (AdminTaskReconcileReply);
+  rpc SuspendMatchQueue(AdminQueueGateRequest) returns (AdminQueueGateReply) {
+    option (google.api.http) = { post: "/admin/api/v1/suspend-match-queue" body: "*" };
+  }
+  rpc ResumeMatchQueue(AdminQueueGateRequest) returns (AdminQueueGateReply) {
+    option (google.api.http) = { post: "/admin/api/v1/resume-match-queue" body: "*" };
+  }
+  rpc RetryRoomRecovery(AdminRoomRecoveryRequest) returns (AdminRoomRecoveryReply) {
+    option (google.api.http) = { post: "/admin/api/v1/retry-room-recovery" body: "*" };
+  }
+  rpc DrainProcess(AdminDrainProcessRequest) returns (AdminDrainProcessReply) {
+    option (google.api.http) = { post: "/admin/api/v1/drain-process" body: "*" };
+  }
+  rpc RetrySettlement(AdminSettlementRetryRequest) returns (AdminSettlementRetryReply) {
+    option (google.api.http) = { post: "/admin/api/v1/retry-settlement" body: "*" };
+  }
+  rpc ReconcilePlatformTask(AdminTaskReconcileRequest) returns (AdminTaskReconcileReply) {
+    option (google.api.http) = { post: "/admin/api/v1/reconcile-platform-task" body: "*" };
+  }
   // FIX-GM-01: the room epoch entry. GetRoomEpoch is read-only; BumpRoomEpoch is the audited,
   // idempotent command that keeps the owner and moves the room to Recovering (the storage
   // transaction and operator authorization are the FIX-GM-02 / FIX-GM-06 lines).
-  rpc GetRoomEpoch(AdminGetRoomEpochRequest) returns (AdminGetRoomEpochReply);
-  rpc BumpRoomEpoch(AdminBumpRoomEpochRequest) returns (AdminBumpRoomEpochReply);
+  rpc GetRoomEpoch(AdminGetRoomEpochRequest) returns (AdminGetRoomEpochReply) {
+    option (google.api.http) = { post: "/admin/api/v1/get-room-epoch" body: "*" };
+  }
+  rpc BumpRoomEpoch(AdminBumpRoomEpochRequest) returns (AdminBumpRoomEpochReply) {
+    option (google.api.http) = { post: "/admin/api/v1/bump-room-epoch" body: "*" };
+  }
   // FIX-GM-07: the targeted playtest dispatch and its effect query. Both are operator-gated
   // (FIX-GM-06's bearer credential and scope) and audited; the dispatch routes to the current
   // owner via the ControlServer's directory — the receiving host re-validates the target
   // version — and the status query answers "what did operation X do" from the data plane,
   // never conflating accepted with applied.
-  rpc DispatchRoomCommand(AdminDispatchRoomCommandRequest) returns (AdminDispatchRoomCommandReply);
-  rpc GetOperationStatus(AdminGetOperationStatusRequest) returns (AdminGetOperationStatusReply);
+  rpc DispatchRoomCommand(AdminDispatchRoomCommandRequest) returns (AdminDispatchRoomCommandReply) {
+    option (google.api.http) = { post: "/admin/api/v1/dispatch-room-command" body: "*" };
+  }
+  rpc GetOperationStatus(AdminGetOperationStatusRequest) returns (AdminGetOperationStatusReply) {
+    option (google.api.http) = { post: "/admin/api/v1/get-operation-status" body: "*" };
+  }
+}
+
+// The operator identity the bearer credential resolves to (FIX-WEB-01, consumed by the
+// FIX-WEB-04 login page). Scope arrays follow the FIX-GM-06 store semantics: an empty
+// array means every tenant or game, a listed name means only those.
+message AdminWhoAmIReply {
+  string operator_id = 1;
+  string role = 2;
+  repeated string tenants = 3;
+  repeated string games = 4;
+  bool enabled = 5;
 }

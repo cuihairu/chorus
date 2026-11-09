@@ -1,0 +1,98 @@
+// Vendored verbatim from googleapis (google/api/http.proto), the well-known HTTP rule
+// messages that google.api.http annotations reference. Carrying them in-tree keeps the
+// proto compile hermetic — no external include path — and lets the contract tests read
+// the same typed rules the server runtime will read. Apache-2.0, Google LLC.
+syntax = "proto3";
+
+package google.api;
+
+option cc_enable_arenas = true;
+option go_package = "google.golang.org/genproto/googleapis/api/annotations;annotations";
+option java_multiple_files = true;
+option java_outer_classname = "HttpProto";
+option java_package = "com.google.api";
+option objc_class_prefix = "GAPI";
+
+// Defines the HTTP configuration for an API service. It contains a list of
+// [HttpRule][google.api.HttpRule], each specifying the mapping of an API method
+// to one or more HTTP REST API methods.
+message Http {
+  // A list of HTTP configuration rules that apply to individual API methods.
+  //
+  // **NOTE:** All service configuration rules follow "last one wins" order.
+  repeated HttpRule rules = 1;
+
+  // When set to true, URL path parameters will be fully URI-decoded except in
+  // cases of single segment matches in reserved expansion. The default behavior
+  // is to not decode RFC 6570 reserved characters in multi segment matches.
+  bool fully_decode_reserved_expansion = 2;
+}
+
+// gRPC Transcoding is an API feature that enables you to use HTTP/JSON to
+// interact with your gRPC API. For more information, see the
+// [gRPC HTTP/JSON transcoding documentation](https://cloud.google.com/endpoints/docs/grpc/transcoding).
+message HttpRule {
+  // Selects a method to which this rule applies.
+  //
+  // Refer to [selector][google.api.DocumentationRule.selector] for syntax details.
+  string selector = 1;
+
+  // Determines the URL pattern is matched by this rules. This pattern can be
+  // used with any of the standard HTTP methods or a custom method. It is
+  // used to map each gRPC method to one or more HTTP REST API methods.
+  oneof pattern {
+    // Maps to HTTP GET. Used for listing and getting information about
+    // resources.
+    string get = 2;
+
+    // Maps to HTTP PUT. Used for replacing a resource.
+    string put = 3;
+
+    // Maps to HTTP POST. Used for creating a resource or performing an action.
+    string post = 4;
+
+    // Maps to HTTP DELETE. Used for deleting a resource.
+    string delete = 5;
+
+    // Maps to HTTP PATCH. Used for updating a resource.
+    string patch = 6;
+
+    // The custom pattern is used for specifying an HTTP method that is not
+    // included in the `pattern` field, such as HEAD, or "*" to leave the
+    // HTTP method unspecified for this rule. The wild-card rule is useful
+    // for services that provide content to Web (HTML) clients.
+    CustomHttpPattern custom = 8;
+  }
+
+  // The name of the request field whose value is mapped to the HTTP request
+  // body, or `*` for mapping all request fields not captured by the path
+  // pattern to the HTTP body, or omitted for not having any HTTP request body.
+  //
+  // NOTE: the referred field must be present at the top-level of the request
+  // message type.
+  string body = 7;
+
+  // Optional. The name of the response field whose value is mapped to the HTTP
+  // response body. When omitted, the entire HTTP response body will be mapped
+  // to the response message. If specified, this field behaves as an unnamed
+  // field, and the response message fields will be mapped to the unnamed
+  // fields of the HTTP response body.
+  //
+  // NOTE: the referred field must be present at the top-level of the response
+  // message type.
+  string response_body = 12;
+
+  // Additional HTTP bindings for the selector. Nested bindings must
+  // not contain an `additional_bindings` field themselves (that is,
+  // the nesting may only be one level deep).
+  repeated HttpRule additional_bindings = 11;
+}
+
+// A custom pattern is used for defining custom HTTP verb.
+message CustomHttpPattern {
+  // The name of this custom HTTP verb.
+  string kind = 1;
+
+  // The path matched by this custom verb.
+  string path = 2;
+}
