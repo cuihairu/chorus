@@ -311,16 +311,20 @@ public sealed class RedesignInput09LikeEffectHostTests
             var streamers = liveKeys.All(key => snapshot.Streamers.Any(streamer =>
                 streamer.Platform == "simulator" && streamer.CanonicalLiveSessionKey == key));
             var room = snapshot.Rooms.FirstOrDefault(room => room.RoomId == roomId);
-            return streamers && room is { Endpoint.Length: > 0 };
+            if (!(streamers && room is { Endpoint.Length: > 0 })) return false;
+            // A settled snapshot: the route stands AND the version held still for two
+            // 600 ms windows. A legitimate late bump — a gateway's readiness word
+            // flipping as its probe first answers, a session rotation — restarts the
+            // hunt inside the same 30 s budget instead of failing the whole wait.
+            for (var stable = 0; stable < 2; stable++)
+            {
+                var before = (await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty())).Version;
+                await Task.Delay(600);
+                if (before != (await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty())).Version) return false;
+            }
+            return true;
         }, TimeSpan.FromSeconds(30));
-        if (!complete) return false;
-        for (var stable = 0; stable < 2; stable++)
-        {
-            var before = (await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty())).Version;
-            await Task.Delay(600);
-            if (before != (await routing.GetRoutingSnapshotAsync(new Chorus.Rpc.Empty())).Version) return false;
-        }
-        return true;
+        return complete;
     }
 
     private static async Task<HttpResponseMessage> PostAsync(HttpClient http, int ingressPort, string body)
