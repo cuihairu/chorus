@@ -256,11 +256,25 @@ public sealed class RedesignParticipationCommitHostTests
                 ["CHORUS_OWNERSHIP_RENEW_INTERVAL_MS"] = "500",
                 ["CHORUS_END_COORDINATOR_INTERVAL_MS"] = "150",
                 ["CHORUS_MATCH_INTERVAL_MS"] = "200",
-                ["CHORUS_ROUND_DURATION_TICKS"] = "40",
+                // 400 ticks at the 25 ms matchmaker beat give the room ≥10 s of life: the
+                // observation window below must finish — and the corrected endpoint must be
+                // able to deliver — while every participation is still Active. At 40 ticks a
+                // fast machine ends the room inside the sampling loop, and the moot
+                // retirement (the correct one for a released round) retires the event Done.
+                ["CHORUS_ROUND_DURATION_TICKS"] = "400",
                 ["CHORUS_ROUTE_CONFIRM_TIMEOUT_MS"] = "10000",
                 ["CHORUS_PARTICIPATION_DISPATCH_INTERVAL_MS"] = "300"
             });
         await environment.StartAsync("Chorus.DataServer", environment.DataPort, "data-server");
+        // The node row must exist before the first self-report lands: a host reporting before
+        // RegisterNode is rejected and the report interval here is 60 s — the row would then
+        // never appear inside the test, and the endpoint fix below would have nothing to fix.
+        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-rel04b"))
+        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
+        {
+            await new ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
+                new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-rel04b" });
+        }
         await environment.StartAsync("Chorus.StreamerServer", environment.StreamerPort,
             "streamer-server", StreamerEnvironment(environment, simulatorKey, accessKey,
                 reportEndpoint: "https://localhost:1", reportIntervalMs: "60000"));
@@ -273,12 +287,6 @@ public sealed class RedesignParticipationCommitHostTests
                 ["CHORUS_REPORT_INTERVAL_MS"] = "500"
             },
             clientTenant: "tenant-a", instanceId: "game-rel04b");
-        using (var agentCertificate = environment.Certificate("@cluster", "node-agent", "agent-rel04b"))
-        using (var agentChannel = environment.Channel(environment.ControlPort, agentCertificate, "control-server"))
-        {
-            await new ControlService.ControlServiceClient(agentChannel).RegisterNodeAsync(
-                new RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-rel04b" });
-        }
         await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
             new Dictionary<string, string>(RedesignEndOperationHostTests.GatewayEnvironment(
                 environment.DataPort, $"https://localhost:{environment.ControlPort}", gatewayPort))
