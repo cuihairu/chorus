@@ -386,6 +386,19 @@
 - [ ] **FIX-REC-01 / P0：接通恢复准备、双 Gateway 路由与 Actor 激活屏障。** 依赖：FIX-TAKE-03、FIX-TAKE-04、FIX-LINK-08、FIX-END-03。
 - [ ] **FIX-REC-02 / P1：验收长局及批量房间恢复容量。** 依赖：FIX-READ-05、FIX-TAKE-08、FIX-REC-01。
 
+### 22.21 测试覆盖率补测（2026-10-20 巡检单）
+
+- [x] **COV-01 / P1：补进程内处理器覆盖，并如实记录 98% 不可达。** 依赖：无。 - 证据：e04bbf2。
+  - 真实口径核实（coverlet XPlat，排除 /obj /bin 生成与缓存；按 (file,line) 去重的行命中）：25,837 有效行 / 18,626 覆盖 = **72.09%**（2026-11-08 全量基线）；codecov 全口径（含生成 proto/镜像代码）约 47%，非生成代码是诚实分母。
+  - 缺口根因：重设计后服务器编排跑在子进程里，coverage collector 只挂测试宿主进程 → DataServer 的 gRPC 处理器（角色栅栏/租户栅栏/异常映射/幂等重放）全部不可见。
+  - 补测（e04bbf2，23 个测试，两个测试文件）：在测试进程内起真实 Kestrel，复刻 DataServer Program.cs 接线（14 个裸 store 单例 + mTLS + AddGrpc + 全部 MapGrpcService），用 ProcessCertificateIssuer 签发真证书、ProcessGrpcClientFactory 建真信道，覆盖 Round（开/终局、过期 epoch、外来租户、未授权角色、退赛成功/重放/吊销会话/非参与者/错角色/外来租户请求）、StreamerIdentity（身份解析/登录/恢复轮换/旧密钥拒绝/资料一次性创建/连接挂断幂等/挂载-绑定-状态-吊销全生命周期/错角色）、Leaderboard 与 Frame（真提交帧→从 infra.outbox 读 effect→计分幂等/TopN/名次/邻近/GM 修正与过期版本拒绝/未提交效果拒绝/重置/重建）。不改动任何生产代码。
+  - 处理器文件增量（确定性，仅由新测试驱动）：RoundGrpcService 0→64/293、StreamerIdentityGrpcService 0→158/188、LeaderboardGrpcService 0→141/200、FrameGrpcService 0→40/186。
+  - 补测后全量（2026-11-09，1858/1868 绿；10 个失败全是共租负载风暴下的既有宿主测试签名——FrameChannelCapacity、M0/M2/M3、ModuleCheckpoint、ModuleUpgradeHost、PlatformGatewayRouting、RoundDemo——逐个隔离复跑全绿，无一为新测试）：**73.88%**（19,089 覆盖 / 6,748 未覆盖）。注意跨运行总数受失败测试数摆动 ±1.5%（失败测试不执行其代码路径），per-file 增量才是可归因口径。
+  - **98% 不可达（如实记录，不硬凑）**：未覆盖 6,748 行的构成——子进程专属服务器编排（gRPC/WS 处理器与协调器，collector 挂不到子进程）：EdgeWs 483、RoomRuntime 332、AdminGrpcService 325、RoundGrpcService 余 229、MatchCoordinatorService 220、EndOperationCoordinatorService 201、RedesignControlStore 176、DemoCluster 173、StreamerSessionGrpcService 171、MatchGrpcService 148 等；顶层语句 Program.cs 入口接线约 730 行（五个服务器都是顶层程序，无进程内宿主即不可覆盖）；`RequireCertificate` 下无证书/坏证书在 TLS 握手即断，处理器内两条 Unauthenticated 行经真传输不可达；其余为真网络/固定超时/防御性空 catch。即使全部可覆盖行都盖住，理论上限约 92–94%，98% 在当前架构下不可达。
+  - **CI 红修复（2026-11-10，1fc1f3f、a987568，纯测试侧零生产改动）**：`Test (with coverage)` 腿挂的 2 个测试根因已钉死——①`AnUnreachableOwnerKeepsTheEventPendingThenDeliversOnceReachable`：快机器上房间 40 tick×25ms≈1s 内自然终局，参与行 Closed/指针置空后，下一次 dispatch pass 的 moot 退休（对已释放轮次是正确行为）把事件退休 Done，撞进 5×400ms 采样窗（负载门禁 tick 拖长反而掩盖此确定性失败；CI 2 次、本地隔离复现同签名）；同测还埋第二洞——streamer 首次自报先于 RegisterNode 落地被拒（报告间隔 60s 不重试到窗口内），进程行缺失使端点修正无从生效。修法：400 tick 让房间寿命≥10s 盖过观察窗+投递；RegisterNode 提前到自报宿主启动之前。隔离 2 绿（15s/17s）+ 门禁内绿。②`AParkedRoomSurfacesAsRoomSuspendedOnTheClient`：150s 窗口在 CI 满载 runner 超时（本地典型 8-20s），事件不变量等待窗放宽到 300s（本地零开销）。修复后全量门禁 1872/1874（12m31s），2 失败均为文档化负载族且隔离复跑绿（streamer agent fact 10s、FrameChannel 容量 3s）。
+
+
+
 ## 源码分层分析 2026-11-07
 
 ### a) 抽象层清单
