@@ -219,7 +219,8 @@
 
 - [x] **FIX-GM-06 / P0：实现 ControlServer 操作员管理入口。** 依赖：无。
   - 证据：4ebd198；13/13 绿；2/2 绿
-- [ ] **FIX-GM-07 / P0：接通 GM 定向分发与生效查询。** 依赖：FIX-GM-06、FIX-LINK-08、FIX-FRAME-02。
+- [x] **FIX-GM-07 / P0：接通 GM 定向分发与生效查询。** 依赖：FIX-GM-06、FIX-LINK-08、FIX-FRAME-02。
+  - 证据：c300c79；host 1 + store 1 绿（定向）；feat 665ba78 / test c300c79
 
 ### 22.12 多主播帧同步、离线策略与防作弊（P0/P1）
 
