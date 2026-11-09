@@ -58,6 +58,9 @@ builder.Services.AddSingleton(new ClusterDirectory(serverCertificate, root, node
     TimeSpan.FromSeconds(directoryStaleSeconds)));
 // The ownership lease registrar (architecture 4.2): renews live holders, lets silent ones expire.
 builder.Services.AddHostedService<OwnershipRenewalService>();
+// The drain confirmer (FIX-AGENT-02): a Draining game slot escalates to Drained once its
+// host holds no more active rooms — the agent stops on Drained, waits while Draining.
+builder.Services.AddHostedService<DrainConfirmationService>();
 // The recovery-deadline sweep (FIX-TAKE-05): closes expired open recoveries — reassigning
 // to a different host under a newer epoch, or parking them for an operator.
 builder.Services.AddHostedService<RoomRecoverySweepService>();

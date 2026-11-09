@@ -39,6 +39,8 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
     private readonly Dictionary<string, ManagedSlot> _slots = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _desiredState = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _lastCommandBySlot = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTime> _drainRequestedUtc = new(StringComparer.Ordinal);
+    private int _drainForceSeconds = 300;
     private BootstrapManifestPayload _manifest = null!;
     private string _stateDirectory = null!;
     private string _journalPath = null!;
@@ -62,7 +64,8 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                     foreach (var spec in _manifest.SeedSlots)
                     {
                         // A plan can park a slot down (Draining/Stopped): the supervisor does
-                        // not restart what the control plane asked to stop.
+                        // not restart what the control plane asked to stop — and Draining is
+                        // not a stop at all (FIX-AGENT-02): the parked slot's process stays up.
                         if (_desiredState.GetValueOrDefault(spec.SlotId, "Running") != "Running") continue;
                         if (!_slots.TryGetValue(spec.SlotId, out var running) || running.Process.HasExited)
                         {
@@ -71,6 +74,21 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                             _slots[spec.SlotId] = StartSlot(spec);
                             SaveJournal();
                         }
+                    }
+                    // FIX-AGENT-02: the drain wait is bounded. A Draining slot whose process
+                    // outlives the force deadline (CHORUS_DRAIN_FORCE_SECONDS, default 300s)
+                    // is stopped locally so the node converges even if the control plane's
+                    // business-drain confirmation never arrives.
+                    var nowUtc = DateTime.UtcNow;
+                    foreach (var (slotId, requestedUtc) in _drainRequestedUtc)
+                    {
+                        if (_desiredState.GetValueOrDefault(slotId) != "Draining") continue;
+                        if (!_slots.TryGetValue(slotId, out var draining) || draining.Process.HasExited) continue;
+                        if (nowUtc - requestedUtc <= TimeSpan.FromSeconds(_drainForceSeconds)) continue;
+                        logger.LogWarning(
+                            "Slot {SlotId} outlived its drain deadline ({Seconds}s); forcing the stop",
+                            slotId, _drainForceSeconds);
+                        StopSlotGracefully(draining);
                     }
                 }
                 await ReportAsync(stoppingToken);
@@ -115,6 +133,9 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
             throw new InvalidOperationException("Node authority is not authorized by the cluster root.");
         _stateDirectory = Path.GetFullPath(Required("CHORUS_AGENT_STATE_DIR"));
         Directory.CreateDirectory(_stateDirectory);
+        if (Environment.GetEnvironmentVariable("CHORUS_DRAIN_FORCE_SECONDS") is { Length: > 0 } forceText
+            && int.TryParse(forceText, out var forceSeconds) && forceSeconds > 0)
+            _drainForceSeconds = forceSeconds;
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(_stateDirectory,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         _journalPath = Path.Combine(_stateDirectory, "process-journal.json");
@@ -283,7 +304,11 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                     ReportSequence = Interlocked.Increment(ref _reportSequence),
                     Lifecycle = slot.Process.HasExited ? "Exited" : "Running",
                     Readiness = ready ? "Ready" : "NotReady",
-                    Health = ready ? "Healthy" : "Degraded", Admission = "Accepting",
+                    Health = ready ? "Healthy" : "Degraded",
+                    // FIX-AGENT-02: a parked Draining slot stays alive but reports Draining —
+                    // that is the admission the scheduler filters new assignments by.
+                    Admission = _desiredState.GetValueOrDefault(slot.Spec.SlotId, "Running") == "Draining"
+                        ? "Draining" : "Accepting",
                     EntityRecovery = "NotStarted",
                     StartedUnixMs = new DateTimeOffset(slot.StartedAtUtc).ToUnixTimeMilliseconds(),
                     Endpoint = endpoint.ToString()
@@ -369,6 +394,14 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                     }
                     break;
                 case "Draining":
+                    // FIX-AGENT-02: Draining parks the slot. The process keeps serving its
+                    // business load (existing rooms finish; the scheduler stops new
+                    // assignments because the reported admission is Draining) while the
+                    // control plane waits for the drain to complete and escalates the slot
+                    // to Drained. The agent only cuts the process loose when the drain
+                    // outlives its force deadline (supervisor loop).
+                    _drainRequestedUtc[plan.SlotId] = DateTime.UtcNow;
+                    break;
                 case "Drained":
                 case "Stopped":
                     if (_slots.TryGetValue(plan.SlotId, out var stopping)) StopSlotGracefully(stopping);

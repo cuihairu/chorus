@@ -5,6 +5,7 @@ using Chorus.Platform;
 using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
+using Npgsql;
 using RoutingService = Chorus.Rpc.Routing;
 
 namespace Chorus.Engine.Tests;
@@ -754,19 +755,20 @@ public sealed class RedesignM3HostTests
         var before = environment.AgentJournal().Single(entry => entry.SlotId == dataSlot);
         Assert.True(before.Pid > 0);
 
-        // Drain the data slot: the agent stops it gracefully, journals the command first,
-        // and the slot stays down — the supervisor does not restart what a plan stopped.
+        // Stop the data slot (FIX-AGENT-02: Draining parks, Stopped is the stop state): the
+        // agent stops it gracefully, journals the command first, and the slot stays down —
+        // the supervisor does not restart what a plan stopped.
         var drained = await deployment.ApplyPlanAsync(new ApplyPlanRequest
         {
             NodeId = "node-a", SlotId = dataSlot, Role = "data-server",
-            DesiredState = "Draining", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            DesiredState = "Stopped", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
             PlanGeneration = 5, CommandId = "m3-drain-data-1"
         });
         Assert.Equal(5, drained.PlanGeneration);
         var stopped = await WaitForAsync(() => Task.FromResult(environment.AgentJournal()
-            .Single(entry => entry.SlotId == dataSlot) is { Pid: 0, DesiredState: "Draining" }
+            .Single(entry => entry.SlotId == dataSlot) is { Pid: 0, DesiredState: "Stopped" }
             && IsProcessGone(before.Pid)), TimeSpan.FromSeconds(30));
-        Assert.True(stopped, "The agent did not drain the data slot.");
+        Assert.True(stopped, "The agent did not stop the data slot.");
         Assert.Equal("m3-drain-data-1", environment.AgentJournal()
             .Single(entry => entry.SlotId == dataSlot).CommandId);
 
@@ -774,7 +776,7 @@ public sealed class RedesignM3HostTests
         var repeated = await deployment.ApplyPlanAsync(new ApplyPlanRequest
         {
             NodeId = "node-a", SlotId = dataSlot, Role = "data-server",
-            DesiredState = "Draining", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            DesiredState = "Stopped", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
             PlanGeneration = 5, CommandId = "m3-drain-data-1"
         });
         Assert.Equal(5, repeated.PlanGeneration);
@@ -859,14 +861,14 @@ public sealed class RedesignM3HostTests
         var drained = await deployment.ApplyPlanAsync(new ApplyPlanRequest
         {
             NodeId = "node-a", SlotId = streamerSlot, Role = "streamer-server",
-            DesiredState = "Draining", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            DesiredState = "Stopped", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
             PlanGeneration = 3, CommandId = "m3-drain-streamer-1"
         });
         Assert.Equal(3, drained.PlanGeneration);
         var stopped = await WaitForAsync(() => Task.FromResult(environment.AgentJournal()
-            .Single(entry => entry.SlotId == streamerSlot) is { Pid: 0, DesiredState: "Draining" }
+            .Single(entry => entry.SlotId == streamerSlot) is { Pid: 0, DesiredState: "Stopped" }
             && IsProcessGone(before.Pid)), TimeSpan.FromSeconds(30));
-        Assert.True(stopped, "The agent did not drain the supervised streamer slot.");
+        Assert.True(stopped, "The agent did not stop the supervised streamer slot.");
 
         // The gateway slot is untouched and its face still answers.
         Assert.True(environment.AgentJournal()
@@ -876,6 +878,104 @@ public sealed class RedesignM3HostTests
         var gatewayReady = await new StreamerGatewayFace.StreamerGatewayFaceClient(gatewayChannel)
             .ReadyAsync(new Empty());
         Assert.True(gatewayReady.Ready);
+    }
+
+    [Fact]
+    public async Task ADrainPlanParksTheSlotUntilItsForceDeadline()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        // FIX-AGENT-02: Draining parks the slot — the process keeps serving while the control
+        // plane waits for the business drain. The wait is bounded: the agent force-stops a
+        // slot whose drain outlives CHORUS_DRAIN_FORCE_SECONDS (short here so the fact stays
+        // quick; the shipped default is 300).
+        var agent = await environment.StartBootstrapAgentAsync(joinCluster: true,
+            agentEnvironment: new Dictionary<string, string> { ["CHORUS_DRAIN_FORCE_SECONDS"] = "4" });
+        await environment.WaitForAgentReportsAsync(agent, expectedPreviousAgent: null, nodeId: "node-a");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-13");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var deployment = new Deployment.DeploymentClient(controlChannel);
+        const string dataSlot = "node-a/data-server";
+        var before = environment.AgentJournal().Single(entry => entry.SlotId == dataSlot);
+        Assert.True(before.Pid > 0);
+
+        var draining = await deployment.ApplyPlanAsync(new ApplyPlanRequest
+        {
+            NodeId = "node-a", SlotId = dataSlot, Role = "data-server",
+            DesiredState = "Draining", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            PlanGeneration = 4, CommandId = "m3-drain-park-1"
+        });
+        Assert.Equal(4, draining.PlanGeneration);
+
+        // The park is real: two seconds in the process is still alive (the old behavior
+        // stopped it inside the plan apply), the journal keeps its pid, and the process row
+        // already reads Draining — the store pins admission the moment the plan wins, so the
+        // scheduler stops offering the slot new work before the agent's next report.
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        Assert.True(environment.AgentJournal().Single(entry => entry.SlotId == dataSlot).Pid > 0);
+        Assert.False(IsProcessGone(before.Pid));
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT admission FROM control.process WHERE slot_id=@slot", connection);
+            command.Parameters.AddWithValue("slot", dataSlot);
+            Assert.Equal("Draining", await command.ExecuteScalarAsync());
+        }
+
+        // The force deadline ends the wait: the agent stops the process on its own, and the
+        // journal keeps the Draining state and the original command — no restart, no rewind.
+        var forced = await WaitForAsync(() => Task.FromResult(environment.AgentJournal()
+            .Single(entry => entry.SlotId == dataSlot) is
+            { Pid: 0, DesiredState: "Draining", CommandId: "m3-drain-park-1" }
+            && IsProcessGone(before.Pid)), TimeSpan.FromSeconds(30));
+        Assert.True(forced, "The agent did not force-stop the parked draining slot.");
+    }
+
+    [Fact]
+    public async Task AConfirmedGameDrainEscalatesToDrainedAndTheAgentStops()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        // FIX-AGENT-02: the drain confirmer watches Draining game slots and counts the Active
+        // room leases each host still holds. A host holding no rooms is escalated to Drained
+        // with a fresh command id — and Drained is what actually stops the process.
+        var gamePort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var agent = await environment.StartBootstrapAgentAsync(
+            gameProject: "Chorus.GameServer", gamePort: gamePort, joinCluster: true);
+        await environment.WaitForAgentReportsAsync(agent, expectedPreviousAgent: null, expectedReady: 3,
+            nodeId: "node-a");
+
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-14");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var deployment = new Deployment.DeploymentClient(controlChannel);
+        const string gameSlot = "node-a/game-server";
+        var before = environment.AgentJournal().Single(entry => entry.SlotId == gameSlot);
+        Assert.True(before.Pid > 0);
+
+        await deployment.ApplyPlanAsync(new ApplyPlanRequest
+        {
+            NodeId = "node-a", SlotId = gameSlot, Role = "game-server",
+            DesiredState = "Draining", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            PlanGeneration = 4, CommandId = "m3-drain-game-1"
+        });
+
+        // The confirmer escalates the zero-room slot: the agent stops on Drained, the journal
+        // names the confirmation command, and the deployment row reads Drained.
+        var escalated = await WaitForAsync(() => Task.FromResult(
+            environment.AgentJournal().Single(entry => entry.SlotId == gameSlot) is
+            {
+                Pid: 0, DesiredState: "Drained", CommandId: "drain-confirmed-node-a/game-server-4"
+            } && IsProcessGone(before.Pid)), TimeSpan.FromSeconds(40));
+        Assert.True(escalated, "The zero-room game slot was not escalated to Drained.");
+
+        await using (var connection = new NpgsqlConnection(environment.DatabaseConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT desired_state FROM control.deployment WHERE slot_id=@slot", connection);
+            command.Parameters.AddWithValue("slot", gameSlot);
+            Assert.Equal("Drained", await command.ExecuteScalarAsync());
+        }
     }
 
     [Fact]

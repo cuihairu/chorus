@@ -436,8 +436,11 @@ message DeploymentPlanProto {
   string slot_id = 1;
   string node_id = 2;
   string role = 3;
-  // Running keeps the process supervised and restarted; Draining stops it gracefully;
-  // Stopped stops it and keeps it down.
+  // Running keeps the process supervised and restarted. Draining parks the process: it
+  // keeps serving the rooms it already holds (admission Draining) until the control plane
+  // confirms the business drain and escalates to Drained — or the agent's force deadline
+  // (CHORUS_DRAIN_FORCE_SECONDS) stops it. Drained and Stopped stop the process and keep
+  // it down.
   string desired_state = 4;
   string desired_version = 5;
   string package_hash = 6;
