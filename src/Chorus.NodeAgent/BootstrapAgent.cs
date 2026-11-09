@@ -25,9 +25,15 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         DateTime StartedAtUtc, WindowsJob? Job);
 
     /// <summary>Agent-level variables the seed hosts inherit — the lab topology the agent
-    /// itself runs under (coordinator endpoints), never node-authority secrets.</summary>
+    /// itself runs under (coordinator endpoints, tenant applications, optional lab platform
+    /// credentials), never node-authority secrets.</summary>
     private static readonly string[] PassthroughVariables =
-        ["CHORUS_GAME_ENDPOINTS", "CHORUS_MATCH_INTERVAL_MS", "CHORUS_DATA_ENDPOINT"];
+    [
+        "CHORUS_GAME_ENDPOINTS", "CHORUS_MATCH_INTERVAL_MS", "CHORUS_DATA_ENDPOINT",
+        "CHORUS_TENANT_APPLICATIONS", "CHORUS_ACCESS_CREDENTIAL_KEY",
+        "CHORUS_PLATFORM_SIMULATOR", "CHORUS_SIMULATOR_SIGNING_KEY",
+        "CHORUS_DEV_PLATFORM_ENDPOINT", "CHORUS_WSS_PORT", "CHORUS_INGRESS_PORT"
+    ];
 
     private readonly object _gate = new();
     private readonly Dictionary<string, ManagedSlot> _slots = new(StringComparer.Ordinal);
@@ -179,27 +185,38 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         start.Environment["CHORUS_TLS_CERT_PEM"] = certificatePath;
         start.Environment["CHORUS_TLS_KEY_PEM"] = keyPath;
         start.Environment["CHORUS_PORT"] = spec.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        if (spec.Role == "game-server")
+        // Every supervised service that speaks to the data plane gets the node's seeded data
+        // port (FIX-AGENT-01); the streamer gateway additionally routes to the seeded streamer
+        // port and the control endpoint the manifest pins.
+        if (_manifest.SeedSlots.FirstOrDefault(slot => slot.Role == "data-server") is { } dataSlot)
+            start.Environment["CHORUS_DATA_PORT"] = dataSlot.Port.ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
+        if (spec.Role is "streamer-gateway" or "platform-gateway")
         {
-            // The game host speaks to the data plane this node seeds, and for a tenant it
-            // serves: the agent mints its tenant-scoped client identity from the same grant.
-            if (_manifest.SeedSlots.FirstOrDefault(slot => slot.Role == "data-server") is { } dataSlot)
-                start.Environment["CHORUS_DATA_PORT"] = dataSlot.Port.ToString(
+            if (spec.Role == "streamer-gateway" &&
+                _manifest.SeedSlots.FirstOrDefault(slot => slot.Role == "streamer-server") is { } streamerSlot)
+                start.Environment["CHORUS_STREAMER_PORT"] = streamerSlot.Port.ToString(
                     System.Globalization.CultureInfo.InvariantCulture);
-            if (Environment.GetEnvironmentVariable("CHORUS_GAME_CLIENT_TENANT") is { Length: > 0 } tenant)
-            {
-                using var clientCertificate = ProcessCertificateIssuer.CreateProcess(_nodeAuthority,
-                    new ProcessIdentity(_manifest.ClusterId, tenant, _manifest.NodeId, spec.Role,
-                        instanceId + "-client"),
-                    DateTimeOffset.UtcNow.AddHours(24), "localhost");
-                var clientCertificatePath = Path.Combine(certDirectory, "process-client.pem");
-                var clientKeyPath = Path.Combine(certDirectory, "process-client.key");
-                File.WriteAllText(clientCertificatePath, clientCertificate.ExportCertificatePem());
-                using (var clientKey = clientCertificate.GetECDsaPrivateKey())
-                    File.WriteAllText(clientKeyPath, clientKey!.ExportPkcs8PrivateKeyPem());
-                start.Environment["CHORUS_CLIENT_CERT_PEM"] = clientCertificatePath;
-                start.Environment["CHORUS_CLIENT_KEY_PEM"] = clientKeyPath;
-            }
+            // Both gateways self-report to the control plane through the endpoint the
+            // manifest pins; the operator tasks they reconcile also live there.
+            start.Environment["CHORUS_CONTROL_ENDPOINT"] = _manifest.ControlEndpoint;
+        }
+        if (spec.Role == "game-server" &&
+            Environment.GetEnvironmentVariable("CHORUS_GAME_CLIENT_TENANT") is { Length: > 0 } tenant)
+        {
+            // For a tenant the game host serves, the agent mints its tenant-scoped client
+            // identity from the same grant.
+            using var clientCertificate = ProcessCertificateIssuer.CreateProcess(_nodeAuthority,
+                new ProcessIdentity(_manifest.ClusterId, tenant, _manifest.NodeId, spec.Role,
+                    instanceId + "-client"),
+                DateTimeOffset.UtcNow.AddHours(24), "localhost");
+            var clientCertificatePath = Path.Combine(certDirectory, "process-client.pem");
+            var clientKeyPath = Path.Combine(certDirectory, "process-client.key");
+            File.WriteAllText(clientCertificatePath, clientCertificate.ExportCertificatePem());
+            using (var clientKey = clientCertificate.GetECDsaPrivateKey())
+                File.WriteAllText(clientKeyPath, clientKey!.ExportPkcs8PrivateKeyPem());
+            start.Environment["CHORUS_CLIENT_CERT_PEM"] = clientCertificatePath;
+            start.Environment["CHORUS_CLIENT_KEY_PEM"] = clientKeyPath;
         }
         var process = Process.Start(start) ?? throw new InvalidOperationException($"Could not start {spec.SlotId}.");
         var job = OperatingSystem.IsWindows() ? WindowsJob.Attach(process) : null;
@@ -242,6 +259,15 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                     else if (slot.Spec.Role == "game-server")
                         ready = (await new GameHost.GameHostClient(roleChannel)
                             .ReadyAsync(new Empty(), cancellationToken: token)).Ready;
+                    else if (slot.Spec.Role == "streamer-server")
+                        ready = (await new StreamerSession.StreamerSessionClient(roleChannel)
+                            .ReadyAsync(new Empty(), cancellationToken: token)).Ready;
+                    else if (slot.Spec.Role == "streamer-gateway")
+                        ready = (await new StreamerGatewayFace.StreamerGatewayFaceClient(roleChannel)
+                            .ReadyAsync(new Empty(), cancellationToken: token)).Ready;
+                    else if (slot.Spec.Role == "platform-gateway")
+                        ready = (await new PlatformGatewayFace.PlatformGatewayFaceClient(roleChannel)
+                            .ReadyAsync(new Empty(), cancellationToken: token)).Ready;
                     else
                         ready = (await new DataService.DataServiceClient(roleChannel)
                             .ReadyAsync(new Empty(), cancellationToken: token)).Ready;
@@ -266,7 +292,9 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         }
         catch (Exception error) when (error is RpcException or HttpRequestException)
         {
-            logger.LogWarning("ControlServer is unavailable; signed bootstrap slots remain supervised locally");
+            // The error detail is the only window into why: a refused dial, a refused plan
+            // stream, or a server-side register rejection all land on this one warning.
+            logger.LogWarning(error, "ControlServer is unavailable; signed bootstrap slots remain supervised locally");
         }
     }
 

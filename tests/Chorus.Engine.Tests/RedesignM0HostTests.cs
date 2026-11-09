@@ -354,7 +354,8 @@ public sealed class RedesignM0HostTests
 
         public async Task<Process> StartBootstrapAgentAsync(string? gameProject = null, int? gamePort = null,
             IReadOnlyDictionary<string, string>? toolEnvironment = null,
-            IReadOnlyDictionary<string, string>? agentEnvironment = null, bool joinCluster = false)
+            IReadOnlyDictionary<string, string>? agentEnvironment = null, bool joinCluster = false,
+            IReadOnlyList<(string Project, string Role, int Port)>? extraSeeds = null)
         {
             var root = FindRoot();
             var configuration = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))!.Name;
@@ -390,6 +391,13 @@ public sealed class RedesignM0HostTests
                 prepare.Environment["CHORUS_GAME_DLL"] = Path.Combine(root, "src", gameProject, "bin",
                     configuration, "net10.0", gameProject + ".dll");
                 prepare.Environment["CHORUS_GAME_PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            foreach (var (project, role, seedPort) in extraSeeds ?? Array.Empty<(string Project, string Role, int Port)>())
+            {
+                var variable = "CHORUS_" + role.ToUpperInvariant().Replace('-', '_');
+                prepare.Environment[variable + "_DLL"] = Path.Combine(root, "src", project, "bin",
+                    configuration, "net10.0", project + ".dll");
+                prepare.Environment[variable + "_PORT"] = seedPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
             foreach (var (name, value) in toolEnvironment ?? new Dictionary<string, string>())
                 prepare.Environment[name] = value;
@@ -458,7 +466,8 @@ public sealed class RedesignM0HostTests
                 await Task.Delay(200);
             }
             throw new TimeoutException(
-                $"NodeAgent did not report {expectedReady} ready seed processes. " + AgentOutput(agent));
+                $"NodeAgent did not report {expectedReady} ready seed processes. " +
+                AgentOutput(agent) + "\n--- seed host output ---\n" + AllHostOutput);
         }
 
         /// <summary>The agent's local command/process journal — plan evidence without trusting

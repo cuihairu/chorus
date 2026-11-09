@@ -820,6 +820,65 @@ public sealed class RedesignM3HostTests
     }
 
     [Fact]
+    public async Task TheAgentSupervisesStreamerPlaneSeedsAndPlansParkThemDown()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var streamerPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var wssPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        // The streamer plane on one supervised node (FIX-AGENT-01): the agent wires the seeded
+        // data port into both services, the seeded streamer port and the control endpoint into
+        // the gateway, and probes each face's Ready with its own node identity.
+        var agent = await environment.StartBootstrapAgentAsync(
+            agentEnvironment: new Dictionary<string, string>
+            {
+                ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}""",
+                ["CHORUS_PLATFORM_SIMULATOR"] = "true",
+                ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
+                ["CHORUS_ACCESS_CREDENTIAL_KEY"] = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)),
+                ["CHORUS_WSS_PORT"] = wssPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            },
+            joinCluster: true,
+            extraSeeds:
+            [
+                ("Chorus.StreamerServer", "streamer-server", streamerPort),
+                ("Chorus.StreamerGateway", "streamer-gateway", gatewayPort)
+            ]);
+        await environment.WaitForAgentReportsAsync(agent, expectedPreviousAgent: null, expectedReady: 4,
+            nodeId: "node-a");
+
+        // A plan parks the streamer slot down and the supervisor neither restarts it nor
+        // touches the rest of the plane.
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-12");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var deployment = new Deployment.DeploymentClient(controlChannel);
+        const string streamerSlot = "node-a/streamer-server";
+        var before = environment.AgentJournal().Single(entry => entry.SlotId == streamerSlot);
+        Assert.True(before.Pid > 0);
+
+        var drained = await deployment.ApplyPlanAsync(new ApplyPlanRequest
+        {
+            NodeId = "node-a", SlotId = streamerSlot, Role = "streamer-server",
+            DesiredState = "Draining", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            PlanGeneration = 3, CommandId = "m3-drain-streamer-1"
+        });
+        Assert.Equal(3, drained.PlanGeneration);
+        var stopped = await WaitForAsync(() => Task.FromResult(environment.AgentJournal()
+            .Single(entry => entry.SlotId == streamerSlot) is { Pid: 0, DesiredState: "Draining" }
+            && IsProcessGone(before.Pid)), TimeSpan.FromSeconds(30));
+        Assert.True(stopped, "The agent did not drain the supervised streamer slot.");
+
+        // The gateway slot is untouched and its face still answers.
+        Assert.True(environment.AgentJournal()
+            .Single(entry => entry.SlotId == "node-a/streamer-gateway").Pid > 0);
+        using var gatewayCertificate = environment.Certificate("@cluster", "streamer-gateway", "gateway-m3-12");
+        using var gatewayChannel = environment.Channel(gatewayPort, gatewayCertificate, "streamer-gateway");
+        var gatewayReady = await new StreamerGatewayFace.StreamerGatewayFaceClient(gatewayChannel)
+            .ReadyAsync(new Empty());
+        Assert.True(gatewayReady.Ready);
+    }
+
+    [Fact]
     public async Task ControlOutagePausesMatchingAndPlansDoNotRepullProcesses()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();

@@ -77,8 +77,9 @@ BootstrapSeedSlot Seed(string role, string assembly, int port)
     return new BootstrapSeedSlot($"{args[2]}/{role}", role, path,
         Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))), port);
 }
-// The seed set is control + data (architecture 10.1); a game-server seed is optional lab
-// topology so one node can host the whole match path under agent supervision.
+// The seed set is control + data (architecture 10.1); game-server, streamer-server and the two
+// gateways are optional lab topology so one node can host more of the deployment under agent
+// supervision (FIX-AGENT-01).
 var seeds = new List<BootstrapSeedSlot>
 {
     Seed("control-server", args[3], Port("CHORUS_CONTROL_PORT", 7500)),
@@ -86,6 +87,15 @@ var seeds = new List<BootstrapSeedSlot>
 };
 if (Environment.GetEnvironmentVariable("CHORUS_GAME_DLL") is { Length: > 0 } gameDll)
     seeds.Add(Seed("game-server", gameDll, Port("CHORUS_GAME_PORT", 7503)));
+
+void SeedOptional(string role, string dllVariable, string portVariable, int fallbackPort)
+{
+    if (Environment.GetEnvironmentVariable(dllVariable) is not { Length: > 0 } assembly) return;
+    seeds.Add(Seed(role, assembly, Port(portVariable, fallbackPort)));
+}
+SeedOptional("streamer-server", "CHORUS_STREAMER_SERVER_DLL", "CHORUS_STREAMER_SERVER_PORT", 7502);
+SeedOptional("streamer-gateway", "CHORUS_STREAMER_GATEWAY_DLL", "CHORUS_STREAMER_GATEWAY_PORT", 7530);
+SeedOptional("platform-gateway", "CHORUS_PLATFORM_GATEWAY_DLL", "CHORUS_PLATFORM_GATEWAY_PORT", 7504);
 var manifest = new BootstrapManifestPayload(args[1], args[2], "root-ca.pem", "node-ca.pem", "node-ca.pfx",
     $"https://localhost:{Environment.GetEnvironmentVariable("CHORUS_CONTROL_PORT") ?? "7500"}",
     DateTimeOffset.UtcNow.AddDays(30).ToUnixTimeMilliseconds(),

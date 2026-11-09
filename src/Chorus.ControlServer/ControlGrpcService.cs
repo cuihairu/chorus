@@ -25,9 +25,9 @@ public sealed class ControlGrpcService(
 
     public override async Task<ProcessReply> ReportProcess(ReportProcessRequest request, ServerCallContext context)
     {
-        // Two reporters speak for a process: the supervising node agent (bootstrap roles,
-        // including a seeded game slot) and the process itself (game/streamer/gateway hosts,
-        // which know their own endpoint). The caller certificate decides which — an agent cannot
+        // Two reporters speak for a process: the supervising node agent (any of the six seed
+        // roles, FIX-AGENT-01) and the process itself (game/streamer/gateway hosts, which know
+        // their own endpoint). The caller certificate decides which — an agent cannot
         // claim a self-report and a process cannot impersonate its agent.
         var caller = await RequireAsync(context,
             "node-agent", "data-server", "streamer-server", "game-server", "platform-gateway",
@@ -38,7 +38,7 @@ public sealed class ControlGrpcService(
         {
             CheckNode(caller, request.NodeId, request.AgentInstanceId);
             if (request.Role is not ("control-server" or "data-server" or "game-server"
-                    or "platform-gateway") ||
+                    or "streamer-server" or "streamer-gateway" or "platform-gateway") ||
                 request.SlotId != $"{request.NodeId}/{request.Role}" ||
                 request.StartedUnixMs <= 0)
                 throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid bootstrap slot report."));

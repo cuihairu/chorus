@@ -12,7 +12,9 @@ public sealed class StreamerSessionGrpcService(
 {
     public override async Task<ReadyReply> Ready(Empty request, ServerCallContext context)
     {
-        await RequireAsync(context);
+        // The node agent probes business readiness with its own identity — the same shape the
+        // gateway faces serve; the business faces keep the streamer-only gate.
+        await RequireAsync(context, "streamer-server", "streamer-gateway", "node-agent");
         return new ReadyReply { Ready = true, SchemaVersion = "4" };
     }
 
@@ -280,14 +282,14 @@ public sealed class StreamerSessionGrpcService(
             CurrentRoomId = currentRoomId ?? "", RoundGeneration = roundGeneration
         };
 
-    private async Task<ProcessIdentity> RequireAsync(ServerCallContext context)
+    private async Task<ProcessIdentity> RequireAsync(ServerCallContext context, params string[] roles)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;
         if (certificate is null) throw new RpcException(new Status(StatusCode.Unauthenticated, "Client certificate is absent from request context."));
         var caller = trustedCertificates.Resolve(certificate);
         if (caller is null) throw new RpcException(new Status(StatusCode.Unauthenticated, "Client certificate identity is invalid."));
-        if (!StringComparer.Ordinal.Equals(caller.Role, "streamer-server")
-            && !StringComparer.Ordinal.Equals(caller.Role, "streamer-gateway"))
+        if (roles.Length == 0) roles = ["streamer-server", "streamer-gateway"];
+        if (!roles.Contains(caller.Role, StringComparer.Ordinal))
             throw new RpcException(new Status(StatusCode.PermissionDenied, "Role is not authorized."));
         return caller;
     }
