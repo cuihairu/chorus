@@ -23,6 +23,31 @@ permissions:
   contents: read
 
 jobs:
+  console-build:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          cache: "pnpm"
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: console
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: console
+        run: pnpm build
+
   build-test:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     services:

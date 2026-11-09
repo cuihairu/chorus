@@ -21,3 +21,8 @@ overrides:
   vite: 6.4.5
   vuepress-html-webpack-plugin>loader-utils: ^1.4.1
   webpack-log: ^3.0.2
+
+onlyBuiltDependencies:
+  - esbuild
+allowBuilds:
+  esbuild: true
