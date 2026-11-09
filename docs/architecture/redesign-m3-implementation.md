@@ -1040,3 +1040,11 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **验收映射**：WEB-03（服务器暴露）按路由表接线并按授权表挂 RequireOperator；WEB-05 类型化客户端从描述符推导路径；WEB-17 验收按授权表逐条对 401/403。
 - **门禁**：定向 3/3 绿；全量 pin 8 核（外部共租 1min load 63-74 持续）1877/1881（43m43s）——4 失败全为既有文档签名（FrameChannel 吞吐/p95 负载饿死 delivered 36000/36000 零丢弃、M2 CorruptSnapshots 时钟窗 Actual 200、streamer agent fact 就绪族 10m13s、RoundDemo 时序 flake），零新签名；Input08/09 全族隔离绿。
 - **诚实边界**：注解惰性——服务器尚不服务这些路由（WEB-03 的 AddGrpcJsonTranscoding + 操作员门接线）；`WhoAmI` handler 未实现（GM-01 先例：契约先立、rpc 暂 Unimplemented）；9 个 RPC 的浏览器授权行为未验证（WEB-03 的 host 验收）；角色秩细分（operator 层命令）是产品后续决策，本契约定为保守的读 viewer/命令 gm；错误映射表是对框架标准行为的文档化，WEB-03 验收时对真端点核。
+
+## 建立浏览器控制台工程（FIX-WEB-02，d1cbf5d）
+
+- **任务**：建立 22.16 浏览器控制台工程（React + Ant Design + ProComponents，Vite + TypeScript）。todo.md:294。依赖：无。
+- **机制**：`console/` 独立工程（自带 pnpm-lock，不并入根 workspace 的 packages——docs 站的安装面不被拖慢；node 24 / pnpm 10-12 兼容，lockfile 9.0）；React 18 + antd 5 + @ant-design/pro-components 2 + vite 6（对齐根 override 的 6.4.5）；`pnpm build` = `tsc --noEmit && vite build`，`pnpm typecheck` 单独可跑。dev server 把 `/admin/api` 代理到本地 ControlServer（FIX-WEB-01 契约前缀，`CHORUS_CONSOLE_CONTROL` 环境变量指向），页面开发直连真集群。壳层 ProLayout 菜单声明 22.16 全部页面位（home / operator login / nodes / rooms / streamers / operations），页面随各自 API 线（WEB-04/06/07/08/10）落地。pnpm ≥11 的依赖构建脚本审批（esbuild postinstall）经根 `pnpm-workspace.yaml` 双写：`allowBuilds`（pnpm 11+ 的名字）+ `onlyBuiltDependencies`（pnpm 10 的名字，CI runner 钉 pnpm 10）——两代 pnpm 的 frozen install 皆 0 退出。
+- **CI**：ci.yml 加 `console-build` job（checkout + pnpm 10 + node 24 + `pnpm install --frozen-lockfile` + `pnpm build`，cache 指向 console/pnpm-lock.yaml），控制台构建纳入每 push 门。
+- **门禁**：`pnpm build` 绿（tsc 0 错；vite 产物 ~835KB 单包——脚手架，分包随页面加）；console 与根 `pnpm install --frozen-lockfile` 皆 0 退出。
+- **诚实边界**：无路由库（壳层 useState 切页——登录页若需真路由随 WEB-04 引入 react-router）；无页面测试（工程级验证=类型检查+构建；页面级验证随各页面任务与 WEB-17 验收）；生产托管未接（WEB-18）；i18n 未接（WEB-16）；`/admin/api` 服务端尚不存在（WEB-03）——代理配置按契约前缀先行。
