@@ -285,7 +285,7 @@
 
 - [x] **FIX-AGENT-01 / P1：接通六类服务的受控进程槽位。** 依赖：无。 - 证据：e8b2ef0。
 - [x] **FIX-AGENT-02 / P1：让 Drain 等待业务排空确认。** 依赖：FIX-LINK-01。 - 证据：661dde0。
-- [ ] **FIX-AGENT-03 / P1：实现有界异常重启与隔离。** 依赖：无。
+- [x] **FIX-AGENT-03 / P1：实现有界异常重启与隔离。** 依赖：无。 - 证据：3f866bb。
 
 ### 22.16 Web 控制台：React + Ant Design + ProComponents（P0/P1）
 
