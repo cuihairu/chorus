@@ -438,10 +438,11 @@ public sealed class RedesignM0HostTests
             Process agent, string? expectedPreviousAgent, int expectedReady = 2,
             string nodeId = "node-bootstrap")
         {
-            // 180s upper bound for the poll, not a sleep: four seed hosts plus the
-            // WatchPlans/report path stretch well past 35s on loaded CI runners
-            // (observed timeout at 38s), while quiet local runs return in seconds.
-            var deadline = DateTime.UtcNow.AddSeconds(180);
+            // 600s upper bound for the poll, not a sleep: this wait covers the whole signed
+            // bootstrap coming up (the agent-supervised control seed included) on 4-core CI
+            // runners where several host facts' process trees herd at once — observed past
+            // 180s there — while quiet local runs return in seconds.
+            var deadline = DateTime.UtcNow.AddSeconds(600);
             while (DateTime.UtcNow < deadline)
             {
                 if (agent.HasExited)
