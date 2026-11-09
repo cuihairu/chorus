@@ -979,6 +979,104 @@ public sealed class RedesignM3HostTests
     }
 
     [Fact]
+    public async Task ACrashedSeedRestartsWithBoundedBackoff()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        // FIX-AGENT-03: a crash is restarted on the bounded backoff (architecture 10.2),
+        // not immediately in a tight loop — one SIGKILL exercises the first rung of the
+        // ladder and the slot comes back under a fresh pid.
+        var agent = await environment.StartBootstrapAgentAsync(joinCluster: true);
+        await environment.WaitForAgentReportsAsync(agent, expectedPreviousAgent: null, nodeId: "node-a");
+
+        const string dataSlot = "node-a/data-server";
+        var before = environment.AgentJournal().Single(entry => entry.SlotId == dataSlot);
+        Assert.True(before.Pid > 0);
+        _ = kill(before.Pid, 9);
+
+        var restarted = await WaitForAsync(() =>
+        {
+            var entry = environment.AgentJournal().Single(item => item.SlotId == dataSlot);
+            return Task.FromResult(entry.Pid > 0 && entry.Pid != before.Pid && IsProcessGone(before.Pid));
+        }, TimeSpan.FromSeconds(25));
+        Assert.True(restarted, "The agent did not restart the crashed slot.");
+        Assert.Null(environment.AgentJournal().Single(entry => entry.SlotId == dataSlot).QuarantinedAtUtc);
+    }
+
+    [Fact]
+    public async Task ARestormQuarantinesTheSlotUntilAFreshCommandReopensIt()
+    {
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        // FIX-AGENT-03: five restarts inside the crash window quarantine the slot — the
+        // sixth crash is not restarted, the health reports Quarantined, and only a fresh
+        // Running plan reopens the slot (architecture 10.2). The window is shortened here
+        // so the fact stays quick; the shipped default is 600s.
+        var agent = await environment.StartBootstrapAgentAsync(joinCluster: true,
+            agentEnvironment: new Dictionary<string, string> { ["CHORUS_CRASH_WINDOW_SECONDS"] = "120" });
+        await environment.WaitForAgentReportsAsync(agent, expectedPreviousAgent: null, nodeId: "node-a");
+
+        const string dataSlot = "node-a/data-server";
+        // Kill the seed until the window's budget runs out. The seed's own pre-bind crash
+        // at boot shares the same window, so the quarantining kill lands between the
+        // fourth and the seventh — the count is observed, not assumed.
+        var quarantined = false;
+        for (var attempt = 0; attempt < 7 && !quarantined; attempt++)
+        {
+            var entry = environment.AgentJournal().Single(item => item.SlotId == dataSlot);
+            Assert.True(entry.Pid > 0, $"Restart {attempt} did not bring the slot back.");
+            _ = kill(entry.Pid, 9);
+            await WaitForAsync(() =>
+            {
+                var next = environment.AgentJournal().Single(item => item.SlotId == dataSlot);
+                quarantined = next.Pid == 0 && next.QuarantinedAtUtc is not null;
+                return Task.FromResult(quarantined ||
+                    (next.Pid > 0 && next.Pid != entry.Pid && IsProcessGone(entry.Pid)));
+            }, TimeSpan.FromSeconds(40));
+            if (!quarantined)
+                Assert.True(environment.AgentJournal()
+                    .Single(item => item.SlotId == dataSlot).Pid > 0, $"Restart {attempt} never happened.");
+        }
+
+        Assert.True(quarantined,
+            "The restorm did not quarantine the slot.\n--- journal ---\n" +
+            string.Join("\n", environment.AgentJournal().Select(entry =>
+                $"{entry.SlotId} pid={entry.Pid} state={entry.DesiredState} quarantined={entry.QuarantinedAtUtc?.ToString("O") ?? "null"}")) +
+            "\n--- agent output ---\n" + environment.AgentOutput(agent));
+        await Task.Delay(TimeSpan.FromSeconds(6));
+        Assert.Equal(0, environment.AgentJournal().Single(item => item.SlotId == dataSlot).Pid);
+        // The health rides the agent's next report tick; under load a tick can fail and
+        // retry, so the row is polled rather than read once.
+        var healthReported = await WaitForAsync(async () =>
+        {
+            await using var connection = new NpgsqlConnection(environment.DatabaseConnectionString);
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "SELECT health FROM control.process WHERE slot_id=@slot", connection);
+            command.Parameters.AddWithValue("slot", dataSlot);
+            return await command.ExecuteScalarAsync() as string == "Quarantined";
+        }, TimeSpan.FromSeconds(25));
+        Assert.True(healthReported, "The quarantine never reached the process row's health.");
+
+        // A fresh Running plan is the operator's way out: the quarantine lifts and the
+        // slot is pulled up under a new pid.
+        using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-15");
+        using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate, "control-server");
+        var deployment = new Deployment.DeploymentClient(controlChannel);
+        var reopened = await deployment.ApplyPlanAsync(new ApplyPlanRequest
+        {
+            NodeId = "node-a", SlotId = dataSlot, Role = "data-server",
+            DesiredState = "Running", DesiredVersion = "bootstrap", PackageHash = "bootstrap",
+            PlanGeneration = 5, CommandId = "m3-reopen-1"
+        });
+        Assert.Equal(5, reopened.PlanGeneration);
+        var lifted = await WaitForAsync(() =>
+        {
+            var entry = environment.AgentJournal().Single(item => item.SlotId == dataSlot);
+            return Task.FromResult(entry.Pid > 0 && entry.QuarantinedAtUtc is null);
+        }, TimeSpan.FromSeconds(30));
+        Assert.True(lifted, "The fresh plan did not reopen the quarantined slot.");
+    }
+
+    [Fact]
     public async Task ControlOutagePausesMatchingAndPlansDoNotRepullProcesses()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();

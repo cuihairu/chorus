@@ -20,7 +20,7 @@ namespace Chorus.NodeAgent;
 public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundService
 {
     private sealed record JournalEntry(string SlotId, string ProcessInstanceId, int Pid, DateTime StartedAtUtc,
-        string DesiredState, string CommandId);
+        string DesiredState, string CommandId, DateTime? QuarantinedAtUtc = null);
     private sealed record ManagedSlot(BootstrapSeedSlot Spec, string InstanceId, Process Process,
         DateTime StartedAtUtc, WindowsJob? Job);
 
@@ -41,6 +41,13 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
     private readonly Dictionary<string, string> _lastCommandBySlot = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTime> _drainRequestedUtc = new(StringComparer.Ordinal);
     private int _drainForceSeconds = 300;
+    // FIX-AGENT-03: crash restart policy (architecture 10.2) — exponential backoff, and a
+    // slot that keeps crashing inside the window is quarantined instead of restarted.
+    private static readonly int[] CrashBackoffSeconds = [1, 2, 4, 8, 16, 30];
+    private readonly Dictionary<string, List<DateTime>> _restartTimesUtc = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTime> _nextRestartUtc = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTime> _quarantinedUtc = new(StringComparer.Ordinal);
+    private int _crashWindowSeconds = 600;
     private BootstrapManifestPayload _manifest = null!;
     private string _stateDirectory = null!;
     private string _journalPath = null!;
@@ -61,25 +68,64 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
             {
                 lock (_gate)
                 {
+                    var nowUtc = DateTime.UtcNow;
                     foreach (var spec in _manifest.SeedSlots)
                     {
                         // A plan can park a slot down (Draining/Stopped): the supervisor does
                         // not restart what the control plane asked to stop — and Draining is
                         // not a stop at all (FIX-AGENT-02): the parked slot's process stays up.
                         if (_desiredState.GetValueOrDefault(spec.SlotId, "Running") != "Running") continue;
-                        if (!_slots.TryGetValue(spec.SlotId, out var running) || running.Process.HasExited)
+                        // FIX-AGENT-03: a quarantined slot is never restarted by the supervisor —
+                        // returning it to service is the operator's fresh Running plan.
+                        if (_quarantinedUtc.ContainsKey(spec.SlotId)) continue;
+                        if (!_slots.TryGetValue(spec.SlotId, out var running))
                         {
-                            running?.Job?.Dispose();
-                            running?.Process.Dispose();
+                            // A slot the agent has never started starts immediately: a fresh
+                            // bootstrap (or a restarted agent reclaiming its journal) is not a
+                            // crash — it must not wait out a backoff or spend restart budget.
                             _slots[spec.SlotId] = StartSlot(spec);
                             SaveJournal();
+                            continue;
                         }
+                        if (!running.Process.HasExited) continue;
+                        // FIX-AGENT-03 (architecture 10.2): an exited slot under a Running
+                        // desired state crashed. Restart on an exponential backoff
+                        // (1/2/4/8/16/30s); more than five restarts inside the crash window
+                        // quarantine the slot instead — the process keeps dying, the node
+                        // keeps its resources, and the state stays visible in the report.
+                        var restarts = _restartTimesUtc.TryGetValue(spec.SlotId, out var times)
+                            ? times : [];
+                        restarts.RemoveAll(at => nowUtc - at > TimeSpan.FromSeconds(_crashWindowSeconds));
+                        if (restarts.Count >= 5)
+                        {
+                            _quarantinedUtc[spec.SlotId] = nowUtc;
+                            _nextRestartUtc.Remove(spec.SlotId);
+                            logger.LogWarning(
+                                "Slot {SlotId} crashed {Restarts} times within {Seconds}s; quarantined until a fresh plan",
+                                spec.SlotId, restarts.Count, _crashWindowSeconds);
+                            SaveJournal();
+                            continue;
+                        }
+                        if (!_nextRestartUtc.TryGetValue(spec.SlotId, out var due))
+                            _nextRestartUtc[spec.SlotId] = due = nowUtc.AddSeconds(
+                                CrashBackoffSeconds[Math.Min(restarts.Count, CrashBackoffSeconds.Length - 1)]);
+                        if (nowUtc < due) continue;
+                        _nextRestartUtc.Remove(spec.SlotId);
+                        running?.Job?.Dispose();
+                        running?.Process.Dispose();
+                        restarts.Add(nowUtc);
+                        _restartTimesUtc[spec.SlotId] = restarts;
+                        logger.LogWarning(
+                            "Slot {SlotId} exited; restart {Restarts} of {Window}s window due in {Backoff}s",
+                            spec.SlotId, restarts.Count, _crashWindowSeconds,
+                            CrashBackoffSeconds[Math.Min(restarts.Count - 1, CrashBackoffSeconds.Length - 1)]);
+                        _slots[spec.SlotId] = StartSlot(spec);
+                        SaveJournal();
                     }
                     // FIX-AGENT-02: the drain wait is bounded. A Draining slot whose process
                     // outlives the force deadline (CHORUS_DRAIN_FORCE_SECONDS, default 300s)
                     // is stopped locally so the node converges even if the control plane's
                     // business-drain confirmation never arrives.
-                    var nowUtc = DateTime.UtcNow;
                     foreach (var (slotId, requestedUtc) in _drainRequestedUtc)
                     {
                         if (_desiredState.GetValueOrDefault(slotId) != "Draining") continue;
@@ -136,6 +182,9 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         if (Environment.GetEnvironmentVariable("CHORUS_DRAIN_FORCE_SECONDS") is { Length: > 0 } forceText
             && int.TryParse(forceText, out var forceSeconds) && forceSeconds > 0)
             _drainForceSeconds = forceSeconds;
+        if (Environment.GetEnvironmentVariable("CHORUS_CRASH_WINDOW_SECONDS") is { Length: > 0 } windowText
+            && int.TryParse(windowText, out var windowSeconds) && windowSeconds > 0)
+            _crashWindowSeconds = windowSeconds;
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(_stateDirectory,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         _journalPath = Path.Combine(_stateDirectory, "process-journal.json");
@@ -152,6 +201,7 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         {
             _desiredState[entry.SlotId] = entry.DesiredState;
             if (entry.CommandId.Length > 0) _lastCommandBySlot[entry.SlotId] = entry.CommandId;
+            if (entry.QuarantinedAtUtc is { } quarantinedUtc) _quarantinedUtc[entry.SlotId] = quarantinedUtc;
         }
     }
 
@@ -304,7 +354,10 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                     ReportSequence = Interlocked.Increment(ref _reportSequence),
                     Lifecycle = slot.Process.HasExited ? "Exited" : "Running",
                     Readiness = ready ? "Ready" : "NotReady",
-                    Health = ready ? "Healthy" : "Degraded",
+                    // FIX-AGENT-03: a quarantined slot reports the isolation in its health so
+                    // the control plane sees why the node stopped serving the slot.
+                    Health = _quarantinedUtc.ContainsKey(slot.Spec.SlotId) ? "Quarantined"
+                        : ready ? "Healthy" : "Degraded",
                     // FIX-AGENT-02: a parked Draining slot stays alive but reports Draining —
                     // that is the admission the scheduler filters new assignments by.
                     Admission = _desiredState.GetValueOrDefault(slot.Spec.SlotId, "Running") == "Draining"
@@ -379,9 +432,25 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
             _desiredState[plan.SlotId] = plan.DesiredState is "Running" or "Draining" or "Drained" or "Stopped"
                 ? plan.DesiredState : "Running";
             SaveJournal();
+            if (plan.CommandId.Length == 0)
+            {
+                // A commandless row is a state declaration, not a command (architecture 10.2):
+                // bootstrap seed values replay on every WatchPlans reconnect, and re-running
+                // them must never start, stop, or reset the slot's crash bookkeeping — the
+                // supervisor owns the process lifecycle between real commands.
+                logger.LogInformation("Applied plan {SlotId} state {State} (commandless declaration)",
+                    plan.SlotId, plan.DesiredState);
+                return;
+            }
             switch (_desiredState[plan.SlotId])
             {
                 case "Running":
+                    // A fresh Running command is also the way out of quarantine (FIX-AGENT-03):
+                    // like drain, returning a slot to service is an operator act — the plan
+                    // clears the quarantine and the restart budget and pulls the slot up.
+                    _quarantinedUtc.Remove(plan.SlotId);
+                    _restartTimesUtc.Remove(plan.SlotId);
+                    _nextRestartUtc.Remove(plan.SlotId);
                     if (!_slots.TryGetValue(plan.SlotId, out var running) || running.Process.HasExited)
                     {
                         if (_slots.TryGetValue(plan.SlotId, out var previous))
@@ -457,15 +526,21 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
 
     private void SaveJournal()
     {
-        var entries = _manifest.SeedSlots.Select(spec => _slots.TryGetValue(spec.SlotId, out var slot)
+        var entries = _manifest.SeedSlots.Select(spec =>
+        {
+            // The quarantine marker rides the journal (FIX-AGENT-03): a restarted agent
+            // keeps the isolation instead of silently resuming the restart storm.
+            DateTime? quarantinedUtc =
+                _quarantinedUtc.TryGetValue(spec.SlotId, out var quarantined) ? quarantined : null;
+            return _slots.TryGetValue(spec.SlotId, out var slot)
                 ? new JournalEntry(spec.SlotId, slot.InstanceId, slot.Process.HasExited ? 0 : slot.Process.Id,
                     slot.StartedAtUtc, _desiredState.GetValueOrDefault(spec.SlotId, "Running"),
-                    _lastCommandBySlot.GetValueOrDefault(spec.SlotId, ""))
+                    _lastCommandBySlot.GetValueOrDefault(spec.SlotId, ""), quarantinedUtc)
                 // A stopped slot keeps its row parked so the desired state and command id persist.
                 : new JournalEntry(spec.SlotId, "", 0, DateTime.MinValue,
                     _desiredState.GetValueOrDefault(spec.SlotId, "Running"),
-                    _lastCommandBySlot.GetValueOrDefault(spec.SlotId, "")))
-            .ToArray();
+                    _lastCommandBySlot.GetValueOrDefault(spec.SlotId, ""), quarantinedUtc);
+        }).ToArray();
         var pending = _journalPath + ".pending";
         File.WriteAllText(pending, JsonSerializer.Serialize(entries));
         File.Move(pending, _journalPath, overwrite: true);

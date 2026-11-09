@@ -472,19 +472,21 @@ public sealed class RedesignM0HostTests
 
         /// <summary>The agent's local command/process journal — plan evidence without trusting
         /// the control plane's view of the node.</summary>
-        public IReadOnlyList<(string SlotId, int Pid, string DesiredState, string CommandId)> AgentJournal()
+        public IReadOnlyList<(string SlotId, int Pid, string DesiredState, string CommandId,
+            DateTime? QuarantinedAtUtc)> AgentJournal()
         {
             var path = Path.Combine(_directory, "agent-state", "process-journal.json");
             if (!File.Exists(path)) return [];
             var entries = JsonSerializer.Deserialize<AgentJournalEntry[]>(File.ReadAllText(path)) ?? [];
             return entries.Select(entry => (entry.SlotId, entry.Pid,
-                entry.DesiredState ?? "Running", entry.CommandId ?? "")).ToList();
+                entry.DesiredState ?? "Running", entry.CommandId ?? "",
+                entry.QuarantinedAtUtc)).ToList();
         }
 
         private sealed record AgentJournalEntry(string SlotId, string ProcessInstanceId, int Pid,
-            DateTime StartedAtUtc, string? DesiredState, string? CommandId);
+            DateTime StartedAtUtc, string? DesiredState, string? CommandId, DateTime? QuarantinedAtUtc = null);
 
-        private string AgentOutput(Process agent) => _hostOutput.TryGetValue(agent, out var output) ? output.ToString() : "";
+        public string AgentOutput(Process agent) => _hostOutput.TryGetValue(agent, out var output) ? output.ToString() : "";
 
         public async ValueTask DisposeAsync()
         {
