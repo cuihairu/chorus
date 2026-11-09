@@ -136,6 +136,24 @@ public sealed class GameHostGrpcService(RoomRuntime runtime, TrustedProcessCerti
         };
     }
 
+    /// <summary>FIX-GM-07: the operator-delegated playtest command. control-server callers
+    /// only — the process fence is the delegation authority (the operator's own identity and
+    /// audit row live at the ControlServer that resolved the route here); the target-version
+    /// authority is the runtime's own ownership fence.</summary>
+    public override async Task<DeliverRoomCommandReply> DeliverRoomCommand(DeliverRoomCommandRequest request,
+        ServerCallContext context)
+    {
+        Require(context, "control-server");
+        try
+        {
+            return await runtime.DeliverRoomCommandAsync(request, context.CancellationToken);
+        }
+        catch (ArgumentException error)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message));
+        }
+    }
+
     private ProcessIdentity Require(ServerCallContext context, params string[] roles)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;

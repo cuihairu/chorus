@@ -945,6 +945,70 @@ message AdminBumpRoomEpochReply {
   string game_id = 10;
 }
 
+// FIX-GM-07: the targeted playtest dispatch (architecture 12.1's room command row). The
+// operator authors a module command for one named participant; the ControlServer resolves the
+// current owner from its own directory — the operator never names an endpoint — and the owner
+// GameServer validates the target version (owner instance, epoch, live binding) before the
+// command rides the same durable ordered-authoritative-input path a client command rides. It
+// takes effect at a committed tick, never on the RPC thread. The operation id is the request
+// id: a lost reply is queried, not re-sent under a new id.
+message AdminDispatchRoomCommandRequest {
+  string request_id = 1;
+  string operator = 2;
+  string reason = 3;
+  string tenant_id = 4;
+  string game_id = 5;
+  string room_id = 6;
+  // 0 = "whatever the ownership row holds now". A stated value that no longer matches is a
+  // stale target and is refused — the operator re-reads the room snapshot, not a hint.
+  int64 expected_epoch = 7;
+  // The participant whose seat the command plays as; the host resolves the participant's
+  // live binding, so a finished/closed seat is refused rather than inventing a participant.
+  string participant_id = 8;
+  // The module command, already in the module's own command shape — the module holds the
+  // trust boundary and rejects shapes it does not know (the same intent rule clients face).
+  string payload_json = 9;
+}
+
+message AdminDispatchRoomCommandReply {
+  string operation_id = 1;
+  string room_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  // The dispatch stage at reply time: "DurableAccepted" (the store row stands, the room will
+  // consume it at a committed tick), "Duplicate" (this operation id already stands), or the
+  // refusal word the target answered with ("StaleOwner", "Overloaded"). Never "Applied" —
+  // application is what GetOperationStatus proves from the frame record.
+  string stage = 5;
+  bool duplicate = 6;
+  string note = 7;
+  string tenant_id = 8;
+  string game_id = 9;
+}
+
+// FIX-GM-07: the effect query by the original operation id (architecture 12.1: accepted,
+// applied and unknown are distinct answers; a timeout is queried, never re-sent).
+message AdminGetOperationStatusRequest {
+  string operation_id = 1;
+  string tenant_id = 2;
+  string game_id = 3;
+  string room_id = 4;
+}
+
+message AdminGetOperationStatusReply {
+  bool found = 1;
+  // "Accepted" — the durable input row stands, the room has not consumed it yet;
+  // "Applied" — a committed frame's input refs name this operation id (applied_tick is the
+  // tick that consumed it); "NotFound" — the data plane holds no such operation id; or the
+  // room's terminal disposition word if the input was refused after dispatch
+  // ("OutOfRound", "Skipped", ...) — never silently folded into an accepted answer.
+  string stage = 2;
+  // 0 until stage is "Applied" (a room's first frame is tick 1, so 0 is never a real tick).
+  int64 applied_tick = 3;
+  string platform = 4;
+  string note = 5;
+}
+
 service Admin {
   rpc Ready(chorus.m0.Empty) returns (chorus.m0.ReadyReply);
   // Diagnostics: the streamer's whole footprint and the room's whole footprint. In the
@@ -967,4 +1031,11 @@ service Admin {
   // transaction and operator authorization are the FIX-GM-02 / FIX-GM-06 lines).
   rpc GetRoomEpoch(AdminGetRoomEpochRequest) returns (AdminGetRoomEpochReply);
   rpc BumpRoomEpoch(AdminBumpRoomEpochRequest) returns (AdminBumpRoomEpochReply);
+  // FIX-GM-07: the targeted playtest dispatch and its effect query. Both are operator-gated
+  // (FIX-GM-06's bearer credential and scope) and audited; the dispatch routes to the current
+  // owner via the ControlServer's directory — the receiving host re-validates the target
+  // version — and the status query answers "what did operation X do" from the data plane,
+  // never conflating accepted with applied.
+  rpc DispatchRoomCommand(AdminDispatchRoomCommandRequest) returns (AdminDispatchRoomCommandReply);
+  rpc GetOperationStatus(AdminGetOperationStatusRequest) returns (AdminGetOperationStatusReply);
 }

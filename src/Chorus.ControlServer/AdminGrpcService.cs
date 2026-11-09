@@ -1,6 +1,7 @@
 using Chorus.Data;
 using Chorus.Rpc;
 using Grpc.Core;
+using System.Text.Json;
 
 namespace Chorus.ControlServer;
 
@@ -102,6 +103,129 @@ public sealed class AdminGrpcService(
             Duplicate = outcome.Duplicate, TenantId = request.TenantId, GameId = request.GameId
         };
     }
+
+    /// <summary>The targeted playtest dispatch (FIX-GM-07, architecture 12.1's room command
+    /// row). The operator gate and forged-identity check mirror the epoch entries; the route
+    /// is resolved here — the operator never names an endpoint — and the owner host is the
+    /// target-version authority that re-validates owner and epoch before the command rides
+    /// the durable ordered-input path. The audit row is written first, so a replayed request
+    /// id answers as a visible duplicate of the durable input (its stage read from the data
+    /// plane) instead of a second effect. The reply's stage is never "Applied": application
+    /// is what GetOperationStatus proves from the committed frame record.</summary>
+    public override async Task<AdminDispatchRoomCommandReply> DispatchRoomCommand(
+        AdminDispatchRoomCommandRequest request, ServerCallContext context)
+    {
+        if (Incomplete(request.RequestId, request.Operator, request.Reason) ||
+            string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId) ||
+            string.IsNullOrWhiteSpace(request.RoomId) || string.IsNullOrWhiteSpace(request.ParticipantId) ||
+            string.IsNullOrWhiteSpace(request.PayloadJson))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The dispatch needs a request id, an operator, a reason, a target room, a participant and a payload."));
+        var operatorIdentity = await RequireOperator(context, "gm", request.TenantId, request.GameId);
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
+        try { using (JsonDocument.Parse(request.PayloadJson)) { } }
+        catch (JsonException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The payload is not valid JSON."));
+        }
+        var epoch = await controlStore.GetRoomEpochAsync(
+            request.TenantId, request.GameId, request.RoomId, context.CancellationToken);
+        if (!epoch.Found)
+            throw new RpcException(new Status(StatusCode.NotFound, "The room has no ownership row."));
+        if (request.ExpectedEpoch > 0 && request.ExpectedEpoch != epoch.Epoch)
+            throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                $"The room is at epoch {epoch.Epoch}, not the expected {request.ExpectedEpoch}; re-read the snapshot."));
+        var acted = await adminStore.WriteAuditAsync(request.RequestId, request.Operator, request.Reason,
+            request.RoomId, "DispatchRoomCommand",
+            $$"""{"room":"{{request.RoomId}}","participant":"{{request.ParticipantId}}","owner":"{{epoch.OwnerInstanceId ?? ""}}","epoch":{{epoch.Epoch}}}""",
+            context.CancellationToken);
+        if (!acted)
+        {
+            // A replayed request id: the durable input's stage is the answer, and a lost
+            // original (audit stands, dispatch never landed) says so — the operator issues a
+            // fresh id, never a re-send that could double an applied command.
+            var lookup = await new RoundInput.RoundInputClient(directory.DataChannel).LookupInputAsync(
+                new LookupInputRequest { EventId = request.RequestId },
+                deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: context.CancellationToken);
+            return new AdminDispatchRoomCommandReply
+            {
+                OperationId = request.RequestId, RoomId = request.RoomId,
+                OwnerInstanceId = epoch.OwnerInstanceId ?? "", Epoch = epoch.Epoch,
+                Stage = lookup.Found ? OperationStage(lookup) : "NotFound",
+                Duplicate = true,
+                Note = lookup.Found ? "This operation id already stands." :
+                    "This request id is audited but produced no durable input; issue a new request id.",
+                TenantId = request.TenantId, GameId = request.GameId
+            };
+        }
+        var channel = directory.GameHostChannel(epoch.OwnerInstanceId ?? "")
+            ?? throw new RpcException(new Status(StatusCode.NotFound,
+                $"The room's owner '{epoch.OwnerInstanceId}' is not a known game host."));
+        // The host's own fence answers a room it no longer runs; the call deadline covers the
+        // host's binding read plus its durable accept (each internally bounded at 10s).
+        var delivered = await new GameHost.GameHostClient(channel).DeliverRoomCommandAsync(
+            new DeliverRoomCommandRequest
+            {
+                TenantId = request.TenantId, GameId = request.GameId, RoomId = request.RoomId,
+                OperationId = request.RequestId, ParticipantId = request.ParticipantId,
+                PayloadJson = request.PayloadJson
+            }, deadline: DateTime.UtcNow.AddSeconds(30), cancellationToken: context.CancellationToken);
+        return new AdminDispatchRoomCommandReply
+        {
+            OperationId = delivered.OperationId, RoomId = request.RoomId,
+            OwnerInstanceId = delivered.OwnerInstanceId, Epoch = delivered.Epoch,
+            Stage = delivered.Disposition, Duplicate = delivered.Disposition == DuplicateText,
+            Note = delivered.Note, TenantId = request.TenantId, GameId = request.GameId
+        };
+    }
+
+    /// <summary>The effect query by the original operation id (FIX-GM-07, architecture 12.1:
+    /// accepted, applied and unknown are distinct answers; a timeout is queried, never
+    /// re-sent under a new id). The data plane holds the whole answer — the input row's
+    /// acceptance, the delivery state and the committed tick whose frame consumed the
+    /// command — so the control plane only translates it into stages.</summary>
+    public override async Task<AdminGetOperationStatusReply> GetOperationStatus(
+        AdminGetOperationStatusRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.OperationId) || string.IsNullOrWhiteSpace(request.TenantId) ||
+            string.IsNullOrWhiteSpace(request.GameId) || string.IsNullOrWhiteSpace(request.RoomId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The status query needs an operation id and its scope."));
+        await RequireOperator(context, "gm", request.TenantId, request.GameId);
+        var lookup = await new RoundInput.RoundInputClient(directory.DataChannel).LookupInputAsync(
+            new LookupInputRequest { EventId = request.OperationId },
+            deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: context.CancellationToken);
+        if (!lookup.Found)
+            return new AdminGetOperationStatusReply
+            {
+                Found = false, Stage = "NotFound",
+                Note = "The data plane holds no input under this operation id."
+            };
+        return new AdminGetOperationStatusReply
+        {
+            Found = true, Stage = OperationStage(lookup), AppliedTick = lookup.AppliedTick,
+            Platform = lookup.Platform, Note = lookup.DeliveryState
+        };
+    }
+
+    /// <summary>One input lookup translated into the operation's stage word: "Applied" only
+    /// when a committed frame's input refs name the operation id; "Accepted" while the
+    /// durable row stands unconsumed; a terminal disposition word (the room refused the
+    /// input after dispatch) otherwise.</summary>
+    private static string OperationStage(LookupInputReply lookup)
+    {
+        if (lookup.DeliveryState == "Consumed")
+            return lookup.AppliedTick > 0 ? "Applied" : "Consumed";
+        if (lookup.Disposition is not ("Routed" or ""))
+            return lookup.Disposition;
+        return "Accepted";
+    }
+
+    /// <summary>The literal "Duplicate" — RoomRuntime's disposition word for a replayed
+    /// durable accept; kept as a literal because ControlServer does not reference GameServer.</summary>
+    private const string DuplicateText = "Duplicate";
 
     public override async Task<AdminStreamerSnapshotReply> GetStreamerSnapshot(
         AdminStreamerSnapshotRequest request, ServerCallContext context)

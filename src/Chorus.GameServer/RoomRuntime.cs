@@ -50,7 +50,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
 
     // FIX-SYNC-09: the client command channel — same literal as RoomActor and the input
     // store's ClientPlatform, kept local because GameServer does not reference DataServer.
-    private const string ClientCommandPlatform = "@chorus";
+    private const string ClientCommandPlatform = RoomCommandPlatforms.Client;
 
     // FIX-INPUT-01: the direct-push room-event dispositions (strings; the protos carry no
     // enums by convention) and the host's inbound bound — a saturated or closed bound
@@ -59,6 +59,10 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     public const string Duplicate = "Duplicate";
     public const string StaleOwner = "StaleOwner";
     public const string Overloaded = "Overloaded";
+    // FIX-GM-07: the delegated dispatch's seat refusal — the named participant holds no
+    // live binding for this room (unknown, finished, or pointed elsewhere). A retry cannot
+    // fix it; the operator re-reads the room snapshot.
+    public const string UnknownParticipant = "UnknownParticipant";
     public const string OutcomeUnknown = "OutcomeUnknown";
     private readonly SemaphoreSlim? _roomEventGate;
     // FIX-INPUT-03: the per-room inbound seat bound every constructed actor carries.
@@ -817,7 +821,9 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                             // now carries the platform channel) so the replay applies the same
                             // origin-aware gate the live tick did — a client command stays raw
                             // and the module's intent-only rule ignores a forged platform shape.
-                            var fromClient = delivery.Platform == ClientCommandPlatform;
+                            // FIX-GM-07: the shared predicate is what keeps that agreement exact
+                            // for the delegated GM channel too.
+                            var fromClient = RoomCommandPlatforms.IsRawCommand(delivery.Platform);
                             var command = fromClient ? delivery.PayloadJson
                                 : _inputTranslator?.Translate(delivery.PayloadJson) ?? delivery.PayloadJson;
                             if (command is not null)
@@ -1649,6 +1655,76 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         {
             _roomEventGate.Release();
         }
+    }
+
+    /// <summary>
+    /// FIX-GM-07: the operator-delegated playtest command (architecture 12.1's room command
+    /// row). The ControlServer authenticated the operator and routes here through its
+    /// directory; this host is the target-version authority — it answers StaleOwner unless it
+    /// owns the room — and resolves the named participant's live binding itself, never a
+    /// caller-named endpoint or binding. The command then rides exactly the room-attributed
+    /// push path a platform event rides (durable accept under the operation id, seat, wake),
+    /// so it takes effect at a committed tick and a lost reply is a verbatim retry that the
+    /// store's receipt answers as Duplicate. The "gm" platform keeps the payload raw for the
+    /// module — the module's own command rule is the trust boundary that rejects shapes it
+    /// does not know, exactly as it does for a client's intent.
+    /// </summary>
+    public async Task<DeliverRoomCommandReply> DeliverRoomCommandAsync(DeliverRoomCommandRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.TenantId.Length == 0 || request.GameId.Length == 0 || request.RoomId.Length == 0 ||
+            request.OperationId.Length == 0 || request.ParticipantId.Length == 0 ||
+            request.PayloadJson.Length == 0)
+            throw new ArgumentException(
+                "tenant_id, game_id, room_id, operation_id, participant_id and payload_json are required.");
+        try { using (JsonDocument.Parse(request.PayloadJson)) { } }
+        catch (JsonException error) { throw new ArgumentException("The payload is not valid JSON.", error); }
+
+        var actor = FindRoom(request.RoomId);
+        if (actor is null || actor.GameId != request.GameId)
+            return new DeliverRoomCommandReply
+            {
+                OperationId = request.OperationId, Disposition = StaleOwner,
+                Note = "This host does not run this room."
+            };
+        var binding = actor.BindingForParticipant(request.ParticipantId);
+        if (binding is null)
+            return new DeliverRoomCommandReply
+            {
+                OperationId = request.OperationId, Disposition = UnknownParticipant,
+                OwnerInstanceId = actor.OwnerInstanceId, Epoch = actor.Epoch,
+                Note = "The named participant holds no live seat on this room."
+            };
+        if (_dataChannel is null)
+            throw new InvalidOperationException("The data-plane channel is not configured.");
+        // The binding read is the dispatch's own admission claim: the seat must still point
+        // at this room, and the generation the store confirms is what AcceptRoomEvent's
+        // fence re-checks under lock. A seat closed between the two reads refuses there —
+        // the stale claim is the refusal, never a misplaced command.
+        var seat = await new RoundInput.RoundInputClient(_dataChannel).GetBindingAsync(
+            new GetBindingRequest { BindingId = binding },
+            deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+        if (!seat.Found || seat.CurrentRoomId != request.RoomId || seat.RoundGeneration <= 0)
+            return new DeliverRoomCommandReply
+            {
+                OperationId = request.OperationId, Disposition = UnknownParticipant,
+                OwnerInstanceId = actor.OwnerInstanceId, Epoch = actor.Epoch,
+                Note = "The participant's binding no longer points at this room."
+            };
+        var delivered = await DeliverEventAsync(new DeliverRoomEventRequest
+        {
+            TenantId = request.TenantId, GameId = request.GameId, RoomId = request.RoomId,
+            OwnerInstanceId = actor.OwnerInstanceId, Epoch = actor.Epoch,
+            EventId = request.OperationId, Platform = RoomCommandPlatforms.Gm,
+            AppId = RoomCommandPlatforms.GmAppId, BindingId = binding,
+            RoundGeneration = seat.RoundGeneration, PayloadJson = request.PayloadJson
+        }, cancellationToken);
+        return new DeliverRoomCommandReply
+        {
+            OperationId = request.OperationId, Disposition = delivered.Disposition,
+            OwnerInstanceId = actor.OwnerInstanceId, Epoch = actor.Epoch, Note = delivered.Note
+        };
     }
 
     public async ValueTask DisposeAsync()

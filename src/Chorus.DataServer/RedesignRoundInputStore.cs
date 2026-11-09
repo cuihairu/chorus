@@ -20,6 +20,12 @@ public sealed record RoomEventReceipt(
 
 public sealed record ParticipationWithdrawn(string RoomId, string State, bool Duplicate);
 
+// FIX-GM-07: the delegated dispatch's pre-flight read and the operation status lookup.
+public sealed record BindingRead(bool Found, string? CurrentRoomId, long RoundGeneration);
+
+public sealed record InputLookup(bool Found, string Platform, string Disposition,
+    string? RoomId, string? DeliveryState, long AppliedTick);
+
 /// <summary>
 /// Delivery-record routing into rounds (architecture 6.3). Attributed platform events move into
 /// exactly one consumer scope: a trusted round hint wins, otherwise the binding's current room
@@ -990,6 +996,91 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
             await pointer.ExecuteNonQueryAsync(cancellationToken);
         }
         return JsonSerializer.Serialize(new ParticipationWithdrawn(roomId, stateAfter, Duplicate: false));
+    }
+
+    /// <summary>
+    /// FIX-GM-07: the delegated dispatch's pre-flight read — a binding's current room and round
+    /// generation, the same row (and the same columns) the attributed-push fence checks its
+    /// claim against. Read-only and unlocked: the fence itself re-reads under lock, so a race
+    /// between this read and the push closes as a refused claim, never a misplaced command.
+    /// </summary>
+    public async Task<BindingRead> GetBindingAsync(string bindingId,
+        CancellationToken cancellationToken = default)
+    {
+        Require(bindingId, nameof(bindingId));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var select = new NpgsqlCommand("""
+            SELECT current_room_id,round_generation FROM live.binding WHERE binding_id=@binding
+            """, connection);
+        select.Parameters.AddWithValue("binding", bindingId);
+        await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return new BindingRead(Found: false, CurrentRoomId: null, RoundGeneration: 0);
+        return new BindingRead(Found: true,
+            CurrentRoomId: reader.IsDBNull(0) ? null : reader.GetString(0),
+            RoundGeneration: reader.GetInt64(1));
+    }
+
+    /// <summary>
+    /// FIX-GM-07: the effect query behind the admin's operation status — one operation id,
+    /// answered from the durable record. The input row's existence and disposition say whether
+    /// the operation was accepted at all; the attributed delivery's state and the committed
+    /// frame whose input refs name the event id say whether — and at which tick — the room
+    /// applied it. Three separate facts, each truthful alone: an event can be routed with no
+    /// delivery yet, delivered-but-pending, or consumed into a frame.
+    /// </summary>
+    public async Task<InputLookup> LookupOperationAsync(string eventId,
+        CancellationToken cancellationToken = default)
+    {
+        Require(eventId, nameof(eventId));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        string platform;
+        string? disposition;
+        await using (var select = new NpgsqlCommand("""
+            SELECT platform,disposition FROM input.event WHERE event_id=@event
+            """, connection))
+        {
+            select.Parameters.AddWithValue("event", eventId);
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                return new InputLookup(Found: false, Platform: "", Disposition: "",
+                    RoomId: null, DeliveryState: null, AppliedTick: 0);
+            platform = reader.GetString(0);
+            disposition = reader.GetString(1);
+        }
+        string? roomId = null;
+        string? deliveryState = null;
+        await using (var delivery = new NpgsqlCommand("""
+            SELECT d.room_id,d.state FROM input.delivery d
+            WHERE d.event_id=@event
+            ORDER BY d.consumer_scope LIMIT 1
+            """, connection))
+        {
+            delivery.Parameters.AddWithValue("event", eventId);
+            await using var reader = await delivery.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                roomId = reader.IsDBNull(0) ? null : reader.GetString(0);
+                deliveryState = reader.GetString(1);
+            }
+        }
+        var appliedTick = 0L;
+        if (deliveryState == RedesignFrameStore.Consumed && roomId is not null)
+            await using (var frame = new NpgsqlCommand("""
+                SELECT tick_id FROM game.frame
+                WHERE room_id=@room AND input_refs @> to_jsonb(ARRAY[@event]::text[])
+                ORDER BY tick_id LIMIT 1
+                """, connection))
+            {
+                frame.Parameters.AddWithValue("room", roomId);
+                frame.Parameters.AddWithValue("event", eventId);
+                var found = await frame.ExecuteScalarAsync(cancellationToken);
+                if (found is not null) appliedTick = Convert.ToInt64(found);
+            }
+        return new InputLookup(Found: true, Platform: platform, Disposition: disposition,
+            RoomId: roomId, DeliveryState: deliveryState, AppliedTick: appliedTick);
     }
 
     private static void Require(string? value, string name)

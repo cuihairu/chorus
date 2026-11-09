@@ -83,7 +83,7 @@ internal sealed class RoomActor : IAsyncDisposable
     private const int OverBudgetWindow = 10;
     // Durable client commands ride the inbox on this platform; their dedup key is the
     // command id the subscriber correlates receipts against (architecture 6.3).
-    private const string ClientCommandPlatform = "@chorus";
+    private const string ClientCommandPlatform = RoomCommandPlatforms.Client;
     // FIX-SYNC-06: the server heartbeat timeout the presence judge applies to a control
     // session's last heartbeat. The real value is a wiring decision (the gateway's heartbeat
     // cadence and how many misses count as dead); this is the mechanism's production default
@@ -334,8 +334,10 @@ internal sealed class RoomActor : IAsyncDisposable
                     // FIX-SYNC-09: the platform translator never touches a client command —
                     // a client payload shaped like a platform event is not a platform fact;
                     // it stays raw and the module's intent-only rule ignores it. The origin
-                    // rides with the input so the module holds the trust boundary.
-                    var fromClient = item.Platform == ClientCommandPlatform;
+                    // rides with the input so the module holds the trust boundary. FIX-GM-07:
+                    // the operator's delegated command is raw for the same reason — the
+                    // shared predicate keeps the recovery replay in exact agreement.
+                    var fromClient = RoomCommandPlatforms.IsRawCommand(item.Platform);
                     var command = fromClient ? item.PayloadJson
                         : _inputTranslator?.Translate(item.PayloadJson) ?? item.PayloadJson;
                     if (command is not null)
@@ -804,6 +806,19 @@ internal sealed class RoomActor : IAsyncDisposable
     /// the epoch itself is the subscriber-facing property above).</summary>
     internal string GameId => _gameId;
     internal string OwnerInstanceId => _ownerInstanceId;
+
+    /// <summary>FIX-GM-07: the live binding a participant's seat rides — the inverse of the
+    /// prepare-time map, resolved by this host rather than trusted from a caller. The scan is
+    /// in binding order so a degenerate map (two bindings to one participant) resolves the
+    /// same binding every time; a finished or unknown participant answers null and the
+    /// dispatch refuses rather than inventing a seat.</summary>
+    internal string? BindingForParticipant(string participantId)
+    {
+        foreach (var (binding, participant) in _participantByBinding.OrderBy(
+            pair => pair.Key, StringComparer.Ordinal))
+            if (participant == participantId) return binding;
+        return null;
+    }
 
     /// <summary>FIX-INPUT-03: whether a directly pushed event can take an in-memory seat —
     /// an event id that already holds one always may (an idempotent replay never blocks on

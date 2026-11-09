@@ -511,6 +511,44 @@ service RoundInput {
   // accepted — never applied. FailedPrecondition is a stale owner picture;
   // InvalidArgument is an attribution error retrying cannot fix.
   rpc AcceptRoomEvent(AcceptRoomEventRequest) returns (AcceptRoomEventReply);
+  // FIX-GM-07: the read the delegated dispatch needs before it can attribute a command —
+  // a binding's current room and round generation, exactly the row the store itself checks
+  // an attributed push against. Read-only; a racing bump closes through AcceptRoomEvent's
+  // own fence, never through this read.
+  rpc GetBinding(GetBindingRequest) returns (GetBindingReply);
+  // FIX-GM-07: the effect query behind the admin's operation status — one operation id
+  // answered from the durable record: the input row's existence and disposition, the
+  // delivery state, and the tick whose committed frame consumed it.
+  rpc LookupInput(LookupInputRequest) returns (LookupInputReply);
+}
+
+message GetBindingRequest {
+  string binding_id = 1;
+}
+
+message GetBindingReply {
+  bool found = 1;
+  // Null when the binding is unmounted.
+  string current_room_id = 2;
+  int64 round_generation = 3;
+}
+
+message LookupInputRequest {
+  string event_id = 1;
+}
+
+message LookupInputReply {
+  bool found = 1;
+  string platform = 2;
+  // The input row's own disposition — "Routed" (live, room-attributed) or a terminal
+  // out-of-round word ("OutOfRound", "Skipped", "Compensated", ...).
+  string disposition = 3;
+  string room_id = 4;
+  // The attributed delivery's state: "Pending" (durably accepted, unconsumed) or
+  // "Consumed" (a committed frame took it). Empty when the event has no delivery yet.
+  string delivery_state = 5;
+  // The tick whose committed frame's input refs name this event id; 0 while unconsumed.
+  int64 applied_tick = 6;
 }
 
 // Settlement and round finalization (architecture 9.3). The final frame commits the
@@ -628,6 +666,36 @@ service GameHost {
   // alive: an unknown or already-destroyed room answers cleanly, and destroying never
   // throws. The frozen result stays queryable (FIX-ROOM-05); no persisted row moves.
   rpc DestroyRoom(DestroyRoomRequest) returns (DestroyRoomReply);
+  // FIX-GM-07: the operator-delegated playtest command (architecture 12.1). The control
+  // plane has already authenticated the operator and written the audit row; this host is
+  // the delegation fence and the target-version authority: it answers StaleOwner unless it
+  // owns the room at its own epoch, resolves the named participant's live binding itself
+  // (never trusting a caller-named endpoint or binding), and forwards the command through
+  // the same durable ordered-input path a client command rides. control-server callers only.
+  rpc DeliverRoomCommand(DeliverRoomCommandRequest) returns (DeliverRoomCommandReply);
+}
+
+// FIX-GM-07: one operator-delegated room command. The operation id is the business identity
+// the whole chain keys on — the durable input row, the frame's input refs and the status
+// query all answer it; a lost reply is retried verbatim and the store's receipt decides
+// between Duplicate and DurableAccepted.
+message DeliverRoomCommandRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string operation_id = 4;
+  string participant_id = 5;
+  string payload_json = 6;
+}
+
+message DeliverRoomCommandReply {
+  string operation_id = 1;
+  // "DurableAccepted", "Duplicate" or the refusal word ("StaleOwner", "Overloaded",
+  // "UnknownParticipant"). Never "Applied" — application happens at a committed tick.
+  string disposition = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  string note = 5;
 }
 
 message DestroyRoomRequest {

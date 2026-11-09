@@ -536,6 +536,43 @@ public sealed class RoundInputGrpcService(
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
+    /// <summary>
+    /// FIX-GM-07: the delegated dispatch's pre-flight binding read. Read-only — game-server
+    /// (the dispatching host resolving its participant's seat) and control-server.
+    /// </summary>
+    public override async Task<GetBindingReply> GetBinding(GetBindingRequest request,
+        ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.BindingId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The binding id is required."));
+        Require(context, "game-server", "control-server");
+        var read = await inputStore.GetBindingAsync(request.BindingId, context.CancellationToken);
+        return new GetBindingReply
+        {
+            Found = read.Found, CurrentRoomId = read.CurrentRoomId ?? "",
+            RoundGeneration = read.RoundGeneration
+        };
+    }
+
+    /// <summary>
+    /// FIX-GM-07: the effect query behind the admin's operation status. Read-only — the
+    /// control plane asks what one operation id did; no caller mutates anything here.
+    /// </summary>
+    public override async Task<LookupInputReply> LookupInput(LookupInputRequest request,
+        ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.EventId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The event id is required."));
+        Require(context, "control-server");
+        var lookup = await inputStore.LookupOperationAsync(request.EventId, context.CancellationToken);
+        return new LookupInputReply
+        {
+            Found = lookup.Found, Platform = lookup.Platform, Disposition = lookup.Disposition,
+            RoomId = lookup.RoomId ?? "", DeliveryState = lookup.DeliveryState ?? "",
+            AppliedTick = lookup.AppliedTick
+        };
+    }
+
     private ProcessIdentity Require(ServerCallContext context, params string[] roles)
     {
         var certificate = context.GetHttpContext().Connection.ClientCertificate;
