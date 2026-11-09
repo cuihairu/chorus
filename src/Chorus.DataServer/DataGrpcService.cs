@@ -11,7 +11,7 @@ public sealed class DataGrpcService(
 {
     public override async Task<ReadyReply> Ready(Empty request, ServerCallContext context)
     {
-        await RequireAsync(context, "control-server", "node-agent", "streamer-server", "game-server");
+        await RequireAsync(context, "control-server", "node-agent", "streamer-server", "game-server", "platform-gateway");
         return new ReadyReply { Ready = true, SchemaVersion = "4" };
     }
 

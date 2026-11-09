@@ -8,7 +8,8 @@ public sealed class ControlGrpcService(
 {
     public override async Task<ReadyReply> Ready(Empty request, ServerCallContext context)
     {
-        await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server", "control-server");
+        await RequireAsync(context, "node-agent", "data-server", "streamer-server", "game-server", "control-server",
+            "streamer-gateway");
         return new ReadyReply { Ready = true, SchemaVersion = "4" };
     }
 
