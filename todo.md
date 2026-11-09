@@ -290,7 +290,8 @@
 
 ### 22.16 Web 控制台：React + Ant Design + ProComponents（P0/P1）
 
-- [ ] **FIX-WEB-01 / P0：定义浏览器 Admin API 契约。** 依赖：无。
+- [x] **FIX-WEB-01 / P0：定义浏览器 Admin API 契约。** 依赖：无。
+  - 证据：11f0583；contract 3/3 绿（路由表/命令三元组/WhoAmI 形状，钉编译描述符）；gate 1877/1881（4 共租文档签名零新）
 - [ ] **FIX-WEB-02 / P1：建立 React 控制台工程。** 依赖：无。
 - [ ] **FIX-WEB-03 / P0：在 ControlServer 暴露浏览器管理 API。** 依赖：FIX-WEB-01、FIX-GM-06。
 - [ ] **FIX-WEB-04 / P0：接通操作员登录页面。** 依赖：FIX-WEB-02、FIX-WEB-03。
