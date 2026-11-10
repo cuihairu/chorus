@@ -154,13 +154,16 @@ public sealed class RedesignM3AdminHostTests
         Assert.Contains(inbox.Items[0].EventId, broken.Frames[0].InputRefsJson);
         Assert.Contains("score", broken.Frames[0].EffectsJson);
         // The durable announcements include the round's own lifecycle: the start effect the
-        // admission wrote plus both frame effects, all still pending a dispatcher.
+        // admission wrote plus both frame effects. Their dispatch status is scheduler
+        // timing, not round semantics — by the time the trace reads, the concurrent
+        // dispatcher may hold each effect Pending, Dispatching or already Done — so the
+        // trace pins the rows themselves. The missing settlement shows in the grants
+        // below (Planned with an empty ledger), which no dispatcher can touch.
         Assert.Equal(3, broken.Effects.Count);
         Assert.Equal(room + "/0/start", broken.Effects[0].EffectId);
         Assert.Equal("round.started", broken.Effects[0].Kind);
         Assert.Equal(room + "/1/0", broken.Effects[1].EffectId);
         Assert.Equal(room + "/2/0", broken.Effects[2].EffectId);
-        Assert.All(broken.Effects, effect => Assert.Equal("Pending", effect.Status));
         Assert.Equal(1, broken.ResultVersion);
         Assert.Contains("ranking", broken.ResultJson);
         Assert.Equal(2, broken.Grants.Count);

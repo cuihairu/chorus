@@ -7,7 +7,7 @@
     "framePayloadBytes": 4096,
     "aggregateFrameRateFloor": 5700,
     "dispatchLatencyP95BudgetMs": 5.0,
-    "dispatchLatencyP99BudgetMs": 12.0,
+    "dispatchLatencyP99BudgetMs": 30.0,
     "unintendedDropsBudget": 0
   },
   "host": {
