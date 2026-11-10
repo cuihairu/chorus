@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { whoAmI, type WhoAmIReply } from './api';
+import { type AdminWhoAmIReply } from './api/contract';
+import { createAdminClient } from './api/client';
 
 // The operator session (FIX-WEB-04). The credential is the bearer token issued through
 // the control plane's operator store; the console keeps it in sessionStorage, resolves it
@@ -11,7 +12,7 @@ const tokenStorageKey = 'chorus.operator-token';
 
 interface AuthState {
   token: string | null;
-  operator: WhoAmIReply | null;
+  operator: AdminWhoAmIReply | null;
   /** True while a stored token is being re-resolved against the control plane. */
   restoring: boolean;
   login: (token: string) => Promise<void>;
@@ -30,7 +31,7 @@ function readStoredToken(): string | null {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(readStoredToken);
-  const [operator, setOperator] = useState<WhoAmIReply | null>(null);
+  const [operator, setOperator] = useState<AdminWhoAmIReply | null>(null);
   const [restoring, setRestoring] = useState(token !== null);
   const restored = useRef(false);
 
@@ -41,7 +42,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (token === null || restored.current || operator !== null) return;
     restored.current = true;
     let cancelled = false;
-    whoAmI(token)
+    createAdminClient(token)
+      .whoAmI({})
       .then((identity) => {
         if (!cancelled) {
           setOperator(identity);
@@ -62,7 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [token, operator]);
 
   const login = useCallback(async (candidate: string) => {
-    const identity = await whoAmI(candidate);
+    const identity = await createAdminClient(candidate).whoAmI({});
     sessionStorage.setItem(tokenStorageKey, candidate);
     setToken(candidate);
     setOperator(identity);

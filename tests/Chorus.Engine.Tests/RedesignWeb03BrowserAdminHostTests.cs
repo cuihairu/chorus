@@ -76,11 +76,15 @@ public sealed class RedesignWeb03BrowserAdminHostTests
             """{"requestId":"web03-gate-3","operator":"someone-else","reason":"forged","partitionKey":"test/web03"}""")).StatusCode);
 
         // (8) The status query relaxed from gm to viewer (FIX-WEB-01): a viewer reads it.
+        // The 64-bit integer arrives as a JSON number — this server's transcoding shape,
+        // which the generated client's numeric Int64 fields (FIX-WEB-05) mirror.
         using (var status = await PostAsync(client, baseUrl + "/get-operation-status", "carl-token",
             """{"operationId":"web03-op-none","tenantId":"tenant-a","gameId":"game-a","roomId":"room-web03-none"}"""))
         {
             Assert.Equal(HttpStatusCode.OK, status.StatusCode);
-            Assert.Contains("\"found\":false", await status.Content.ReadAsStringAsync());
+            var statusBody = await status.Content.ReadAsStringAsync();
+            Assert.Contains("\"found\":false", statusBody);
+            Assert.Contains("\"appliedTick\":0", statusBody);
         }
 
         // (9) The browser health word is who-am-i; the process-cert health word (Ready) is

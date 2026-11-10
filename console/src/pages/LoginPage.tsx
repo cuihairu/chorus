@@ -1,7 +1,7 @@
 import { Alert, Button, Card, Form, Input, Typography } from 'antd';
 import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
-import { AdminError } from '../api';
+import { AdminError } from '../api/client';
 import { useAuth } from '../auth';
 
 // The operator login page (FIX-WEB-04). The credential is resolved against the
