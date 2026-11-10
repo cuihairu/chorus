@@ -334,7 +334,8 @@
   - 证据：c083a6f；NodeAgent/MachineMemoryCollector（/proc/meminfo→(TotalBytes,UsedBytes,UsedPercent)；电平单读无基线；Used=Total−MemAvailable（内核可用口径，非自算）；老内核回落 MemFree+Buffers+Cached；kB/MB/GB/B 缩放；缺文件/畸形/无可用数→无值；used 钳 [0,total]；读源可注入非 Linux 无值）；+5 fact（MemAvailable 50.0%/回落/钳 0/null 族/注入源）；行为中性零调用点全量门不重跑（CI 后盾）
 - [x] **FIX-OBS-04 / P1：采集系统负载。** 依赖：FIX-OBS-01。
   - 证据：b86c889；NodeAgent/MachineLoadCollector（/proc/loadavg 前三字段→(1m,5m,15m)；电平单读无基线；负值拒畸形；读源可注入非 Linux 无值）；+4 fact（三均值/零负载/null 族/注入源）；行为中性零调用点全量门不重跑（CI 后盾）
-- [ ] **FIX-OBS-05 / P1：采集磁盘容量与使用率。** 依赖：FIX-OBS-01。
+- [x] **FIX-OBS-05 / P1：采集磁盘容量与使用率。** 依赖：FIX-OBS-01。
+  - 证据：4eff812；NodeAgent/MachineDiskCollector（df -Pk→每挂载 (mount,total,used,percent)；电平单读无基线；伪/内存文件系统 25 名黑名单跳过、overlay 保留、零容量跳过；\040 空格还原；读源可注入非 Linux 无值）；+5 fact（块设备+overlay per mount/伪内存被跳/空格挂载/缺畸形全伪零容量 null/注入源）；行为中性零调用点全量门不重跑（CI 后盾）
 - [ ] **FIX-OBS-06 / P1：可靠上报机器遥测。** 依赖：FIX-OBS-02、FIX-OBS-03、FIX-OBS-04、FIX-OBS-05。
 - [ ] **FIX-OBS-07 / P1：提供机器与进程统计 API。** 依赖：FIX-WEB-03、FIX-OBS-06。
 - [ ] **FIX-OBS-08 / P1：提供房间统计 API。** 依赖：FIX-WEB-03、FIX-OBS-01、FIX-LINK-01。

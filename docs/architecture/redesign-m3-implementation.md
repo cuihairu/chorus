@@ -1199,3 +1199,12 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **测试形状**：+4 fact——三平均值解析（0.15/0.08/0.05）；零负载；缺文件/过短/非数字/负值 → null；注入源答 1.50/1.00 + 源消失无值。
 - **门禁**：build Release 0 错；4/4 绿。行为中性（零调用点）→ 全量门不重跑（WEB-17 先例），push 后 CI 后盾。
 - **诚实边界**：负载平均是整机 runqueue 长度不是百分比（调度准入「CPU>70%」读的是 CPU 使用率不是负载，两个维度分开）；只采三均值不采 running/total 任务数（字典无此名）；Windows 无 /proc/loadavg（OBS-06 平台分支）；**不含**：周期采样、上报、CPU/内存/磁盘采集（OBS-02/03/05）。
+
+
+## 采集磁盘容量与使用率（FIX-OBS-05，4eff812）
+
+- **任务**：OBS-01 命名了 `chorus_machine_disk_used_bytes/total_bytes/percent`（Gauge、label mount），无代码读——本项给 NodeAgent 一个磁盘采集器。todo.md:337。依赖：FIX-OBS-01。
+- **机制**：`src/Chorus.NodeAgent/MachineDiskCollector.cs`——读 `df -Pk`（`-P` POSIX 一挂载一行防长路径折行；`-k` 1024 字节块），`Parse` 出每挂载 `MachineDiskSample(Mount, TotalBytes, UsedBytes, UsedPercent)`。磁盘使用是电平：单读即答、无基线。伪/内存文件系统（tmpfs/proc/sysfs/devpts/cgroup 等 25 名黑名单）不是磁盘、跳过；零容量条目跳过；`overlay`（容器根、真存储垫底）保留。`\040` 空格转义还原。读源可注入，非 Linux（无 df）优雅无值。used = 1024 块 ×1024 字节，percent 由 used/total 计算（不信 df 四舍五入的 Capacity 列）。
+- **测试形状**：+5 fact——块设备+overlay per mount（/ 55%→54.77、/data 20%、/app 25%）；伪/内存文件系统被跳（/dev/shm、/proc 缺席）；含空格挂载 `\040` 还原；缺/畸形/全伪/零容量 → null；注入源答 3 样本 + 源消失无值。
+- **门禁**：build Release 0 错；5/5 绿。行为中性（零调用点）→ 全量门不重跑（OBS-02/03/04 先例），push 后 CI 后盾。
+- **诚实边界**：`df` 是子进程（磁盘容量无 proc 单文件可读；`df` 是 coreutils 标准面，失败 catch → 无值）。过滤是"磁盘"语义决策：伪/内存文件系统不报（tmpfs 有容量但非盘），网络/FUSE 挂载保留（有真实容量语义）。**不含**：周期采样、上报、CPU/内存/负载采集（OBS-02/03/04）、uptime 采集（字典有名未实现，非本项范围）。
