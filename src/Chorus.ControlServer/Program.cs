@@ -5,6 +5,7 @@ using Chorus.Data;
 using Chorus.Rpc;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
+using Microsoft.Extensions.FileProviders;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -160,6 +161,23 @@ app.MapGrpcService<AdminGrpcService>();
 app.MapGrpcService<RoundEndGrpcService>();
 // The business path's match-intent entry (FIX-LINK-03): route-source gate, then the queue.
 app.MapGrpcService<MatchIntentGrpcService>();
+// The console's production hosting (FIX-WEB-18): CHORUS_CONSOLE_DIST names the built SPA
+// directory (the `dist/` the console's pnpm build emits). When it is set, the browser
+// endpoint serves those static files and falls back to index.html so the client-side
+// routes (/home, /login, …) answer the shell; the Admin API keeps its own routes — an
+// unknown admin path still answers a plain 404, never the SPA shell. Unset leaves the
+// browser face API-only; building the console is a deployment step, not a dotnet one.
+var consoleDist = Environment.GetEnvironmentVariable("CHORUS_CONSOLE_DIST");
+if (consoleDist is { Length: > 0 })
+{
+    if (!Directory.Exists(consoleDist))
+        throw new InvalidOperationException(
+            $"CHORUS_CONSOLE_DIST '{consoleDist}' does not name a directory.");
+    var consoleFiles = new PhysicalFileProvider(Path.GetFullPath(consoleDist));
+    app.UseStaticFiles(new StaticFileOptions { FileProvider = consoleFiles });
+    app.MapFallback("/admin/api/{**slug}", () => Results.NotFound());
+    app.MapFallbackToFile("index.html", new StaticFileOptions { FileProvider = consoleFiles });
+}
 await app.RunAsync();
 
 static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
