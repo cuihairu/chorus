@@ -185,14 +185,14 @@ export default function OverviewPage() {
       }
     };
     await Promise.allSettled([
-      settle('/ops/alerts', 'alerts', faceGuards.alerts),
-      settle('/telemetry/machine?windowMinutes=15', 'machines', faceGuards.machines),
-      settle('/rooms/stats', 'rooms', faceGuards.rooms),
-      settle('/online/stats', 'online', faceGuards.online),
-      settle('/ingress/stats', 'ingress', faceGuards.ingress),
-      settle('/delivery/stats', 'delivery', faceGuards.delivery),
-      settle('/platform-api/stats', 'platformApi', faceGuards.platformApi),
-      settle('/ops/window?windowMinutes=60', 'window', faceGuards.window),
+      settle('/api/ops/alerts', 'alerts', faceGuards.alerts),
+      settle('/api/telemetry/machine?windowMinutes=15', 'machines', faceGuards.machines),
+      settle('/api/rooms/stats', 'rooms', faceGuards.rooms),
+      settle('/api/online/stats', 'online', faceGuards.online),
+      settle('/api/ingress/stats', 'ingress', faceGuards.ingress),
+      settle('/api/delivery/stats', 'delivery', faceGuards.delivery),
+      settle('/api/platform-api/stats', 'platformApi', faceGuards.platformApi),
+      settle('/api/ops/window?windowMinutes=60', 'window', faceGuards.window),
     ]);
   }, [token]);
 

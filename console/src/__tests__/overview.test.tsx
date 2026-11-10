@@ -209,10 +209,13 @@ describe('the operations overview page', () => {
     expect(within(windowCard).getByText('chorus_ingress_accepted_total')).toBeInTheDocument();
     expect(within(windowCard).getByText('12')).toBeInTheDocument();
 
-    // Every face answered with the operator's bearer header.
+    // Every face answered with the operator's bearer header — the stats faces live
+    // under the control plane's /api group, pinned here against prefix drift.
     const statsCalls = fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/rooms/stats'));
     expect(statsCalls).toHaveLength(1);
+    expect(String(statsCalls[0][0])).toBe('/api/rooms/stats');
     expect((statsCalls[0][1]?.headers as Record<string, string>).Authorization).toBe('Bearer alice-token');
+    expect(String(fetchMock.mock.calls.find(([u]) => String(u).includes('/ops/alerts'))?.[0])).toBe('/api/ops/alerts');
   });
 
   it('isolates a failing face inside its card and keeps the other faces rendered', { timeout: 20000 }, async () => {

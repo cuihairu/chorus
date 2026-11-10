@@ -25,8 +25,9 @@ export function createAdminClient(token: string): AdminClient {
   });
 }
 
-// The statistics faces answer plain GETs (FIX-OBS-08..13): no body, the same bearer
-// header and the same error mapping as the typed client above.
+// The statistics faces answer plain GETs (FIX-OBS-08..15) under the control plane's
+// `/api` group — not the transcoded contract's `/admin/api/v1` prefix above: no body,
+// the same bearer header and the same error mapping as the typed client.
 export async function getAdminJson<T>(token: string, path: string): Promise<T> {
   const response = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
   if (!response.ok) {

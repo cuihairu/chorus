@@ -17,6 +17,7 @@ import { LanguageProvider, LanguageToggle, useI18n } from './i18n';
 import EpochPage from './pages/EpochPage';
 import LeaderboardPage from './pages/LeaderboardPage';
 import LoginPage from './pages/LoginPage';
+import NodesPage from './pages/NodesPage';
 import OperationsPage from './pages/OperationsPage';
 import OverviewPage from './pages/OverviewPage';
 
@@ -25,8 +26,8 @@ import OverviewPage from './pages/OverviewPage';
 // the header word, and a stored credential survives reloads only while who-am-i still
 // answers for it. The header carries the language toggle (FIX-WEB-16): the two words
 // for a menu entry ride the route table itself. Home is the operations overview
-// (FIX-OBS-14); the remaining pages arrive with their backing APIs — nodes and
-// processes (WEB-06), rooms (WEB-07), streamers and matching (WEB-08).
+// (FIX-OBS-14), nodes and processes is the telemetry page (FIX-WEB-06); the remaining
+// pages arrive with their backing APIs — rooms (WEB-07), streamers and matching (WEB-08).
 type RouteKey = 'home' | 'nodes' | 'rooms' | 'streamers' | 'operations' | 'epoch' | 'leaderboard';
 
 const menuRoutes: Array<{
@@ -140,10 +141,11 @@ function ConsolePages() {
   return (
     <ConsoleShell>
       {routeKey === 'home' && <OverviewPage />}
+      {routeKey === 'nodes' && <NodesPage />}
       {routeKey === 'operations' && <OperationsPage />}
       {routeKey === 'epoch' && <EpochPage />}
       {routeKey === 'leaderboard' && <LeaderboardPage />}
-      {routeKey !== 'home' && routeKey !== 'operations' && routeKey !== 'epoch' && routeKey !== 'leaderboard' && (
+      {routeKey !== 'home' && routeKey !== 'nodes' && routeKey !== 'operations' && routeKey !== 'epoch' && routeKey !== 'leaderboard' && (
         <Placeholder routeKey={routeKey} />
       )}
     </ConsoleShell>

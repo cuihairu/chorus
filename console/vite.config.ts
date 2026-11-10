@@ -15,7 +15,14 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // The transcoded Admin contract lives under /admin/api/v1; the statistics faces
+      // (FIX-OBS-08..15) answer under the control plane's /api group.
       '/admin/api': {
+        target: process.env.CHORUS_CONSOLE_CONTROL ?? 'https://localhost:5000',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/api': {
         target: process.env.CHORUS_CONSOLE_CONTROL ?? 'https://localhost:5000',
         changeOrigin: true,
         secure: false,
