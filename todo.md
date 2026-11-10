@@ -315,7 +315,8 @@
   - 证据：94fd564；三查询卡（TopN 快照走板=Continue 带 token 版本标签不变/stale 400 重启词清场、名次与窗口随版本标签、found=false 是回答非错误、空 period/scope 上 wire 即缺省桶）；页面测试 5/5（wire 全等+走板/stale/作用域/viewer 地板）；pnpm build 绿+20/20；pnpm 10 CI=true 冻结安装+测试+构建绿
 - [x] **FIX-WEB-14 / P1：实现排行榜维护操作。** 依赖：FIX-WEB-10、FIX-WEB-13、FIX-RANK-08。
   - 证据：5e42c16；三命令 RPC（adjust/reset/rebuild，gm 地板；audited triple 领位 request_id=幂等键，读答复加 opaque read_version 串——unix-ms 有损、命令令牌需 "O" 无损往返；桥接按码分义 Aborted=stale/FailedPrecondition=界限拒/AlreadyExists=409）；宿主测试 1 fact（修正/同 id 重放 duplicate=需重读后版本——RequireVersion 先于 claim/stale 400 reload 词/负 delta 界限拒/subject+整板重置/重建 wipe 前后 entries 1→0=账本忠实/viewer 403/操作不匹配 403/缺字段 400）；页面 +2 fact（wire 全等+读→版本预填+reload 词+viewer 地板词），console 22/22；漂移门 18→21 方法 17→20 注解；gate 1882/1888 风暴窗零新签名（M2 家族干净树背靠背同败，新签名 PlatformTaskStore/RecoveryStore solo 即绿）
-- [ ] **FIX-WEB-15 / P1：实现操作审计查询。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-09。
+- [x] **FIX-WEB-15 / P1：实现操作审计查询。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-09。
+  - 证据：e221329；读 RPC /admin/api/v1/get-audit-trail（command/operator 逐维精确词过滤、max_entries bounded 1..200、audit_id keyset 游标十进制串——append-only 日志无需快照失效裁决，取 max+1 行裁 has-more）；viewer 地板（匿名 401）；宿主测试 1 fact（首页 newest-first verbatim、全走板恰一次、双过滤+未知词空页、viewer/401/201→400）；漂移门 22 方法/21 注解；页面 Audit trail 卡（Continue 带 cursor 追加更老行+七列表格）+1 fact，console 23/23；gate 1878/1889 风暴 load 33-49 零新签名（FrameChannel 干净树 933fb83 对照 worktree 背靠背同败且跨负载双败=环境实锤；PlatformGatewayRouting solo 3/3 绿；42501×5/M2/FanoutReclaim 归文档族）
 - [ ] **FIX-WEB-16 / P1：完成控制台中英文。** 依赖：FIX-WEB-02、FIX-WEB-04。
 - [ ] **FIX-WEB-17 / P0：验收浏览器管理权限与未知结果。** 依赖：FIX-WEB-10、FIX-WEB-15。
 - [ ] **FIX-WEB-18 / P1：接通控制台生产托管。** 依赖：FIX-WEB-02、FIX-WEB-03、FIX-WEB-04。
