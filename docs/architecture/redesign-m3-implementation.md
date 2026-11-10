@@ -1151,3 +1151,11 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **测试形状**：+2 fact（WEB-17 闭包+走面，21 路×3-4 断言组≈80 断言）；WEB-01 表 1 行 role 修正+doc 注释更新（验收线改 WEB-03/17）；EpochPage lookup 地板+文案+注释；epoch 测试 viewer fact 重写+头注释。计数不变（WEB-01 仍 22 方法/21 注解；console 仍 23 fact）。
 - **门禁**：定向 7/7（WEB-17×2+WEB-01×3+WEB-03+WEB-15）；console tsc+vitest 23/23（epoch 4）+vite build 绿。**测试-only diff（零产品 .NET 代码），按 WEB-13 先例全量门不重跑**，push 后 CI 全套为后盾。
 - **诚实边界**：本面的 handler 顺序是「先 incomplete 校验后认证」——匿名+畸形体得 400 而非 401（校验错误词暴露字段名帮助文本；验收用成形体验 401，把该顺序如实记录为已知面行为，本项不重排 20 个 handler——重排是独立的产品改动，影响面与 WEB-10 起的全部错误契约测试有耦合）；gm 命令探针只断言非 401/403 不断言业务形状（那是各路由自身测试的领地，走面多断言就会在业务演化时假红）；retry-room-recovery 的 gm 探针先落一行审计再 404（审计先行是设计：被拒的尝试也留痕）；未知读形状按「found=false 或空页」断言而非逐字段快照（回答的语义是「不是错误不是折叠的是」，字段形状归各任务）；disabled 地板只挡交互不挡 wire（viewer 手工请求仍被服务器 403——页面地板是 UX 不是安全边界，安全边界在服务端，走面已证）；**不含**：角色秩细分（operator 层命令）、scope 走面、任何后端行为改动。
+
+## 完成控制台中英文（FIX-WEB-16，d692172）
+
+- **任务**：WEB-02 壳与 WEB-04 会话以来五个落地页面全是英文写死——中文操作员面对的是英文面。本项给控制台完整的双语面：壳菜单、登录、操作、纪元、排行五页每个词都有中英对，语言选择驻留并跨重载存活。todo.md:320。依赖：FIX-WEB-02、FIX-WEB-04。
+- **机制**：自研零依赖 i18n（console/src/i18n.tsx，无新包——路由库都未引的树不先引 i18n 库）。**就地对子** `t('Sign in', '登录')`：每处调用点中英并排可审，无键表可漂移、无词典条目可忘。LanguageProvider 持 lang state，t 按 lang 择词；选择写 localStorage `chorus-console-language`（拒绝写的存储只保本会话，try/catch 不炸）。**默认英文**：既有测试 fact 读的都是默认面，每个 t 的英文侧照抄原词逐字节不变（硬约束）。LanguageToggle 在壳头与登录卡各一枚（登录卡是陌生人落地的第一面，恰恰是语言选择最重要的地方），按钮命名「点击去往的语言」而非屏上语言：en 面显示 中文、zh 面显示 EN；aria-label `Switch language` 保持语言中立（两语言下同名可找）。服务器词汇不译：stage Tag（Applied/Audited/NotFound）、ownership/routeSync 状态词、duplicate 标、回执键名（found/platform/note）与描述行 label——那是 wire 词汇，翻译它们等于让 UI 谎报服务器说的话。
+- **测试形状**：+2 fact（console 25/25=登录 6+操作 6+epoch 4+排行 7+i18n 2）：①默认英文→toggle 翻中文（「操作员登录」显形、英文词消失、localStorage=zh）→再翻回（localStorage=en）；②localStorage 预置 zh→首屏即中文、中文表单登录成功、壳菜单「主页」+退出钮中文可见、toggle 显示 EN。antd 坑单补充：两字中文按钮自动插空格（「登 录」「退 出」——autoInsertSpace），可访问名带空格，断言用 `/登\s*录/` 容忍；登录卡无壳头，toggle 组件从 App 提为 i18n.tsx 导出供两处共用。
+- **门禁**：console tsc 0 错；vitest 25/25（+2）+vite build 绿（chunk 体积警告=既有 antd 基线）；pnpm 10 冻结安装对齐。console-only 零 .NET 改动，全量门不重跑（WEB-13 先例），push 后 CI 全套为后盾。
+- **诚实边界**：双语面覆盖 console 五页（占位页标题+subTitle 亦双语）；文档站不在此项（已单语言）；zh 文案是工程直译不是本地化审校（术语沿文档站中文惯例：纪元/走板/回执/地板/作用域）；antd 两字按钮插空格是全局样式行为未关（视觉是 antd 设计选择）；localStorage 不可用时退回会话内默认英文不报错；**不含**：任何后端改动、新页面、文档站双语。
