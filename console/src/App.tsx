@@ -12,6 +12,7 @@ import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth';
 import LoginPage from './pages/LoginPage';
+import OperationsPage from './pages/OperationsPage';
 
 // The console shell (FIX-WEB-02) with the operator session wired in (FIX-WEB-04):
 // every admin route sits behind the login gate, the signed-in operator's identity is
@@ -105,7 +106,9 @@ function ConsolePages() {
     menuRoutes.find((entry) => entry.path === location.pathname)?.routeKey ?? 'home';
   return (
     <ConsoleShell>
-      <Placeholder routeKey={routeKey} />
+      {routeKey === 'operations'
+        ? <OperationsPage />
+        : <Placeholder routeKey={routeKey} />}
     </ConsoleShell>
   );
 }
