@@ -296,7 +296,8 @@
   - 证据：d1cbf5d；pnpm build 绿（tsc+vite）；ci console-build job 入门
 - [x] **FIX-WEB-03 / P0：在 ControlServer 暴露浏览器管理 API。** 依赖：FIX-WEB-01、FIX-GM-06。
   - 证据：fa968a0；浏览器 face host 1/1（whoami/401/viewer 读/viewer→gm 403/gm 命令/伪造身份 403/status 放宽/ready-404 对真端点）；迁移 4 文件 9/9；契约 3/3；gate 1879/1882（3 既有文档签名零新）
-- [ ] **FIX-WEB-04 / P0：接通操作员登录页面。** 依赖：FIX-WEB-02、FIX-WEB-03。
+- [x] **FIX-WEB-04 / P0：接通操作员登录页面。** 依赖：FIX-WEB-02、FIX-WEB-03。
+  - 证据：258a00b；页面测试 6/6（fetch 边界 mock：签入/401/503/无会话回退/重探恢复/登出）；pnpm build 绿；pnpm 10+12 双跑冻结安装+测试+构建绿；ci console-build 加 Test 步
 - [ ] **FIX-WEB-05 / P1：建立类型化 API 客户端。** 依赖：FIX-WEB-01、FIX-WEB-02。
 - [ ] **FIX-WEB-06 / P1：实现节点与进程管理页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-07。
 - [ ] **FIX-WEB-07 / P1：实现房间详情页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-08。

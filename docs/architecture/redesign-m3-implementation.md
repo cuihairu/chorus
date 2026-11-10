@@ -1061,3 +1061,15 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **验收映射**：WEB-05 类型化客户端从描述符推导路径（服务面已真）；WEB-17 验收按授权表逐条对 401/403（本项 host 验收按代表路由对真端点核）。
 - **门禁**：定向（迁移 4 文件 9/9 + 浏览器 face 1/1 + 契约 3/3 + SettleExecutor 修复隔离 2/2）绿；全量 pin 8 核（外部共租持续）1879/1882（17m57s）——3 失败全为既有文档签名（FrameChannel 吞吐/p99 负载饿死、M2 CorruptSnapshots 时钟窗 Actual 200、FanoutReclaim 记录在案 intermittent），零新签名；我的改动测试全绿。
 - **诚实边界**：浏览器端点无 mTLS——它是操作员面，进程证书门在该端点自然 401（集群内部仍走 mTLS 端点）；`Require`（进程证书）仍服务 Ready 与内部路径，未删除；`InScope` 空参数语义扩展（全局命令），现有 4 个 gm 门控不受影响；WhoAmI enabled 恒 true（认证隐含启用，字段为契约形状）；无 tenant/game 字段的全局命令当前以角色门为准，target scope 细化需请求消息携带 tenant/game（契约未来扩展）；**不含**：WEB-05 类型化客户端、WEB-09 管理操作 API 接线（GM-07 已供）、WEB-04 登录页、生产托管（WEB-18）。
+
+## 接通操作员登录页面（FIX-WEB-04，258a00b）
+
+- **任务**：控制台的登录页对上 FIX-WEB-03 的浏览器 face——token 解析、会话保持、未登录门、登出。todo.md:299。依赖：FIX-WEB-02、FIX-WEB-03。
+- **登录词**：登录面就是 who-am-i 探针（无独立 login RPC；GM-06 的凭据即 bearer token）——200 签入、401 = 控制面拒凭据、其余 = 控制面不可达，页面明确区分三者。token 经控制面 operator store 签发（登录页说明文案）。
+- **会话**：token 存 sessionStorage（`chorus.operator-token`）；恢复会话=重探 who-am-i（credential 只在控制面当前仍为它作答时有效——disabled/轮换的凭据回到登录页，绝不显示缓存身份）。登录/登出都即时落 sessionStorage；恢复探针每会话一次，StrictMode 双触发经 ref+cleanup 守护。
+- **门**：除 /login 外全部控制台路由在 `RequireOperator` 后（无 token → 重定向 /login；恢复中 → Spin）；已登录访问 /login 回 /home。react-router 7 引入（WEB-02 预留的口子）：URL 即导航，登录页在壳外（无菜单）。
+- **页面**：antd Card + Password 输入 + Alert 错词；壳层 ProLayout 头部显示操作员身份（role Tag + Sign out）；未建页面保持 WEB-02 占位。
+- **API 面**：`src/api.ts` 极小 helper（POST 契约前缀 + bearer + AdminError{status}）——WEB-05 类型化客户端替换之，status→可读词的映射是存活部分。
+- **页面测试**（WEB-02 边界「页面级验证随页面任务」自本项起兑现）：vitest 5 + jsdom + testing-library（globals:false → 显式 afterEach cleanup；matchMedia stub 按 min-width 命中=桌面布局，否则 ProLayout 藏头部 chrome）。6 fact 在 fetch 边界 mock：签入携 bearer 头进壳、401 停留登录页、503 报不可达、无会话回退登录、存储 token 重探恢复、登出回登录页+清存储。ci console-build job 加 Test 步（pnpm 10 冻结安装 → test → build 全验证过）。
+- **门禁**：`pnpm build` 绿（tsc 0 错；vite 产物 ~1MB 单包——含 router，分包随页面任务）；`pnpm test` 6/6；pnpm 10 与 12 双跑冻结安装+测试+构建皆绿（CI runner 钉 pnpm 10）。
+- **诚实边界**：页面测试在 fetch 边界 mock——who-am-i 服务面本体由 WEB-03 host 测试对真端点验证，本项不重复；未做真集群手测（无头浏览器不在门内；dev 代理已备，WEB-18 托管接通后可用真 face 走通）；token 明文存 sessionStorage——XSS 面与生产托管（WEB-18）一起评估；i18n 未接（WEB-16）；**不含**：WEB-05 类型化客户端、任何管理页面、注册/改密流程（operator store 无此 API）。
