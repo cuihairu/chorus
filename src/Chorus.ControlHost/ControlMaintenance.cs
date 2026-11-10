@@ -3,11 +3,14 @@ using Chorus.Engine.Routing;
 
 namespace Chorus.ControlHost;
 
-public sealed class ControlMaintenance(RoomControlStore store, ILogger<ControlMaintenance> logger, IConfiguration configuration) : BackgroundService
+public sealed class ControlMaintenance(RoomControlStore store, ILogger<ControlMaintenance> logger, IConfiguration configuration, OpsWindowStore opsWindow) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var iteration = 0;
+        // FIX-OBS-13: the ops sample tables keep a bounded history — this many days, then
+        // the maintenance sweep drops what is older.
+        var opsRetentionDays = Math.Clamp(configuration.GetValue("Control:OpsRetentionDays", 7), 1, 365);
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
@@ -28,6 +31,7 @@ public sealed class ControlMaintenance(RoomControlStore store, ILogger<ControlMa
                 store.FormMatches();
                 if (++iteration % 5 == 0) store.Sample();
                 if (iteration % 60 == 0) store.PruneEventHeat(DateTimeOffset.UtcNow.AddMinutes(-60).ToUnixTimeMilliseconds());
+                if (iteration % 3600 == 0) opsWindow.PruneSamples(DateTimeOffset.UtcNow.AddDays(-opsRetentionDays));
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { logger.LogError(ex, "Control maintenance failed; authority remains fenced"); }
         }
