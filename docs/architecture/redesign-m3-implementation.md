@@ -1073,3 +1073,12 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **页面测试**（WEB-02 边界「页面级验证随页面任务」自本项起兑现）：vitest 5 + jsdom + testing-library（globals:false → 显式 afterEach cleanup；matchMedia stub 按 min-width 命中=桌面布局，否则 ProLayout 藏头部 chrome）。6 fact 在 fetch 边界 mock：签入携 bearer 头进壳、401 停留登录页、503 报不可达、无会话回退登录、存储 token 重探恢复、登出回登录页+清存储。ci console-build job 加 Test 步（pnpm 10 冻结安装 → test → build 全验证过）。
 - **门禁**：`pnpm build` 绿（tsc 0 错；vite 产物 ~1MB 单包——含 router，分包随页面任务）；`pnpm test` 6/6；pnpm 10 与 12 双跑冻结安装+测试+构建皆绿（CI runner 钉 pnpm 10）。
 - **诚实边界**：页面测试在 fetch 边界 mock——who-am-i 服务面本体由 WEB-03 host 测试对真端点验证，本项不重复；未做真集群手测（无头浏览器不在门内；dev 代理已备，WEB-18 托管接通后可用真 face 走通）；token 明文存 sessionStorage——XSS 面与生产托管（WEB-18）一起评估；i18n 未接（WEB-16）；**不含**：WEB-05 类型化客户端、任何管理页面、注册/改密流程（operator store 无此 API）。
+
+## 建立类型化 API 客户端（FIX-WEB-05，22900c1）
+
+- **任务**：控制台从描述符推导类型化客户端——路由表、消息形状、每 RPC 方法，漂移在 CI 被拒。todo.md:300。依赖：FIX-WEB-01、FIX-WEB-02。
+- **机制**：生成器（tests/Chorus.Engine.Tests/AdminTsContract.cs）从编译描述符渲染 `console/src/api/contract.ts`：14 条路由读自 google.api.http 注解（kebab 路径绝不手列）；消息接口取 16 个注解 RPC 的请求/回复闭包（21 个 Admin 消息 + TicketProto + Empty，TS 名冲突即生成失败）；字段名用描述符 JsonName（camel），proto3 JSON 缺省 presence 的单消息字段渲染为 optional。**漂移门**（RedesignWeb05AdminClientContractTests）：CI 只做「重渲染 == 已提交文件」比对，proto 改动未再生或手改生成物都红；`CHORUS_REGEN_ADMIN_TS=1` 把同一测试变成再生器（本地开发命令，UTF-8 无 BOM 落盘）。
+- **64 位整数**：生成器初版按 proto3 JSON 规范把 int64 映射为字符串——**实测推翻**：本服务的 JSON transcoding 写的是 JSON 数字（`"appliedTick":0`，WEB-03 host 测试加真端点断言钉死该形状）。生成器改映射 int64 族 → `number`（诚实边界：值超 2^53 失精度；Admin 面的 64 位字段是 epoch/tick/version，均在范围内）。
+- **客户端核**（console/src/api/client.ts，手写）：`createAdminClient(token)` 把生成类绑到浏览器 fetch（契约前缀路由 + bearer 头 + JSON 体 + AdminError{status}）——替代 WEB-04 的极小 helper（api.ts 删除），登录/会话/页面测试的 fetch 边界契约逐字不变（同路径/同头/同体，6/6 不改一行仍绿）。
+- **门禁**：pnpm build 绿（tsc 对生成物 0 错）；pnpm test 6/6；.NET 定向 5/5（漂移门 1 + WEB-01 契约 3 + WEB-03 浏览器 face 1 含 int64 见证）；宿主 face 对真端点核过（本机 Postgres，Host=127.0.0.1）。
+- **诚实边界**：类型形状=描述符+一个真端点 int64 见证字段，非逐字段对真 JSON 全量核（WEB-17 验收按路由走真 face 时自然覆盖）；2^53 精度边界如上；客户端不做重试/超时策略（页面任务随各自语义加）；生成器不支持 map/enum/bytes/oneof——遇到即生成失败（扩映射是显式决定）；CI 不再生（只比对），再生是本地命令；**不含**：任何页面接线（WEB-06+ 随各自任务换用 client）、角色表客户端化（页面按 identity.role 与契约读/命令层判）、WEB-09 管理操作 API 接线。
