@@ -285,6 +285,7 @@ public sealed class AdminGrpcService(
             var reply = new AdminLeaderboardTopReply
             {
                 ReadVersionUnixMs = VersionUnixMs(page.ReadVersion),
+                ReadVersion = FormatVersion(page.ReadVersion),
                 HasMore = page.HasMore, NextPageToken = page.NextCursor ?? ""
             };
             foreach (var entry in page.Entries)
@@ -319,7 +320,8 @@ public sealed class AdminGrpcService(
             return new AdminLeaderboardRankReply
             {
                 Found = true, Rank = rank.Rank, Score = rank.Entry.Score,
-                ReadVersionUnixMs = VersionUnixMs(rank.ReadVersion)
+                ReadVersionUnixMs = VersionUnixMs(rank.ReadVersion),
+                ReadVersion = FormatVersion(rank.ReadVersion)
             };
         }
         catch (Exception error) when (error is ArgumentException or LeaderboardStaleReadException)
@@ -346,7 +348,8 @@ public sealed class AdminGrpcService(
                 ? new AdminLeaderboardAroundReply { Found = false }
                 : new AdminLeaderboardAroundReply
                 {
-                    Found = true, ReadVersionUnixMs = VersionUnixMs(around.ReadVersion)
+                    Found = true, ReadVersionUnixMs = VersionUnixMs(around.ReadVersion),
+                    ReadVersion = FormatVersion(around.ReadVersion)
                 };
             if (around is not null)
                 foreach (var ranked in around.Entries)
@@ -357,6 +360,109 @@ public sealed class AdminGrpcService(
             return reply;
         }
         catch (Exception error) when (error is ArgumentException or LeaderboardStaleReadException)
+        {
+            throw MapLeaderboardError(error);
+        }
+    }
+
+    // The leaderboard maintenance commands (FIX-WEB-14): the RANK-08 GM corrections on the
+    // gm floor. The request leads with the audited triple (request id = idempotency key,
+    // operator = the authenticated caller, reason = the audit evidence) and names the read
+    // key exactly as the queries do; expected_version is the opaque read_version string a
+    // query reply carried, and a board that changed since that read is refused before any
+    // write (a precondition failure — HTTP 400 on the browser face — with the reload word,
+    // never a correction onto a stale view).
+    public override async Task<AdminLeaderboardAdjustReply> AdjustLeaderboardEntry(
+        AdminLeaderboardAdjustRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId)
+            || string.IsNullOrWhiteSpace(request.Board) || string.IsNullOrWhiteSpace(request.SubjectId)
+            || string.IsNullOrWhiteSpace(request.RequestId) || string.IsNullOrWhiteSpace(request.Reason))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The leaderboard adjustment request is incomplete."));
+        var operatorIdentity = await RequireOperator(context, "gm", request.TenantId, request.GameId);
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
+        try
+        {
+            var result = await leaderboardQueries.AdjustEntryAsync(request.TenantId,
+                LeaderboardReadKey(request.TenantId, request.GameId, request.Board,
+                    request.PeriodId, request.ScopeId, request.Subject),
+                request.SubjectId, request.Delta, request.ExpectedVersion,
+                request.RequestId, request.Reason, context.CancellationToken);
+            return new AdminLeaderboardAdjustReply
+            {
+                Score = result.Score, Duplicate = result.Duplicate,
+                ReadVersionUnixMs = VersionUnixMs(result.Version), ReadVersion = FormatVersion(result.Version)
+            };
+        }
+        catch (Exception error) when (error is ArgumentException or LeaderboardStaleReadException
+            or LeaderboardRejectedException or LeaderboardIdempotencyConflictException)
+        {
+            throw MapLeaderboardError(error);
+        }
+    }
+
+    public override async Task<AdminLeaderboardResetReply> ResetLeaderboardEntry(
+        AdminLeaderboardResetRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId)
+            || string.IsNullOrWhiteSpace(request.Board)
+            || string.IsNullOrWhiteSpace(request.RequestId) || string.IsNullOrWhiteSpace(request.Reason))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The leaderboard reset request is incomplete."));
+        var operatorIdentity = await RequireOperator(context, "gm", request.TenantId, request.GameId);
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
+        try
+        {
+            // An empty subject id spells the whole-board reset (every subject on the bucket).
+            var result = await leaderboardQueries.ResetEntryAsync(request.TenantId,
+                LeaderboardReadKey(request.TenantId, request.GameId, request.Board,
+                    request.PeriodId, request.ScopeId, request.Subject),
+                request.SubjectId.Length > 0 ? request.SubjectId : null, request.ExpectedVersion,
+                request.RequestId, request.Reason, context.CancellationToken);
+            return new AdminLeaderboardResetReply
+            {
+                Duplicate = result.Duplicate,
+                ReadVersionUnixMs = VersionUnixMs(result.Version), ReadVersion = FormatVersion(result.Version)
+            };
+        }
+        catch (Exception error) when (error is ArgumentException or LeaderboardStaleReadException
+            or LeaderboardRejectedException or LeaderboardIdempotencyConflictException)
+        {
+            throw MapLeaderboardError(error);
+        }
+    }
+
+    public override async Task<AdminLeaderboardRebuildReply> RebuildLeaderboard(
+        AdminLeaderboardRebuildRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId)
+            || string.IsNullOrWhiteSpace(request.Board)
+            || string.IsNullOrWhiteSpace(request.RequestId) || string.IsNullOrWhiteSpace(request.Reason))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The leaderboard rebuild request is incomplete."));
+        var operatorIdentity = await RequireOperator(context, "gm", request.TenantId, request.GameId);
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
+        try
+        {
+            var result = await leaderboardQueries.RebuildBoardAsync(request.TenantId,
+                LeaderboardReadKey(request.TenantId, request.GameId, request.Board,
+                    request.PeriodId, request.ScopeId, request.Subject),
+                context.CancellationToken);
+            return new AdminLeaderboardRebuildReply
+            {
+                Entries = result.Entries,
+                ReadVersionUnixMs = VersionUnixMs(result.Version), ReadVersion = FormatVersion(result.Version)
+            };
+        }
+        catch (Exception error) when (error is ArgumentException or LeaderboardStaleReadException
+            or LeaderboardRejectedException or LeaderboardIdempotencyConflictException)
         {
             throw MapLeaderboardError(error);
         }
@@ -383,13 +489,28 @@ public sealed class AdminGrpcService(
     private static long VersionUnixMs(DateTimeOffset version) =>
         version == DateTimeOffset.MinValue ? 0 : version.ToUnixTimeMilliseconds();
 
+    /// <summary>The read version in its opaque command-token form (FIX-WEB-14): the exact
+    /// string a maintenance command's expected_version takes back — the round-trip "O"
+    /// format, empty when the board has never scored. The unix-ms field is the display
+    /// form; this one is lossless.</summary>
+    private static string FormatVersion(DateTimeOffset version) =>
+        version == DateTimeOffset.MinValue
+            ? ""
+            : version.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+
     private static RpcException MapLeaderboardError(Exception error)
     {
-        // A stale snapshot (the board moved on or the walk's lifetime expired) is a
-        // precondition failure: restart the read from the first page, never page on.
-        return error is ArgumentException argument
-            ? new RpcException(new Status(StatusCode.InvalidArgument, argument.Message))
-            : new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+        // A stale snapshot (the board moved on or the walk's lifetime expired) and a
+        // refused correction (bounds) are precondition failures — restart the read from
+        // the first page or reload the board before retrying, never page or correct on.
+        // A spent operation id is a conflict: the same id answered a different projection.
+        return error switch
+        {
+            ArgumentException argument => new RpcException(new Status(StatusCode.InvalidArgument, argument.Message)),
+            LeaderboardIdempotencyConflictException => new RpcException(
+                new Status(StatusCode.AlreadyExists, error.Message)),
+            _ => new RpcException(new Status(StatusCode.FailedPrecondition, error.Message)),
+        };
     }
 
     public override async Task<AdminStreamerSnapshotReply> GetStreamerSnapshot(

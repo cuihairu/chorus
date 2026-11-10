@@ -146,5 +146,15 @@ public sealed class RedesignRank05RankModuleUnitTests
         // RANK-05 tests only exercise the rank paths; the TopN path is RANK-04's tests.
         public Task<TopNReply> GetTopAsync(GetTopRequest request, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        // The RANK-08 command paths are FIX-WEB-14's tests.
+        public Task<AdjustBoardReply> AdjustBoardAsync(AdjustBoardRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<ResetBoardReply> ResetBoardAsync(ResetBoardRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RebuildBoardReply> RebuildBoardAsync(RebuildBoardRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

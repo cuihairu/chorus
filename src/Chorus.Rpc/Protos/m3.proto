@@ -1099,6 +1099,24 @@ service Admin {
   rpc GetLeaderboardAround(AdminLeaderboardAroundRequest) returns (AdminLeaderboardAroundReply) {
     option (google.api.http) = { post: "/admin/api/v1/get-leaderboard-around" body: "*" };
   }
+  // FIX-WEB-14: the leaderboard maintenance commands (the RANK-08 GM corrections) on the
+  // gm floor. Every request leads with the audited triple (request id, operator, reason)
+  // and carries the board's read key exactly as the queries spell it; expected_version is
+  // the opaque read_version string a query reply carried back — the adjustment and reset
+  // refuse a board that changed since that read (a precondition failure, HTTP 400 on the
+  // browser face), the operation id is the idempotency key (a replay answers Duplicate
+  // and the stored score), and every correction is a ledger row so a rebuild reproduces
+  // it. The rebuild re-derives the entries from that ledger; it names no expected version
+  // (it is the recovery move when the projection itself is in doubt).
+  rpc AdjustLeaderboardEntry(AdminLeaderboardAdjustRequest) returns (AdminLeaderboardAdjustReply) {
+    option (google.api.http) = { post: "/admin/api/v1/adjust-leaderboard-entry" body: "*" };
+  }
+  rpc ResetLeaderboardEntry(AdminLeaderboardResetRequest) returns (AdminLeaderboardResetReply) {
+    option (google.api.http) = { post: "/admin/api/v1/reset-leaderboard-entry" body: "*" };
+  }
+  rpc RebuildLeaderboard(AdminLeaderboardRebuildRequest) returns (AdminLeaderboardRebuildReply) {
+    option (google.api.http) = { post: "/admin/api/v1/rebuild-leaderboard" body: "*" };
+  }
 }
 
 // The operator identity the bearer credential resolves to (FIX-WEB-01, consumed by the
@@ -1144,6 +1162,10 @@ message AdminLeaderboardTopReply {
   bool has_more = 3;
   // Carries a token exactly when has_more; pass it back as page_token to continue.
   string next_page_token = 4;
+  // FIX-WEB-14: the read version spelled the way the maintenance commands expect it
+  // back — an opaque string (empty = the board has never scored). The unix-ms field is
+  // the display form; this is the form a command's expected_version takes, losslessly.
+  string read_version = 5;
 }
 
 message AdminLeaderboardRankRequest {
@@ -1162,6 +1184,8 @@ message AdminLeaderboardRankReply {
   int64 rank = 2;
   int64 score = 3;
   int64 read_version_unix_ms = 4;
+  // FIX-WEB-14: the opaque command-token form of the same read version (empty = never scored).
+  string read_version = 5;
 }
 
 message AdminLeaderboardAroundRequest {
@@ -1187,4 +1211,77 @@ message AdminLeaderboardAroundReply {
   // The subject and its rank neighbours, in rank order, at one read view (RANK-05).
   repeated AdminLeaderboardRankedEntryProto entries = 2;
   int64 read_version_unix_ms = 3;
+  // FIX-WEB-14: the opaque command-token form of the same read version (empty = never scored).
+  string read_version = 4;
+}
+
+// FIX-WEB-14: the RANK-08 maintenance commands, operator-facing. The request leads with
+// the audited triple (request id = the idempotency key and audit anchor, operator = the
+// authenticated caller, reason = the audit evidence), then the board's read key exactly
+// as the queries spell it (empty period/scope = the all-time global bucket). The command
+// requests the read version the operator last saw as expected_version — the opaque
+// read_version string a query reply carried; empty = no guard.
+message AdminLeaderboardAdjustRequest {
+  string request_id = 1;
+  string operator = 2;
+  string reason = 3;
+  string tenant_id = 4;
+  string game_id = 5;
+  string board = 6;
+  string period_id = 7;
+  string scope_id = 8;
+  int32 subject = 9;
+  string subject_id = 10;
+  // The signed correction. The data plane applies exactly this amount, once.
+  int64 delta = 11;
+  string expected_version = 12;
+}
+
+message AdminLeaderboardAdjustReply {
+  int64 score = 1;
+  bool duplicate = 2;
+  int64 read_version_unix_ms = 3;
+  // The board's version after the correction, in the opaque command-token form — the
+  // value the operator's next expected_version names.
+  string read_version = 4;
+}
+
+message AdminLeaderboardResetRequest {
+  string request_id = 1;
+  string operator = 2;
+  string reason = 3;
+  string tenant_id = 4;
+  string game_id = 5;
+  string board = 6;
+  string period_id = 7;
+  string scope_id = 8;
+  int32 subject = 9;
+  // Empty resets the whole board (every subject on the bucket).
+  string subject_id = 10;
+  string expected_version = 11;
+}
+
+message AdminLeaderboardResetReply {
+  bool duplicate = 1;
+  int64 read_version_unix_ms = 2;
+  string read_version = 3;
+}
+
+message AdminLeaderboardRebuildRequest {
+  string request_id = 1;
+  string operator = 2;
+  string reason = 3;
+  string tenant_id = 4;
+  string game_id = 5;
+  string board = 6;
+  string period_id = 7;
+  string scope_id = 8;
+  int32 subject = 9;
+}
+
+message AdminLeaderboardRebuildReply {
+  // The number of entries re-derived from the effect ledger.
+  int32 entries = 1;
+  int64 read_version_unix_ms = 2;
+  string read_version = 3;
 }

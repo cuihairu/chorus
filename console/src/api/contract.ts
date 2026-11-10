@@ -108,10 +108,33 @@ export interface AdminGetRoomEpochRequest {
   roomId: string;
 }
 
+export interface AdminLeaderboardAdjustReply {
+  score: number;
+  duplicate: boolean;
+  readVersionUnixMs: number;
+  readVersion: string;
+}
+
+export interface AdminLeaderboardAdjustRequest {
+  requestId: string;
+  operator: string;
+  reason: string;
+  tenantId: string;
+  gameId: string;
+  board: string;
+  periodId: string;
+  scopeId: string;
+  subject: number;
+  subjectId: string;
+  delta: number;
+  expectedVersion: string;
+}
+
 export interface AdminLeaderboardAroundReply {
   found: boolean;
   entries: AdminLeaderboardRankedEntryProto[];
   readVersionUnixMs: number;
+  readVersion: string;
 }
 
 export interface AdminLeaderboardAroundRequest {
@@ -135,6 +158,7 @@ export interface AdminLeaderboardRankReply {
   rank: number;
   score: number;
   readVersionUnixMs: number;
+  readVersion: string;
 }
 
 export interface AdminLeaderboardRankRequest {
@@ -153,11 +177,50 @@ export interface AdminLeaderboardRankedEntryProto {
   score: number;
 }
 
+export interface AdminLeaderboardRebuildReply {
+  entries: number;
+  readVersionUnixMs: number;
+  readVersion: string;
+}
+
+export interface AdminLeaderboardRebuildRequest {
+  requestId: string;
+  operator: string;
+  reason: string;
+  tenantId: string;
+  gameId: string;
+  board: string;
+  periodId: string;
+  scopeId: string;
+  subject: number;
+}
+
+export interface AdminLeaderboardResetReply {
+  duplicate: boolean;
+  readVersionUnixMs: number;
+  readVersion: string;
+}
+
+export interface AdminLeaderboardResetRequest {
+  requestId: string;
+  operator: string;
+  reason: string;
+  tenantId: string;
+  gameId: string;
+  board: string;
+  periodId: string;
+  scopeId: string;
+  subject: number;
+  subjectId: string;
+  expectedVersion: string;
+}
+
 export interface AdminLeaderboardTopReply {
   entries: AdminLeaderboardEntryProto[];
   readVersionUnixMs: number;
   hasMore: boolean;
   nextPageToken: string;
+  readVersion: string;
 }
 
 export interface AdminLeaderboardTopRequest {
@@ -403,6 +466,9 @@ export const adminRoutes = {
   getLeaderboardTop: '/admin/api/v1/get-leaderboard-top',
   getLeaderboardRank: '/admin/api/v1/get-leaderboard-rank',
   getLeaderboardAround: '/admin/api/v1/get-leaderboard-around',
+  adjustLeaderboardEntry: '/admin/api/v1/adjust-leaderboard-entry',
+  resetLeaderboardEntry: '/admin/api/v1/reset-leaderboard-entry',
+  rebuildLeaderboard: '/admin/api/v1/rebuild-leaderboard',
 } as const;
 
 export type AdminRouteName = keyof typeof adminRoutes;
@@ -478,5 +544,17 @@ export class AdminClient {
   getLeaderboardAround(request: AdminLeaderboardAroundRequest): Promise<AdminLeaderboardAroundReply> {
     return this.call<AdminLeaderboardAroundRequest, AdminLeaderboardAroundReply>(
       adminRoutes.getLeaderboardAround, request);
+  }
+  adjustLeaderboardEntry(request: AdminLeaderboardAdjustRequest): Promise<AdminLeaderboardAdjustReply> {
+    return this.call<AdminLeaderboardAdjustRequest, AdminLeaderboardAdjustReply>(
+      adminRoutes.adjustLeaderboardEntry, request);
+  }
+  resetLeaderboardEntry(request: AdminLeaderboardResetRequest): Promise<AdminLeaderboardResetReply> {
+    return this.call<AdminLeaderboardResetRequest, AdminLeaderboardResetReply>(
+      adminRoutes.resetLeaderboardEntry, request);
+  }
+  rebuildLeaderboard(request: AdminLeaderboardRebuildRequest): Promise<AdminLeaderboardRebuildReply> {
+    return this.call<AdminLeaderboardRebuildRequest, AdminLeaderboardRebuildReply>(
+      adminRoutes.rebuildLeaderboard, request);
   }
 }

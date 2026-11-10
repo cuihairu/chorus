@@ -54,6 +54,7 @@ const firstPage = {
     { subjectId: 'c', score: 5 },
   ],
   readVersionUnixMs: 1720000000000,
+  readVersion: '2026-01-02T03:04:05.678901+00:00',
   hasMore: true,
   nextPageToken: 'tok-1',
 };
@@ -61,11 +62,18 @@ const firstPage = {
 const secondPage = {
   entries: [{ subjectId: 'b', score: 3 }],
   readVersionUnixMs: 1720000000000,
+  readVersion: '2026-01-02T03:04:05.678901+00:00',
   hasMore: false,
   nextPageToken: '',
 };
 
-const rankReply = { found: true, rank: 3, score: 3, readVersionUnixMs: 1720000000000 };
+const rankReply = {
+  found: true,
+  rank: 3,
+  score: 3,
+  readVersionUnixMs: 1720000000000,
+  readVersion: '2026-01-02T03:04:05.678901+00:00',
+};
 
 async function openLeaderboards() {
   const user = userEvent.setup();
@@ -281,5 +289,113 @@ describe('the leaderboard page', () => {
     await user.type(within(rankCard).getByLabelText('Subject ID'), 'b');
     await user.click(within(rankCard).getByRole('button', { name: 'Find rank' }));
     expect(within(rankCard).getByText('Your scope does not cover this board.')).toBeInTheDocument();
+  });
+
+  it('commands carry the audited triple and the read version token', { timeout: 20000 }, async () => {
+    const adjustVersion = '2026-01-02T03:04:06.000001+00:00';
+    const fetchMock = sequenceFetch({
+      '/who-am-i': [{ status: 200, body: gmIdentity }],
+      '/get-leaderboard-top': [{ status: 200, body: firstPage }],
+      '/adjust-leaderboard-entry': [
+        { status: 200, body: { score: 7, duplicate: false, readVersionUnixMs: 1720000001000, readVersion: adjustVersion } },
+        {
+          status: 400,
+          body: { code: 9, message: "The board changed since the operator's read version; reload the board and retry.", details: [] },
+        },
+      ],
+      '/rebuild-leaderboard': [
+        { status: 200, body: { entries: 1, readVersionUnixMs: 1720000002000, readVersion: adjustVersion } },
+      ],
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <ConsoleRoot />
+      </MemoryRouter>,
+    );
+    const { user, topCard } = await openLeaderboards();
+    const adjustCard = screen.getByText('Adjustment').closest('.ant-card') as HTMLElement;
+    const rebuildCard = screen.getByText('Rebuild', { exact: true }).closest('.ant-card') as HTMLElement;
+
+    // The read feeds the command forms: the adjustment's expected version is the exact
+    // token the top page named — the operator corrects the view they just saw.
+    await fillKey(topCard, user);
+    await user.click(within(topCard).getByRole('button', { name: 'Read top' }));
+    const expectedInput = within(adjustCard).getByLabelText('Expected version') as HTMLInputElement;
+    await waitFor(() => expect(expectedInput.value).toBe('2026-01-02T03:04:05.678901+00:00'));
+
+    await fillKey(adjustCard, user);
+    await user.type(within(adjustCard).getByLabelText('Subject ID'), 'a');
+    const deltaField = within(adjustCard).getByLabelText('Delta');
+    await user.clear(deltaField);
+    await user.type(deltaField, '2');
+    await user.type(within(adjustCard).getByLabelText('Reason'), 'reward correction');
+    await user.click(within(adjustCard).getByRole('button', { name: 'Apply adjustment' }));
+
+    // The audited triple leads on the wire; the key and the token ride behind it.
+    const [adjustBody] = bodies(fetchMock, '/adjust-leaderboard-entry');
+    expect(adjustBody).toEqual({
+      requestId: expect.any(String),
+      operator: 'gm-alice',
+      reason: 'reward correction',
+      tenantId: 'tenant-a',
+      gameId: 'game-a',
+      board: 'score-alltime',
+      periodId: '',
+      scopeId: '',
+      subject: 0,
+      subjectId: 'a',
+      delta: 2,
+      expectedVersion: '2026-01-02T03:04:05.678901+00:00',
+    });
+    expect((adjustBody.requestId as string).length).toBeGreaterThan(0);
+    expect(within(adjustCard).getByText('score 7')).toBeInTheDocument();
+
+    // A board that changed since the operator's read is refused with the reload word.
+    await user.click(within(adjustCard).getByRole('button', { name: 'Apply adjustment' }));
+    expect(within(adjustCard).getByText(
+      'The board changed since your read version — reload the board and retry.',
+    )).toBeInTheDocument();
+
+    // The rebuild names the key and the evidence only — the entries are what was in doubt.
+    await fillKey(rebuildCard, user);
+    await user.type(within(rebuildCard).getByLabelText('Reason'), 'projection drift');
+    await user.click(within(rebuildCard).getByRole('button', { name: 'Rebuild board' }));
+    const [rebuildBody] = bodies(fetchMock, '/rebuild-leaderboard');
+    expect(rebuildBody).toEqual({
+      requestId: expect.any(String),
+      operator: 'gm-alice',
+      reason: 'projection drift',
+      tenantId: 'tenant-a',
+      gameId: 'game-a',
+      board: 'score-alltime',
+      periodId: '',
+      scopeId: '',
+      subject: 0,
+    });
+    expect(within(rebuildCard).getByText('rebuilt 1 entries')).toBeInTheDocument();
+  });
+
+  it('keeps maintenance on the gm floor', { timeout: 20000 }, async () => {
+    const fetchMock = sequenceFetch({
+      '/who-am-i': [{ status: 200, body: viewerIdentity }],
+      '/get-leaderboard-top': [{ status: 200, body: secondPage }],
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <ConsoleRoot />
+      </MemoryRouter>,
+    );
+    const { user, topCard } = await openLeaderboards();
+    // Reads work on the viewer floor; the command forms never mount.
+    await fillKey(topCard, user);
+    await user.click(within(topCard).getByRole('button', { name: 'Read top' }));
+    expect(within(topCard).getAllByText('b').length).toBeGreaterThan(0);
+    expect(screen.getByText('Maintenance')).toBeInTheDocument();
+    expect(screen.getByText('Maintenance commands need the gm role.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Apply adjustment' })).not.toBeInTheDocument();
   });
 });

@@ -17,6 +17,12 @@ public interface ILeaderboardQueryDataPlane
     Task<RankReply> GetRankAsync(GetRankRequest request, CancellationToken cancellationToken = default);
 
     Task<AroundReply> GetAroundMeAsync(GetAroundMeRequest request, CancellationToken cancellationToken = default);
+
+    Task<AdjustBoardReply> AdjustBoardAsync(AdjustBoardRequest request, CancellationToken cancellationToken = default);
+
+    Task<ResetBoardReply> ResetBoardAsync(ResetBoardRequest request, CancellationToken cancellationToken = default);
+
+    Task<RebuildBoardReply> RebuildBoardAsync(RebuildBoardRequest request, CancellationToken cancellationToken = default);
 }
 
 /// <summary>The production data-plane implementation: the data host's leaderboard face.</summary>
@@ -31,6 +37,15 @@ public sealed class GrpcLeaderboardQueryDataPlane(Leaderboard.LeaderboardClient 
 
     public Task<AroundReply> GetAroundMeAsync(GetAroundMeRequest request, CancellationToken cancellationToken = default) =>
         client.GetAroundMeAsync(request, cancellationToken: cancellationToken).ResponseAsync;
+
+    public Task<AdjustBoardReply> AdjustBoardAsync(AdjustBoardRequest request, CancellationToken cancellationToken = default) =>
+        client.AdjustBoardAsync(request, cancellationToken: cancellationToken).ResponseAsync;
+
+    public Task<ResetBoardReply> ResetBoardAsync(ResetBoardRequest request, CancellationToken cancellationToken = default) =>
+        client.ResetBoardAsync(request, cancellationToken: cancellationToken).ResponseAsync;
+
+    public Task<RebuildBoardReply> RebuildBoardAsync(RebuildBoardRequest request, CancellationToken cancellationToken = default) =>
+        client.RebuildBoardAsync(request, cancellationToken: cancellationToken).ResponseAsync;
 }
 
 /// <summary>
@@ -189,4 +204,105 @@ public sealed class LeaderboardQueryService(ILeaderboardQueryDataPlane dataPlane
         value.Length == 0
             ? DateTimeOffset.MinValue
             : DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+
+    /// <summary>FIX-WEB-14: applies one GM correction (RANK-08) through the data plane.
+    /// The operation id is the idempotency key and the audit anchor — a replay answers the
+    /// stored score as a duplicate, the same id with a different projection is a visible
+    /// conflict; expectedVersion is the opaque read version the operator last saw (empty
+    /// = no guard) and a changed board is a stale read. Returns the resulting score and
+    /// the board's version after the correction.</summary>
+    public async Task<LeaderboardAdjustResult> AdjustEntryAsync(string tenantId, LeaderboardBoard board,
+        string subjectId, long delta, string? expectedVersion, string operationId, string reason,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("A tenant id must not be empty.", nameof(tenantId));
+        if (string.IsNullOrWhiteSpace(operationId))
+            throw new ArgumentException("A GM correction needs its operation id (the idempotency and audit anchor).", nameof(operationId));
+        board.Validate();
+        try
+        {
+            var reply = await dataPlane.AdjustBoardAsync(new AdjustBoardRequest
+            {
+                TenantId = tenantId, GameId = board.GameId,
+                Board = LeaderboardScoringService.ToProto(board), SubjectId = subjectId,
+                Delta = delta, ExpectedVersion = expectedVersion ?? "",
+                OperationId = operationId, Reason = reason ?? ""
+            }, cancellationToken);
+            return new LeaderboardAdjustResult(reply.Score, reply.Duplicate, ParseVersion(reply.Version));
+        }
+        catch (RpcException error)
+        {
+            throw MapCommandError(error);
+        }
+    }
+
+    /// <summary>FIX-WEB-14: applies one GM reset (RANK-08) through the data plane — zeroing
+    /// one subject's entry, or the whole board's bucket when <paramref name="subjectId"/>
+    /// is null. The same idempotency, version guard and evidence as the correction.</summary>
+    public async Task<LeaderboardResetResult> ResetEntryAsync(string tenantId, LeaderboardBoard board,
+        string? subjectId, string? expectedVersion, string operationId, string reason,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("A tenant id must not be empty.", nameof(tenantId));
+        if (string.IsNullOrWhiteSpace(operationId))
+            throw new ArgumentException("A GM reset needs its operation id (the idempotency and audit anchor).", nameof(operationId));
+        board.Validate();
+        try
+        {
+            var reply = await dataPlane.ResetBoardAsync(new ResetBoardRequest
+            {
+                TenantId = tenantId, GameId = board.GameId,
+                Board = LeaderboardScoringService.ToProto(board), SubjectId = subjectId ?? "",
+                ExpectedVersion = expectedVersion ?? "",
+                OperationId = operationId, Reason = reason ?? ""
+            }, cancellationToken);
+            return new LeaderboardResetResult(reply.Duplicate, ParseVersion(reply.Version));
+        }
+        catch (RpcException error)
+        {
+            throw MapCommandError(error);
+        }
+    }
+
+    /// <summary>FIX-WEB-14: rebuilds one board's projection from its effect ledger through
+    /// the data plane (RANK-08) — the recovery move when the projection itself is in doubt.
+    /// It names no expected version (the entries are what is in doubt) and never touches
+    /// the committed outbox rows; the ledger's scoring evidence stays intact. Returns the
+    /// number of re-derived entries and the board's version at the same snapshot.</summary>
+    public async Task<LeaderboardRebuildResult> RebuildBoardAsync(string tenantId, LeaderboardBoard board,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(tenantId))
+            throw new ArgumentException("A tenant id must not be empty.", nameof(tenantId));
+        board.Validate();
+        try
+        {
+            var reply = await dataPlane.RebuildBoardAsync(new RebuildBoardRequest
+            {
+                TenantId = tenantId, GameId = board.GameId,
+                Board = LeaderboardScoringService.ToProto(board)
+            }, cancellationToken);
+            return new LeaderboardRebuildResult(reply.Entries, ParseVersion(reply.Version));
+        }
+        catch (RpcException error)
+        {
+            throw MapCommandError(error);
+        }
+    }
+
+    /// <summary>The data plane's command-face failure words (FIX-RANK-08's gRPC mapping):
+    /// aborted = the board changed since the operator's read version (a stale read),
+    /// failed-precondition = the correction was refused before any write (bounds),
+    /// already-exists = the operation id was spent on a different projection,
+    /// invalid-argument = a malformed request. Never a silent re-amount.</summary>
+    private static Exception MapCommandError(RpcException error) => error.StatusCode switch
+    {
+        StatusCode.Aborted => new LeaderboardStaleReadException(error.Status.Detail),
+        StatusCode.FailedPrecondition => new LeaderboardRejectedException(error.Status.Detail),
+        StatusCode.AlreadyExists => new LeaderboardIdempotencyConflictException(error.Status.Detail),
+        StatusCode.InvalidArgument => new ArgumentException(error.Status.Detail),
+        _ => error,
+    };
 }

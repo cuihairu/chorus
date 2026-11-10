@@ -21,14 +21,17 @@ import type {
 } from '../api/contract';
 import { useAuth } from '../auth';
 
-// The out-of-the-box leaderboard back office (FIX-WEB-13, on the FIX-WEB-12 read face):
-// every query names the read key only — tenant, game, board and the optional period and
-// scope (empty spells the all-time global bucket on the wire) plus the RANK-01 subject
-// type. The walk is a snapshot: each page carries the read version, a continuation
-// resumes the same snapshot, and if the board changed underneath it the next page is
-// refused with an explicit restart word — never a cross-version page. found=false on
-// the rank and window faces is an answer, not an error. Maintenance commands (reset,
-// rebuild, GM adjustments) arrive with WEB-14.
+// The out-of-the-box leaderboard back office (FIX-WEB-13, on the FIX-WEB-12 read face,
+// maintained through FIX-WEB-14's command face): every query names the read key only —
+// tenant, game, board and the optional period and scope (empty spells the all-time
+// global bucket on the wire) plus the RANK-01 subject type. The walk is a snapshot: each
+// page carries the read version, a continuation resumes the same snapshot, and if the
+// board changed underneath it the next page is refused with an explicit restart word —
+// never a cross-version page. found=false on the rank and window faces is an answer, not
+// an error. The maintenance commands (adjust, reset, rebuild — the RANK-08 GM
+// corrections) sit on the gm floor: each carries the audited triple and the opaque
+// version token a read named (prefilled here), and a board that changed since that read
+// is refused with a reload word — never corrected onto a stale view.
 const subjectOptions = [
   { value: 0, label: 'Player' },
   { value: 1, label: 'Streamer' },
@@ -38,10 +41,19 @@ const subjectOptions = [
 const restartWord = 'The board changed since this walk started — start a fresh read.';
 const notFoundWord = 'That subject has no score on this board.';
 const scopeWord = 'Your scope does not cover this board.';
+const reloadWord = 'The board changed since your read version — reload the board and retry.';
+const conflictWord = 'That operation id already answered a different projection — use a fresh one.';
+const floorWord = 'Maintenance commands need the gm role.';
 
 function describeError(err: unknown): string {
   if (err instanceof AdminError && err.status === 400 && err.message.includes('restart the read')) {
     return restartWord;
+  }
+  if (err instanceof AdminError && err.status === 400 && err.message.includes('reload the board')) {
+    return reloadWord;
+  }
+  if (err instanceof AdminError && err.status === 409) {
+    return conflictWord;
   }
   if (err instanceof AdminError && err.status === 403) {
     return scopeWord;
@@ -61,7 +73,13 @@ function readKey(values: Record<string, unknown>) {
 }
 
 export default function LeaderboardPage() {
-  const { token } = useAuth();
+  const { token, operator } = useAuth();
+  const canCommand = operator?.role === 'gm';
+  // The opaque version token the maintenance commands name as expected_version (WEB-14):
+  // every successful read refreshes it into the command forms, so a correction names the
+  // exact view the operator just saw.
+  const [adjustForm] = Form.useForm();
+  const [resetForm] = Form.useForm();
   const [top, setTop] = useState<AdminLeaderboardTopReply | null>(null);
   const [topEntries, setTopEntries] = useState<AdminLeaderboardEntryProto[]>([]);
   const [topValues, setTopValues] = useState<Record<string, unknown> | null>(null);
@@ -79,6 +97,19 @@ export default function LeaderboardPage() {
     readVersionUnixMs: number;
   } | null>(null);
   const [aroundError, setAroundError] = useState<string | null>(null);
+  const [adjust, setAdjust] = useState<{ score: number; duplicate: boolean; readVersionUnixMs: number } | null>(null);
+  const [adjustError, setAdjustError] = useState<string | null>(null);
+  const [reset, setReset] = useState<{ duplicate: boolean; readVersionUnixMs: number } | null>(null);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [rebuild, setRebuild] = useState<{ entries: number; readVersionUnixMs: number } | null>(null);
+  const [rebuildError, setRebuildError] = useState<string | null>(null);
+
+  /** Feeds a fresh read version into the command forms — the token a correction names. */
+  const pushVersion = (version: string) => {
+    if (!canCommand || version.length === 0) return;
+    adjustForm.setFieldsValue({ expectedVersion: version });
+    resetForm.setFieldsValue({ expectedVersion: version });
+  };
 
   const runTop = async (values: Record<string, unknown>, pageToken: string, append: boolean) => {
     setTopError(null);
@@ -94,6 +125,7 @@ export default function LeaderboardPage() {
       });
       setTop(reply);
       setTopEntries((current) => (append ? [...current, ...reply.entries] : reply.entries));
+      pushVersion(reply.readVersion);
     } catch (err) {
       // A refused continuation kills the walk: the operator restarts from the first page.
       setTop(null);
@@ -111,6 +143,7 @@ export default function LeaderboardPage() {
         subjectId: String(values.subjectId ?? ''),
       });
       setRank(reply);
+      pushVersion(reply.readVersion);
     } catch (err) {
       setRankError(describeError(err));
     }
@@ -126,8 +159,70 @@ export default function LeaderboardPage() {
         window: Number(values.window ?? 5),
       });
       setAround(reply);
+      pushVersion(reply.readVersion);
     } catch (err) {
       setAroundError(describeError(err));
+    }
+  };
+
+  /** The audited triple rides every command: the request id is minted per submit (each
+   * submit is one operation; a replay answers Duplicate), the operator is the signed-in
+   * identity, the reason is the operator's audit evidence. */
+  const auditedTriple = () => ({
+    requestId: crypto.randomUUID(),
+    operator: operator?.operatorId ?? '',
+  });
+
+  const runAdjust = async (values: Record<string, unknown>) => {
+    setAdjustError(null);
+    setAdjust(null);
+    try {
+      const reply = await createAdminClient(token ?? '').adjustLeaderboardEntry({
+        ...auditedTriple(),
+        ...readKey(values),
+        subjectId: String(values.subjectId ?? ''),
+        delta: Number(values.delta ?? 0),
+        expectedVersion: String(values.expectedVersion ?? ''),
+        reason: String(values.reason ?? ''),
+      });
+      setAdjust(reply);
+      pushVersion(reply.readVersion);
+    } catch (err) {
+      setAdjustError(describeError(err));
+    }
+  };
+
+  const runReset = async (values: Record<string, unknown>) => {
+    setResetError(null);
+    setReset(null);
+    try {
+      const reply = await createAdminClient(token ?? '').resetLeaderboardEntry({
+        ...auditedTriple(),
+        ...readKey(values),
+        subjectId: String(values.subjectId ?? ''),
+        expectedVersion: String(values.expectedVersion ?? ''),
+        reason: String(values.reason ?? ''),
+      });
+      setReset(reply);
+      pushVersion(reply.readVersion);
+    } catch (err) {
+      setResetError(describeError(err));
+    }
+  };
+
+  const runRebuild = async (values: Record<string, unknown>) => {
+    setRebuildError(null);
+    setRebuild(null);
+    try {
+      const reply = await createAdminClient(token ?? '').rebuildLeaderboard({
+        ...auditedTriple(),
+        ...readKey(values),
+        reason: String(values.reason ?? ''),
+      });
+      setRebuild(reply);
+      pushVersion(reply.readVersion);
+    } catch (err) {
+      setRebuildError(describeError(err));
     }
   };
 
@@ -157,10 +252,13 @@ export default function LeaderboardPage() {
   return (
     <Card title="Leaderboards">
       <Typography.Paragraph type="secondary">
-        Read-only leaderboard queries. Empty period and scope name the all-time global
-        bucket. A walk reads one snapshot: every page carries its read version, and a
-        board that changes under the walk is refused with a restart word — start the walk
-        over rather than mixing versions. found=false means no score, not a failure.
+        Leaderboard queries and maintenance. Empty period and scope name the all-time
+        global bucket. A walk reads one snapshot: every page carries its read version,
+        and a board that changes under the walk is refused with a restart word — start
+        the walk over rather than mixing versions. found=false means no score, not a
+        failure. The maintenance commands carry the version token a read named back: a
+        board that changed since that read is refused with a reload word, never corrected
+        onto a stale view.
       </Typography.Paragraph>
       <Card title="Top N" style={{ marginBottom: 16 }}>
         <Form
@@ -281,6 +379,113 @@ export default function LeaderboardPage() {
             ]}
             dataSource={around.entries}
           />
+          </>
+        )}
+      </Card>
+      <Card title="Maintenance" style={{ marginBottom: 16 }}>
+        {!canCommand && (
+          <Alert type="info" showIcon message={floorWord} style={{ marginTop: 12 }} />
+        )}
+        {canCommand && (
+          <>
+            <Card title="Adjustment" style={{ marginBottom: 16 }}>
+              <Form layout="vertical" name="leaderboard-adjust" form={adjustForm} onFinish={runAdjust}>
+                <Space wrap size="large">
+                  {keyFields()}
+                  <Form.Item
+                    name="subjectId"
+                    label="Subject ID"
+                    rules={[{ required: true, message: 'The subject id is required.' }]}
+                  >
+                    <Input placeholder="subject id" />
+                  </Form.Item>
+                  <Form.Item name="delta" label="Delta">
+                    <InputNumber />
+                  </Form.Item>
+                  <Form.Item name="expectedVersion" label="Expected version">
+                    <Input placeholder="empty = no guard" style={{ minWidth: 260 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="reason"
+                    label="Reason"
+                    rules={[{ required: true, message: 'The audit reason is required.' }]}
+                  >
+                    <Input placeholder="why this correction" style={{ minWidth: 200 }} />
+                  </Form.Item>
+                  <Button type="primary" htmlType="submit">
+                    Apply adjustment
+                  </Button>
+                </Space>
+              </Form>
+              {adjustError !== null && (
+                <Alert type="error" showIcon message={adjustError} style={{ marginTop: 12 }} />
+              )}
+              {adjust !== null && (
+                <Space style={{ marginTop: 12 }} wrap>
+                  <Tag color="blue">score {adjust.score}</Tag>
+                  {adjust.duplicate && <Tag color="orange">duplicate</Tag>}
+                  <Tag color="blue">read version {adjust.readVersionUnixMs}</Tag>
+                </Space>
+              )}
+            </Card>
+            <Card title="Reset" style={{ marginBottom: 16 }}>
+              <Form layout="vertical" name="leaderboard-reset" form={resetForm} onFinish={runReset}>
+                <Space wrap size="large">
+                  {keyFields()}
+                  <Form.Item name="subjectId" label="Subject ID">
+                    <Input placeholder="empty = whole board" />
+                  </Form.Item>
+                  <Form.Item name="expectedVersion" label="Expected version">
+                    <Input placeholder="empty = no guard" style={{ minWidth: 260 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="reason"
+                    label="Reason"
+                    rules={[{ required: true, message: 'The audit reason is required.' }]}
+                  >
+                    <Input placeholder="why this reset" style={{ minWidth: 200 }} />
+                  </Form.Item>
+                  <Button type="primary" htmlType="submit">
+                    Reset entry
+                  </Button>
+                </Space>
+              </Form>
+              {resetError !== null && (
+                <Alert type="error" showIcon message={resetError} style={{ marginTop: 12 }} />
+              )}
+              {reset !== null && (
+                <Space style={{ marginTop: 12 }} wrap>
+                  {reset.duplicate && <Tag color="orange">duplicate</Tag>}
+                  <Tag color="blue">read version {reset.readVersionUnixMs}</Tag>
+                </Space>
+              )}
+            </Card>
+            <Card title="Rebuild" style={{ marginBottom: 16 }}>
+              <Form layout="vertical" name="leaderboard-rebuild" onFinish={runRebuild}>
+                <Space wrap size="large">
+                  {keyFields()}
+                  <Form.Item
+                    name="reason"
+                    label="Reason"
+                    rules={[{ required: true, message: 'The audit reason is required.' }]}
+                  >
+                    <Input placeholder="why this rebuild" style={{ minWidth: 200 }} />
+                  </Form.Item>
+                  <Button type="primary" htmlType="submit">
+                    Rebuild board
+                  </Button>
+                </Space>
+              </Form>
+              {rebuildError !== null && (
+                <Alert type="error" showIcon message={rebuildError} style={{ marginTop: 12 }} />
+              )}
+              {rebuild !== null && (
+                <Space style={{ marginTop: 12 }} wrap>
+                  <Tag color="blue">rebuilt {rebuild.entries} entries</Tag>
+                  <Tag color="blue">read version {rebuild.readVersionUnixMs}</Tag>
+                </Space>
+              )}
+            </Card>
           </>
         )}
       </Card>

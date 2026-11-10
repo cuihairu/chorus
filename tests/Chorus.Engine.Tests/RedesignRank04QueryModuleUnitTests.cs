@@ -114,5 +114,15 @@ public sealed class RedesignRank04QueryModuleUnitTests
 
         public Task<AroundReply> GetAroundMeAsync(GetAroundMeRequest request, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        // The RANK-08 command paths are FIX-WEB-14's tests.
+        public Task<AdjustBoardReply> AdjustBoardAsync(AdjustBoardRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<ResetBoardReply> ResetBoardAsync(ResetBoardRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<RebuildBoardReply> RebuildBoardAsync(RebuildBoardRequest request, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

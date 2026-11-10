@@ -342,6 +342,21 @@ public sealed record LeaderboardEffectResult(long Score, bool Duplicate);
 /// ledger — the number of entries re-derived and the board's version at the same snapshot.</summary>
 public sealed record LeaderboardRebuildResult(int Entries, DateTimeOffset Version);
 
+/// <summary>FIX-WEB-14: the result of one GM correction — the subject's resulting score,
+/// whether the operation id had already been applied (a replay answers the stored score as
+/// a duplicate) and the board's version after the correction (the value the operator's
+/// next expected version names).</summary>
+public sealed record LeaderboardAdjustResult(long Score, bool Duplicate, DateTimeOffset Version);
+
+/// <summary>FIX-WEB-14: the result of one GM reset — whether the operation id had already
+/// been applied and the board's version after the reset.</summary>
+public sealed record LeaderboardResetResult(bool Duplicate, DateTimeOffset Version);
+
+/// <summary>FIX-WEB-14: refused because the operation id was already applied to a different
+/// projection — the same id with a different board, subject or amount is a visible
+/// conflict, never a silent re-amount (RANK-08's idempotency contract).</summary>
+public sealed class LeaderboardIdempotencyConflictException(string message) : Exception(message);
+
 /// <summary>
 /// FIX-RANK-04: the bounded query page size (developer-capabilities.md「查询」「有限页大小」).
 /// One TopN read answers at most <see cref="MaxTopEntries"/> entries — a query page is bounded,
