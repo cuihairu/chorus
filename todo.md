@@ -318,7 +318,8 @@
 - [x] **FIX-WEB-15 / P1：实现操作审计查询。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-09。
   - 证据：e221329；读 RPC /admin/api/v1/get-audit-trail（command/operator 逐维精确词过滤、max_entries bounded 1..200、audit_id keyset 游标十进制串——append-only 日志无需快照失效裁决，取 max+1 行裁 has-more）；viewer 地板（匿名 401）；宿主测试 1 fact（首页 newest-first verbatim、全走板恰一次、双过滤+未知词空页、viewer/401/201→400）；漂移门 22 方法/21 注解；页面 Audit trail 卡（Continue 带 cursor 追加更老行+七列表格）+1 fact，console 23/23；gate 1878/1889 风暴 load 33-49 零新签名（FrameChannel 干净树 933fb83 对照 worktree 背靠背同败且跨负载双败=环境实锤；PlatformGatewayRouting solo 3/3 绿；42501×5/M2/FanoutReclaim 归文档族）
 - [ ] **FIX-WEB-16 / P1：完成控制台中英文。** 依赖：FIX-WEB-02、FIX-WEB-04。
-- [ ] **FIX-WEB-17 / P0：验收浏览器管理权限与未知结果。** 依赖：FIX-WEB-10、FIX-WEB-15。
+- [x] **FIX-WEB-17 / P0：验收浏览器管理权限与未知结果。** 依赖：FIX-WEB-10、FIX-WEB-15。
+  - 证据：9c7e7b2；闭包 fact（WEB-01 表=描述符注解集=探针集互等）+ 走面 fact（21 路逐条：匿名成形体 401/viewer 读 200+未知形状 found=false 或空页/gm 地板恰 403/gm 命令穿门非 401·403/伪造身份恰 403；queue-gate 对记录值+epoch 未知房 found=false）；**抓到并修正真偏离**：get-room-epoch 三层分歧（GM-06 权威 gm 地板 vs WEB-01 表 viewer vs WEB-11 页 mock viewer lookup 照答）——表向实改 read/gm+ContractRoutes internal 单一事实源、EpochPage lookup 卡 gm 地板化+文案改、epoch 测试 viewer fact 重写；定向 7/7+console 23/23+build 绿；测试-only diff 按 WEB-13 先例全量门不重跑（CI 后盾）
 - [ ] **FIX-WEB-18 / P1：接通控制台生产托管。** 依赖：FIX-WEB-02、FIX-WEB-03、FIX-WEB-04。
 
 ### 22.17 运维总览、机器负载与平台数据链路统计（P1）
