@@ -1191,3 +1191,11 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **测试形状**：+5 fact——MemAvailable 算 used（16384000kB 与 8192000kB → 50.0%）；无 MemAvailable 回落 free+buffers+cached；available>total 钳 0%；缺文件/畸形/总无可用数 → null；采集器注入源答 50% + 源消失无值。
 - **门禁**：build Release 0 错；5/5 绿。行为中性（零调用点）→ 全量门不重跑（WEB-17 先例），push 后 CI 后盾。
 - **诚实边界**：used=total−available 是「此刻可用」口径不是 RSS/私有驻留（进程级驻留归 OBS-07 的 per-process）；swap 不参与（字典无 swap 名，磁盘压力告警走磁盘族）；MemAvailable 缺失时的 free+buffers+cached 回落是近似（不含 SReclaimable，老内核口径）；**不含**：周期采样、上报、CPU/负载/磁盘采集（OBS-02/04/05）。
+
+## 采集系统负载（FIX-OBS-04，b86c889）
+
+- **任务**：OBS-01 命名了 `chorus_machine_load_1m/5m/15m`，无代码读——本项给 NodeAgent 一个负载采集器。todo.md:332。依赖：FIX-OBS-01。
+- **机制**：`src/Chorus.NodeAgent/MachineLoadCollector.cs`——读 `/proc/loadavg`，`Parse` 出 `MachineLoadSample(Load1m, Load5m, Load15m)`（前三字段，第四是 running/total 任务数不采）。负载是电平：单读即答、无基线。负值（内核绝不发）拒为畸形。读源可注入，非 Linux 优雅无值。
+- **测试形状**：+4 fact——三平均值解析（0.15/0.08/0.05）；零负载；缺文件/过短/非数字/负值 → null；注入源答 1.50/1.00 + 源消失无值。
+- **门禁**：build Release 0 错；4/4 绿。行为中性（零调用点）→ 全量门不重跑（WEB-17 先例），push 后 CI 后盾。
+- **诚实边界**：负载平均是整机 runqueue 长度不是百分比（调度准入「CPU>70%」读的是 CPU 使用率不是负载，两个维度分开）；只采三均值不采 running/total 任务数（字典无此名）；Windows 无 /proc/loadavg（OBS-06 平台分支）；**不含**：周期采样、上报、CPU/内存/磁盘采集（OBS-02/03/05）。
