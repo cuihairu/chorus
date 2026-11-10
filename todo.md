@@ -311,7 +311,8 @@
   - 证据：8fea6af；查/抬两卡（expected 必填 stale 可见拒、target 0 哨兵、routeSync 与提交分显、duplicate 记录值）；页面测试 4/4；pnpm build 绿+15/15；pnpm 10 CI=true 冻结安装+测试+构建绿
 - [x] **FIX-WEB-12 / P1：为后台提供排行榜查询接口。** 依赖：FIX-WEB-03、FIX-RANK-04、FIX-RANK-05、FIX-RANK-06、FIX-RANK-07。
   - 证据：b179c8e；三读 RPC（top/rank/around；操作员只命名读键，写侧描述子中性缺省；read_version 0=从未计分哨兵）；宿主测试 1 fact（分页/续页版本不变/唯一名次/窗口/stale 显式拒+malformed 400/viewer 地板 401/缺字段 400）；顺带修 RANK-06 板版本残余窗假 stale 与 agent 种子 7502 互撞（CI 三连红根因）+WEB-01 漂移表 15→18；回归 RANK 180/180+WEB-01 3/3+WEB-05 1/1+WEB-03 1/1；gate 1882/1887 零新签名（M2 时钟族干净树对照钉死，风暴 4 轮判定细节见 ledger）
-- [ ] **FIX-WEB-13 / P1：实现开箱即用排行榜后台页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-12。
+- [x] **FIX-WEB-13 / P1：实现开箱即用排行榜后台页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-12。
+  - 证据：94fd564；三查询卡（TopN 快照走板=Continue 带 token 版本标签不变/stale 400 重启词清场、名次与窗口随版本标签、found=false 是回答非错误、空 period/scope 上 wire 即缺省桶）；页面测试 5/5（wire 全等+走板/stale/作用域/viewer 地板）；pnpm build 绿+20/20；pnpm 10 CI=true 冻结安装+测试+构建绿
 - [ ] **FIX-WEB-14 / P1：实现排行榜维护操作。** 依赖：FIX-WEB-10、FIX-WEB-13、FIX-RANK-08。
 - [ ] **FIX-WEB-15 / P1：实现操作审计查询。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-09。
 - [ ] **FIX-WEB-16 / P1：完成控制台中英文。** 依赖：FIX-WEB-02、FIX-WEB-04。
