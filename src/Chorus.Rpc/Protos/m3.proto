@@ -1081,6 +1081,24 @@ service Admin {
   rpc GetOperationStatus(AdminGetOperationStatusRequest) returns (AdminGetOperationStatusReply) {
     option (google.api.http) = { post: "/admin/api/v1/get-operation-status" body: "*" };
   }
+  // FIX-WEB-12: the leaderboard queries for the back office (viewer rank). The request
+  // names the board's READ KEY — board id, period bucket id and scope id — plus the
+  // subject type (the storage's row filter). The write-side descriptors (aggregation,
+  // score bounds, the period's calendar) are inert in reads: they shape scoring, not
+  // queries, so the operator never resupplies what it cannot know. The TopN page is the
+  // RANK-06 walk: an empty page_token starts from the top, a token continues the same
+  // snapshot, and a stale or expired token is an explicit error — never a cross-version
+  // seemingly-contiguous page. Timestamps ride unix milliseconds (0 = the board has never
+  // scored), the Admin face's convention.
+  rpc GetLeaderboardTop(AdminLeaderboardTopRequest) returns (AdminLeaderboardTopReply) {
+    option (google.api.http) = { post: "/admin/api/v1/get-leaderboard-top" body: "*" };
+  }
+  rpc GetLeaderboardRank(AdminLeaderboardRankRequest) returns (AdminLeaderboardRankReply) {
+    option (google.api.http) = { post: "/admin/api/v1/get-leaderboard-rank" body: "*" };
+  }
+  rpc GetLeaderboardAround(AdminLeaderboardAroundRequest) returns (AdminLeaderboardAroundReply) {
+    option (google.api.http) = { post: "/admin/api/v1/get-leaderboard-around" body: "*" };
+  }
 }
 
 // The operator identity the bearer credential resolves to (FIX-WEB-01, consumed by the
@@ -1092,4 +1110,81 @@ message AdminWhoAmIReply {
   repeated string tenants = 3;
   repeated string games = 4;
   bool enabled = 5;
+}
+
+// FIX-WEB-12: the back-office leaderboard queries. A request carries the board's read
+// key: the board id, the period bucket id (empty = "alltime", RANK-07's buckets are named
+// buckets like "daily-2026-11-05") and the scope id (empty = "global"), plus the subject
+// type as the RANK-01 RankSubject number (0 player, 1 streamer, 2 faction) — the storage
+// filters rows by it, so a wrong value answers an empty board rather than another board's
+// rows. The read version rides unix milliseconds, 0 = never scored (the AdminRoomSnapshot
+// unix-ms convention); a stale/expired continuation is an explicit precondition error,
+// never a cross-version page.
+message AdminLeaderboardTopRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string board = 3;
+  string period_id = 4;
+  string scope_id = 5;
+  int32 subject = 6;
+  // The page size, bounded 1..1000 (RANK-04's read bound). Required.
+  int32 max_entries = 7;
+  // The previous page's next_page_token; empty starts a fresh walk from the top (RANK-06).
+  string page_token = 8;
+}
+
+message AdminLeaderboardEntryProto {
+  string subject_id = 1;
+  int64 score = 2;
+}
+
+message AdminLeaderboardTopReply {
+  repeated AdminLeaderboardEntryProto entries = 1;
+  int64 read_version_unix_ms = 2;
+  bool has_more = 3;
+  // Carries a token exactly when has_more; pass it back as page_token to continue.
+  string next_page_token = 4;
+}
+
+message AdminLeaderboardRankRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string board = 3;
+  string period_id = 4;
+  string scope_id = 5;
+  int32 subject = 6;
+  string subject_id = 7;
+}
+
+message AdminLeaderboardRankReply {
+  bool found = 1;
+  // The subject's unique ordinal in the board order (RANK-05: ties take consecutive ranks).
+  int64 rank = 2;
+  int64 score = 3;
+  int64 read_version_unix_ms = 4;
+}
+
+message AdminLeaderboardAroundRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string board = 3;
+  string period_id = 4;
+  string scope_id = 5;
+  int32 subject = 6;
+  string subject_id = 7;
+  // The window is bounded 1..50 (RANK-05's bound). Required.
+  int32 window = 8;
+}
+
+message AdminLeaderboardRankedEntryProto {
+  int64 rank = 1;
+  string subject_id = 2;
+  int64 score = 3;
+}
+
+message AdminLeaderboardAroundReply {
+  bool found = 1;
+  // The subject and its rank neighbours, in rank order, at one read view (RANK-05).
+  repeated AdminLeaderboardRankedEntryProto entries = 2;
+  int64 read_version_unix_ms = 3;
 }

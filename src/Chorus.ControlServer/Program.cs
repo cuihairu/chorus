@@ -143,6 +143,12 @@ builder.Services.AddHostedService(serviceProvider => new ClusterDirectoryRefresh
 // The browser face runs on the gRPC JSON transcoding (FIX-WEB-03): the Admin service's
 // google.api.http annotations become real routes once this is on.
 builder.Services.AddGrpc().AddJsonTranscoding();
+// The leaderboard query module (FIX-RANK-04/05/06) rides the data host's leaderboard face;
+// the back office queries boards through it (FIX-WEB-12).
+builder.Services.AddSingleton<ILeaderboardQueryDataPlane>(serviceProvider =>
+    new GrpcLeaderboardQueryDataPlane(new Leaderboard.LeaderboardClient(
+        serviceProvider.GetRequiredService<ClusterDirectory>().DataChannel)));
+builder.Services.AddSingleton<LeaderboardQueryService>();
 
 var app = builder.Build();
 app.MapGrpcService<ControlGrpcService>();

@@ -335,13 +335,12 @@ public sealed class RedesignLeaderboardStore
     /// <summary>
     /// FIX-RANK-04: reads the bounded TopN of one board together with the board's read
     /// version at the same snapshot (developer-capabilities.md「分页绑定榜单读取版本」). One
-    /// SELECT computes the page and the version — the window <c>max(updated_at) OVER ()</c>
-    /// covers the whole board (windows run before <c>LIMIT</c>), so the answered entries and
-    /// the version are one consistent view, never a version from before or after the page.
-    /// The version is the board's last write marker: it changes whenever any entry of the
-    /// board changes, so a paginated continuation that carries it back detects a changed
-    /// board. An empty board answers an empty page and the version sentinel
-    /// (<see cref="DateTimeOffset.MinValue"/>).
+    /// SELECT computes the page and the version — the version is a scalar subquery over the
+    /// whole board (the same statement snapshot as the answered entries), never a version
+    /// from before or after the page. The version is the board's last write marker: it
+    /// changes whenever any entry of the board changes, so a paginated continuation that
+    /// carries it back detects a changed board. An empty board answers an empty page and the
+    /// version sentinel (<see cref="DateTimeOffset.MinValue"/>).
     /// </summary>
     public async Task<LeaderboardTopResult> ReadTopWithVersionAsync(LeaderboardBoard board, int maxEntries,
         CancellationToken cancellationToken = default)
@@ -356,11 +355,14 @@ public sealed class RedesignLeaderboardStore
     /// the board; a continuation resumes strictly after the previous page's last entry's
     /// keyset (<paramref name="afterScore"/>/<paramref name="afterSubjectId"/> — score
     /// descending, subject id ascending, the RANK-01 order), so a walk never overlaps or skips
-    /// an entry. The page and the board's read version are one snapshot (single SELECT with
-    /// <c>max(updated_at) OVER ()</c>). One row past the page bound is read to know whether
-    /// more remain (so a continuation that would answer an empty page is never issued). The
-    /// page's <see cref="LeaderboardPageResult.NextCursor"/> is null here — the data plane
-    /// issues the cursor (it carries the snapshot deadline the store does not know).
+    /// an entry. The page and the board's read version are one snapshot (single SELECT; the
+    /// version is the whole-board scalar subquery, NOT a window over the keyset-filtered
+    /// rows — a window would make every continuation carry the remainder's newest write,
+    /// and a cursor minted from the whole-board marker would false-stale the moment the
+    /// board's newest write sat behind the keyset). One row past the page bound is read to
+    /// know whether more remain (so a continuation that would answer an empty page is never
+    /// issued). The page's <see cref="LeaderboardPageResult.NextCursor"/> is null here — the
+    /// data plane issues the cursor (it carries the snapshot deadline the store does not know).
     /// </summary>
     public async Task<LeaderboardPageResult> ReadTopPageAsync(LeaderboardBoard board, int maxEntries,
         long? afterScore, string? afterSubjectId, CancellationToken cancellationToken = default)
@@ -373,20 +375,28 @@ public sealed class RedesignLeaderboardStore
         var keyset = afterScore is not null;
         var sql = keyset
             ? """
-              SELECT subject_id, score, max(updated_at) OVER () AS board_version
-              FROM game.leaderboard_entry
-              WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
-                AND period_id=@period AND scope_id=@scope AND subject_type=@subject
-                AND (score < @after_score OR (score = @after_score AND subject_id > @after_subject))
-              ORDER BY score DESC, subject_id ASC
+              SELECT e1.subject_id, e1.score,
+                (SELECT max(e3.updated_at) FROM game.leaderboard_entry e3
+                  WHERE e3.tenant_id=e1.tenant_id AND e3.game_id=e1.game_id AND e3.board_id=e1.board_id
+                    AND e3.period_id=e1.period_id AND e3.scope_id=e1.scope_id
+                    AND e3.subject_type=e1.subject_type) AS board_version
+              FROM game.leaderboard_entry e1
+              WHERE e1.tenant_id=@tenant AND e1.game_id=@game AND e1.board_id=@board
+                AND e1.period_id=@period AND e1.scope_id=@scope AND e1.subject_type=@subject
+                AND (e1.score < @after_score OR (e1.score = @after_score AND e1.subject_id > @after_subject))
+              ORDER BY e1.score DESC, e1.subject_id ASC
               LIMIT @max
               """
             : """
-              SELECT subject_id, score, max(updated_at) OVER () AS board_version
-              FROM game.leaderboard_entry
-              WHERE tenant_id=@tenant AND game_id=@game AND board_id=@board
-                AND period_id=@period AND scope_id=@scope AND subject_type=@subject
-              ORDER BY score DESC, subject_id ASC
+              SELECT e1.subject_id, e1.score,
+                (SELECT max(e3.updated_at) FROM game.leaderboard_entry e3
+                  WHERE e3.tenant_id=e1.tenant_id AND e3.game_id=e1.game_id AND e3.board_id=e1.board_id
+                    AND e3.period_id=e1.period_id AND e3.scope_id=e1.scope_id
+                    AND e3.subject_type=e1.subject_type) AS board_version
+              FROM game.leaderboard_entry e1
+              WHERE e1.tenant_id=@tenant AND e1.game_id=@game AND e1.board_id=@board
+                AND e1.period_id=@period AND e1.scope_id=@scope AND e1.subject_type=@subject
+              ORDER BY e1.score DESC, e1.subject_id ASC
               LIMIT @max
               """;
         await using var connection = new NpgsqlConnection(_connectionString);

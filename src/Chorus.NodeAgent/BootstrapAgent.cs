@@ -256,6 +256,13 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         start.Environment["CHORUS_TLS_CERT_PEM"] = certificatePath;
         start.Environment["CHORUS_TLS_KEY_PEM"] = keyPath;
         start.Environment["CHORUS_PORT"] = spec.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // The browser face (FIX-WEB-03) gives every control server a second, operator-facing
+        // listener; the manifest pins only the cluster ports, so each seed takes a free
+        // ephemeral port here — two supervised control servers would otherwise fight over
+        // the fixed default and one would die with an address-in-use at startup.
+        if (spec.Role == "control-server")
+            start.Environment["CHORUS_BROWSER_PORT"] = FreePort().ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
         // Every supervised service that speaks to the data plane gets the node's seeded data
         // port (FIX-AGENT-01); the streamer gateway additionally routes to the seeded streamer
         // port and the control endpoint the manifest pins.
@@ -559,6 +566,13 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
 
     private static string Required(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value : throw new InvalidOperationException($"Set {name} before starting NodeAgent.");
+
+    private static int FreePort()
+    {
+        using var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        return ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+    }
 
     [DllImport("libc", SetLastError = true)]
     private static extern int kill(int pid, int signal);

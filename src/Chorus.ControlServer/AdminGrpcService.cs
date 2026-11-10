@@ -15,7 +15,8 @@ namespace Chorus.ControlServer;
 /// </summary>
 public sealed class AdminGrpcService(
     ClusterDirectory directory, RedesignAdminStore adminStore, RedesignControlStore controlStore,
-    RedesignOperatorStore operatorStore, TrustedProcessCertificates trustedCertificates) : Admin.AdminBase
+    RedesignOperatorStore operatorStore, TrustedProcessCertificates trustedCertificates,
+    LeaderboardQueryService leaderboardQueries) : Admin.AdminBase
 {
     private static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(10);
 
@@ -262,6 +263,134 @@ public sealed class AdminGrpcService(
     /// <summary>The literal "Duplicate" — RoomRuntime's disposition word for a replayed
     /// durable accept; kept as a literal because ControlServer does not reference GameServer.</summary>
     private const string DuplicateText = "Duplicate";
+
+    // The back-office leaderboard queries (FIX-WEB-12): reads on the viewer floor that name
+    // the board's read key — board, period bucket, scope and subject type — and ride the
+    // RANK-04/05/06 query module. A stale or expired continuation token (RANK-06's snapshot
+    // walk) is an explicit precondition error, never a cross-version seemingly-contiguous page.
+    public override async Task<AdminLeaderboardTopReply> GetLeaderboardTop(
+        AdminLeaderboardTopRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId)
+            || string.IsNullOrWhiteSpace(request.Board))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The leaderboard request is incomplete."));
+        await RequireOperator(context, "viewer", request.TenantId, request.GameId);
+        try
+        {
+            var page = await leaderboardQueries.GetTopPageAsync(request.TenantId,
+                LeaderboardReadKey(request.TenantId, request.GameId, request.Board,
+                    request.PeriodId, request.ScopeId, request.Subject),
+                request.MaxEntries, request.PageToken, context.CancellationToken);
+            var reply = new AdminLeaderboardTopReply
+            {
+                ReadVersionUnixMs = VersionUnixMs(page.ReadVersion),
+                HasMore = page.HasMore, NextPageToken = page.NextCursor ?? ""
+            };
+            foreach (var entry in page.Entries)
+                reply.Entries.Add(new AdminLeaderboardEntryProto
+                {
+                    SubjectId = entry.SubjectId, Score = entry.Score
+                });
+            return reply;
+        }
+        catch (Exception error) when (error is ArgumentException or LeaderboardStaleReadException)
+        {
+            throw MapLeaderboardError(error);
+        }
+    }
+
+    public override async Task<AdminLeaderboardRankReply> GetLeaderboardRank(
+        AdminLeaderboardRankRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId)
+            || string.IsNullOrWhiteSpace(request.Board) || string.IsNullOrWhiteSpace(request.SubjectId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The leaderboard request is incomplete."));
+        await RequireOperator(context, "viewer", request.TenantId, request.GameId);
+        try
+        {
+            var rank = await leaderboardQueries.GetRankAsync(request.TenantId,
+                LeaderboardReadKey(request.TenantId, request.GameId, request.Board,
+                    request.PeriodId, request.ScopeId, request.Subject),
+                request.SubjectId, context.CancellationToken);
+            if (rank is null)
+                return new AdminLeaderboardRankReply { Found = false };
+            return new AdminLeaderboardRankReply
+            {
+                Found = true, Rank = rank.Rank, Score = rank.Entry.Score,
+                ReadVersionUnixMs = VersionUnixMs(rank.ReadVersion)
+            };
+        }
+        catch (Exception error) when (error is ArgumentException or LeaderboardStaleReadException)
+        {
+            throw MapLeaderboardError(error);
+        }
+    }
+
+    public override async Task<AdminLeaderboardAroundReply> GetLeaderboardAround(
+        AdminLeaderboardAroundRequest request, ServerCallContext context)
+    {
+        if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId)
+            || string.IsNullOrWhiteSpace(request.Board) || string.IsNullOrWhiteSpace(request.SubjectId))
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The leaderboard request is incomplete."));
+        await RequireOperator(context, "viewer", request.TenantId, request.GameId);
+        try
+        {
+            var around = await leaderboardQueries.GetAroundMeAsync(request.TenantId,
+                LeaderboardReadKey(request.TenantId, request.GameId, request.Board,
+                    request.PeriodId, request.ScopeId, request.Subject),
+                request.SubjectId, request.Window, context.CancellationToken);
+            var reply = around is null
+                ? new AdminLeaderboardAroundReply { Found = false }
+                : new AdminLeaderboardAroundReply
+                {
+                    Found = true, ReadVersionUnixMs = VersionUnixMs(around.ReadVersion)
+                };
+            if (around is not null)
+                foreach (var ranked in around.Entries)
+                    reply.Entries.Add(new AdminLeaderboardRankedEntryProto
+                    {
+                        Rank = ranked.Rank, SubjectId = ranked.Entry.SubjectId, Score = ranked.Entry.Score
+                    });
+            return reply;
+        }
+        catch (Exception error) when (error is ArgumentException or LeaderboardStaleReadException)
+        {
+            throw MapLeaderboardError(error);
+        }
+    }
+
+    /// <summary>The board's read key (FIX-WEB-12): period bucket id (empty = the all-time
+    /// bucket) and scope id (empty = the global scope) name the storage key; the subject
+    /// type is the row filter. The definition-side descriptors (aggregation, bounds, the
+    /// period's calendar) shape scoring, not queries — reads never consult them, so the
+    /// descriptor carries neutral defaults rather than asking the operator to resupply
+    /// what it cannot know.</summary>
+    private static LeaderboardBoard LeaderboardReadKey(string tenantId, string gameId, string board,
+        string periodId, string scopeId, int subject)
+    {
+        if (subject is < 0 or > (int)RankSubject.Faction)
+            throw new ArgumentException("The subject type is not a RANK-01 subject type.");
+        return new LeaderboardBoard(tenantId, gameId, board, (RankSubject)subject, RankAggregation.Sum,
+            ScoreBounds.Default,
+            new RankPeriod(RankPeriodKind.AllTime, periodId.Length > 0 ? periodId : "alltime",
+                "", null, null, ""),
+            new RankScope(scopeId.Length > 0 ? scopeId : "global"));
+    }
+
+    private static long VersionUnixMs(DateTimeOffset version) =>
+        version == DateTimeOffset.MinValue ? 0 : version.ToUnixTimeMilliseconds();
+
+    private static RpcException MapLeaderboardError(Exception error)
+    {
+        // A stale snapshot (the board moved on or the walk's lifetime expired) is a
+        // precondition failure: restart the read from the first page, never page on.
+        return error is ArgumentException argument
+            ? new RpcException(new Status(StatusCode.InvalidArgument, argument.Message))
+            : new RpcException(new Status(StatusCode.FailedPrecondition, error.Message));
+    }
 
     public override async Task<AdminStreamerSnapshotReply> GetStreamerSnapshot(
         AdminStreamerSnapshotRequest request, ServerCallContext context)

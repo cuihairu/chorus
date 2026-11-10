@@ -108,6 +108,69 @@ export interface AdminGetRoomEpochRequest {
   roomId: string;
 }
 
+export interface AdminLeaderboardAroundReply {
+  found: boolean;
+  entries: AdminLeaderboardRankedEntryProto[];
+  readVersionUnixMs: number;
+}
+
+export interface AdminLeaderboardAroundRequest {
+  tenantId: string;
+  gameId: string;
+  board: string;
+  periodId: string;
+  scopeId: string;
+  subject: number;
+  subjectId: string;
+  window: number;
+}
+
+export interface AdminLeaderboardEntryProto {
+  subjectId: string;
+  score: number;
+}
+
+export interface AdminLeaderboardRankReply {
+  found: boolean;
+  rank: number;
+  score: number;
+  readVersionUnixMs: number;
+}
+
+export interface AdminLeaderboardRankRequest {
+  tenantId: string;
+  gameId: string;
+  board: string;
+  periodId: string;
+  scopeId: string;
+  subject: number;
+  subjectId: string;
+}
+
+export interface AdminLeaderboardRankedEntryProto {
+  rank: number;
+  subjectId: string;
+  score: number;
+}
+
+export interface AdminLeaderboardTopReply {
+  entries: AdminLeaderboardEntryProto[];
+  readVersionUnixMs: number;
+  hasMore: boolean;
+  nextPageToken: string;
+}
+
+export interface AdminLeaderboardTopRequest {
+  tenantId: string;
+  gameId: string;
+  board: string;
+  periodId: string;
+  scopeId: string;
+  subject: number;
+  maxEntries: number;
+  pageToken: string;
+}
+
 export interface AdminParticipantProto {
   participantId: string;
   bindingId: string;
@@ -337,6 +400,9 @@ export const adminRoutes = {
   bumpRoomEpoch: '/admin/api/v1/bump-room-epoch',
   dispatchRoomCommand: '/admin/api/v1/dispatch-room-command',
   getOperationStatus: '/admin/api/v1/get-operation-status',
+  getLeaderboardTop: '/admin/api/v1/get-leaderboard-top',
+  getLeaderboardRank: '/admin/api/v1/get-leaderboard-rank',
+  getLeaderboardAround: '/admin/api/v1/get-leaderboard-around',
 } as const;
 
 export type AdminRouteName = keyof typeof adminRoutes;
@@ -400,5 +466,17 @@ export class AdminClient {
   getOperationStatus(request: AdminGetOperationStatusRequest): Promise<AdminGetOperationStatusReply> {
     return this.call<AdminGetOperationStatusRequest, AdminGetOperationStatusReply>(
       adminRoutes.getOperationStatus, request);
+  }
+  getLeaderboardTop(request: AdminLeaderboardTopRequest): Promise<AdminLeaderboardTopReply> {
+    return this.call<AdminLeaderboardTopRequest, AdminLeaderboardTopReply>(
+      adminRoutes.getLeaderboardTop, request);
+  }
+  getLeaderboardRank(request: AdminLeaderboardRankRequest): Promise<AdminLeaderboardRankReply> {
+    return this.call<AdminLeaderboardRankRequest, AdminLeaderboardRankReply>(
+      adminRoutes.getLeaderboardRank, request);
+  }
+  getLeaderboardAround(request: AdminLeaderboardAroundRequest): Promise<AdminLeaderboardAroundReply> {
+    return this.call<AdminLeaderboardAroundRequest, AdminLeaderboardAroundReply>(
+      adminRoutes.getLeaderboardAround, request);
   }
 }
