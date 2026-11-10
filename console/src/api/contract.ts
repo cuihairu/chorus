@@ -3,6 +3,29 @@
 // CHORUS_REGEN_ADMIN_TS=1 dotnet test --filter "FullyQualifiedName~RedesignWeb05AdminClientContractTests"
 // and commit the result; the CI gate re-renders from the descriptors and refuses drift.
 
+export interface AdminAuditEntryProto {
+  requestId: string;
+  operator: string;
+  reason: string;
+  scope: string;
+  command: string;
+  detail: string;
+  createdAtUnixMs: number;
+}
+
+export interface AdminAuditTrailReply {
+  entries: AdminAuditEntryProto[];
+  hasMore: boolean;
+  nextPageToken: string;
+}
+
+export interface AdminAuditTrailRequest {
+  command: string;
+  operator: string;
+  maxEntries: number;
+  pageToken: string;
+}
+
 export interface AdminBindingProto {
   bindingId: string;
   gameId: string;
@@ -463,6 +486,7 @@ export const adminRoutes = {
   bumpRoomEpoch: '/admin/api/v1/bump-room-epoch',
   dispatchRoomCommand: '/admin/api/v1/dispatch-room-command',
   getOperationStatus: '/admin/api/v1/get-operation-status',
+  getAuditTrail: '/admin/api/v1/get-audit-trail',
   getLeaderboardTop: '/admin/api/v1/get-leaderboard-top',
   getLeaderboardRank: '/admin/api/v1/get-leaderboard-rank',
   getLeaderboardAround: '/admin/api/v1/get-leaderboard-around',
@@ -532,6 +556,10 @@ export class AdminClient {
   getOperationStatus(request: AdminGetOperationStatusRequest): Promise<AdminGetOperationStatusReply> {
     return this.call<AdminGetOperationStatusRequest, AdminGetOperationStatusReply>(
       adminRoutes.getOperationStatus, request);
+  }
+  getAuditTrail(request: AdminAuditTrailRequest): Promise<AdminAuditTrailReply> {
+    return this.call<AdminAuditTrailRequest, AdminAuditTrailReply>(
+      adminRoutes.getAuditTrail, request);
   }
   getLeaderboardTop(request: AdminLeaderboardTopRequest): Promise<AdminLeaderboardTopReply> {
     return this.call<AdminLeaderboardTopRequest, AdminLeaderboardTopReply>(

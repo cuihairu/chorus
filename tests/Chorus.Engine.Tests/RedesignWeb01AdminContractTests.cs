@@ -52,6 +52,7 @@ public sealed class RedesignWeb01AdminContractTests
         ("/admin/api/v1/trace-round", "read", "viewer"),
         ("/admin/api/v1/get-room-epoch", "read", "viewer"),
         ("/admin/api/v1/get-operation-status", "read", "viewer"),
+        ("/admin/api/v1/get-audit-trail", "read", "viewer"),
         ("/admin/api/v1/get-leaderboard-top", "read", "viewer"),
         ("/admin/api/v1/get-leaderboard-rank", "read", "viewer"),
         ("/admin/api/v1/get-leaderboard-around", "read", "viewer"),
@@ -94,8 +95,8 @@ public sealed class RedesignWeb01AdminContractTests
 
         // Ready is deliberately unannotated: it is a process-cert health word, and the
         // browser's health word is who-am-i. Exactly the non-Ready surface carries routes.
-        Assert.Equal(21, admin.Methods.Count);
-        Assert.Equal(20, admin.Methods.Count(m => m.GetOptions()?.HasExtension(AnnotationsExtensions.Http) == true));
+        Assert.Equal(22, admin.Methods.Count);
+        Assert.Equal(21, admin.Methods.Count(m => m.GetOptions()?.HasExtension(AnnotationsExtensions.Http) == true));
         Assert.Null(admin.Methods.Single(m => m.Name == "Ready").GetOptions());
     }
 

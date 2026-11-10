@@ -7,6 +7,10 @@ namespace Chorus.ControlServer;
 public sealed record QueueGateState(string PartitionKey, bool Suspended, DateTime UpdatedAtUtc, string UpdatedBy);
 public sealed record AdminAuditRow(string RequestId, string Operator, string Reason, string Scope,
     string Command, string DetailJson, DateTime CreatedAtUtc);
+/// <summary>FIX-WEB-15: one trail row — the audit entry plus its identity-column anchor,
+/// the walk's keyset cursor.</summary>
+public sealed record AdminAuditTrailRow(long AuditId, string RequestId, string Operator, string Reason,
+    string Scope, string Command, string DetailJson, DateTime CreatedAtUtc);
 public sealed record AdminBindingSnapshot(string BindingId, string GameId, long Generation, string State,
     string? CurrentRoomId, DateTime CreatedAtUtc);
 public sealed record AdminTicketSnapshot(string TicketId, string State, string PartitionKey,
@@ -91,6 +95,38 @@ public sealed class RedesignAdminStore(string connectionString)
         if (!await reader.ReadAsync(cancellationToken)) return null;
         return new AdminAuditRow(reader.GetString(0), reader.GetString(1), reader.GetString(2),
             reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetDateTime(6));
+    }
+
+    /// <summary>FIX-WEB-15: one bounded page of the audit trail, newest first, with one
+    /// more row than asked for as the has-more signal (the caller trims it). The walk is
+    /// a keyset on audit_id (an append-only identity column): a page's cursor is the last
+    /// row's id, and a newer row can never reorder an older one — no snapshot deadline.
+    /// Filters are exact words, not patterns; empty means unfiltered.</summary>
+    public async Task<IReadOnlyList<AdminAuditTrailRow>> QueryAuditTrailAsync(string command,
+        string @operator, int maxEntriesPlusOne, long strictlyBeforeAuditId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var query = new NpgsqlCommand("""
+            SELECT audit_id,request_id,operator,reason,scope,command,detail::text,created_at
+            FROM control.audit
+            WHERE (@command = '' OR command = @command)
+              AND (@operator = '' OR operator = @operator)
+              AND (@after = 0 OR audit_id < @after)
+            ORDER BY audit_id DESC LIMIT @max
+            """, connection);
+        query.Parameters.AddWithValue("command", command ?? "");
+        query.Parameters.AddWithValue("operator", @operator ?? "");
+        query.Parameters.AddWithValue("after", strictlyBeforeAuditId);
+        query.Parameters.AddWithValue("max", maxEntriesPlusOne);
+        await using var reader = await query.ExecuteReaderAsync(cancellationToken);
+        var rows = new List<AdminAuditTrailRow>();
+        while (await reader.ReadAsync(cancellationToken))
+            rows.Add(new AdminAuditTrailRow(reader.GetInt64(0), reader.GetString(1), reader.GetString(2),
+                reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetString(6),
+                reader.GetDateTime(7)));
+        return rows;
     }
 
     public async Task<QueueGateState> SetQueueGateAsync(string partitionKey, bool suspended, string updatedBy,

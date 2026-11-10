@@ -247,6 +247,39 @@ public sealed class AdminGrpcService(
         };
     }
 
+    // The audit trail query (FIX-WEB-15): the control plane's own operation log, newest
+    // first, on the viewer floor — the same read trust level as the single-id status
+    // query above. Exact-word filters and an audit-id keyset cursor (append-only log, no
+    // snapshot deadline); the store hands back one row more than asked for as the
+    // has-more signal and the cursor is the last row's id.
+    public override async Task<AdminAuditTrailReply> GetAuditTrail(
+        AdminAuditTrailRequest request, ServerCallContext context)
+    {
+        if (request.MaxEntries is <= 0 or > 200)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The audit trail page is bounded (1..200)."));
+        await RequireOperator(context, "viewer", "", "");
+        long after = long.TryParse(request.PageToken,
+            System.Globalization.CultureInfo.InvariantCulture, out var parsed) ? parsed : 0;
+        var rows = await adminStore.QueryAuditTrailAsync(request.Command, request.Operator,
+            request.MaxEntries + 1, after, context.CancellationToken);
+        var reply = new AdminAuditTrailReply();
+        foreach (var row in rows.Take(request.MaxEntries))
+            reply.Entries.Add(new AdminAuditEntryProto
+            {
+                RequestId = row.RequestId, Operator = row.Operator, Reason = row.Reason,
+                Scope = row.Scope, Command = row.Command, Detail = row.DetailJson,
+                CreatedAtUnixMs = new DateTimeOffset(row.CreatedAtUtc).ToUnixTimeMilliseconds()
+            });
+        if (rows.Count > request.MaxEntries)
+        {
+            reply.HasMore = true;
+            reply.NextPageToken = rows[request.MaxEntries - 1].AuditId.ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return reply;
+    }
+
     /// <summary>One input lookup translated into the operation's stage word: "Applied" only
     /// when a committed frame's input refs name the operation id; "Accepted" while the
     /// durable row stands unconsumed; a terminal disposition word (the room refused the

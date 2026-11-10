@@ -7,6 +7,7 @@ import {
   Input,
   InputNumber,
   Space,
+  Table,
   Tabs,
   Tag,
   Typography,
@@ -14,7 +15,7 @@ import {
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { createAdminClient, AdminError } from '../api/client';
-import type { AdminGetOperationStatusReply } from '../api/contract';
+import type { AdminGetOperationStatusReply, AdminAuditEntryProto } from '../api/contract';
 import { useAuth } from '../auth';
 
 // The management operations and receipts page (FIX-WEB-10, architecture 12.1): commands
@@ -24,7 +25,9 @@ import { useAuth } from '../auth';
 // (Accepted → Applied at a committed tick, FIX-GM-07) or the audit trail (Audited,
 // FIX-WEB-09). Accepted, applied and unknown are never folded together. Every command
 // sits on the gm floor (FIX-WEB-01), so a viewer gets the receipts but the command tabs
-// stay closed. The epoch bump gets its own page later (FIX-WEB-11).
+// stay closed. The audit trail query (FIX-WEB-15) sits beside the receipts: the log is
+// a read on the viewer floor — newest first, exact-word filters, an audit-id keyset
+// cursor walking strictly older rows. The epoch bump gets its own page later (FIX-WEB-11).
 type CommandKey =
   | 'suspendMatchQueue'
   | 'resumeMatchQueue'
@@ -88,6 +91,12 @@ export default function OperationsPage() {
   const [commandReply, setCommandReply] = useState<{ command: CommandKey; reply: Reply } | null>(null);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [querying, setQuerying] = useState(false);
+  // The audit trail walk (FIX-WEB-15): newest first, one page at a time — the continuation
+  // carries the server's cursor and appends strictly older rows.
+  const [auditEntries, setAuditEntries] = useState<AdminAuditEntryProto[]>([]);
+  const [auditState, setAuditState] = useState<{ hasMore: boolean; nextPageToken: string } | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditValues, setAuditValues] = useState<Record<string, unknown> | null>(null);
 
   const queryReceipt = async ({ operationId }: { operationId: string }) => {
     setQuerying(true);
@@ -180,6 +189,29 @@ export default function OperationsPage() {
         : err instanceof AdminError && err.status === 409
           ? 'This request id is already spent by a different request.'
           : 'The control plane refused or could not take this command. Check the target and try again.');
+    }
+  };
+
+  const runAudit = async (values: Record<string, unknown>, pageToken: string, append: boolean) => {
+    setAuditError(null);
+    setAuditValues(values);
+    if (!append) {
+      setAuditEntries([]);
+      setAuditState(null);
+    }
+    try {
+      const reply = await createAdminClient(token ?? '').getAuditTrail({
+        command: String(values.command ?? ''),
+        operator: String(values.operator ?? ''),
+        maxEntries: Number(values.maxEntries ?? 20),
+        pageToken,
+      });
+      setAuditEntries((current) => (append ? [...current, ...reply.entries] : reply.entries));
+      setAuditState({ hasMore: reply.hasMore, nextPageToken: reply.nextPageToken });
+    } catch {
+      setAuditEntries([]);
+      setAuditState(null);
+      setAuditError('The control plane refused or could not read the audit trail. Try again shortly.');
     }
   };
 
@@ -365,6 +397,68 @@ export default function OperationsPage() {
               </Descriptions.Item>
               <Descriptions.Item label="note">{receipt.note}</Descriptions.Item>
             </Descriptions>
+          </>
+        )}
+      </Card>
+      <Card title="Audit trail" style={{ marginBottom: 16 }}>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          Every audited command, newest first — one exact word per filter, empty means
+          unfiltered. The walk continues strictly older rows; the log is append-only, so
+          a page never reorders.
+        </Typography.Paragraph>
+        {auditError !== null && (
+          <Alert type="error" showIcon message={auditError} style={{ marginBottom: 12 }} />
+        )}
+        <Form
+          layout="inline"
+          colon={false}
+          name="audit-query"
+          onFinish={(values) => runAudit(values as Record<string, unknown>, '', false)}
+        >
+          <Form.Item name="command" style={{ minWidth: 220 }}>
+            <Input aria-label="Command filter" placeholder="command word, empty = all" allowClear />
+          </Form.Item>
+          <Form.Item name="operator" style={{ minWidth: 180 }}>
+            <Input aria-label="Operator filter" placeholder="operator, empty = all" allowClear />
+          </Form.Item>
+          <Form.Item name="maxEntries" initialValue={20}>
+            <InputNumber aria-label="Max entries" min={1} max={200} />
+          </Form.Item>
+          <Button type="primary" htmlType="submit">
+            Query audit
+          </Button>
+        </Form>
+        {auditEntries.length > 0 && (
+          <>
+            <Space style={{ marginTop: 12 }}>
+              {auditState?.hasMore && auditValues !== null && (
+                <Button onClick={() => runAudit(auditValues, auditState.nextPageToken, true)}>
+                  Continue
+                </Button>
+              )}
+            </Space>
+            <Table
+              size="small"
+              style={{ marginTop: 12 }}
+              rowKey={(entry) => `${entry.createdAtUnixMs}:${entry.requestId}`}
+              pagination={false}
+              scroll={{ x: 900 }}
+              columns={[
+                {
+                  title: 'Time',
+                  dataIndex: 'createdAtUnixMs',
+                  key: 'time',
+                  render: (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19),
+                },
+                { title: 'Command', dataIndex: 'command', key: 'command' },
+                { title: 'Operator', dataIndex: 'operator', key: 'operator' },
+                { title: 'Request id', dataIndex: 'requestId', key: 'requestId' },
+                { title: 'Reason', dataIndex: 'reason', key: 'reason' },
+                { title: 'Scope', dataIndex: 'scope', key: 'scope' },
+                { title: 'Detail', dataIndex: 'detail', key: 'detail' },
+              ]}
+              dataSource={auditEntries}
+            />
           </>
         )}
       </Card>

@@ -1010,6 +1010,42 @@ message AdminGetOperationStatusReply {
   string note = 5;
 }
 
+// FIX-WEB-15: the audit trail query — the control plane's own operation log, newest
+// first. A request names at most one exact filter per dimension (the command word and
+// the operator name; empty = unfiltered), a bounded page size, and the previous page's
+// next_page_token (the last row's audit id in decimal; empty starts at the newest row).
+// The walk is a keyset on an append-only identity column — a newer row can never reorder
+// an older one, so the cursor needs no snapshot deadline.
+message AdminAuditTrailRequest {
+  // The exact command word ("leaderboard.adjust", "bump-room-epoch", ...); empty = every command.
+  string command = 1;
+  // The exact operator name the audit row stands under; empty = every operator.
+  string operator = 2;
+  // The page size, bounded 1..200. Required.
+  int32 max_entries = 3;
+  // The previous page's next_page_token (the last row's audit id); empty starts at the newest.
+  string page_token = 4;
+}
+
+message AdminAuditEntryProto {
+  string request_id = 1;
+  string operator = 2;
+  string reason = 3;
+  // The command's own scope word ("tenant/game/room", "board/period/scope", ...).
+  string scope = 4;
+  string command = 5;
+  // The command's detail JSON, verbatim.
+  string detail = 6;
+  int64 created_at_unix_ms = 7;
+}
+
+message AdminAuditTrailReply {
+  repeated AdminAuditEntryProto entries = 1;
+  bool has_more = 2;
+  // Carries a token exactly when has_more; pass it back as page_token to continue.
+  string next_page_token = 3;
+}
+
 // The operator surface. FIX-WEB-01 adds the browser binding to the same contract the GM
 // client (GmOperatorClient) already speaks: every entry below carries a google.api.http
 // annotation so the browser console speaks HTTP+JSON at /admin/api/v1/<kebab-of-rpc-name>
@@ -1080,6 +1116,13 @@ service Admin {
   }
   rpc GetOperationStatus(AdminGetOperationStatusRequest) returns (AdminGetOperationStatusReply) {
     option (google.api.http) = { post: "/admin/api/v1/get-operation-status" body: "*" };
+  }
+  // FIX-WEB-15: the audit trail query (viewer floor). The audit log is append-only and
+  // every command lands exactly once per (request id, command) — the query walks it newest
+  // first with an audit-id keyset cursor (no snapshot deadline: a newer row can never
+  // reorder an older one). Filters are exact words, not patterns; empty means unfiltered.
+  rpc GetAuditTrail(AdminAuditTrailRequest) returns (AdminAuditTrailReply) {
+    option (google.api.http) = { post: "/admin/api/v1/get-audit-trail" body: "*" };
   }
   // FIX-WEB-12: the leaderboard queries for the back office (viewer rank). The request
   // names the board's READ KEY — board id, period bucket id and scope id — plus the

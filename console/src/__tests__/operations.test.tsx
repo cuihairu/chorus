@@ -234,4 +234,71 @@ describe('the operations and receipts page', () => {
     )).toBeInTheDocument();
     expect(screen.queryByText('suspended')).not.toBeInTheDocument();
   });
+
+  it('walks the audit trail newest first with exact-word filters', { timeout: 20000 }, async () => {
+    const replies = [
+      {
+        status: 200,
+        body: {
+          entries: [
+            { requestId: 'req-5', operator: 'gm-alice', reason: 'correct a score', scope: 'score-alltime/alltime/global', command: 'leaderboard.adjust', detail: '{"subjectId":"a"}', createdAtUnixMs: 1720000000000 },
+            { requestId: 'req-4', operator: 'gm-bob', reason: 'close the gate', scope: 'tenant-a/game-a', command: 'resume-match-queue', detail: '{}', createdAtUnixMs: 1720000001000 },
+          ],
+          hasMore: true,
+          nextPageToken: '12',
+        },
+      },
+      {
+        status: 200,
+        body: {
+          entries: [
+            { requestId: 'req-3', operator: 'gm-alice', reason: 'wipe a cheat', scope: 'score-alltime/alltime/global', command: 'leaderboard.reset', detail: '{}', createdAtUnixMs: 1720000002000 },
+          ],
+          hasMore: false,
+          nextPageToken: '',
+        },
+      },
+    ];
+    const auditCalls: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(url);
+      if (path.endsWith('/who-am-i')) return jsonResponse(200, gmIdentity);
+      if (path.endsWith('/get-audit-trail')) {
+        auditCalls.push(JSON.parse(String(init?.body)));
+        const reply = replies.shift();
+        if (reply === undefined) throw new Error('exhausted audit replies');
+        return jsonResponse(reply.status, reply.body);
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <ConsoleRoot />
+      </MemoryRouter>,
+    );
+    const { user } = await openOperations(gmIdentity);
+    const auditCard = screen.getByText('Audit trail').closest('.ant-card') as HTMLElement;
+
+    await user.type(within(auditCard).getByLabelText('Command filter'), 'leaderboard.adjust');
+    await user.type(within(auditCard).getByLabelText('Operator filter'), 'gm-alice');
+    await user.click(within(auditCard).getByRole('button', { name: 'Query audit' }));
+
+    // The filters ride the wire verbatim; the default page size rides as 20.
+    expect(auditCalls[0]).toEqual({
+      command: 'leaderboard.adjust',
+      operator: 'gm-alice',
+      maxEntries: 20,
+      pageToken: '',
+    });
+    expect(within(auditCard).getByText('correct a score')).toBeInTheDocument();
+    expect(within(auditCard).getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+
+    // The continuation carries the server's cursor and appends strictly older rows.
+    await user.click(within(auditCard).getByRole('button', { name: 'Continue' }));
+    expect(auditCalls[1].pageToken).toBe('12');
+    expect(within(auditCard).getByText('wipe a cheat')).toBeInTheDocument();
+    expect(within(auditCard).queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+  });
 });
