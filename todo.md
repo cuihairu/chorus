@@ -336,7 +336,8 @@
   - 证据：b86c889；NodeAgent/MachineLoadCollector（/proc/loadavg 前三字段→(1m,5m,15m)；电平单读无基线；负值拒畸形；读源可注入非 Linux 无值）；+4 fact（三均值/零负载/null 族/注入源）；行为中性零调用点全量门不重跑（CI 后盾）
 - [x] **FIX-OBS-05 / P1：采集磁盘容量与使用率。** 依赖：FIX-OBS-01。
   - 证据：4eff812；NodeAgent/MachineDiskCollector（df -Pk→每挂载 (mount,total,used,percent)；电平单读无基线；伪/内存文件系统 25 名黑名单跳过、overlay 保留、零容量跳过；\040 空格还原；读源可注入非 Linux 无值）；+5 fact（块设备+overlay per mount/伪内存被跳/空格挂载/缺畸形全伪零容量 null/注入源）；行为中性零调用点全量门不重跑（CI 后盾）
-- [ ] **FIX-OBS-06 / P1：可靠上报机器遥测。** 依赖：FIX-OBS-02、FIX-OBS-03、FIX-OBS-04、FIX-OBS-05。
+- [x] **FIX-OBS-06 / P1：可靠上报机器遥测。** 依赖：FIX-OBS-02、FIX-OBS-03、FIX-OBS-04、FIX-OBS-05。
+  - 证据：e31e794；m0.proto ReportMachineTelemetry（presence 标志族）+0041 迁移（ops.machine_sample+ops.machine_disk_sample）+NodeAgent 三件套（Sampler 聚合四采集器/Pipeline 有界缓冲 drop-oldest+有界重试+退出冲刷/Mapper presence）+BootstrapAgent 5s 循环集成（15s 周期 env 可配）+ControlServer 落库（node 行锁 stale agent 拒）；+16 fact（sampler3+pipeline7+mapper2+store3+M0 host1）+schema 迁移断言更新（表 48→50、迁移 40→41）；全量门 1937 测试 16 失败全为文档化共租 flake 或已修回归（3 宿主断言 solo 全绿）
 - [ ] **FIX-OBS-07 / P1：提供机器与进程统计 API。** 依赖：FIX-WEB-03、FIX-OBS-06。
 - [ ] **FIX-OBS-08 / P1：提供房间统计 API。** 依赖：FIX-WEB-03、FIX-OBS-01、FIX-LINK-01。
 - [ ] **FIX-OBS-09 / P1：提供分口径在线人数。** 依赖：FIX-WEB-03、FIX-OBS-01。
