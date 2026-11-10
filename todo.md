@@ -342,7 +342,8 @@
   - 证据：8be0d37；完整链（用户确认范围：完整链+ControlHost /api 挂载）——进程采集 `MachineProcessCollector`（槽表源+/proc stat jiffies comm 括号后字段 14/15+VmRSS；CPU% 是 delta 首样本立基线，读失败跳过绝不假零）+`MachineProcessProto`（request.process=16 复用 ReportMachineTelemetry RPC）+0042 迁移（ops.process_sample）+store 同事务落库+`TelemetryStore`（MachineStats/ProcessStats 只读 ops，同库假设 Control:ConnectionString，Sqlite 答空非 500）+`/api/telemetry/machine|process`（RequireAuthorization）；+17 fact（collector7+sampler2+mapper2+store6）+schema 迁移断言更新（表 50→51、迁移 41→42）；全量门 1954 测试 8 失败全为文档化共租签名或 solo 转绿（M2 trio solo+干净树同败=环境族）
 - [x] **FIX-OBS-08 / P1：提供房间统计 API。** 依赖：FIX-WEB-03、FIX-OBS-01、FIX-LINK-01。
   - 证据：c335e9d；混合读数（用户确认模式延续：两平面各答各的维度）——`RoomStatsStore`（total/active/by_state 从控制面 records Live 谓词过滤，直方图只含出现过的态；by_tenant 走 game.room 与 admission 同过滤 NOT IN 终态，Sqlite 答空缺席非 500）+`/api/rooms/stats`（RequireAuthorization）；+4 fact；无迁移变更（51/42 不动）；全量门 1958 测试 9 失败全为文档化共租签名或 solo 转绿（M2 trio 已两树同败=环境族、容量 p95 5.80ms 争抢 solo 绿）
-- [ ] **FIX-OBS-09 / P1：提供分口径在线人数。** 依赖：FIX-WEB-03、FIX-OBS-01。
+- [x] **FIX-OBS-09 / P1：提供分口径在线人数。** 依赖：FIX-WEB-03、FIX-OBS-01。
+  - 证据：b604f5f；`OnlineStatsStore`（总数=控制面连接复用路由新鲜度规则 NodeLease 15s/ConnectionLease 30s+gateway 健康，distinct 用户非连接；拆分=数据面——SessionId=room id join game.room 非终态取 tenant·game、无房间行会话只在总数；chorus_online_rooms 读 game.participation Active 参与真相；Sqlite 拆分答空）+`/api/online/stats`；+3 fact；全量门 1961 测试 11 失败全为文档化共租签名或 solo 转绿（M2 环境族/宿主时序 solo 绿）
 - [ ] **FIX-OBS-10 / P1：统计平台原始入口流量。** 依赖：FIX-OBS-01。
 - [ ] **FIX-OBS-11 / P1：统计事件投递与生效链路。** 依赖：FIX-OBS-01、FIX-INPUT-06。
 - [ ] **FIX-OBS-12 / P1：统计平台出站 API 调用。** 依赖：FIX-OBS-01。
