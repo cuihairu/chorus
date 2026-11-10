@@ -48,6 +48,10 @@ jobs:
         working-directory: console
         run: pnpm build
 
+      - name: Test
+        working-directory: console
+        run: pnpm test
+
   build-test:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     services:
