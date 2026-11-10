@@ -28,6 +28,18 @@ function jsonResponse(status: number, body: unknown) {
 
 function statsFaces() {
   return {
+    '/ops/alerts': {
+      status: 200,
+      body: [
+        {
+          kind: 'machine-cpu',
+          subject: 'node-1',
+          observed: 95.5,
+          threshold: 90,
+          detail: 'latest sample reads 95.5% cpu.',
+        },
+      ],
+    },
     '/telemetry/machine': {
       status: 200,
       body: [
@@ -130,8 +142,10 @@ function overviewFetch(overrides: Record<string, { status: number; body: unknown
 async function openOverview(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('Operator token'), 'alice-token');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
-  // The shell's menu anchors have no href (navigation is onClick), so click the item text.
-  await user.click(await screen.findByText('Home', { exact: true }));
+  // The shell's menu anchors have no href (navigation is onClick), so click the item
+  // text. The menu mounts with the responsive layout's desktop flip, one effect tick
+  // after the shell — the timeout absorbs that tick under load.
+  await user.click(await screen.findByText('Home', { exact: true }, { timeout: 5000 }));
   await waitFor(() => expect(screen.getByText('Machines (15 min)')).toBeInTheDocument());
 }
 
@@ -155,6 +169,12 @@ describe('the operations overview page', () => {
     );
     const user = userEvent.setup();
     await openOverview(user);
+
+    // Alerts face: the breach row with its kind, subject and observed word.
+    const alertsCard = screen.getByText('Alerts').closest('.ant-card') as HTMLElement;
+    expect(within(alertsCard).getByText('machine-cpu')).toBeInTheDocument();
+    expect(within(alertsCard).getByText('node-1')).toBeInTheDocument();
+    expect(within(alertsCard).getByText('95.5')).toBeInTheDocument();
 
     // Machines face: the node row with cpu and memory.
     const machinesCard = screen.getByText('Machines (15 min)').closest('.ant-card') as HTMLElement;
@@ -211,7 +231,7 @@ describe('the operations overview page', () => {
     expect(within(deliveryCard).getByText('500')).toBeInTheDocument();
 
     // The other faces still answer.
-    expect(screen.getByText('node-1')).toBeInTheDocument();
+    expect(screen.getByText('12.5%')).toBeInTheDocument();
     expect(screen.getByText('river.execute')).toBeInTheDocument();
     expect(screen.getByText('chorus_ingress_accepted_total')).toBeInTheDocument();
   });
@@ -234,7 +254,7 @@ describe('the operations overview page', () => {
     expect(within(roomsCard).getByText('unexpected shape')).toBeInTheDocument();
 
     // The other faces still answer.
-    expect(screen.getByText('node-1')).toBeInTheDocument();
+    expect(screen.getByText('12.5%')).toBeInTheDocument();
     expect(screen.getByText('river.execute')).toBeInTheDocument();
     expect(screen.getByText('chorus_ingress_accepted_total')).toBeInTheDocument();
   });
@@ -260,7 +280,7 @@ describe('the operations overview page', () => {
     });
 
     // The refreshed faces render again, not a stuck spinner.
-    expect(await screen.findByText('node-1')).toBeInTheDocument();
+    expect(await screen.findByText('12.5%')).toBeInTheDocument();
     expect(screen.getByText('chorus_ingress_accepted_total')).toBeInTheDocument();
   });
 });

@@ -19,14 +19,15 @@ import { AdminError, getAdminJson } from '../api/client';
 import { useAuth } from '../auth';
 import { useI18n } from '../i18n';
 
-// The operations overview (FIX-OBS-14): one screen that answers "is the fleet healthy"
-// from the statistics faces — machines (OBS-07), rooms and online (OBS-08/09), the raw
+// The operations overview (FIX-OBS-14, with the threshold words of FIX-OBS-15): one
+// screen that answers "is the fleet healthy" from the statistics faces — the computed
+// threshold alerts (OBS-15), machines (OBS-07), rooms and online (OBS-08/09), the raw
 // ingress and the event delivery chain (OBS-10/11), the outbound platform calls
 // (OBS-12), and the counters' windowed increments with the retained history behind them
 // (OBS-13). Each face answers independently, so one face's failure is that card's
 // error, never a blank screen; the numbers are the faces' own answers shown as they
-// are — no averaging across horizons and no derived health verdict (thresholds and
-// alerts arrive with FIX-OBS-15).
+// are — no averaging across horizons and no verdict beyond what the alerts face itself
+// states.
 
 interface MachineMemory {
   totalBytes: number;
@@ -112,9 +113,18 @@ interface OpsWindow {
   families: OpsFamily[];
 }
 
+interface OpsAlertItem {
+  kind: string;
+  subject: string;
+  observed: number;
+  threshold: number;
+  detail: string;
+}
+
 type Face<T> = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'data'; value: T };
 
 interface Faces {
+  alerts: Face<OpsAlertItem[]>;
   machines: Face<MachineNode[]>;
   rooms: Face<RoomStats>;
   online: Face<OnlineStats>;
@@ -125,6 +135,7 @@ interface Faces {
 }
 
 const loadingFaces: Faces = {
+  alerts: { kind: 'loading' },
   machines: { kind: 'loading' },
   rooms: { kind: 'loading' },
   online: { kind: 'loading' },
@@ -140,6 +151,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 // Each face owns its JSON shape; a 200 that doesn't carry the face's own discriminators
 // (an older control plane, a proxy interposing) is that card's error, never a page crash.
 const faceGuards: Record<keyof Faces, (value: unknown) => boolean> = {
+  alerts: (value) => Array.isArray(value),
   machines: (value) => Array.isArray(value),
   rooms: (value) => isRecord(value) && typeof value.total === 'number' && isRecord(value.byState),
   online: (value) => isRecord(value) && typeof value.playersTotal === 'number',
@@ -173,6 +185,7 @@ export default function OverviewPage() {
       }
     };
     await Promise.allSettled([
+      settle('/ops/alerts', 'alerts', faceGuards.alerts),
       settle('/telemetry/machine?windowMinutes=15', 'machines', faceGuards.machines),
       settle('/rooms/stats', 'rooms', faceGuards.rooms),
       settle('/online/stats', 'online', faceGuards.online),
@@ -203,6 +216,29 @@ export default function OverviewPage() {
         >
       </Space>
       <Row gutter={[16, 16]}>
+        <Col xs={24}>
+          {faceCard(t('Alerts', '告警'), faces.alerts as Face<never>, (value) => {
+            const active = value as OpsAlertItem[];
+            if (active.length === 0) {
+              return <Typography.Text type="secondary">{t('No threshold breaches.', '无阈值破口。')}</Typography.Text>;
+            }
+            return (
+              <Table
+                size="small"
+                rowKey={(alert) => `${alert.kind}:${alert.subject}`}
+                pagination={false}
+                dataSource={active}
+                columns={[
+                  { title: t('Kind', '类别'), dataIndex: 'kind', render: (kind: string) => <Tag color="red">{kind}</Tag> },
+                  { title: t('Subject', '主体'), dataIndex: 'subject' },
+                  { title: t('Observed', '读数'), dataIndex: 'observed' },
+                  { title: t('Threshold', '阈值'), dataIndex: 'threshold' },
+                  { title: t('Detail', '详情'), dataIndex: 'detail' },
+                ]}
+              />
+            );
+          })}
+        </Col>
         <Col xs={24} xl={12}>
           {faceCard(t('Machines (15 min)', '机器（15 分钟）'), faces.machines as Face<never>, (value) => {
             const nodes = value as MachineNode[];

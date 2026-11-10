@@ -32,9 +32,23 @@ builder.Services.AddSingleton(new TelemetryStore(databaseConnection, databasePro
 builder.Services.AddSingleton(new RoomStatsStore(databaseConnection, databaseProvider, controlDatabase));
 builder.Services.AddSingleton(new OnlineStatsStore(databaseConnection, databaseProvider, controlDatabase));
 builder.Services.AddSingleton(new IngressStatsStore(databaseConnection, databaseProvider));
-builder.Services.AddSingleton(new DeliveryStatsStore(databaseConnection, databaseProvider));
-builder.Services.AddSingleton(new PlatformApiStatsStore(databaseConnection, databaseProvider));
-builder.Services.AddSingleton(new OpsWindowStore(databaseConnection, databaseProvider));
+var deliveryStatsStore = new DeliveryStatsStore(databaseConnection, databaseProvider);
+builder.Services.AddSingleton(deliveryStatsStore);
+var platformApiStatsStore = new PlatformApiStatsStore(databaseConnection, databaseProvider);
+builder.Services.AddSingleton(platformApiStatsStore);
+var opsWindowStore = new OpsWindowStore(databaseConnection, databaseProvider);
+builder.Services.AddSingleton(opsWindowStore);
+builder.Services.AddSingleton(new OpsAlertsStore(
+    new TelemetryStore(databaseConnection, databaseProvider),
+    opsWindowStore, deliveryStatsStore, platformApiStatsStore,
+    new OpsAlertThresholds(
+        Math.Clamp(builder.Configuration.GetValue("Control:Alerts:MachineCpuPercent", 90.0), 1, 100),
+        Math.Clamp(builder.Configuration.GetValue("Control:Alerts:MachineMemoryPercent", 90.0), 1, 100),
+        Math.Clamp(builder.Configuration.GetValue("Control:Alerts:MachineQuietMinutes", 5), 1, 1440),
+        Math.Max(builder.Configuration.GetValue("Control:Alerts:IngressRejections", 1L), 0L),
+        Math.Max(builder.Configuration.GetValue("Control:Alerts:EffectsFailed", 0L), 0L),
+        Math.Max(builder.Configuration.GetValue("Control:Alerts:EffectsPending", 1000L), 0L),
+        Math.Max(builder.Configuration.GetValue("Control:Alerts:PlatformApiFailures", 1L), 0L))));
 builder.Services.AddSingleton<RoomControlStore>();
 builder.Services.AddHostedService<ControlMaintenance>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
@@ -120,6 +134,7 @@ admin.MapGet("/ingress/stats", (IngressStatsStore s) => s.Stats());
 admin.MapGet("/delivery/stats", (DeliveryStatsStore s) => s.Stats());
 admin.MapGet("/platform-api/stats", (PlatformApiStatsStore s) => s.Stats());
 admin.MapGet("/ops/window", (int? windowMinutes, OpsWindowStore s) => s.Stats(windowMinutes ?? 60));
+admin.MapGet("/ops/alerts", (OpsAlertsStore s) => s.Active());
 admin.MapGet("/rooms", (RoomControlStore s) => s.Rooms().Select(r => r with { Inbox = null, Receipts = null, Snapshot = null }));
 admin.MapGet("/rooms/{id}", (string id, RoomControlStore s) => s.Room(id) is { } r ? Results.Ok(new { room = r with { Inbox = null, Receipts = null }, pendingEvents = s.PendingCount(id), connections = s.Connections().Where(c => c.SessionId == id) }) : Results.NotFound());
 admin.MapGet("/connections", (RoomControlStore s) => s.Connections());
