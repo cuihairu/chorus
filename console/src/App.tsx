@@ -4,6 +4,7 @@ import {
   LogoutOutlined,
   PartitionOutlined,
   PlayCircleOutlined,
+  ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { PageContainer, ProLayout } from '@ant-design/pro-components';
@@ -11,6 +12,7 @@ import { Button, Result, Spin, Tag } from 'antd';
 import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth';
+import EpochPage from './pages/EpochPage';
 import LoginPage from './pages/LoginPage';
 import OperationsPage from './pages/OperationsPage';
 
@@ -18,8 +20,8 @@ import OperationsPage from './pages/OperationsPage';
 // every admin route sits behind the login gate, the signed-in operator's identity is
 // the header word, and a stored credential survives reloads only while who-am-i still
 // answers for it. The remaining pages arrive with their backing APIs — nodes and
-// processes (WEB-06), rooms (WEB-07), streamers and matching (WEB-08), operations (WEB-10).
-type RouteKey = 'home' | 'nodes' | 'rooms' | 'streamers' | 'operations';
+// processes (WEB-06), rooms (WEB-07), streamers and matching (WEB-08).
+type RouteKey = 'home' | 'nodes' | 'rooms' | 'streamers' | 'operations' | 'epoch';
 
 const menuRoutes: Array<{ path: string; name: string; icon: ReactNode; routeKey: RouteKey }> = [
   { path: '/home', name: 'Home', icon: <HomeOutlined />, routeKey: 'home' },
@@ -27,6 +29,7 @@ const menuRoutes: Array<{ path: string; name: string; icon: ReactNode; routeKey:
   { path: '/rooms', name: 'Rooms', icon: <PlayCircleOutlined />, routeKey: 'rooms' },
   { path: '/streamers', name: 'Streamers and matching', icon: <PartitionOutlined />, routeKey: 'streamers' },
   { path: '/operations', name: 'Operations', icon: <ClusterOutlined />, routeKey: 'operations' },
+  { path: '/epoch', name: 'Room epoch', icon: <ThunderboltOutlined />, routeKey: 'epoch' },
 ];
 
 function Placeholder({ routeKey }: { routeKey: RouteKey }) {
@@ -36,6 +39,7 @@ function Placeholder({ routeKey }: { routeKey: RouteKey }) {
     rooms: 'Rooms',
     streamers: 'Streamers and matching',
     operations: 'Operations and receipts',
+    epoch: 'Room epoch',
   };
   return (
     <PageContainer>
@@ -106,9 +110,9 @@ function ConsolePages() {
     menuRoutes.find((entry) => entry.path === location.pathname)?.routeKey ?? 'home';
   return (
     <ConsoleShell>
-      {routeKey === 'operations'
-        ? <OperationsPage />
-        : <Placeholder routeKey={routeKey} />}
+      {routeKey === 'operations' && <OperationsPage />}
+      {routeKey === 'epoch' && <EpochPage />}
+      {routeKey !== 'operations' && routeKey !== 'epoch' && <Placeholder routeKey={routeKey} />}
     </ConsoleShell>
   );
 }
