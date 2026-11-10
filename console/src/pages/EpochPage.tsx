@@ -13,6 +13,7 @@ import {
 import { useState } from 'react';
 import { createAdminClient, AdminError } from '../api/client';
 import type { AdminGetRoomEpochReply, AdminBumpRoomEpochReply } from '../api/contract';
+import { useI18n } from '../i18n';
 import { useAuth } from '../auth';
 
 // The standalone room-epoch form (FIX-WEB-11, architecture 4.5 + GM-01..05): the
@@ -57,6 +58,7 @@ function ReplyRows({ reply }: { reply: Record<string, unknown> }) {
 
 export default function EpochPage() {
   const { token, operator } = useAuth();
+  const { t } = useI18n();
   const canCommand = operator?.role === 'gm';
   const [lookup, setLookup] = useState<AdminGetRoomEpochReply | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
@@ -67,8 +69,10 @@ export default function EpochPage() {
     err instanceof AdminError && err.status === 403
       ? refused
       : err instanceof AdminError && err.status === 409
-        ? 'This request id is already spent by a different request.'
-        : 'The control plane refused or could not take this. Check the target and try again.';
+        ? t('This request id is already spent by a different request.',
+          '这个请求 id 已被另一个请求用掉。')
+        : t('The control plane refused or could not take this. Check the target and try again.',
+          '控制面拒绝了这条请求或无法受理。请检查目标后重试。');
 
   const runLookup = async (values: Record<string, unknown>) => {
     setLookupError(null);
@@ -83,7 +87,8 @@ export default function EpochPage() {
         roomId: String(values.roomId ?? ''),
       }));
     } catch (err) {
-      setLookupError(describe(err, 'Your scope does not cover this room.'));
+      setLookupError(describe(err, t('Your scope does not cover this room.',
+        '你的作用域不覆盖这个房间。')));
     }
   };
 
@@ -102,33 +107,34 @@ export default function EpochPage() {
         targetEpoch: Number(values.targetEpoch ?? 0),
       }));
     } catch (err) {
-      setBumpError(describe(err, 'The control plane refused this command: your role or scope does not cover it.'));
+      setBumpError(describe(err, t(
+        'The control plane refused this command: your role or scope does not cover it.',
+        '控制面拒绝了这条命令：你的角色或作用域不覆盖它。')));
     }
   };
 
   return (
-    <Card title="Room epoch">
+    <Card title={t('Room epoch', '房间纪元')}>
       <Typography.Paragraph type="secondary">
-        Look a room up, then bump its epoch against the expected value the lookup showed —
-        a stale expectation is refused visibly. A bump parks the room in Recovering and
-        fences old-epoch commits; bringing it back is the explicit recovery command on the
-        operations page. The route sync status says whether a gateway has confirmed the
-        new routing — committed is not the same as confirmed.
+        {t(
+          'Look a room up, then bump its epoch against the expected value the lookup showed — a stale expectation is refused visibly. A bump parks the room in Recovering and fences old-epoch commits; bringing it back is the explicit recovery command on the operations page. The route sync status says whether a gateway has confirmed the new routing — committed is not the same as confirmed.',
+          '先查一个房间，再对照查询显示的期望值抬它的纪元——过期的期望会被显式拒绝。抬纪元会把房间停进 Recovering 并栅化旧纪元提交；把房间带回来是操作页上显式的恢复命令。路由同步状态说明是否有网关已确认新路由——已提交不等于已确认。',
+        )}
       </Typography.Paragraph>
-      <Card title="Lookup" style={{ marginBottom: 16 }}>
+      <Card title={t('Lookup', '查询')} style={{ marginBottom: 16 }}>
         <Form layout="vertical" name="epoch-lookup" onFinish={runLookup} disabled={!canCommand}>
           <Space wrap size="large">
-            <Form.Item name="tenantId" label="Tenant" rules={[{ required: true, message: 'Tenant is required.' }]}>
-              <Input placeholder="tenant id" />
+            <Form.Item name="tenantId" label={t('Tenant', '租户')} rules={[{ required: true, message: t('Tenant is required.', '租户必填。') }]}>
+              <Input placeholder={t('tenant id', '租户 id')} />
             </Form.Item>
-            <Form.Item name="gameId" label="Game" rules={[{ required: true, message: 'Game is required.' }]}>
-              <Input placeholder="game id" />
+            <Form.Item name="gameId" label={t('Game', '游戏')} rules={[{ required: true, message: t('Game is required.', '游戏必填。') }]}>
+              <Input placeholder={t('game id', '游戏 id')} />
             </Form.Item>
-            <Form.Item name="roomId" label="Room" rules={[{ required: true, message: 'Room is required.' }]}>
-              <Input placeholder="room id" />
+            <Form.Item name="roomId" label={t('Room', '房间')} rules={[{ required: true, message: t('Room is required.', '房间必填。') }]}>
+              <Input placeholder={t('room id', '房间 id')} />
             </Form.Item>
             <Button type="primary" htmlType="submit" disabled={!canCommand}>
-              Look up
+              {t('Look up', '查询')}
             </Button>
           </Space>
         </Form>
@@ -146,41 +152,42 @@ export default function EpochPage() {
         <Alert
           type="info"
           showIcon
-          message="Your role is below the gm floor: epoch lookups and bumps both stay closed."
+          message={t('Your role is below the gm floor: epoch lookups and bumps both stay closed.',
+            '你的角色低于 gm 地板：纪元查询与抬升都保持关闭。')}
           style={{ marginBottom: 12 }}
         />
       )}
-      <Card title="Bump" style={{ marginBottom: 16 }}>
+      <Card title={t('Bump', '抬升')} style={{ marginBottom: 16 }}>
         <Form layout="vertical" name="epoch-bump" onFinish={runBump} disabled={!canCommand}>
           <Space wrap size="large">
-            <Form.Item name="reason" label="Reason" rules={[{ required: true, message: 'A reason is required.' }]}>
-              <Input placeholder="why this epoch bump, for the audit row" style={{ minWidth: 280 }} />
+            <Form.Item name="reason" label={t('Reason', '理由')} rules={[{ required: true, message: t('A reason is required.', '理由必填。') }]}>
+              <Input placeholder={t('why this epoch bump, for the audit row', '为何抬纪元——写进审计行')} style={{ minWidth: 280 }} />
             </Form.Item>
-            <Form.Item name="tenantId" label="Tenant" rules={[{ required: true, message: 'Tenant is required.' }]}>
-              <Input placeholder="tenant id" />
+            <Form.Item name="tenantId" label={t('Tenant', '租户')} rules={[{ required: true, message: t('Tenant is required.', '租户必填。') }]}>
+              <Input placeholder={t('tenant id', '租户 id')} />
             </Form.Item>
-            <Form.Item name="gameId" label="Game" rules={[{ required: true, message: 'Game is required.' }]}>
-              <Input placeholder="game id" />
+            <Form.Item name="gameId" label={t('Game', '游戏')} rules={[{ required: true, message: t('Game is required.', '游戏必填。') }]}>
+              <Input placeholder={t('game id', '游戏 id')} />
             </Form.Item>
-            <Form.Item name="roomId" label="Room" rules={[{ required: true, message: 'Room is required.' }]}>
-              <Input placeholder="room id" />
+            <Form.Item name="roomId" label={t('Room', '房间')} rules={[{ required: true, message: t('Room is required.', '房间必填。') }]}>
+              <Input placeholder={t('room id', '房间 id')} />
             </Form.Item>
             <Form.Item
               name="expectedEpoch"
-              label="Expected epoch"
-              rules={[{ required: true, message: 'The expected epoch is required.' }]}
+              label={t('Expected epoch', '期望纪元')}
+              rules={[{ required: true, message: t('The expected epoch is required.', '期望纪元必填。') }]}
             >
-              <InputNumber min={1} placeholder="the epoch the lookup showed" />
+              <InputNumber min={1} placeholder={t('the epoch the lookup showed', '查询显示的纪元')} />
             </Form.Item>
-            <Form.Item name="targetEpoch" label="Target epoch (optional)">
-              <InputNumber min={0} placeholder="empty = expected + 1" />
+            <Form.Item name="targetEpoch" label={t('Target epoch (optional)', '目标纪元（可选）')}>
+              <InputNumber min={0} placeholder={t('empty = expected + 1', '留空 = 期望 + 1')} />
             </Form.Item>
             <Button type="primary" htmlType="submit" disabled={!canCommand}>
-              Bump epoch
+              {t('Bump epoch', '抬升纪元')}
             </Button>
           </Space>
         </Form>
-        {bumpError !== null && <Alert type="error" showIcon message={bumpError} style={{ marginTop: 12 }} />}
+        {bumpError !== null && <Alert type="error" showIcon message={bumpError} style={{ marginBottom: 12 }} />}
         {bump !== null && (
           <>
             <Space style={{ marginTop: 12 }}>
@@ -190,8 +197,9 @@ export default function EpochPage() {
             </Space>
             <ReplyRows reply={bump as unknown as Record<string, unknown>} />
             <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
-              Receipt {bump.operationId}: replaying it answers a duplicate with the recorded
-              values, and the receipt query on the operations page answers for this id.
+              {t('Receipt', '回执')} {bump.operationId}:{' '}
+              {t('replaying it answers a duplicate with the recorded values, and the receipt query on the operations page answers for this id.',
+                '重放它会以重复回答记录值，操作页上的回执查询也答这个 id。')}
             </Typography.Paragraph>
           </>
         )}

@@ -20,6 +20,7 @@ import type {
   AdminLeaderboardRankedEntryProto,
 } from '../api/contract';
 import { useAuth } from '../auth';
+import { useI18n } from '../i18n';
 
 // The out-of-the-box leaderboard back office (FIX-WEB-13, on the FIX-WEB-12 read face,
 // maintained through FIX-WEB-14's command face): every query names the read key only —
@@ -32,33 +33,29 @@ import { useAuth } from '../auth';
 // corrections) sit on the gm floor: each carries the audited triple and the opaque
 // version token a read named (prefilled here), and a board that changed since that read
 // is refused with a reload word — never corrected onto a stale view.
-const subjectOptions = [
-  { value: 0, label: 'Player' },
-  { value: 1, label: 'Streamer' },
-  { value: 2, label: 'Faction' },
-];
 
-const restartWord = 'The board changed since this walk started — start a fresh read.';
-const notFoundWord = 'That subject has no score on this board.';
-const scopeWord = 'Your scope does not cover this board.';
-const reloadWord = 'The board changed since your read version — reload the board and retry.';
-const conflictWord = 'That operation id already answered a different projection — use a fresh one.';
-const floorWord = 'Maintenance commands need the gm role.';
+type ErrorWords = {
+  restart: string;
+  reload: string;
+  conflict: string;
+  scope: string;
+  generic: string;
+};
 
-function describeError(err: unknown): string {
+function describeError(err: unknown, words: ErrorWords): string {
   if (err instanceof AdminError && err.status === 400 && err.message.includes('restart the read')) {
-    return restartWord;
+    return words.restart;
   }
   if (err instanceof AdminError && err.status === 400 && err.message.includes('reload the board')) {
-    return reloadWord;
+    return words.reload;
   }
   if (err instanceof AdminError && err.status === 409) {
-    return conflictWord;
+    return words.conflict;
   }
   if (err instanceof AdminError && err.status === 403) {
-    return scopeWord;
+    return words.scope;
   }
-  return 'The control plane refused or could not take this. Check the board key and try again.';
+  return words.generic;
 }
 
 function readKey(values: Record<string, unknown>) {
@@ -74,6 +71,7 @@ function readKey(values: Record<string, unknown>) {
 
 export default function LeaderboardPage() {
   const { token, operator } = useAuth();
+  const { t } = useI18n();
   const canCommand = operator?.role === 'gm';
   // The opaque version token the maintenance commands name as expected_version (WEB-14):
   // every successful read refreshes it into the command forms, so a correction names the
@@ -104,6 +102,25 @@ export default function LeaderboardPage() {
   const [rebuild, setRebuild] = useState<{ entries: number; readVersionUnixMs: number } | null>(null);
   const [rebuildError, setRebuildError] = useState<string | null>(null);
 
+  const errorWords: ErrorWords = {
+    restart: t('The board changed since this walk started — start a fresh read.',
+      '走板开始后板已变化——请重新起一条走板。'),
+    reload: t('The board changed since your read version — reload the board and retry.',
+      '板在你读到的版本之后已变化——请重读板后重试。'),
+    conflict: t('That operation id already answered a different projection — use a fresh one.',
+      '这个操作 id 已回答过另一个投影——请换一个新的。'),
+    scope: t('Your scope does not cover this board.', '你的作用域不覆盖这块板。'),
+    generic: t('The control plane refused or could not take this. Check the board key and try again.',
+      '控制面拒绝了这条请求或无法受理。请检查板键后重试。'),
+  };
+  const notFoundWord = t('That subject has no score on this board.', '该主体在此板无分。');
+  const floorWord = t('Maintenance commands need the gm role.', '维护命令需要 gm 角色。');
+  const subjectOptions = [
+    { value: 0, label: t('Player', '玩家') },
+    { value: 1, label: t('Streamer', '主播') },
+    { value: 2, label: t('Faction', '阵营') },
+  ];
+
   /** Feeds a fresh read version into the command forms — the token a correction names. */
   const pushVersion = (version: string) => {
     if (!canCommand || version.length === 0) return;
@@ -130,7 +147,7 @@ export default function LeaderboardPage() {
       // A refused continuation kills the walk: the operator restarts from the first page.
       setTop(null);
       setTopEntries([]);
-      setTopError(describeError(err));
+      setTopError(describeError(err, errorWords));
     }
   };
 
@@ -145,7 +162,7 @@ export default function LeaderboardPage() {
       setRank(reply);
       pushVersion(reply.readVersion);
     } catch (err) {
-      setRankError(describeError(err));
+      setRankError(describeError(err, errorWords));
     }
   };
 
@@ -161,7 +178,7 @@ export default function LeaderboardPage() {
       setAround(reply);
       pushVersion(reply.readVersion);
     } catch (err) {
-      setAroundError(describeError(err));
+      setAroundError(describeError(err, errorWords));
     }
   };
 
@@ -188,7 +205,7 @@ export default function LeaderboardPage() {
       setAdjust(reply);
       pushVersion(reply.readVersion);
     } catch (err) {
-      setAdjustError(describeError(err));
+      setAdjustError(describeError(err, errorWords));
     }
   };
 
@@ -206,7 +223,7 @@ export default function LeaderboardPage() {
       setReset(reply);
       pushVersion(reply.readVersion);
     } catch (err) {
-      setResetError(describeError(err));
+      setResetError(describeError(err, errorWords));
     }
   };
 
@@ -222,43 +239,40 @@ export default function LeaderboardPage() {
       setRebuild(reply);
       pushVersion(reply.readVersion);
     } catch (err) {
-      setRebuildError(describeError(err));
+      setRebuildError(describeError(err, errorWords));
     }
   };
 
   const keyFields = () => (
     <>
-      <Form.Item name="tenantId" label="Tenant" rules={[{ required: true, message: 'Tenant is required.' }]}>
-        <Input placeholder="tenant id" />
+      <Form.Item name="tenantId" label={t('Tenant', '租户')} rules={[{ required: true, message: t('Tenant is required.', '租户必填。') }]}>
+        <Input placeholder={t('tenant id', '租户 id')} />
       </Form.Item>
-      <Form.Item name="gameId" label="Game" rules={[{ required: true, message: 'Game is required.' }]}>
-        <Input placeholder="game id" />
+      <Form.Item name="gameId" label={t('Game', '游戏')} rules={[{ required: true, message: t('Game is required.', '游戏必填。') }]}>
+        <Input placeholder={t('game id', '游戏 id')} />
       </Form.Item>
-      <Form.Item name="board" label="Board" rules={[{ required: true, message: 'Board is required.' }]}>
-        <Input placeholder="board id" />
+      <Form.Item name="board" label={t('Board', '板')} rules={[{ required: true, message: t('Board is required.', '板必填。') }]}>
+        <Input placeholder={t('board id', '板 id')} />
       </Form.Item>
-      <Form.Item name="periodId" label="Period (optional)">
-        <Input placeholder="empty = all time" />
+      <Form.Item name="periodId" label={t('Period (optional)', '周期（可选）')}>
+        <Input placeholder={t('empty = all time', '留空 = 全时期')} />
       </Form.Item>
-      <Form.Item name="scopeId" label="Scope (optional)">
-        <Input placeholder="empty = global" />
+      <Form.Item name="scopeId" label={t('Scope (optional)', '作用域（可选）')}>
+        <Input placeholder={t('empty = global', '留空 = 全局')} />
       </Form.Item>
-      <Form.Item name="subject" label="Subject type" initialValue={0}>
+      <Form.Item name="subject" label={t('Subject type', '主体类型')} initialValue={0}>
         <Select options={subjectOptions} style={{ minWidth: 120 }} />
       </Form.Item>
     </>
   );
 
   return (
-    <Card title="Leaderboards">
+    <Card title={t('Leaderboards', '排行榜')}>
       <Typography.Paragraph type="secondary">
-        Leaderboard queries and maintenance. Empty period and scope name the all-time
-        global bucket. A walk reads one snapshot: every page carries its read version,
-        and a board that changes under the walk is refused with a restart word — start
-        the walk over rather than mixing versions. found=false means no score, not a
-        failure. The maintenance commands carry the version token a read named back: a
-        board that changed since that read is refused with a reload word, never corrected
-        onto a stale view.
+        {t(
+          'Leaderboard queries and maintenance. Empty period and scope name the all-time global bucket. A walk reads one snapshot: every page carries its read version, and a board that changes under the walk is refused with a restart word — start the walk over rather than mixing versions. found=false means no score, not a failure. The maintenance commands carry the version token a read named back: a board that changed since that read is refused with a reload word, never corrected onto a stale view.',
+          '排行榜查询与维护。留空的周期与作用域即全时期全局桶。走板读的是一份快照：每页都带着它读到的版本，板在走板中途变化会被重启词拒绝——重头走而不是混版本。found=false 表示没有分数，不是失败。维护命令带着读回答的版本令牌：板在读之后变化过会被重读词拒绝，绝不在过期视图上修正。',
+        )}
       </Typography.Paragraph>
       <Card title="Top N" style={{ marginBottom: 16 }}>
         <Form
@@ -271,11 +285,11 @@ export default function LeaderboardPage() {
         >
           <Space wrap size="large">
             {keyFields()}
-            <Form.Item name="maxEntries" label="Max entries" initialValue={10}>
+            <Form.Item name="maxEntries" label={t('Max entries', '条数上限')} initialValue={10}>
               <InputNumber min={1} max={1000} />
             </Form.Item>
             <Button type="primary" htmlType="submit">
-              Read top
+              {t('Read top', '读榜首')}
             </Button>
           </Space>
         </Form>
@@ -283,10 +297,10 @@ export default function LeaderboardPage() {
         {top !== null && (
           <>
             <Space style={{ marginTop: 12 }}>
-              <Tag color="blue">read version {top.readVersionUnixMs}</Tag>
+              <Tag color="blue">{t('read version', '读版本')} {top.readVersionUnixMs}</Tag>
               {top.hasMore && topValues !== null && (
                 <Button onClick={() => runTop(topValues, top.nextPageToken, true)}>
-                  Continue
+                  {t('Continue', '继续')}
                 </Button>
               )}
             </Space>
@@ -297,27 +311,27 @@ export default function LeaderboardPage() {
               pagination={false}
               columns={[
                 { title: '#', dataIndex: 'index', key: 'index', render: (_v, _r, i) => i + 1 },
-                { title: 'Subject', dataIndex: 'subjectId', key: 'subjectId' },
-                { title: 'Score', dataIndex: 'score', key: 'score' },
+                { title: t('Subject', '主体'), dataIndex: 'subjectId', key: 'subjectId' },
+                { title: t('Score', '分数'), dataIndex: 'score', key: 'score' },
               ]}
               dataSource={topEntries}
             />
           </>
         )}
       </Card>
-      <Card title="Rank" style={{ marginBottom: 16 }}>
+      <Card title={t('Rank', '名次')} style={{ marginBottom: 16 }}>
         <Form layout="vertical" name="leaderboard-rank" onFinish={runRank}>
           <Space wrap size="large">
             {keyFields()}
             <Form.Item
               name="subjectId"
-              label="Subject ID"
-              rules={[{ required: true, message: 'The subject id is required.' }]}
+              label={t('Subject ID', '主体 id')}
+              rules={[{ required: true, message: t('The subject id is required.', '主体 id 必填。') }]}
             >
-              <Input placeholder="subject id" />
+              <Input placeholder={t('subject id', '主体 id')} />
             </Form.Item>
             <Button type="primary" htmlType="submit">
-              Find rank
+              {t('Find rank', '查名次')}
             </Button>
           </Space>
         </Form>
@@ -328,7 +342,7 @@ export default function LeaderboardPage() {
         {rank !== null && rank.found && (
           <>
             <Space style={{ marginTop: 12 }}>
-              <Tag color="blue">read version {rank.readVersionUnixMs}</Tag>
+              <Tag color="blue">{t('read version', '读版本')} {rank.readVersionUnixMs}</Tag>
             </Space>
             <Descriptions size="small" column={1} style={{ marginTop: 12 }}>
               <Descriptions.Item label="rank">{rank.rank}</Descriptions.Item>
@@ -337,22 +351,22 @@ export default function LeaderboardPage() {
           </>
         )}
       </Card>
-      <Card title="Around" style={{ marginBottom: 16 }}>
+      <Card title={t('Around', '邻近窗口')} style={{ marginBottom: 16 }}>
         <Form layout="vertical" name="leaderboard-around" onFinish={runAround}>
           <Space wrap size="large">
             {keyFields()}
             <Form.Item
               name="subjectId"
-              label="Subject ID"
-              rules={[{ required: true, message: 'The subject id is required.' }]}
+              label={t('Subject ID', '主体 id')}
+              rules={[{ required: true, message: t('The subject id is required.', '主体 id 必填。') }]}
             >
-              <Input placeholder="subject id" />
+              <Input placeholder={t('subject id', '主体 id')} />
             </Form.Item>
-            <Form.Item name="window" label="Window" initialValue={5}>
+            <Form.Item name="window" label={t('Window', '窗口')} initialValue={5}>
               <InputNumber min={1} max={50} />
             </Form.Item>
             <Button type="primary" htmlType="submit">
-              Read window
+              {t('Read window', '读窗口')}
             </Button>
           </Space>
         </Form>
@@ -365,7 +379,7 @@ export default function LeaderboardPage() {
         {around !== null && around.found && (
           <>
             <Space style={{ marginTop: 12 }}>
-              <Tag color="blue">read version {around.readVersionUnixMs}</Tag>
+              <Tag color="blue">{t('read version', '读版本')} {around.readVersionUnixMs}</Tag>
             </Space>
             <Table
             size="small"
@@ -374,46 +388,46 @@ export default function LeaderboardPage() {
             pagination={false}
             columns={[
               { title: 'Rank #', dataIndex: 'rank', key: 'rank' },
-              { title: 'Subject', dataIndex: 'subjectId', key: 'subjectId' },
-              { title: 'Score', dataIndex: 'score', key: 'score' },
+              { title: t('Subject', '主体'), dataIndex: 'subjectId', key: 'subjectId' },
+              { title: t('Score', '分数'), dataIndex: 'score', key: 'score' },
             ]}
             dataSource={around.entries}
           />
           </>
         )}
       </Card>
-      <Card title="Maintenance" style={{ marginBottom: 16 }}>
+      <Card title={t('Maintenance', '维护')} style={{ marginBottom: 16 }}>
         {!canCommand && (
           <Alert type="info" showIcon message={floorWord} style={{ marginTop: 12 }} />
         )}
         {canCommand && (
           <>
-            <Card title="Adjustment" style={{ marginBottom: 16 }}>
+            <Card title={t('Adjustment', '修正')} style={{ marginBottom: 16 }}>
               <Form layout="vertical" name="leaderboard-adjust" form={adjustForm} onFinish={runAdjust}>
                 <Space wrap size="large">
                   {keyFields()}
                   <Form.Item
                     name="subjectId"
-                    label="Subject ID"
-                    rules={[{ required: true, message: 'The subject id is required.' }]}
+                    label={t('Subject ID', '主体 id')}
+                    rules={[{ required: true, message: t('The subject id is required.', '主体 id 必填。') }]}
                   >
-                    <Input placeholder="subject id" />
+                    <Input placeholder={t('subject id', '主体 id')} />
                   </Form.Item>
-                  <Form.Item name="delta" label="Delta">
+                  <Form.Item name="delta" label={t('Delta', '增减')}>
                     <InputNumber />
                   </Form.Item>
-                  <Form.Item name="expectedVersion" label="Expected version">
-                    <Input placeholder="empty = no guard" style={{ minWidth: 260 }} />
+                  <Form.Item name="expectedVersion" label={t('Expected version', '期望版本')}>
+                    <Input placeholder={t('empty = no guard', '留空 = 不设守卫')} style={{ minWidth: 260 }} />
                   </Form.Item>
                   <Form.Item
                     name="reason"
-                    label="Reason"
-                    rules={[{ required: true, message: 'The audit reason is required.' }]}
+                    label={t('Reason', '理由')}
+                    rules={[{ required: true, message: t('The audit reason is required.', '审计理由必填。') }]}
                   >
-                    <Input placeholder="why this correction" style={{ minWidth: 200 }} />
+                    <Input placeholder={t('why this correction', '为何做此修正')} style={{ minWidth: 200 }} />
                   </Form.Item>
                   <Button type="primary" htmlType="submit">
-                    Apply adjustment
+                    {t('Apply adjustment', '应用修正')}
                   </Button>
                 </Space>
               </Form>
@@ -422,31 +436,31 @@ export default function LeaderboardPage() {
               )}
               {adjust !== null && (
                 <Space style={{ marginTop: 12 }} wrap>
-                  <Tag color="blue">score {adjust.score}</Tag>
+                  <Tag color="blue">{t('score', '分数')} {adjust.score}</Tag>
                   {adjust.duplicate && <Tag color="orange">duplicate</Tag>}
-                  <Tag color="blue">read version {adjust.readVersionUnixMs}</Tag>
+                  <Tag color="blue">{t('read version', '读版本')} {adjust.readVersionUnixMs}</Tag>
                 </Space>
               )}
             </Card>
-            <Card title="Reset" style={{ marginBottom: 16 }}>
+            <Card title={t('Reset', '重置')} style={{ marginBottom: 16 }}>
               <Form layout="vertical" name="leaderboard-reset" form={resetForm} onFinish={runReset}>
                 <Space wrap size="large">
                   {keyFields()}
-                  <Form.Item name="subjectId" label="Subject ID">
-                    <Input placeholder="empty = whole board" />
+                  <Form.Item name="subjectId" label={t('Subject ID', '主体 id')}>
+                    <Input placeholder={t('empty = whole board', '留空 = 整块板')} />
                   </Form.Item>
-                  <Form.Item name="expectedVersion" label="Expected version">
-                    <Input placeholder="empty = no guard" style={{ minWidth: 260 }} />
+                  <Form.Item name="expectedVersion" label={t('Expected version', '期望版本')}>
+                    <Input placeholder={t('empty = no guard', '留空 = 不设守卫')} style={{ minWidth: 260 }} />
                   </Form.Item>
                   <Form.Item
                     name="reason"
-                    label="Reason"
-                    rules={[{ required: true, message: 'The audit reason is required.' }]}
+                    label={t('Reason', '理由')}
+                    rules={[{ required: true, message: t('The audit reason is required.', '审计理由必填。') }]}
                   >
-                    <Input placeholder="why this reset" style={{ minWidth: 200 }} />
+                    <Input placeholder={t('why this reset', '为何做此重置')} style={{ minWidth: 200 }} />
                   </Form.Item>
                   <Button type="primary" htmlType="submit">
-                    Reset entry
+                    {t('Reset entry', '重置条目')}
                   </Button>
                 </Space>
               </Form>
@@ -456,23 +470,23 @@ export default function LeaderboardPage() {
               {reset !== null && (
                 <Space style={{ marginTop: 12 }} wrap>
                   {reset.duplicate && <Tag color="orange">duplicate</Tag>}
-                  <Tag color="blue">read version {reset.readVersionUnixMs}</Tag>
+                  <Tag color="blue">{t('read version', '读版本')} {reset.readVersionUnixMs}</Tag>
                 </Space>
               )}
             </Card>
-            <Card title="Rebuild" style={{ marginBottom: 16 }}>
+            <Card title={t('Rebuild', '重建')} style={{ marginBottom: 16 }}>
               <Form layout="vertical" name="leaderboard-rebuild" onFinish={runRebuild}>
                 <Space wrap size="large">
                   {keyFields()}
                   <Form.Item
                     name="reason"
-                    label="Reason"
-                    rules={[{ required: true, message: 'The audit reason is required.' }]}
+                    label={t('Reason', '理由')}
+                    rules={[{ required: true, message: t('The audit reason is required.', '审计理由必填。') }]}
                   >
-                    <Input placeholder="why this rebuild" style={{ minWidth: 200 }} />
+                    <Input placeholder={t('why this rebuild', '为何做此重建')} style={{ minWidth: 200 }} />
                   </Form.Item>
                   <Button type="primary" htmlType="submit">
-                    Rebuild board
+                    {t('Rebuild board', '重建板')}
                   </Button>
                 </Space>
               </Form>
@@ -481,8 +495,8 @@ export default function LeaderboardPage() {
               )}
               {rebuild !== null && (
                 <Space style={{ marginTop: 12 }} wrap>
-                  <Tag color="blue">rebuilt {rebuild.entries} entries</Tag>
-                  <Tag color="blue">read version {rebuild.readVersionUnixMs}</Tag>
+                  <Tag color="blue">{t('rebuilt', '重建')} {rebuild.entries} {t('entries', '条')}</Tag>
+                  <Tag color="blue">{t('read version', '读版本')} {rebuild.readVersionUnixMs}</Tag>
                 </Space>
               )}
             </Card>

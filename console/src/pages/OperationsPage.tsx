@@ -17,6 +17,7 @@ import type { ReactNode } from 'react';
 import { createAdminClient, AdminError } from '../api/client';
 import type { AdminGetOperationStatusReply, AdminAuditEntryProto } from '../api/contract';
 import { useAuth } from '../auth';
+import { useI18n } from '../i18n';
 
 // The management operations and receipts page (FIX-WEB-10, architecture 12.1): commands
 // are submitted with a fresh request id and the signed-in operator as the body identity
@@ -47,16 +48,6 @@ const stageColor: Record<string, string> = {
   NotFound: 'red',
 };
 
-const commandLabels: Record<CommandKey, string> = {
-  suspendMatchQueue: 'Suspend match queue',
-  resumeMatchQueue: 'Resume match queue',
-  retryRoomRecovery: 'Retry room recovery',
-  drainProcess: 'Drain process',
-  retrySettlement: 'Retry settlement',
-  reconcilePlatformTask: 'Reconcile platform task',
-  dispatchRoomCommand: 'Dispatch room command',
-};
-
 function newRequestId(): string {
   return crypto.randomUUID();
 }
@@ -85,6 +76,7 @@ function ReplyCard({ title, reply }: { title: string; reply: Reply }) {
 
 export default function OperationsPage() {
   const { token, operator } = useAuth();
+  const { t } = useI18n();
   const canCommand = operator?.role === 'gm';
   const [receipt, setReceipt] = useState<AdminGetOperationStatusReply | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
@@ -98,6 +90,16 @@ export default function OperationsPage() {
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditValues, setAuditValues] = useState<Record<string, unknown> | null>(null);
 
+  const commandLabels: Record<CommandKey, string> = {
+    suspendMatchQueue: t('Suspend match queue', '暂停匹配队列'),
+    resumeMatchQueue: t('Resume match queue', '恢复匹配队列'),
+    retryRoomRecovery: t('Retry room recovery', '重试房间恢复'),
+    drainProcess: t('Drain process', '排空进程'),
+    retrySettlement: t('Retry settlement', '重试结算'),
+    reconcilePlatformTask: t('Reconcile platform task', '对账平台任务'),
+    dispatchRoomCommand: t('Dispatch room command', '下发房间命令'),
+  };
+
   const queryReceipt = async ({ operationId }: { operationId: string }) => {
     setQuerying(true);
     setQueryError(null);
@@ -110,8 +112,8 @@ export default function OperationsPage() {
       }));
     } catch (err) {
       setQueryError(err instanceof AdminError && err.status === 403
-        ? 'Your scope does not cover this operation.'
-        : 'The control plane is unreachable. Try again shortly.');
+        ? t('Your scope does not cover this operation.', '你的作用域不覆盖这条操作。')
+        : t('The control plane is unreachable. Try again shortly.', '控制面当前不可达，请稍后再试。'));
     } finally {
       setQuerying(false);
     }
@@ -185,10 +187,13 @@ export default function OperationsPage() {
       setCommandReply({ command, reply });
     } catch (err) {
       setCommandError(err instanceof AdminError && err.status === 403
-        ? 'The control plane refused this command: your role or scope does not cover it.'
+        ? t('The control plane refused this command: your role or scope does not cover it.',
+          '控制面拒绝了这条命令：你的角色或作用域不覆盖它。')
         : err instanceof AdminError && err.status === 409
-          ? 'This request id is already spent by a different request.'
-          : 'The control plane refused or could not take this command. Check the target and try again.');
+          ? t('This request id is already spent by a different request.',
+            '这个请求 id 已被另一个请求用掉。')
+          : t('The control plane refused or could not take this command. Check the target and try again.',
+            '控制面拒绝了这条命令或无法受理。请检查目标后重试。'));
     }
   };
 
@@ -211,28 +216,29 @@ export default function OperationsPage() {
     } catch {
       setAuditEntries([]);
       setAuditState(null);
-      setAuditError('The control plane refused or could not read the audit trail. Try again shortly.');
+      setAuditError(t('The control plane refused or could not read the audit trail. Try again shortly.',
+        '控制面拒绝了这次审计读取或无法读取。请稍后再试。'));
     }
   };
 
   const reasonField = (
-    <Form.Item name="reason" label="Reason" rules={[{ required: true, message: 'A reason is required.' }]}>
-      <Input placeholder="why this command, for the audit row" />
+    <Form.Item name="reason" label={t('Reason', '理由')} rules={[{ required: true, message: t('A reason is required.', '理由必填。') }]}>
+      <Input placeholder={t('why this command, for the audit row', '为何下这条命令——写进审计行')} />
     </Form.Item>
   );
   const scopeFields = (
     <>
-      <Form.Item name="tenantId" label="Tenant" rules={[{ required: true, message: 'Tenant is required.' }]}>
-        <Input placeholder="tenant id" />
+      <Form.Item name="tenantId" label={t('Tenant', '租户')} rules={[{ required: true, message: t('Tenant is required.', '租户必填。') }]}>
+        <Input placeholder={t('tenant id', '租户 id')} />
       </Form.Item>
-      <Form.Item name="gameId" label="Game" rules={[{ required: true, message: 'Game is required.' }]}>
-        <Input placeholder="game id" />
+      <Form.Item name="gameId" label={t('Game', '游戏')} rules={[{ required: true, message: t('Game is required.', '游戏必填。') }]}>
+        <Input placeholder={t('game id', '游戏 id')} />
       </Form.Item>
     </>
   );
   const roomField = (
-    <Form.Item name="roomId" label="Room" rules={[{ required: true, message: 'Room is required.' }]}>
-      <Input placeholder="room id" />
+    <Form.Item name="roomId" label={t('Room', '房间')} rules={[{ required: true, message: t('Room is required.', '房间必填。') }]}>
+      <Input placeholder={t('room id', '房间 id')} />
     </Form.Item>
   );
 
@@ -243,8 +249,8 @@ export default function OperationsPage() {
       content: (
         <>
           {reasonField}
-          <Form.Item name="partitionKey" label="Partition key" rules={[{ required: true, message: 'Partition key is required.' }]}>
-            <Input placeholder="tenant/game the pairing gate parks" />
+          <Form.Item name="partitionKey" label={t('Partition key', '分区键')} rules={[{ required: true, message: t('Partition key is required.', '分区键必填。') }]}>
+            <Input placeholder={t('tenant/game the pairing gate parks', '配对门停下的 tenant/game')} />
           </Form.Item>
         </>
       ),
@@ -255,8 +261,8 @@ export default function OperationsPage() {
       content: (
         <>
           {reasonField}
-          <Form.Item name="partitionKey" label="Partition key" rules={[{ required: true, message: 'Partition key is required.' }]}>
-            <Input placeholder="tenant/game the pairing gate resumes" />
+          <Form.Item name="partitionKey" label={t('Partition key', '分区键')} rules={[{ required: true, message: t('Partition key is required.', '分区键必填。') }]}>
+            <Input placeholder={t('tenant/game the pairing gate resumes', '配对门恢复的 tenant/game')} />
           </Form.Item>
         </>
       ),
@@ -269,11 +275,11 @@ export default function OperationsPage() {
           {reasonField}
           {scopeFields}
           {roomField}
-          <Form.Item name="toInstanceId" label="To instance (optional)">
-            <Input placeholder="leave empty for the coordinator to place" />
+          <Form.Item name="toInstanceId" label={t('To instance (optional)', '目标实例（可选）')}>
+            <Input placeholder={t('leave empty for the coordinator to place', '留空由协调者放置')} />
           </Form.Item>
-          <Form.Item name="tickMs" label="Tick ms (optional)">
-            <InputNumber min={0} placeholder="0 = module default" style={{ width: '100%' }} />
+          <Form.Item name="tickMs" label={t('Tick ms (optional)', 'Tick 毫秒（可选）')}>
+            <InputNumber min={0} placeholder={t('0 = module default', '0 = 模块默认')} style={{ width: '100%' }} />
           </Form.Item>
         </>
       ),
@@ -284,8 +290,8 @@ export default function OperationsPage() {
       content: (
         <>
           {reasonField}
-          <Form.Item name="processInstanceId" label="Process instance" rules={[{ required: true, message: 'Process instance is required.' }]}>
-            <Input placeholder="process instance id to drain" />
+          <Form.Item name="processInstanceId" label={t('Process instance', '进程实例')} rules={[{ required: true, message: t('Process instance is required.', '进程实例必填。') }]}>
+            <Input placeholder={t('process instance id to drain', '要排空的进程实例 id')} />
           </Form.Item>
         </>
       ),
@@ -296,8 +302,8 @@ export default function OperationsPage() {
       content: (
         <>
           {reasonField}
-          <Form.Item name="roomId" label="Room" rules={[{ required: true, message: 'Room is required.' }]}>
-            <Input placeholder="room id whose settlement retries" />
+          <Form.Item name="roomId" label={t('Room', '房间')} rules={[{ required: true, message: t('Room is required.', '房间必填。') }]}>
+            <Input placeholder={t('room id whose settlement retries', '要重试结算的房间 id')} />
           </Form.Item>
         </>
       ),
@@ -308,8 +314,8 @@ export default function OperationsPage() {
       content: (
         <>
           {reasonField}
-          <Form.Item name="taskId" label="Task" rules={[{ required: true, message: 'Task id is required.' }]}>
-            <Input placeholder="platform task id to reconcile" />
+          <Form.Item name="taskId" label={t('Task', '任务')} rules={[{ required: true, message: t('Task id is required.', '任务 id 必填。') }]}>
+            <Input placeholder={t('platform task id to reconcile', '要对账的平台任务 id')} />
           </Form.Item>
         </>
       ),
@@ -322,17 +328,17 @@ export default function OperationsPage() {
           {reasonField}
           {scopeFields}
           {roomField}
-          <Form.Item name="expectedEpoch" label="Expected epoch (optional)">
-            <InputNumber min={0} placeholder="0 = whatever the ownership row holds now" style={{ width: '100%' }} />
+          <Form.Item name="expectedEpoch" label={t('Expected epoch (optional)', '期望纪元（可选）')}>
+            <InputNumber min={0} placeholder={t('0 = whatever the ownership row holds now', '0 = 所有权行当前值')} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="participantId" label="Participant" rules={[{ required: true, message: 'Participant is required.' }]}>
-            <Input placeholder="the participant whose seat the command plays as" />
+          <Form.Item name="participantId" label={t('Participant', '参与者')} rules={[{ required: true, message: t('Participant is required.', '参与者必填。') }]}>
+            <Input placeholder={t('the participant whose seat the command plays as', '命令以其座位身份行动的参与者')} />
           </Form.Item>
           <Form.Item
             name="payloadJson"
-            label="Payload (module JSON)"
+            label={t('Payload (module JSON)', '载荷（模块 JSON）')}
             rules={[
-              { required: true, message: 'The module payload is required.' },
+              { required: true, message: t('The module payload is required.', '模块载荷必填。') },
               {
                 validator: (_, value) => {
                   if (!value) return Promise.resolve();
@@ -340,7 +346,7 @@ export default function OperationsPage() {
                     JSON.parse(String(value));
                     return Promise.resolve();
                   } catch {
-                    return Promise.reject(new Error('The payload is not valid JSON.'));
+                    return Promise.reject(new Error(t('The payload is not valid JSON.', '载荷不是合法 JSON。')));
                   }
                 },
               },
@@ -354,18 +360,19 @@ export default function OperationsPage() {
   ];
 
   return (
-    <Card title="Operations and receipts">
+    <Card title={t('Operations and receipts', '操作与回执')}>
       <Typography.Paragraph type="secondary">
-        Every command carries a fresh request id and your own identity; the audit row is
-        written before anything acts, so a replayed request id answers as a visible
-        duplicate instead of acting twice. Submit below, then query the receipt by its
-        operation id above.
+        {t(
+          'Every command carries a fresh request id and your own identity; the audit row is written before anything acts, so a replayed request id answers as a visible duplicate instead of acting twice. Submit below, then query the receipt by its operation id above.',
+          '每条命令都带着新铸的请求 id 和你自己的身份；审计行先于任何动作落账，重放的请求 id 会以可见的重复作答而不是二次执行。在下方提交，再在上方按操作 id 查回执。',
+        )}
       </Typography.Paragraph>
-      <Card title="Operation receipt" style={{ marginBottom: 16 }}>
+      <Card title={t('Operation receipt', '操作回执')} style={{ marginBottom: 16 }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          A room command answers Accepted or Applied at a committed tick from the data
-          plane; a control-plane command answers Audited with its recorded evidence; an
-          unknown id answers NotFound — never folded into an accepted answer.
+          {t(
+            'A room command answers Accepted or Applied at a committed tick from the data plane; a control-plane command answers Audited with its recorded evidence; an unknown id answers NotFound — never folded into an accepted answer.',
+            '房间命令由数据面在已提交 tick 上回答 Accepted 或 Applied；控制面命令回答 Audited 并附其记录的证据；未知 id 回答 NotFound——绝不折叠进已接受的回答。',
+          )}
         </Typography.Paragraph>
         {queryError !== null && (
           <Alert type="error" showIcon message={queryError} style={{ marginBottom: 12 }} />
@@ -373,15 +380,15 @@ export default function OperationsPage() {
         <Form layout="inline" colon={false} name="receipt-query" onFinish={queryReceipt} disabled={querying}>
           <Form.Item
             name="operationId"
-            rules={[{ required: true, message: 'Enter the operation id.' }]}
+            rules={[{ required: true, message: t('Enter the operation id.', '请输入操作 id。') }]}
             style={{ minWidth: 320 }}
           >
             {/* The inline layout renders no visible label element; the aria-label is
                 the input's accessible name. */}
-            <Input aria-label="Operation id" placeholder="operation id" allowClear />
+            <Input aria-label={t('Operation id', '操作 id')} placeholder={t('operation id', '操作 id')} allowClear />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={querying}>
-            Query receipt
+            {t('Query receipt', '查回执')}
           </Button>
         </Form>
         {receipt !== null && (
@@ -392,7 +399,7 @@ export default function OperationsPage() {
             <Descriptions size="small" column={1} style={{ marginTop: 8 }}>
               <Descriptions.Item label="found">{String(receipt.found)}</Descriptions.Item>
               <Descriptions.Item label="platform">{receipt.platform}</Descriptions.Item>
-              <Descriptions.Item label="applied tick">
+              <Descriptions.Item label={t('applied tick', '已应用 tick')}>
                 {receipt.appliedTick === 0 ? '—' : receipt.appliedTick}
               </Descriptions.Item>
               <Descriptions.Item label="note">{receipt.note}</Descriptions.Item>
@@ -400,11 +407,12 @@ export default function OperationsPage() {
           </>
         )}
       </Card>
-      <Card title="Audit trail" style={{ marginBottom: 16 }}>
+      <Card title={t('Audit trail', '审计轨迹')} style={{ marginBottom: 16 }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          Every audited command, newest first — one exact word per filter, empty means
-          unfiltered. The walk continues strictly older rows; the log is append-only, so
-          a page never reorders.
+          {t(
+            'Every audited command, newest first — one exact word per filter, empty means unfiltered. The walk continues strictly older rows; the log is append-only, so a page never reorders.',
+            '每条被审计的命令，最新在前——每个过滤维恰好一个精确词，留空即不过滤。走板只续更老的行；日志只追加，页从不重排。',
+          )}
         </Typography.Paragraph>
         {auditError !== null && (
           <Alert type="error" showIcon message={auditError} style={{ marginBottom: 12 }} />
@@ -416,16 +424,16 @@ export default function OperationsPage() {
           onFinish={(values) => runAudit(values as Record<string, unknown>, '', false)}
         >
           <Form.Item name="command" style={{ minWidth: 220 }}>
-            <Input aria-label="Command filter" placeholder="command word, empty = all" allowClear />
+            <Input aria-label={t('Command filter', '命令过滤')} placeholder={t('command word, empty = all', '命令词，留空 = 全部')} allowClear />
           </Form.Item>
           <Form.Item name="operator" style={{ minWidth: 180 }}>
-            <Input aria-label="Operator filter" placeholder="operator, empty = all" allowClear />
+            <Input aria-label={t('Operator filter', '操作者过滤')} placeholder={t('operator, empty = all', '操作者，留空 = 全部')} allowClear />
           </Form.Item>
           <Form.Item name="maxEntries" initialValue={20}>
-            <InputNumber aria-label="Max entries" min={1} max={200} />
+            <InputNumber aria-label={t('Max entries', '条数上限')} min={1} max={200} />
           </Form.Item>
           <Button type="primary" htmlType="submit">
-            Query audit
+            {t('Query audit', '查审计')}
           </Button>
         </Form>
         {auditEntries.length > 0 && (
@@ -433,7 +441,7 @@ export default function OperationsPage() {
             <Space style={{ marginTop: 12 }}>
               {auditState?.hasMore && auditValues !== null && (
                 <Button onClick={() => runAudit(auditValues, auditState.nextPageToken, true)}>
-                  Continue
+                  {t('Continue', '继续')}
                 </Button>
               )}
             </Space>
@@ -445,17 +453,17 @@ export default function OperationsPage() {
               scroll={{ x: 900 }}
               columns={[
                 {
-                  title: 'Time',
+                  title: t('Time', '时间'),
                   dataIndex: 'createdAtUnixMs',
                   key: 'time',
                   render: (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19),
                 },
-                { title: 'Command', dataIndex: 'command', key: 'command' },
-                { title: 'Operator', dataIndex: 'operator', key: 'operator' },
-                { title: 'Request id', dataIndex: 'requestId', key: 'requestId' },
-                { title: 'Reason', dataIndex: 'reason', key: 'reason' },
-                { title: 'Scope', dataIndex: 'scope', key: 'scope' },
-                { title: 'Detail', dataIndex: 'detail', key: 'detail' },
+                { title: t('Command', '命令'), dataIndex: 'command', key: 'command' },
+                { title: t('Operator', '操作者'), dataIndex: 'operator', key: 'operator' },
+                { title: t('Request id', '请求 id'), dataIndex: 'requestId', key: 'requestId' },
+                { title: t('Reason', '理由'), dataIndex: 'reason', key: 'reason' },
+                { title: t('Scope', '作用域'), dataIndex: 'scope', key: 'scope' },
+                { title: t('Detail', '详情'), dataIndex: 'detail', key: 'detail' },
               ]}
               dataSource={auditEntries}
             />
@@ -466,7 +474,8 @@ export default function OperationsPage() {
         <Alert
           type="info"
           showIcon
-          message="Your role is below the command floor: receipts stay open, commands stay closed."
+          message={t('Your role is below the command floor: receipts stay open, commands stay closed.',
+            '你的角色低于命令地板：回执保持开放，命令保持关闭。')}
           style={{ marginBottom: 12 }}
         />
       )}
@@ -490,7 +499,7 @@ export default function OperationsPage() {
             >
               {content}
               <Button type="primary" htmlType="submit">
-                Submit
+                {t('Submit', '提交')}
               </Button>
             </Form>
           ),
