@@ -8,7 +8,8 @@ import { ConsoleRoot } from '../App';
 // the fetch boundary: the operator looks a room's epoch up, bumps against the expected
 // value, and reads the honest split of the reply — old/new epoch, the Recovering park,
 // the route sync status that separates committed from confirmed, and a duplicate replay
-// carrying the recorded values. A viewer gets lookups but the bump floor stays closed.
+// carrying the recorded values. The whole epoch floor is gm (FIX-WEB-17, GM-06): a
+// viewer gets neither the lookup nor the bump.
 
 const gmIdentity = {
   operatorId: 'gm-alice',
@@ -178,7 +179,7 @@ describe('the room epoch page', () => {
     expect(screen.getByText('4')).toBeInTheDocument();
   });
 
-  it('leaves a viewer with open lookups but a closed bump floor', async () => {
+  it('keeps the whole epoch floor closed for a viewer', async () => {
     vi.stubGlobal('fetch', routeFetch({
       '/who-am-i': { status: 200, body: viewerIdentity },
       '/get-room-epoch': { status: 200, body: epochReply },
@@ -189,15 +190,12 @@ describe('the room epoch page', () => {
         <ConsoleRoot />
       </MemoryRouter>,
     );
-    const { user, lookupCard, bumpCard } = await openEpoch(viewerIdentity);
+    const { lookupCard, bumpCard } = await openEpoch(viewerIdentity);
 
     expect(screen.getByText(
-      'Your role is below the command floor: lookups stay open, bumps stay closed.',
+      'Your role is below the gm floor: epoch lookups and bumps both stay closed.',
     )).toBeInTheDocument();
+    expect(within(lookupCard).getByRole('button', { name: 'Look up' })).toBeDisabled();
     expect(within(bumpCard).getByRole('button', { name: 'Bump epoch' })).toBeDisabled();
-
-    await fillLookup(lookupCard, user);
-    await user.click(within(lookupCard).getByRole('button', { name: 'Look up' }));
-    expect((await screen.findAllByText('Active')).length).toBeGreaterThan(0);
   });
 });

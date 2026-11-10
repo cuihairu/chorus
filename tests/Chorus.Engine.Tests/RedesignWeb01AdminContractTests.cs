@@ -10,8 +10,8 @@ namespace Chorus.Engine.Tests;
 /// /admin/api/v1/&lt;kebab-of-rpc-name&gt; with the request message as the body; the route table,
 /// the audited-command shape and the operator identity surface are read here straight from
 /// m3.proto's annotations, so the contract cannot drift from the proto. The enforcement of the
-/// role table against live hosts is the FIX-WEB-03 acceptance line — this file pins what the
-/// contract says, not yet what the server does.
+/// role table against live hosts is the FIX-WEB-03/17 acceptance lines (representative routes,
+/// then the whole table) — this file pins what the contract says, not yet what the server does.
 /// </summary>
 public sealed class RedesignWeb01AdminContractTests
 {
@@ -44,13 +44,15 @@ public sealed class RedesignWeb01AdminContractTests
             : null;
     }
 
-    private static (string Path, string Kind, string MinRole)[] ContractRoutes() =>
+    internal static (string Path, string Kind, string MinRole)[] ContractRoutes() =>
     [
         ("/admin/api/v1/who-am-i", "read", "viewer"),
         ("/admin/api/v1/get-streamer-snapshot", "read", "viewer"),
         ("/admin/api/v1/get-room-snapshot", "read", "viewer"),
         ("/admin/api/v1/trace-round", "read", "viewer"),
-        ("/admin/api/v1/get-room-epoch", "read", "viewer"),
+        // The epoch lookup is floored at gm (GM-06's tested decision): it carries the
+        // audited triple and feeds the bump — the FIX-WEB-17 walk verifies the floor live.
+        ("/admin/api/v1/get-room-epoch", "read", "gm"),
         ("/admin/api/v1/get-operation-status", "read", "viewer"),
         ("/admin/api/v1/get-audit-trail", "read", "viewer"),
         ("/admin/api/v1/get-leaderboard-top", "read", "viewer"),

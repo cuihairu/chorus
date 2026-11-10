@@ -24,7 +24,9 @@ import { useAuth } from '../auth';
 // retry-room-recovery command, not an implicit side effect. The reply's route sync
 // status is the honest split between "the store committed" (always, if this answers)
 // and "a gateway confirmed the new routing" (Pending until it happens). A replayed
-// request id answers as a duplicate carrying the recorded values (GM-05).
+// request id answers as a duplicate carrying the recorded values (GM-05). The whole
+// floor is gm (FIX-WEB-17 acceptance, GM-06's tested decision): the lookup carries the
+// audited triple and feeds the bump, so a viewer gets neither half of the page.
 const ownershipColor: Record<string, string> = {
   Active: 'green',
   Recovering: 'orange',
@@ -114,7 +116,7 @@ export default function EpochPage() {
         new routing — committed is not the same as confirmed.
       </Typography.Paragraph>
       <Card title="Lookup" style={{ marginBottom: 16 }}>
-        <Form layout="vertical" name="epoch-lookup" onFinish={runLookup}>
+        <Form layout="vertical" name="epoch-lookup" onFinish={runLookup} disabled={!canCommand}>
           <Space wrap size="large">
             <Form.Item name="tenantId" label="Tenant" rules={[{ required: true, message: 'Tenant is required.' }]}>
               <Input placeholder="tenant id" />
@@ -125,7 +127,7 @@ export default function EpochPage() {
             <Form.Item name="roomId" label="Room" rules={[{ required: true, message: 'Room is required.' }]}>
               <Input placeholder="room id" />
             </Form.Item>
-            <Button type="primary" htmlType="submit">
+            <Button type="primary" htmlType="submit" disabled={!canCommand}>
               Look up
             </Button>
           </Space>
@@ -144,7 +146,7 @@ export default function EpochPage() {
         <Alert
           type="info"
           showIcon
-          message="Your role is below the command floor: lookups stay open, bumps stay closed."
+          message="Your role is below the gm floor: epoch lookups and bumps both stay closed."
           style={{ marginBottom: 12 }}
         />
       )}
