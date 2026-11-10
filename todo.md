@@ -321,7 +321,8 @@
   - 证据：d692172；自研零依赖 i18n（t(en,zh) 就地对子无键表可漂移、LanguageProvider+localStorage 'chorus-console-language'、默认英文保既有 fact、en 串逐字节不变）；壳菜单+登录卡/壳头双 toggle（按钮命名去往语言，aria-label 语言中立）；五页全词双语，服务器词汇（stage/状态词/duplicate/wire 键名）不译；页面 +2 fact（默认英文→翻 zh→回 en 存 localStorage；预置 zh 首屏中文+壳词中文），console 25/25+tsc+build 绿；antd 两字中文按钮插空格断言 \s* 容忍；console-only 零 .NET 改动全量门不重跑（CI 后盾）
 - [x] **FIX-WEB-17 / P0：验收浏览器管理权限与未知结果。** 依赖：FIX-WEB-10、FIX-WEB-15。
   - 证据：9c7e7b2；闭包 fact（WEB-01 表=描述符注解集=探针集互等）+ 走面 fact（21 路逐条：匿名成形体 401/viewer 读 200+未知形状 found=false 或空页/gm 地板恰 403/gm 命令穿门非 401·403/伪造身份恰 403；queue-gate 对记录值+epoch 未知房 found=false）；**抓到并修正真偏离**：get-room-epoch 三层分歧（GM-06 权威 gm 地板 vs WEB-01 表 viewer vs WEB-11 页 mock viewer lookup 照答）——表向实改 read/gm+ContractRoutes internal 单一事实源、EpochPage lookup 卡 gm 地板化+文案改、epoch 测试 viewer fact 重写；定向 7/7+console 23/23+build 绿；测试-only diff 按 WEB-13 先例全量门不重跑（CI 后盾）
-- [ ] **FIX-WEB-18 / P1：接通控制台生产托管。** 依赖：FIX-WEB-02、FIX-WEB-03、FIX-WEB-04。
+- [x] **FIX-WEB-18 / P1：接通控制台生产托管。** 依赖：FIX-WEB-02、FIX-WEB-03、FIX-WEB-04。
+  - 证据：46d735c；CHORUS_CONSOLE_DIST 命名 dist 目录：UseStaticFiles+MapFallbackToFile(index.html) 落客户端路由回壳+显式 MapFallback(/admin/api/{**slug}) 404（未知管理路径不被壳吞）；未设时浏览器面 API-only 与 WEB-03 逐字节同；静态资产无认证（登录页即 SPA），/admin/api 的 bearer 门不动；构建是部署步非 dotnet 步；宿主 +2 fact（fixture dist：根/路由落回壳/资产字节+类型/匿名 401/令牌 200/未知 admin 404 无壳标记；未设：根 404+匿名 401），定向 8/8；全量 pin-8 1893 零新签名（M2 双件套干净树背靠背 4/4 同败=环境时钟窗族实证闭环；agent/FanoutReclaim 文档族 solo 绿；RoundInputStore+KilledGameServer 负载伪影 solo 绿）；毕清 9 孤儿库+0 进程
 
 ### 22.17 运维总览、机器负载与平台数据链路统计（P1）
 
