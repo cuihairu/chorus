@@ -303,7 +303,8 @@
 - [ ] **FIX-WEB-06 / P1：实现节点与进程管理页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-07。
 - [ ] **FIX-WEB-07 / P1：实现房间详情页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-08。
 - [ ] **FIX-WEB-08 / P1：实现主播与匹配页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-09。
-- [ ] **FIX-WEB-09 / P0：接通管理操作提交与结果查询 API。** 依赖：FIX-WEB-03、FIX-GM-07。
+- [x] **FIX-WEB-09 / P0：接通管理操作提交与结果查询 API。** 依赖：FIX-WEB-03、FIX-GM-07。
+  - 证据：a890110；store 2/2 + 浏览器 face host 1/1（dispatch→DurableAccepted→Applied 数字 tick→无 scope 同答→Audited 证据→NotFound）；回归 9 绿；gate 1880/1886（6 既有文档签名零新）
 - [ ] **FIX-WEB-10 / P1：实现管理操作与回执页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-09。
 - [ ] **FIX-WEB-11 / P1：接入独立房间 epoch 的 GM 表单。** 依赖：FIX-WEB-10、FIX-GM-03、FIX-GM-05。
 - [ ] **FIX-WEB-12 / P1：为后台提供排行榜查询接口。** 依赖：FIX-WEB-03、FIX-RANK-04、FIX-RANK-05、FIX-RANK-06、FIX-RANK-07。
