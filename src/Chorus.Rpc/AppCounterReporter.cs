@@ -10,7 +10,8 @@ namespace Chorus.Rpc;
 /// the control plane every interval, speaking with its process certificate the way the
 /// process self-report speaks. A failed or unreachable report is retried on the next tick
 /// — reporting only converges, never crashes the host. The snapshot is read fresh each
-/// tick, so what lands is the value at report time, never a stale one.
+/// tick, so what lands is the value at report time, never a stale one; an empty snapshot
+/// sends nothing, since the control plane refuses empty reports.
 /// </summary>
 public sealed class AppCounterReporter(
     X509Certificate2 clientCertificate, X509Certificate2 root, X509Certificate2 nodeAuthority,
@@ -27,20 +28,28 @@ public sealed class AppCounterReporter(
         var control = new ControlService.ControlServiceClient(channel);
         while (!stoppingToken.IsCancellationRequested)
         {
+            var samples = snapshot();
             try
             {
-                var request = new AppCounterReport
+                // FIX-OBS-12: an empty counter set is not a report — the control plane
+                // refuses empty ones outright, and a face that has observed nothing yet
+                // (a gateway with no webhook face and no platform call made) stays silent
+                // until it has something to say.
+                if (samples.Count > 0)
                 {
-                    NodeId = identity.NodeId,
-                    ProcessInstanceId = identity.ProcessInstanceId,
-                    ReportedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-                };
-                foreach (var (family, value) in snapshot())
-                    request.Counters.Add(new AppCounterProto { Family = family, Value = value });
-                var reply = await control.ReportAppCountersAsync(request,
-                    deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: stoppingToken);
-                if (!reply.Accepted)
-                    logger?.LogInformation("App counter report was not accepted; retrying.");
+                    var request = new AppCounterReport
+                    {
+                        NodeId = identity.NodeId,
+                        ProcessInstanceId = identity.ProcessInstanceId,
+                        ReportedAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    };
+                    foreach (var (family, value) in samples)
+                        request.Counters.Add(new AppCounterProto { Family = family, Value = value });
+                    var reply = await control.ReportAppCountersAsync(request,
+                        deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: stoppingToken);
+                    if (!reply.Accepted)
+                        logger?.LogInformation("App counter report was not accepted; retrying.");
+                }
             }
             catch (RpcException error) when (error.StatusCode is StatusCode.Unavailable or StatusCode.DeadlineExceeded)
             {

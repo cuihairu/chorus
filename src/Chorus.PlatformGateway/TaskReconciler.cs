@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Chorus.Platform;
 using Chorus.Rpc;
 using Grpc.Core;
@@ -15,7 +16,7 @@ namespace Chorus.PlatformGateway;
 public sealed class TaskReconciler(
     PlatformTask.PlatformTaskClient tasks, IPlatformTaskAdapter adapter, string instanceId,
     int intervalMs, int leaseSeconds, int deadlineSeconds, int callTimeoutSeconds,
-    ILogger<TaskReconciler>? logger = null) : BackgroundService
+    PlatformApiCounters? counters = null, ILogger<TaskReconciler>? logger = null) : BackgroundService
 {
     private static readonly TimeSpan RpcTimeout = TimeSpan.FromSeconds(5);
 
@@ -32,6 +33,10 @@ public sealed class TaskReconciler(
     /// once (a listed task is skipped until its branch finishes).</summary>
     private readonly object _inFlightGate = new();
     private readonly HashSet<string> _inFlight = new(StringComparer.Ordinal);
+
+    /// <summary>The outbound platform API counters (FIX-OBS-12): every adapter exchange
+    /// the executor issues lands here with its latency, endpoint-named.</summary>
+    private readonly PlatformApiCounters _counters = counters ?? new PlatformApiCounters();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -120,7 +125,8 @@ public sealed class TaskReconciler(
                 using var queryCancellation =
                     CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 queryCancellation.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, callTimeoutSeconds)));
-                outcome = await adapter.QueryAsync(task.OperationId, queryCancellation.Token);
+                outcome = await ObservedCallAsync($"{adapter.Platform}.status",
+                    token => adapter.QueryAsync(task.OperationId, token), queryCancellation.Token);
             }
             catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
             {
@@ -153,8 +159,9 @@ public sealed class TaskReconciler(
         callCancellation.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, callTimeoutSeconds)));
         try
         {
-            var observed = await adapter.CallAsync(
-                new PlatformTaskCall(task.OperationId, task.DesiredJson), callCancellation.Token);
+            var observed = await ObservedCallAsync($"{adapter.Platform}.execute",
+                token => adapter.CallAsync(new PlatformTaskCall(task.OperationId, task.DesiredJson), token),
+                callCancellation.Token);
             if (observed.NotRequired)
             {
                 await tasks.CompleteNotRequiredAsync(new TaskCompleteRequest
@@ -189,6 +196,27 @@ public sealed class TaskReconciler(
                 TaskId = task.TaskId, OwnerInstanceId = instanceId,
                 LastError = "The platform call could not be observed: " + error.Message
             }, deadline: DateTime.UtcNow.Add(RpcTimeout), cancellationToken: cancellationToken);
+        }
+    }
+
+    /// <summary>Issues one adapter exchange under the outbound API counters (FIX-OBS-12):
+    /// the exchange is observed with its wall latency whether it answers or its transport
+    /// throws — the failure counter is a transport exchange that did not answer, not a
+    /// platform answer of "not executed", which is a successful interaction.</summary>
+    private async Task<PlatformTaskOutcome> ObservedCallAsync(string endpoint,
+        Func<CancellationToken, Task<PlatformTaskOutcome>> call, CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+        try
+        {
+            var outcome = await call(cancellationToken);
+            _counters.Observed(endpoint, failed: false, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            return outcome;
+        }
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
+        {
+            _counters.Observed(endpoint, failed: true, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+            throw;
         }
     }
 

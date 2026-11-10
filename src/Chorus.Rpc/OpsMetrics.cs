@@ -182,6 +182,12 @@ public static class OpsMetrics
         new("chorus_platform_api_latency_ms", OpsMetricKind.Histogram, "milliseconds", "endpoint",
             "Outbound platform API call latency (label: endpoint).");
 
+    /// <summary>The OBS-12 histogram rides the scalar counter transport as cumulative
+    /// le buckets at these bounds (milliseconds, ascending); a latency above every bound
+    /// counts only at +Inf, which the readers append.</summary>
+    public static readonly IReadOnlyList<long> PlatformApiLatencyBoundsMs =
+        [10, 25, 50, 100, 250, 500, 1000, 2500, 5000];
+
     /// <summary>The whole dictionary. A downstream task amends this list — never adds a
     /// bare string literal beside it.</summary>
     public static readonly IReadOnlyList<OpsMetricSpec> All =

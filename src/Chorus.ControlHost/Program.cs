@@ -33,6 +33,7 @@ builder.Services.AddSingleton(new RoomStatsStore(databaseConnection, databasePro
 builder.Services.AddSingleton(new OnlineStatsStore(databaseConnection, databaseProvider, controlDatabase));
 builder.Services.AddSingleton(new IngressStatsStore(databaseConnection, databaseProvider));
 builder.Services.AddSingleton(new DeliveryStatsStore(databaseConnection, databaseProvider));
+builder.Services.AddSingleton(new PlatformApiStatsStore(databaseConnection, databaseProvider));
 builder.Services.AddSingleton<RoomControlStore>();
 builder.Services.AddHostedService<ControlMaintenance>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
@@ -116,6 +117,7 @@ admin.MapGet("/rooms/stats", (RoomStatsStore s) => s.Stats());
 admin.MapGet("/online/stats", (OnlineStatsStore s) => s.Stats());
 admin.MapGet("/ingress/stats", (IngressStatsStore s) => s.Stats());
 admin.MapGet("/delivery/stats", (DeliveryStatsStore s) => s.Stats());
+admin.MapGet("/platform-api/stats", (PlatformApiStatsStore s) => s.Stats());
 admin.MapGet("/rooms", (RoomControlStore s) => s.Rooms().Select(r => r with { Inbox = null, Receipts = null, Snapshot = null }));
 admin.MapGet("/rooms/{id}", (string id, RoomControlStore s) => s.Room(id) is { } r ? Results.Ok(new { room = r with { Inbox = null, Receipts = null }, pendingEvents = s.PendingCount(id), connections = s.Connections().Where(c => c.SessionId == id) }) : Results.NotFound());
 admin.MapGet("/connections", (RoomControlStore s) => s.Connections());

@@ -75,13 +75,18 @@ builder.Services.AddSingleton(stopDeliveries);
 // and the reporter below carries to the control plane — the statistics face reads them
 // there, not here (no database credentials on this host).
 var ingressCounters = new IngressCounters();
+// The task executor's own counters (FIX-OBS-12): every outbound platform API exchange
+// the reconciler issues is counted and endpoint-named here, reported like the webhook
+// face's numbers.
+var platformApiCounters = new PlatformApiCounters();
 builder.Services.AddHostedService(_ => new TaskReconciler(
     new PlatformTask.PlatformTaskClient(DataChannel()), taskAdapter,
     identity.ProcessInstanceId,
     int.Parse(Environment.GetEnvironmentVariable("CHORUS_TASK_RECONCILE_INTERVAL_MS") ?? "1000"),
     int.Parse(Environment.GetEnvironmentVariable("CHORUS_TASK_LEASE_SECONDS") ?? "30"),
     int.Parse(Environment.GetEnvironmentVariable("CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS") ?? "30"),
-    int.Parse(Environment.GetEnvironmentVariable("CHORUS_TASK_CALL_TIMEOUT_SECONDS") ?? "10")));
+    int.Parse(Environment.GetEnvironmentVariable("CHORUS_TASK_CALL_TIMEOUT_SECONDS") ?? "10"),
+    platformApiCounters));
 // Instance self-registration (architecture 4.4): without a supervising node agent, the host
 // tells the control plane itself where it serves, so routing can reach it.
 var controlEndpoint = Environment.GetEnvironmentVariable("CHORUS_CONTROL_ENDPOINT");
@@ -97,15 +102,19 @@ if (controlEndpoint is { Length: > 0 })
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
         readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(readinessDataChannel, cancellationToken)));
-    // The face's counters ride the same self-report trust (FIX-OBS-10): the reporter posts
-    // the cumulative snapshot every interval and the control plane keeps the series its
-    // statistics face reads. No face mounted, nothing to report.
-    if (ingressPort > 0)
-    {
-        builder.Services.AddHostedService(_ => new AppCounterReporter(
-            serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportIntervalMs,
-            ingressCounters.Snapshot));
-    }
+    // The faces' counters ride the same self-report trust (FIX-OBS-10, FIX-OBS-12): the
+    // reporter posts the cumulative snapshot every interval and the control plane keeps
+    // the series its statistics faces read. The task executor always answers for the
+    // platform-API families; the webhook face's families join when that face is mounted.
+    builder.Services.AddHostedService(_ => new AppCounterReporter(
+        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportIntervalMs,
+        () =>
+        {
+            IReadOnlyList<(string Family, long Value)> snapshot = ingressPort > 0
+                ? [.. ingressCounters.Snapshot(), .. platformApiCounters.Snapshot()]
+                : platformApiCounters.Snapshot();
+            return snapshot;
+        }));
 }
 // The routing watch (FIX-INPUT-02): the webhook face resolves each callback's live key to the
 // room it belongs to, and pushes straight at the owning game host. Without the control plane
