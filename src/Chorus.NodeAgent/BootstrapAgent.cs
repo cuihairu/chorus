@@ -215,7 +215,9 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
             && int.TryParse(attemptsText, out var attempts) && attempts > 0 ? attempts : 5;
         var backoffMs = Environment.GetEnvironmentVariable("CHORUS_TELEMETRY_RETRY_BACKOFF_MS") is { Length: > 0 } backoffText
             && int.TryParse(backoffText, out var backoff) && backoff >= 0 ? backoff : 1000;
-        _telemetrySampler = new MachineTelemetrySampler();
+        _telemetrySampler = new MachineTelemetrySampler(process: new MachineProcessCollector(
+            () => _slots.Values.Select(slot => new ProcessSource(
+                slot.InstanceId, slot.Spec.Role, slot.Process.Id, slot.StartedAtUtc)).ToList()));
         _telemetryPipeline = new MachineTelemetryPipeline(maxPending, maxAttempts,
             TimeSpan.FromMilliseconds(backoffMs), logger);
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(_stateDirectory,

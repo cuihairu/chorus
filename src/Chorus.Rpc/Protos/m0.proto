@@ -93,6 +93,13 @@ message MachineDiskMountProto {
   int64 used_bytes = 3;
   double used_percent = 4;
 }
+message MachineProcessProto {
+  string process_instance_id = 1;
+  string role = 2;
+  double cpu_percent = 3;
+  int64 memory_used_bytes = 4;
+  int64 uptime_seconds = 5;
+}
 message MachineTelemetryRequest {
   string node_id = 1;
   string agent_instance_id = 2;
@@ -109,6 +116,7 @@ message MachineTelemetryRequest {
   double load_5m = 13;
   double load_15m = 14;
   repeated MachineDiskMountProto disk = 15;
+  repeated MachineProcessProto process = 16;
 }
 message MachineTelemetryReply { bool accepted = 1; }
 message OwnershipRequest {

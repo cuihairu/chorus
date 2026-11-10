@@ -36,6 +36,16 @@ public static class MachineTelemetryMapper
                     UsedBytes = mount.UsedBytes,
                     UsedPercent = mount.UsedPercent,
                 });
+        if (sample.Process is not null)
+            foreach (var proc in sample.Process)
+                request.Process.Add(new MachineProcessProto
+                {
+                    ProcessInstanceId = proc.ProcessInstanceId,
+                    Role = proc.Role,
+                    CpuPercent = proc.CpuPercent,
+                    MemoryUsedBytes = proc.MemoryUsedBytes,
+                    UptimeSeconds = proc.UptimeSeconds,
+                });
         return request;
     }
 }

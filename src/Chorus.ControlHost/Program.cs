@@ -27,6 +27,7 @@ var databaseConnection = databaseProvider == ControlDatabaseProvider.Sqlite
     ? builder.Configuration["Control:Database"] ?? "data/control.db"
     : builder.Configuration["Control:ConnectionString"] ?? throw new InvalidOperationException("Configure Control:ConnectionString for PostgreSQL.");
 builder.Services.AddSingleton(new ControlDatabase(databaseConnection, databaseProvider));
+builder.Services.AddSingleton(new TelemetryStore(databaseConnection, databaseProvider));
 builder.Services.AddSingleton<RoomControlStore>();
 builder.Services.AddHostedService<ControlMaintenance>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
@@ -104,6 +105,8 @@ admin.MapGet("/event-heat/alerts", (RoomControlStore s) => s.EventHeatAlerts());
 admin.MapPost("/event-heat/alerts/ack", (EventHeatAlertAckRequest request, HttpContext c, RoomControlStore s) =>
     s.AcknowledgeEventHeatAlert(request.Platform, request.BucketAtMs, c.User.Identity!.Name!)).RequireAuthorization("operate");
 admin.MapGet("/nodes", (RoomControlStore s) => s.Nodes());
+admin.MapGet("/telemetry/machine", (string? nodeId, int? windowMinutes, TelemetryStore t) => t.MachineStats(nodeId, windowMinutes ?? 60));
+admin.MapGet("/telemetry/process", (string? nodeId, int? windowMinutes, TelemetryStore t) => t.ProcessStats(nodeId, windowMinutes ?? 60));
 admin.MapGet("/rooms", (RoomControlStore s) => s.Rooms().Select(r => r with { Inbox = null, Receipts = null, Snapshot = null }));
 admin.MapGet("/rooms/{id}", (string id, RoomControlStore s) => s.Room(id) is { } r ? Results.Ok(new { room = r with { Inbox = null, Receipts = null }, pendingEvents = s.PendingCount(id), connections = s.Connections().Where(c => c.SessionId == id) }) : Results.NotFound());
 admin.MapGet("/connections", (RoomControlStore s) => s.Connections());

@@ -318,19 +318,25 @@ public sealed class RedesignControlStore(string connectionString)
     /// <summary>One mounted filesystem in a machine telemetry snapshot (FIX-OBS-06).</summary>
     public sealed record MachineDiskMount(string Mount, long TotalBytes, long UsedBytes, double UsedPercent);
 
+    /// <summary>A supervised process's telemetry in one machine sample (FIX-OBS-07).</summary>
+    public sealed record MachineProcessSample(
+        string ProcessInstanceId, string Role, double CpuPercent,
+        long MemoryUsedBytes, long UptimeSeconds);
+
     /// <summary>
-    /// Stores one accepted machine telemetry snapshot (FIX-OBS-06): the node agent's sample
-    /// lands as one append-only row (per-mount disk rides a child table). The node row lock
-    /// verifies the reporting agent is still the node's registered agent — a stale agent's
-    /// late sample is refused rather than written under a displaced identity. Telemetry is
-    /// at-least-once: a retry whose first response was lost can duplicate a row, harmless for
-    /// periodic levels.
+    /// Stores one accepted machine telemetry snapshot (FIX-OBS-06/07): the node agent's sample
+    /// lands as one append-only row (per-mount disk and per-process samples ride child tables).
+    /// The node row lock verifies the reporting agent is still the node's registered agent — a
+    /// stale agent's late sample is refused rather than written under a displaced identity.
+    /// Telemetry is at-least-once: a retry whose first response was lost can duplicate a row,
+    /// harmless for periodic levels.
     /// </summary>
     public async Task<bool> ReportMachineTelemetryAsync(
         string nodeId, string agentInstanceId, DateTime sampledAtUtc, long reportSequence,
         double? cpuPercent, (long Total, long Used, double Percent)? memory,
         (double L1, double L5, double L15)? load,
-        IReadOnlyList<MachineDiskMount> disk, CancellationToken cancellationToken = default)
+        IReadOnlyList<MachineDiskMount> disk,
+        IReadOnlyList<MachineProcessSample> process, CancellationToken cancellationToken = default)
     {
         if (reportSequence <= 0) throw new ArgumentOutOfRangeException(nameof(reportSequence));
         await using var connection = new NpgsqlConnection(connectionString);
@@ -376,6 +382,21 @@ public sealed class RedesignControlStore(string connectionString)
             diskInsert.Parameters.AddWithValue("used", mount.UsedBytes);
             diskInsert.Parameters.AddWithValue("percent", mount.UsedPercent);
             await diskInsert.ExecuteNonQueryAsync(cancellationToken);
+        }
+        foreach (var proc in process)
+        {
+            await using var processInsert = new NpgsqlCommand("""
+                INSERT INTO ops.process_sample(machine_sample_id, process_instance_id, role,
+                    cpu_percent, memory_used_bytes, uptime_seconds)
+                VALUES (@sample, @instance, @role, @cpu, @memory, @uptime)
+                """, connection, transaction);
+            processInsert.Parameters.AddWithValue("sample", sampleId);
+            processInsert.Parameters.AddWithValue("instance", proc.ProcessInstanceId);
+            processInsert.Parameters.AddWithValue("role", proc.Role);
+            processInsert.Parameters.AddWithValue("cpu", proc.CpuPercent);
+            processInsert.Parameters.AddWithValue("memory", proc.MemoryUsedBytes);
+            processInsert.Parameters.AddWithValue("uptime", proc.UptimeSeconds);
+            await processInsert.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
         return true;

@@ -100,6 +100,8 @@ public sealed class ControlGrpcService(
             request.LoadPresent ? (request.Load1M, request.Load5M, request.Load15M) : null,
             request.Disk.Select(d => new RedesignControlStore.MachineDiskMount(
                 d.Mount, d.TotalBytes, d.UsedBytes, d.UsedPercent)).ToList(),
+            request.Process.Select(p => new RedesignControlStore.MachineProcessSample(
+                p.ProcessInstanceId, p.Role, p.CpuPercent, p.MemoryUsedBytes, p.UptimeSeconds)).ToList(),
             context.CancellationToken);
         return new MachineTelemetryReply { Accepted = accepted };
     }

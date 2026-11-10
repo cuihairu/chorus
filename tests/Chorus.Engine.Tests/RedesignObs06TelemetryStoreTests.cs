@@ -25,7 +25,7 @@ public sealed class RedesignObs06TelemetryStoreTests
             [
                 new RedesignControlStore.MachineDiskMount("/", 1000, 400, 40.0),
                 new RedesignControlStore.MachineDiskMount("/data", 2000, 500, 25.0),
-            ], CancellationToken.None);
+            ], [], CancellationToken.None);
 
         Assert.True(accepted);
 
@@ -78,7 +78,7 @@ public sealed class RedesignObs06TelemetryStoreTests
         // A different agent instance id speaks for node-a: the report is refused, not written.
         var accepted = await store.ReportMachineTelemetryAsync(
             "node-a", "agent-other", DateTime.UtcNow, 1,
-            null, null, null, [], CancellationToken.None);
+            null, null, null, [], [], CancellationToken.None);
 
         Assert.False(accepted);
 
@@ -98,7 +98,7 @@ public sealed class RedesignObs06TelemetryStoreTests
 
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             store.ReportMachineTelemetryAsync("node-a", "agent-1", DateTime.UtcNow, 0,
-                null, null, null, [], CancellationToken.None));
+                null, null, null, [], [], CancellationToken.None));
     }
 
     private sealed class TemporaryDatabase(string source) : IAsyncDisposable

@@ -19,7 +19,8 @@ public sealed class RedesignObs06MachineTelemetryMapperTests
             [
                 new MachineDiskSample("/", 1000, 400, 40.0),
                 new MachineDiskSample("/data", 2000, 500, 25.0),
-            ]);
+            ],
+            Process: null);
 
         var request = MachineTelemetryMapper.ToRequest(sample, "node-a", "agent-1", 7);
 
@@ -46,7 +47,7 @@ public sealed class RedesignObs06MachineTelemetryMapperTests
     public void MapsAbsentFamiliesAsNotPresent()
     {
         var request = MachineTelemetryMapper.ToRequest(
-            new MachineTelemetrySample(100, null, null, null, null), "node-a", "agent-1", 1);
+            new MachineTelemetrySample(100, null, null, null, null, null), "node-a", "agent-1", 1);
 
         Assert.False(request.CpuPresent);
         Assert.False(request.MemoryPresent);

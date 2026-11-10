@@ -12,7 +12,7 @@ namespace Chorus.Engine.Tests;
 /// </summary>
 public sealed class RedesignObs06MachineTelemetryPipelineTests
 {
-    private static MachineTelemetrySample Sample(long at) => new(at, null, null, null, null);
+    private static MachineTelemetrySample Sample(long at) => new(at, null, null, null, null, null);
 
     [Fact]
     public async Task SendsTheOldestBufferedSample()

@@ -50,6 +50,7 @@
     <EmbeddedResource Include="Schema/0039_outbox_committed_at.sql" />
     <EmbeddedResource Include="Schema/0040_leaderboard_gm.sql" />
     <EmbeddedResource Include="Schema/0041_machine_telemetry.sql" />
+    <EmbeddedResource Include="Schema/0042_process_telemetry.sql" />
   </ItemGroup>
 
 </Project>

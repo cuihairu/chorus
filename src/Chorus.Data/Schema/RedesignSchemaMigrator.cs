@@ -49,7 +49,8 @@ public static class RedesignSchemaMigrator
         (38, "Chorus.Data.Schema.0038_leaderboard_effect.sql"),
         (39, "Chorus.Data.Schema.0039_outbox_committed_at.sql"),
         (40, "Chorus.Data.Schema.0040_leaderboard_gm.sql"),
-        (41, "Chorus.Data.Schema.0041_machine_telemetry.sql")
+        (41, "Chorus.Data.Schema.0041_machine_telemetry.sql"),
+        (42, "Chorus.Data.Schema.0042_process_telemetry.sql")
     ];
 
     public static async Task ApplyAsync(NpgsqlConnection connection, CancellationToken cancellationToken = default)
