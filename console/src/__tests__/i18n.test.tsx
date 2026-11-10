@@ -79,9 +79,10 @@ describe('the console language face', () => {
     await user.click(screen.getByRole('button', { name: /登\s*录/ }));
 
     // The shell renders its menu and session words in Chinese; the toggle now
-    // names English as the language it leads to.
+    // names English as the language it leads to. The menu words arrive with the
+    // responsive layout's desktop flip, so wait for them.
     await waitFor(() => expect(screen.getByText('gm')).toBeInTheDocument());
-    expect(screen.getAllByText('主页').length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getAllByText('主页').length).toBeGreaterThan(0));
     expect(screen.getByRole('button', { name: /退\s*出/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Switch language' })).toHaveTextContent('EN');
   });

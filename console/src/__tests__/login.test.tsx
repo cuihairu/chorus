@@ -59,9 +59,10 @@ describe('the operator login page', () => {
     expect(String(url)).toBe('/admin/api/v1/who-am-i');
     expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer alice-token');
 
-    // The shell is visible with the operator's role, not the login card.
+    // The shell is visible with the operator's role, not the login card. The menu
+    // words arrive with the responsive layout's desktop flip, so wait for them.
     await waitFor(() => expect(screen.getByText('gm')).toBeInTheDocument());
-    expect(screen.getAllByText('Home').length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getAllByText('Home').length).toBeGreaterThan(0));
     expect(screen.queryByText('Operator login')).not.toBeInTheDocument();
     expect(sessionStorage.getItem('chorus.operator-token')).toBe('alice-token');
   });

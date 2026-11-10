@@ -24,3 +24,13 @@ export function createAdminClient(token: string): AdminClient {
     return (await response.json()) as Rep;
   });
 }
+
+// The statistics faces answer plain GETs (FIX-OBS-08..13): no body, the same bearer
+// header and the same error mapping as the typed client above.
+export async function getAdminJson<T>(token: string, path: string): Promise<T> {
+  const response = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) {
+    throw new AdminError(response.status, await response.text());
+  }
+  return (await response.json()) as T;
+}
