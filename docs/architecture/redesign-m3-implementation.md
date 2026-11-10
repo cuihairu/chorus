@@ -1175,3 +1175,11 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **测试形状**：+6 fact——①名字合法唯一（`^chorus_[a-z][a-z0-9_]*$`）；②`_total`⟺Counter（**抓出 3 处真设计错**：`chorus_rooms`、`chorus_online_players/streamers/rooms` 本是 level 型 gauge 误用计数器后缀，改名）；③无每玩家/每房间/每请求 ID 标签（禁集 22 词）；④stage-3 既有 OBS 族名全注册（闭包：renderer 加名漏注册即红）；⑤`Spec` 未知名抛错；⑥每条带描述。
 - **门禁**：build Release 0 错；字典 6/6 绿。**行为中性 diff**（新被动注册表、零调用点、零既有代码改动）→ 按 WEB-17 先例全量门不重跑，push 后 CI 后盾。
 - **诚实边界**：字典是命名契约不是仪表——OBS-02..12 才接 Meter/采集；下游任务需要未列名=在**该任务**改字典（附自身 ledger），不是旁路字面量；stage-3 的 `chorus_process_cpu_percent` 已发未标签形与字典 OBS-07 带标签形同名不同形（字典形供统计 API 的按进程拆分，旧未标签形由 stage-3 面保留，OBS-07 时再归并）；per-streamer 在线拆分是查询期在名册上的 API 口径不是指标标签（标签会随名册规模爆基数）；`/metrics` 端点本身与 OBS-07 的 HTTP 面一并接线（WEB-03 浏览器面之外的进程面），不在本项；**不含**：任何仪表/采集/端点/告警实现。
+
+## 采集机器 CPU 使用率（FIX-OBS-02，54b1948）
+
+- **任务**：OBS-01 字典命名了 `chorus_machine_cpu_percent`，但没有任何代码读它——机器 CPU 尚无采集器。本项给 NodeAgent（架构 §10 明确「资源采样」是它的职责）一个 Linux CPU 使用率采集器。todo.md:330。依赖：FIX-OBS-01。
+- **机制**：`src/Chorus.NodeAgent/MachineCpuCollector.cs`——读 `/proc/stat` 聚合行（`cpu user nice system idle iowait irq softirq steal guest guest_nice`），`Parse` 得 (idle,total) 计数，`TrySample` 对相邻两样本求差算使用率。**利用率是区间上的增量不是瞬时电平**：首样本只立基线，从第二样本起回答 `(1-idleΔ/totalΔ)*100`。语义钉死：`idle+iowait` 计空闲（iowait 是等 IO 不是驱核）、`guest/guest_nice` 排除（Linux 上已计入 user/nice，含则双计）、total 缺省 0 或两样本零间隔 → 无值（不是 0% 假值）。读源可注入（构造 `Func<string?>`，缺省读 `/proc/stat`），非 Linux（无该文件）优雅返回无值不崩。采集器无运行时调用点——OBS-06 才把周期采样+上报接上，本项只交付采集原语。
+- **测试形状**：+8 fact——解析 (idle,total)（含 10 字段形）；iowait 计空闲；guest/guest_nice 排除（含/不含解析同值）；缺文件/过短/错标签/非数字 → null；首样本只立基线+第二样本算 28.5714%（手工推的 350/250 delta）；第三样本基线前移（对样本 2 答而非样本 1，防 stale 基线）；读源消失持续无值不崩；零间隔无值。测试项目 +Chorus.NodeAgent 引用。
+- **门禁**：build Release 0 错；8/8 绿。行为中性（新采集器零调用点）→ 全量门不重跑（WEB-17 先例），push 后 CI 后盾。
+- **诚实边界**：采集 Linux `/proc/stat` 聚合行——Windows 节点无该文件，本项不覆盖（Windows CPU 采集是独立任务或 OBS-06 的平台分支）；仅聚合 CPU（不按核拆分，每核维度留给需求方，且按核标签基数=核数有界，未来可按需加）；不接任何调度准入（architecture §15 的「CPU>70% 停止新分配」是调度任务消费本采集器，不在本项）；**不含**：周期采样、上报、内存/负载/磁盘采集（OBS-03/04/05）。

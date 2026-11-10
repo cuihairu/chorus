@@ -328,7 +328,8 @@
 
 - [x] **FIX-OBS-01 / P1：定义运维指标字典。** 依赖：无。
   - 证据：8052f67；Chorus.Rpc/OpsMetrics.cs（OpsMetricSpec Name/Kind/Unit/Labels/Description + All 40 条 + Spec 未知抛错；三宿主共享项目零运行时调用点）；五族：机器（CPU/内存 used·total·percent/load 1·5·15/磁盘 per mount/uptime）+进程（per instance,role）+房间（total/by_state/by_tenant）+在线分口径（players/streamers/rooms by tenant·game）+入站（既有 7 名+raw by source）+事件链（room 会话既有 4 名+delivered/effect+outbox pending/dispatching/done/failed）+出站（calls/failures/latency by endpoint）；约束内建：Prometheus 名+_total 仅计数器+标签仅有界维度（架构 §12 基数规则钉死）；+6 fact（名字合法唯一/_total⟺Counter 抓 3 处 gauge 误用改名/禁 22 词标签/stage-3 既有名闭包注册/Spec 抛错/每条带描述）；行为中性 diff 全量门不重跑（CI 后盾）
-- [ ] **FIX-OBS-02 / P1：采集机器 CPU 使用率。** 依赖：FIX-OBS-01。
+- [x] **FIX-OBS-02 / P1：采集机器 CPU 使用率。** 依赖：FIX-OBS-01。
+  - 证据：54b1948；NodeAgent/MachineCpuCollector（/proc/stat 聚合行 Parse→(idle,total)+TrySample 相邻样本求差 (1-idleΔ/totalΔ)*100；首样本只立基线；idle+iowait 计空闲、guest/guest_nice 排除、零间隔/缺文件/畸形→无值非假 0；读源可注入闭可测，非 Linux 优雅无值）；+8 fact（解析/iowait/guest 排除/畸形 null/首样本基线+28.5714% 手推/第三样本基线前移/读源消失/零间隔）；测试项目 +NodeAgent 引用；行为中性零调用点全量门不重跑（CI 后盾）
 - [ ] **FIX-OBS-03 / P1：采集机器内存。** 依赖：FIX-OBS-01。
 - [ ] **FIX-OBS-04 / P1：采集系统负载。** 依赖：FIX-OBS-01。
 - [ ] **FIX-OBS-05 / P1：采集磁盘容量与使用率。** 依赖：FIX-OBS-01。
