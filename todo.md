@@ -338,7 +338,8 @@
   - 证据：4eff812；NodeAgent/MachineDiskCollector（df -Pk→每挂载 (mount,total,used,percent)；电平单读无基线；伪/内存文件系统 25 名黑名单跳过、overlay 保留、零容量跳过；\040 空格还原；读源可注入非 Linux 无值）；+5 fact（块设备+overlay per mount/伪内存被跳/空格挂载/缺畸形全伪零容量 null/注入源）；行为中性零调用点全量门不重跑（CI 后盾）
 - [x] **FIX-OBS-06 / P1：可靠上报机器遥测。** 依赖：FIX-OBS-02、FIX-OBS-03、FIX-OBS-04、FIX-OBS-05。
   - 证据：e31e794；m0.proto ReportMachineTelemetry（presence 标志族）+0041 迁移（ops.machine_sample+ops.machine_disk_sample）+NodeAgent 三件套（Sampler 聚合四采集器/Pipeline 有界缓冲 drop-oldest+有界重试+退出冲刷/Mapper presence）+BootstrapAgent 5s 循环集成（15s 周期 env 可配）+ControlServer 落库（node 行锁 stale agent 拒）；+16 fact（sampler3+pipeline7+mapper2+store3+M0 host1）+schema 迁移断言更新（表 48→50、迁移 40→41）；全量门 1937 测试 16 失败全为文档化共租 flake 或已修回归（3 宿主断言 solo 全绿）
-- [ ] **FIX-OBS-07 / P1：提供机器与进程统计 API。** 依赖：FIX-WEB-03、FIX-OBS-06。
+- [x] **FIX-OBS-07 / P1：提供机器与进程统计 API。** 依赖：FIX-WEB-03、FIX-OBS-06。
+  - 证据：8be0d37；完整链（用户确认范围：完整链+ControlHost /api 挂载）——进程采集 `MachineProcessCollector`（槽表源+/proc stat jiffies comm 括号后字段 14/15+VmRSS；CPU% 是 delta 首样本立基线，读失败跳过绝不假零）+`MachineProcessProto`（request.process=16 复用 ReportMachineTelemetry RPC）+0042 迁移（ops.process_sample）+store 同事务落库+`TelemetryStore`（MachineStats/ProcessStats 只读 ops，同库假设 Control:ConnectionString，Sqlite 答空非 500）+`/api/telemetry/machine|process`（RequireAuthorization）；+17 fact（collector7+sampler2+mapper2+store6）+schema 迁移断言更新（表 50→51、迁移 41→42）；全量门 1954 测试 8 失败全为文档化共租签名或 solo 转绿（M2 trio solo+干净树同败=环境族）
 - [ ] **FIX-OBS-08 / P1：提供房间统计 API。** 依赖：FIX-WEB-03、FIX-OBS-01、FIX-LINK-01。
 - [ ] **FIX-OBS-09 / P1：提供分口径在线人数。** 依赖：FIX-WEB-03、FIX-OBS-01。
 - [ ] **FIX-OBS-10 / P1：统计平台原始入口流量。** 依赖：FIX-OBS-01。
