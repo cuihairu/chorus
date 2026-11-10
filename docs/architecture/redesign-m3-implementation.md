@@ -1183,3 +1183,11 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **测试形状**：+8 fact——解析 (idle,total)（含 10 字段形）；iowait 计空闲；guest/guest_nice 排除（含/不含解析同值）；缺文件/过短/错标签/非数字 → null；首样本只立基线+第二样本算 28.5714%（手工推的 350/250 delta）；第三样本基线前移（对样本 2 答而非样本 1，防 stale 基线）；读源消失持续无值不崩；零间隔无值。测试项目 +Chorus.NodeAgent 引用。
 - **门禁**：build Release 0 错；8/8 绿。行为中性（新采集器零调用点）→ 全量门不重跑（WEB-17 先例），push 后 CI 后盾。
 - **诚实边界**：采集 Linux `/proc/stat` 聚合行——Windows 节点无该文件，本项不覆盖（Windows CPU 采集是独立任务或 OBS-06 的平台分支）；仅聚合 CPU（不按核拆分，每核维度留给需求方，且按核标签基数=核数有界，未来可按需加）；不接任何调度准入（architecture §15 的「CPU>70% 停止新分配」是调度任务消费本采集器，不在本项）；**不含**：周期采样、上报、内存/负载/磁盘采集（OBS-03/04/05）。
+
+## 采集机器内存（FIX-OBS-03，c083a6f）
+
+- **任务**：OBS-01 命名了 `chorus_machine_memory_used/total/percent`，无代码读——本项给 NodeAgent 一个内存采集器。todo.md:331。依赖：FIX-OBS-01。
+- **机制**：`src/Chorus.NodeAgent/MachineMemoryCollector.cs`——读 `/proc/meminfo`，`Parse` 出 `MachineMemorySample(TotalBytes, UsedBytes, UsedPercent)`。**内存是电平不是增量**：单次读即答、无基线。**Used = Total − MemAvailable**：MemAvailable 是内核自己的「此刻可用」数（含可回收缓存），调度/告警该读它，不自行做 free−buffers 算术；无 MemAvailable（老内核）回落 `MemFree+Buffers+Cached`。kB→bytes 缩放（kB/MB/GB/B 均认）。缺文件/畸形/无可用数/总为 0 → 无值（绝非假 0）；used 越界钳入 [0,total]（内核报 available>total 不产负值）。读源可注入，非 Linux 优雅无值。
+- **测试形状**：+5 fact——MemAvailable 算 used（16384000kB 与 8192000kB → 50.0%）；无 MemAvailable 回落 free+buffers+cached；available>total 钳 0%；缺文件/畸形/总无可用数 → null；采集器注入源答 50% + 源消失无值。
+- **门禁**：build Release 0 错；5/5 绿。行为中性（零调用点）→ 全量门不重跑（WEB-17 先例），push 后 CI 后盾。
+- **诚实边界**：used=total−available 是「此刻可用」口径不是 RSS/私有驻留（进程级驻留归 OBS-07 的 per-process）；swap 不参与（字典无 swap 名，磁盘压力告警走磁盘族）；MemAvailable 缺失时的 free+buffers+cached 回落是近似（不含 SReclaimable，老内核口径）；**不含**：周期采样、上报、CPU/负载/磁盘采集（OBS-02/04/05）。
