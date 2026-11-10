@@ -5,6 +5,8 @@ using Npgsql;
 namespace Chorus.ControlServer;
 
 public sealed record QueueGateState(string PartitionKey, bool Suspended, DateTime UpdatedAtUtc, string UpdatedBy);
+public sealed record AdminAuditRow(string RequestId, string Operator, string Reason, string Scope,
+    string Command, string DetailJson, DateTime CreatedAtUtc);
 public sealed record AdminBindingSnapshot(string BindingId, string GameId, long Generation, string State,
     string? CurrentRoomId, DateTime CreatedAtUtc);
 public sealed record AdminTicketSnapshot(string TicketId, string State, string PartitionKey,
@@ -69,6 +71,26 @@ public sealed class RedesignAdminStore(string connectionString)
         {
             return false;
         }
+    }
+
+    /// <summary>The audit row a request id stands under (FIX-WEB-09): the result query's
+    /// control-plane fallback for operations whose effect lives in the control plane rather
+    /// than the data plane's input path. A request id names one command row; if a foreign
+    /// caller ever reused one across commands, the newest stands.</summary>
+    public async Task<AdminAuditRow?> LookupOperationAsync(string requestId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT request_id,operator,reason,scope,command,detail::text,created_at
+            FROM control.audit WHERE request_id=@request ORDER BY audit_id DESC LIMIT 1
+            """, connection);
+        command.Parameters.AddWithValue("request", requestId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        return new AdminAuditRow(reader.GetString(0), reader.GetString(1), reader.GetString(2),
+            reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetDateTime(6));
     }
 
     public async Task<QueueGateState> SetQueueGateAsync(string partitionKey, bool suspended, string updatedBy,

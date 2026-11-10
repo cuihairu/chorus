@@ -204,27 +204,41 @@ public sealed class AdminGrpcService(
 
     /// <summary>The effect query by the original operation id (FIX-GM-07, architecture 12.1:
     /// accepted, applied and unknown are distinct answers; a timeout is queried, never
-    /// re-sent under a new id). The data plane holds the whole answer — the input row's
-    /// acceptance, the delivery state and the committed tick whose frame consumed the
-    /// command — so the control plane only translates it into stages.</summary>
+    /// re-sent under a new id). The data plane holds the whole answer for room commands —
+    /// the input row's acceptance, the delivery state and the committed tick whose frame
+    /// consumed the command — so the control plane only translates it into stages. The
+    /// control-plane commands (queue gate, drain, settlement retry, task reconcile, epoch
+    /// bump) have no data-plane input: their operation id stands in the audit trail, so a
+    /// miss falls back to the audit row (FIX-WEB-09) and answers "Audited" with the
+    /// recorded evidence — the command's outcome was the synchronous reply, the row is what
+    /// proves it happened. The scope fields are optional: a room command is scoped by the
+    /// request, a control-plane operation is known by its id alone.</summary>
     public override async Task<AdminGetOperationStatusReply> GetOperationStatus(
         AdminGetOperationStatusRequest request, ServerCallContext context)
     {
-        if (string.IsNullOrWhiteSpace(request.OperationId) || string.IsNullOrWhiteSpace(request.TenantId) ||
-            string.IsNullOrWhiteSpace(request.GameId) || string.IsNullOrWhiteSpace(request.RoomId))
+        if (string.IsNullOrWhiteSpace(request.OperationId))
             throw new RpcException(new Status(StatusCode.InvalidArgument,
-                "The status query needs an operation id and its scope."));
+                "The status query needs an operation id."));
         // The status query is a read (FIX-WEB-01): relaxed from the gm floor to viewer.
+        // Empty scope dimensions mean no constraint (FIX-WEB-03's InScope semantics).
         await RequireOperator(context, "viewer", request.TenantId, request.GameId);
         var lookup = await new RoundInput.RoundInputClient(directory.DataChannel).LookupInputAsync(
             new LookupInputRequest { EventId = request.OperationId },
             deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: context.CancellationToken);
         if (!lookup.Found)
+        {
+            var audit = await adminStore.LookupOperationAsync(request.OperationId, context.CancellationToken);
+            if (audit is null)
+                return new AdminGetOperationStatusReply
+                {
+                    Found = false, Stage = "NotFound",
+                    Note = "No data-plane input and no audited operation stand under this id."
+                };
             return new AdminGetOperationStatusReply
             {
-                Found = false, Stage = "NotFound",
-                Note = "The data plane holds no input under this operation id."
+                Found = true, Stage = "Audited", Platform = audit.Command, Note = audit.DetailJson
             };
+        }
         return new AdminGetOperationStatusReply
         {
             Found = true, Stage = OperationStage(lookup), AppliedTick = lookup.AppliedTick,
