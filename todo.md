@@ -294,7 +294,8 @@
   - 证据：11f0583；contract 3/3 绿（路由表/命令三元组/WhoAmI 形状，钉编译描述符）；gate 1877/1881（4 共租文档签名零新）
 - [x] **FIX-WEB-02 / P1：建立 React 控制台工程。** 依赖：无。
   - 证据：d1cbf5d；pnpm build 绿（tsc+vite）；ci console-build job 入门
-- [ ] **FIX-WEB-03 / P0：在 ControlServer 暴露浏览器管理 API。** 依赖：FIX-WEB-01、FIX-GM-06。
+- [x] **FIX-WEB-03 / P0：在 ControlServer 暴露浏览器管理 API。** 依赖：FIX-WEB-01、FIX-GM-06。
+  - 证据：fa968a0；浏览器 face host 1/1（whoami/401/viewer 读/viewer→gm 403/gm 命令/伪造身份 403/status 放宽/ready-404 对真端点）；迁移 4 文件 9/9；契约 3/3；gate 1879/1882（3 既有文档签名零新）
 - [ ] **FIX-WEB-04 / P0：接通操作员登录页面。** 依赖：FIX-WEB-02、FIX-WEB-03。
 - [ ] **FIX-WEB-05 / P1：建立类型化 API 客户端。** 依赖：FIX-WEB-01、FIX-WEB-02。
 - [ ] **FIX-WEB-06 / P1：实现节点与进程管理页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-07。
