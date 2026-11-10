@@ -332,7 +332,8 @@
   - 证据：54b1948；NodeAgent/MachineCpuCollector（/proc/stat 聚合行 Parse→(idle,total)+TrySample 相邻样本求差 (1-idleΔ/totalΔ)*100；首样本只立基线；idle+iowait 计空闲、guest/guest_nice 排除、零间隔/缺文件/畸形→无值非假 0；读源可注入闭可测，非 Linux 优雅无值）；+8 fact（解析/iowait/guest 排除/畸形 null/首样本基线+28.5714% 手推/第三样本基线前移/读源消失/零间隔）；测试项目 +NodeAgent 引用；行为中性零调用点全量门不重跑（CI 后盾）
 - [x] **FIX-OBS-03 / P1：采集机器内存。** 依赖：FIX-OBS-01。
   - 证据：c083a6f；NodeAgent/MachineMemoryCollector（/proc/meminfo→(TotalBytes,UsedBytes,UsedPercent)；电平单读无基线；Used=Total−MemAvailable（内核可用口径，非自算）；老内核回落 MemFree+Buffers+Cached；kB/MB/GB/B 缩放；缺文件/畸形/无可用数→无值；used 钳 [0,total]；读源可注入非 Linux 无值）；+5 fact（MemAvailable 50.0%/回落/钳 0/null 族/注入源）；行为中性零调用点全量门不重跑（CI 后盾）
-- [ ] **FIX-OBS-04 / P1：采集系统负载。** 依赖：FIX-OBS-01。
+- [x] **FIX-OBS-04 / P1：采集系统负载。** 依赖：FIX-OBS-01。
+  - 证据：b86c889；NodeAgent/MachineLoadCollector（/proc/loadavg 前三字段→(1m,5m,15m)；电平单读无基线；负值拒畸形；读源可注入非 Linux 无值）；+4 fact（三均值/零负载/null 族/注入源）；行为中性零调用点全量门不重跑（CI 后盾）
 - [ ] **FIX-OBS-05 / P1：采集磁盘容量与使用率。** 依赖：FIX-OBS-01。
 - [ ] **FIX-OBS-06 / P1：可靠上报机器遥测。** 依赖：FIX-OBS-02、FIX-OBS-03、FIX-OBS-04、FIX-OBS-05。
 - [ ] **FIX-OBS-07 / P1：提供机器与进程统计 API。** 依赖：FIX-WEB-03、FIX-OBS-06。
