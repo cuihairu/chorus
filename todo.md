@@ -307,7 +307,8 @@
   - 证据：a890110；store 2/2 + 浏览器 face host 1/1（dispatch→DurableAccepted→Applied 数字 tick→无 scope 同答→Audited 证据→NotFound）；回归 9 绿；gate 1880/1886（6 既有文档签名零新）
 - [x] **FIX-WEB-10 / P1：实现管理操作与回执页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-09。
   - 证据：6052714；七命令页签+回执查询（仅 id+空维、stage 词分色不折叠）；页面测试 5/5（fetch 边界：提交/派发/回执/viewer 命令地板/403）；pnpm build 绿+11/11；pnpm 10 冻结安装+测试+构建绿
-- [ ] **FIX-WEB-11 / P1：接入独立房间 epoch 的 GM 表单。** 依赖：FIX-WEB-10、FIX-GM-03、FIX-GM-05。
+- [x] **FIX-WEB-11 / P1：接入独立房间 epoch 的 GM 表单。** 依赖：FIX-WEB-10、FIX-GM-03、FIX-GM-05。
+  - 证据：8fea6af；查/抬两卡（expected 必填 stale 可见拒、target 0 哨兵、routeSync 与提交分显、duplicate 记录值）；页面测试 4/4；pnpm build 绿+15/15；pnpm 10 CI=true 冻结安装+测试+构建绿
 - [ ] **FIX-WEB-12 / P1：为后台提供排行榜查询接口。** 依赖：FIX-WEB-03、FIX-RANK-04、FIX-RANK-05、FIX-RANK-06、FIX-RANK-07。
 - [ ] **FIX-WEB-13 / P1：实现开箱即用排行榜后台页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-12。
 - [ ] **FIX-WEB-14 / P1：实现排行榜维护操作。** 依赖：FIX-WEB-10、FIX-WEB-13、FIX-RANK-08。

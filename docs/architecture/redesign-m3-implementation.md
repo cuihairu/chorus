@@ -1100,3 +1100,12 @@ INPUT-02 留下的 open 项落位：StreamerServer 在挂载提交后把 (Bindin
 - **测试形状**（+5：11/11）：回执查询（wire 体=仅 id+空维、Applied+数字 tick）；queue gate 提交（新 requestId、身份、回支行）；房间命令派发（pane 作用域查询、DurableAccepted+操作 id）；viewer（页签 aria-disabled、回执照答 Audited+platform）；403 拒绝（显词、不折叠成回执）。
 - **门禁**：pnpm build 绿；pnpm test 11/11（登录 6 + 操作 5）；pnpm 10 冻结安装+测试+构建绿（CI 对齐）。无 .NET 改动（WEB-09 已供全部后端语义），全量门不重跑。
 - **诚实边界**：回执是**手动查询**——页面不自动轮询 Accepted→Applied 迁移（操作员自查，符合「查询面」而非「订阅面」的任务边界）；命令字段校验最小化（必填+JSON 合法），目标是否存在由服务端裁决；审计**列表**查询不在本页（WEB-15）；中英文不在本页（WEB-16）；dispatch 的 expectedEpoch/tickMs 省略时按 0 提交（0=服务端「随现值」语义）。
+
+## 接入独立房间 epoch 的 GM 表单（FIX-WEB-11，8fea6af）
+
+- **任务**：GM-01..05 把「查 epoch→按期望值抬 epoch→Recovering→显式恢复」做成服务端闭环，但控制台只有 WEB-10 的通用命令页签（刻意无 epoch）——本页给 epoch 一个独立表单：先查后抬，回执把「存储已提交」与「路由已确认」分开显示。todo.md:309。依赖：FIX-WEB-10、FIX-GM-03、FIX-GM-05。
+- **机制**：页面（console/src/pages/EpochPage.tsx）两张卡：**Lookup**（tenant/game/room → `get-room-epoch`，只读也随附新 requestId+操作者身份+理由——proto3 统一请求形状；回复按 owner 状态着色 Active 绿/Recovering 橙）与 **Bump**（reason/tenant/game/room/expectedEpoch 必填、targetEpoch 可选——省略即 0 哨兵=expected+1，GM-01 规则；角色地板同 WEB-10：viewer 查询开放、bump 关闭）。回复渲染：old→new epoch、owner 不变、ownershipStatus 与 routeSyncStatus 双标签（Synced 绿/Pending 橙/Removed 红）、duplicate 金标（同 id 重放=记录值不二次抬，GM-05）、operation id 回执词——指向 WEB-10 的回执查询。文案诚实：抬后房间停在 Recovering、旧 epoch 提交自此被栅栏、恢复是操作页上显式的 retry-room-recovery 命令，非隐式副作用；committed ≠ confirmed。
+- **测试形状**（+4：15/15）：lookup（wire 体随新 requestId/身份/scope；epoch+owner+Active）；bump（expectedEpoch=3 上 wire、targetEpoch 缺省=0 哨兵上 wire；Recovering+Pending+回执词）；duplicate 重放（金标+记录值 4 非二次抬）；viewer（bump 按钮禁用+提示词、lookup 照答 Active）。
+- **antd 落地补充**（继 WEB-10 的坑单）：Lookup/Bump 两卡常驻同屏 → `getByText('Look up')` 与按钮文本互撞（卡题改 'Lookup'）；同屏多卡的字段查询必须卡作用域（`within(card)`）；回支行 label 与语义标签同词（'duplicate'/'Active'）按 findAllByText 断言。
+- **门禁**：pnpm build 绿；pnpm test 15/15（登录 6+操作 5+epoch 4）；pnpm 10 冻结安装+测试+构建绿（CI 对齐，`CI=true` 免 TTY 清 modules 目录）。无 .NET 改动（GM-01..06 与 WEB-03/05/09 已供全部后端语义），全量门不重跑。
+- **诚实边界**：expected epoch 不与 lookup 联动预填（操作员手填 lookup 显示值——查与抬之间 epoch 可被并发变更，自动预填会暗示「照抄即安全」的不实保证；stale 照旧被服务端 FailedPrecondition 拒）；页面不轮询 routeSyncStatus Pending→Synced（操作员重查或重放观察，同 WEB-10 手动查询边界）；「bump 后显式恢复」走操作页通用页签，本页不内嵌恢复入口（恢复有自己的轮询语义，GM-05 已证）；中英文（WEB-16）、审计列表（WEB-15）不在本页；**不含**：任何后端改动。
