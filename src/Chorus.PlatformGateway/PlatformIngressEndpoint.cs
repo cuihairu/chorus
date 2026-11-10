@@ -30,8 +30,15 @@ public sealed class PlatformIngressEndpoint(
     Func<Grpc.Net.Client.GrpcChannel, RoomEvents.RoomEventsClient>? roomEventsFactory = null,
     TimeSpan[]? pushRetryBackoffs = null,
     StopDeliveryRecord? stopDeliveries = null,
-    RoundInput.RoundInputClient? routeEvents = null)
+    RoundInput.RoundInputClient? routeEvents = null,
+    IngressCounters? counters = null)
 {
+    /// <summary>The face's own counters (FIX-OBS-10): every disposition this method answers
+    /// bumps exactly one family, and the reporter carries the cumulative snapshot to the
+    /// control plane. A caller that supplies none still gets counting — the instance-local
+    /// counters just stay instance-local.</summary>
+    private readonly IngressCounters _counters = counters ?? new IngressCounters();
+
     /// <summary>The platform application the callback belongs to; per-app callbacks are how
     /// every platform console routes webhooks, so the face asks for it explicitly.</summary>
     public const string AppIdHeader = "X-Chorus-App-Id";
@@ -109,6 +116,7 @@ public sealed class PlatformIngressEndpoint(
             body.Write(buffer, 0, read);
             if (body.Length > MaxBodyBytes)
             {
+                _counters.TooLarge();
                 return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
             }
         }
@@ -122,6 +130,7 @@ public sealed class PlatformIngressEndpoint(
             pair => pair.Key, pair => pair.Value.ToString(), StringComparer.OrdinalIgnoreCase);
         if (!verifier.Verify(platform, raw, headers))
         {
+            _counters.Unverified();
             return Results.Unauthorized();
         }
 
@@ -137,6 +146,7 @@ public sealed class PlatformIngressEndpoint(
         }
         if (mapped is null)
         {
+            _counters.Unmapped();
             return Results.BadRequest(new { error = "unmapped_event", platform });
         }
 
@@ -227,6 +237,10 @@ public sealed class PlatformIngressEndpoint(
                     if (delivered.Disposition is PushDisposition.DurableAccepted
                         or PushDisposition.Duplicate)
                     {
+                        if (delivered.Disposition == PushDisposition.Duplicate)
+                            _counters.Duplicates();
+                        else
+                            _counters.Accepted();
                         // The pair the drain later routes and the watermark the ack reports:
                         // what this process durably observed for the room, nothing more.
                         stopDeliveries?.ObserveApp(platform, appId);
@@ -298,9 +312,18 @@ public sealed class PlatformIngressEndpoint(
         }
         catch (RpcException)
         {
+            _counters.TimedOut();
             // Not committed: the platform's retry must be a fresh delivery, and the face says
             // so with the one retry posture that never acknowledges a lost event.
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+        // The durable answers the batch committed (FIX-OBS-10): a duplicate receipt counts
+        // as the duplicate it is, any other committed receipt is an accept — the persistent
+        // inbox's attribution is as durable an acceptance as the push leg's own.
+        foreach (var receipt in committed.Receipts)
+        {
+            if (receipt.Duplicate) _counters.Duplicates();
+            else _counters.Accepted();
         }
 
         // FIX-SYNC-07: the ingest leg only attributes — nothing in production routes a live

@@ -323,6 +323,10 @@ public sealed class RedesignControlStore(string connectionString)
         string ProcessInstanceId, string Role, double CpuPercent,
         long MemoryUsedBytes, long UptimeSeconds);
 
+    /// <summary>One counter family of a face's app-counter report (FIX-OBS-10): the family
+    /// names the dictionary metric, the value is the reporter's cumulative count.</summary>
+    public sealed record AppCounterEntry(string Family, long Value);
+
     /// <summary>
     /// Stores one accepted machine telemetry snapshot (FIX-OBS-06/07): the node agent's sample
     /// lands as one append-only row (per-mount disk and per-process samples ride child tables).
@@ -397,6 +401,37 @@ public sealed class RedesignControlStore(string connectionString)
             processInsert.Parameters.AddWithValue("memory", proc.MemoryUsedBytes);
             processInsert.Parameters.AddWithValue("uptime", proc.UptimeSeconds);
             await processInsert.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
+    /// <summary>The face's own counters (FIX-OBS-10): each accepted report appends one row
+    /// per family. The reporter's identity was checked against its certificate by the gRPC
+    /// service (the self-report trust, no agent row involved), so the store lands the rows
+    /// as claimed — the same division ReportMachineTelemetry uses, minus the agent check a
+    /// face has no agent for.</summary>
+    public async Task<bool> ReportAppCountersAsync(
+        string nodeId, string processInstanceId, DateTime reportedAtUtc,
+        IReadOnlyList<AppCounterEntry> counters, CancellationToken cancellationToken = default)
+    {
+        if (counters.Count == 0) throw new ArgumentException("A counter report names no family.", nameof(counters));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        foreach (var counter in counters)
+        {
+            await using var insert = new NpgsqlCommand("""
+                INSERT INTO ops.app_counter_sample(node_id, process_instance_id, family,
+                    value, reported_at)
+                VALUES (@node, @instance, @family, @value, @reported)
+                """, connection, transaction);
+            insert.Parameters.AddWithValue("node", nodeId);
+            insert.Parameters.AddWithValue("instance", processInstanceId);
+            insert.Parameters.AddWithValue("family", counter.Family);
+            insert.Parameters.AddWithValue("value", counter.Value);
+            insert.Parameters.AddWithValue("reported", reportedAtUtc);
+            await insert.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
         return true;

@@ -119,6 +119,21 @@ message MachineTelemetryRequest {
   repeated MachineProcessProto process = 16;
 }
 message MachineTelemetryReply { bool accepted = 1; }
+// Application counters (FIX-OBS-10): a face's own cumulative counts since its process
+// started, the family naming the dictionary metric (Chorus.Rpc OpsMetrics). The reporter
+// speaks with its process certificate; the control plane checks the identity against the
+// certificate the way a process self-report is checked.
+message AppCounterProto {
+  string family = 1;
+  int64 value = 2;
+}
+message AppCounterReport {
+  string node_id = 1;
+  string process_instance_id = 2;
+  int64 reported_at_unix_ms = 3;
+  repeated AppCounterProto counters = 4;
+}
+message AppCounterReply { bool accepted = 1; }
 message OwnershipRequest {
   string kind = 1;
   string entity_id = 2;
@@ -147,6 +162,7 @@ service ControlService {
   rpc RegisterNode(RegisterNodeRequest) returns (NodeReply);
   rpc ReportProcess(ReportProcessRequest) returns (ProcessReply);
   rpc ReportMachineTelemetry(MachineTelemetryRequest) returns (MachineTelemetryReply);
+  rpc ReportAppCounters(AppCounterReport) returns (AppCounterReply);
   rpc ClaimOwnership(OwnershipRequest) returns (OwnershipReply);
   rpc GetOwnership(OwnershipLookup) returns (OwnershipReply);
 }

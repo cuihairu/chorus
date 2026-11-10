@@ -71,6 +71,10 @@ builder.Services.AddSingleton(trustedCertificates);
 // observed — lives here, shared with the webhook face and the drain service.
 var stopDeliveries = new StopDeliveryRecord();
 builder.Services.AddSingleton(stopDeliveries);
+// The webhook face's own counters (FIX-OBS-10): one process-wide instance the face bumps
+// and the reporter below carries to the control plane — the statistics face reads them
+// there, not here (no database credentials on this host).
+var ingressCounters = new IngressCounters();
 builder.Services.AddHostedService(_ => new TaskReconciler(
     new PlatformTask.PlatformTaskClient(DataChannel()), taskAdapter,
     identity.ProcessInstanceId,
@@ -93,6 +97,15 @@ if (controlEndpoint is { Length: > 0 })
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
         readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(readinessDataChannel, cancellationToken)));
+    // The face's counters ride the same self-report trust (FIX-OBS-10): the reporter posts
+    // the cumulative snapshot every interval and the control plane keeps the series its
+    // statistics face reads. No face mounted, nothing to report.
+    if (ingressPort > 0)
+    {
+        builder.Services.AddHostedService(_ => new AppCounterReporter(
+            serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportIntervalMs,
+            ingressCounters.Snapshot));
+    }
 }
 // The routing watch (FIX-INPUT-02): the webhook face resolves each callback's live key to the
 // room it belongs to, and pushes straight at the owning game host. Without the control plane
@@ -129,7 +142,7 @@ if (ingressPort > 0)
         sp.GetServices<IPlatformEventMapper>(),
         new PlatformIngest.PlatformIngestClient(DataChannel()),
         sp.GetService<GatewayRoutingMonitor>(), gameChannelFactory, stopDeliveries: stopDeliveries,
-        routeEvents: new RoundInput.RoundInputClient(DataChannel())));
+        routeEvents: new RoundInput.RoundInputClient(DataChannel()), counters: ingressCounters));
 }
 
 var app = builder.Build();

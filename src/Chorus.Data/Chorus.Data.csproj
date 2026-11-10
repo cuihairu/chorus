@@ -51,6 +51,7 @@
     <EmbeddedResource Include="Schema/0040_leaderboard_gm.sql" />
     <EmbeddedResource Include="Schema/0041_machine_telemetry.sql" />
     <EmbeddedResource Include="Schema/0042_process_telemetry.sql" />
+    <EmbeddedResource Include="Schema/0043_app_counter_sample.sql" />
   </ItemGroup>
 
 </Project>

@@ -106,6 +106,29 @@ public sealed class ControlGrpcService(
         return new MachineTelemetryReply { Accepted = accepted };
     }
 
+    public override async Task<AppCounterReply> ReportAppCounters(
+        AppCounterReport request, ServerCallContext context)
+    {
+        // A face's own counters (FIX-OBS-10): the certificate decides whose numbers these
+        // are — a process reports only its own instance on its own node, the same identity
+        // a process self-report is held to. No agent row is involved, so the certificate
+        // check is the whole trust chain.
+        var caller = await RequireAsync(context, "platform-gateway");
+        if (caller.Role != "platform-gateway" || caller.TenantId != "@cluster" ||
+            caller.NodeId != request.NodeId ||
+            caller.ProcessInstanceId != request.ProcessInstanceId ||
+            request.ReportedAtUnixMs <= 0 || request.Counters.Count == 0 ||
+            request.Counters.Any(c => string.IsNullOrWhiteSpace(c.Family) || c.Value < 0))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Invalid app counter report."));
+        var accepted = await store.ReportAppCountersAsync(
+            request.NodeId, request.ProcessInstanceId,
+            DateTimeOffset.FromUnixTimeMilliseconds(request.ReportedAtUnixMs).UtcDateTime,
+            request.Counters.Select(c => new RedesignControlStore.AppCounterEntry(
+                c.Family, c.Value)).ToList(),
+            context.CancellationToken);
+        return new AppCounterReply { Accepted = accepted };
+    }
+
     /// <summary>Self-report slots follow "{node}/{role}" with an optional "#2", "#3"… replica
     /// suffix — one slot per process instance, instances distinguished by the suffix.</summary>
     private static bool SlotAllowsReplicas(string slotId, string nodeId, string role)
