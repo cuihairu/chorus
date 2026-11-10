@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
+using Chorus.ControlServer;
 using Chorus.Platform;
 using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
+using Grpc.Core.Interceptors;
 using RoutingService = Chorus.Rpc.Routing;
 
 namespace Chorus.Engine.Tests;
@@ -303,7 +305,13 @@ public sealed class RedesignClusterDirectoryHostTests
         using var adminCertificate = environment.Certificate("@cluster", "control-server", "admin-sched");
         using var adminChannel = environment.Channel(environment.ControlPort, adminCertificate,
             "control-server");
-        var drained = await new Admin.AdminClient(adminChannel).DrainProcessAsync(
+        // FIX-WEB-03: the drain command now requires an operator identity, not a process
+        // certificate — the acceptance credential the command body names drives the call.
+        await new RedesignOperatorStore(environment.DatabaseConnectionString)
+            .RegisterOperatorAsync("acceptance", "gm", [], [], "acceptance-token");
+        var drained = await new Admin.AdminClient(
+            adminChannel.Intercept(new OperatorCredentialInterceptor("acceptance-token")))
+            .DrainProcessAsync(
             new AdminDrainProcessRequest
             {
                 RequestId = "drain-sched-a", Operator = "acceptance", Reason = "FIX-SCHED-02",

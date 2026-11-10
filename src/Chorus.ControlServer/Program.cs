@@ -23,17 +23,35 @@ await using (var database = new NpgsqlConnection(connectionString))
     await RedesignSchemaMigrator.VerifyAsync(database);
 }
 
-builder.WebHost.ConfigureKestrel(options => options.Listen(IPAddress.Any, port, listen =>
+var browserPort = int.Parse(Environment.GetEnvironmentVariable("CHORUS_BROWSER_PORT") ?? "7502");
+builder.WebHost.ConfigureKestrel(options =>
 {
-    listen.Protocols = HttpProtocols.Http2;
-    listen.UseHttps(https =>
+    options.Listen(IPAddress.Any, port, listen =>
     {
-        https.ServerCertificate = serverCertificate;
-        https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
-        https.ClientCertificateValidation = (certificate, _, _) =>
-            trustedCertificates.ValidateAndRemember(certificate, root, clusterId, [nodeAuthority]);
+        listen.Protocols = HttpProtocols.Http2;
+        listen.UseHttps(https =>
+        {
+            https.ServerCertificate = serverCertificate;
+            https.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+            https.ClientCertificateValidation = (certificate, _, _) =>
+                trustedCertificates.ValidateAndRemember(certificate, root, clusterId, [nodeAuthority]);
+        });
     });
-}));
+    // The browser face (FIX-WEB-03): the same Admin service on a second endpoint that asks
+    // for no client certificate — a browser cannot present a process certificate, so the
+    // operator bearer is the only authentication here (the process-certificate gates read
+    // the client certificate and naturally refuse on this endpoint). HTTP/1.1 is required
+    // because browsers speak it; the JSON transcoding accepts it.
+    options.Listen(IPAddress.Any, browserPort, listen =>
+    {
+        listen.Protocols = HttpProtocols.Http1AndHttp2;
+        listen.UseHttps(https =>
+        {
+            https.ServerCertificate = serverCertificate;
+            https.ClientCertificateMode = ClientCertificateMode.NoCertificate;
+        });
+    });
+});
 builder.Services.AddSingleton(trustedCertificates);
 builder.Services.AddSingleton(new RedesignControlStore(connectionString));
 builder.Services.AddSingleton(new RedesignCoordinatorStore(connectionString));
@@ -122,7 +140,9 @@ builder.Services.AddHostedService(serviceProvider => new ClusterDirectoryRefresh
             routeConfirmTimeoutMs));
     builder.Services.AddHostedService<MatchCoordinatorService>();
 }
-builder.Services.AddGrpc();
+// The browser face runs on the gRPC JSON transcoding (FIX-WEB-03): the Admin service's
+// google.api.http annotations become real routes once this is on.
+builder.Services.AddGrpc().AddJsonTranscoding();
 
 var app = builder.Build();
 app.MapGrpcService<ControlGrpcService>();

@@ -28,6 +28,27 @@ public sealed class AdminGrpcService(
         return Task.FromResult(new ReadyReply { Ready = true, SchemaVersion = "4" });
     }
 
+    /// <summary>The browser health word and login probe (FIX-WEB-01 / FIX-WEB-03): the caller's
+    /// own operator identity, resolved from the bearer credential — never the request body. A
+    /// credential that authenticates is by definition enabled (a disabled operator is refused
+    /// at the resolve), so the reply's enabled flag is always true here; the flag exists for
+    /// the contract shape, not as an extra state an authenticated caller could report false.</summary>
+    public override async Task<AdminWhoAmIReply> WhoAmI(Empty request, ServerCallContext context)
+    {
+        var token = ReadOperatorToken(context);
+        if (token is null)
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "Operator credentials are absent."));
+        var operatorIdentity = await operatorStore.ResolveOperatorAsync(token, context.CancellationToken);
+        if (operatorIdentity is null)
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "Operator credential is invalid."));
+        return new AdminWhoAmIReply
+        {
+            OperatorId = operatorIdentity.OperatorId, Role = operatorIdentity.Role,
+            Tenants = { operatorIdentity.Tenants }, Games = { operatorIdentity.Games },
+            Enabled = true
+        };
+    }
+
     /// <summary>The read half of the GM room-epoch entry (FIX-GM-01 / FIX-GM-06). The operator
     /// identity comes from the bearer credential, never the request body: an operator may read
     /// only what their role and tenant/game scope cover, and the request's own operator field
@@ -193,7 +214,8 @@ public sealed class AdminGrpcService(
             string.IsNullOrWhiteSpace(request.GameId) || string.IsNullOrWhiteSpace(request.RoomId))
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 "The status query needs an operation id and its scope."));
-        await RequireOperator(context, "gm", request.TenantId, request.GameId);
+        // The status query is a read (FIX-WEB-01): relaxed from the gm floor to viewer.
+        await RequireOperator(context, "viewer", request.TenantId, request.GameId);
         var lookup = await new RoundInput.RoundInputClient(directory.DataChannel).LookupInputAsync(
             new LookupInputRequest { EventId = request.OperationId },
             deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: context.CancellationToken);
@@ -230,9 +252,10 @@ public sealed class AdminGrpcService(
     public override async Task<AdminStreamerSnapshotReply> GetStreamerSnapshot(
         AdminStreamerSnapshotRequest request, ServerCallContext context)
     {
-        Require(context, "control-server");
         if (string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.StreamerId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The snapshot request is incomplete."));
+        // The snapshot is a read (FIX-WEB-01): viewer floor, tenant scope from the request.
+        await RequireOperator(context, "viewer", request.TenantId, "");
         var snapshot = await adminStore.GetStreamerSnapshotAsync(
             request.TenantId, request.StreamerId, context.CancellationToken);
         var reply = new AdminStreamerSnapshotReply
@@ -270,10 +293,15 @@ public sealed class AdminGrpcService(
     public override async Task<AdminRoomSnapshotReply> GetRoomSnapshot(
         AdminRoomSnapshotRequest request, ServerCallContext context)
     {
-        Require(context, "control-server");
         if (string.IsNullOrWhiteSpace(request.RoomId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The snapshot request is incomplete."));
+        // The snapshot is a read (FIX-WEB-01): viewer floor, scope resolved from the room —
+        // the request carries only the room id, so the room's own tenant/game is the target.
+        var identity = await RequireOperator(context, "viewer", "", "");
         var snapshot = await adminStore.GetRoomSnapshotAsync(request.RoomId, context.CancellationToken);
+        if (snapshot.Found && !OperatorAuthorizer.InScope(identity, snapshot.TenantId, snapshot.GameId))
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "Operator scope does not cover the target room."));
         return new AdminRoomSnapshotReply
         {
             Found = snapshot.Found, TenantId = snapshot.TenantId, GameId = snapshot.GameId,
@@ -305,9 +333,15 @@ public sealed class AdminGrpcService(
     public override async Task<AdminTraceRoundReply> TraceRound(
         AdminTraceRoundRequest request, ServerCallContext context)
     {
-        Require(context, "control-server");
         if (string.IsNullOrWhiteSpace(request.RoomId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The trace request is incomplete."));
+        // The trace is a read (FIX-WEB-01): viewer floor, scope resolved from the room (the
+        // request carries only the room id), same shape as GetRoomSnapshot above.
+        var identity = await RequireOperator(context, "viewer", "", "");
+        var scope = await adminStore.GetRoomSnapshotAsync(request.RoomId, context.CancellationToken);
+        if (scope.Found && !OperatorAuthorizer.InScope(identity, scope.TenantId, scope.GameId))
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "Operator scope does not cover the target room."));
         var trace = await adminStore.TraceRoundAsync(request.RoomId, context.CancellationToken);
         return new AdminTraceRoundReply
         {
@@ -355,11 +389,16 @@ public sealed class AdminGrpcService(
     private async Task<AdminQueueGateReply> QueueGateAsync(
         AdminQueueGateRequest request, ServerCallContext context, bool suspended, string command)
     {
-        Require(context, "control-server");
         if (Incomplete(request.RequestId, request.Operator, request.Reason) ||
             string.IsNullOrWhiteSpace(request.PartitionKey))
             throw new RpcException(new Status(StatusCode.InvalidArgument,
                 "The command needs a request id, an operator, a reason and a partition."));
+        // The gate command is gm (FIX-WEB-01) and cluster-wide — the partition key names no
+        // tenant/game, so the role floor is the whole gate here.
+        var operatorIdentity = await RequireOperator(context, "gm", "", "");
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
         var acted = await adminStore.WriteAuditAsync(request.RequestId, request.Operator, request.Reason,
             request.PartitionKey, command, $$"""{"partition":"{{request.PartitionKey}}","suspended":{{(suspended ? "true" : "false")}}}""",
             context.CancellationToken);
@@ -385,12 +424,16 @@ public sealed class AdminGrpcService(
     public override async Task<AdminRoomRecoveryReply> RetryRoomRecovery(
         AdminRoomRecoveryRequest request, ServerCallContext context)
     {
-        Require(context, "control-server");
         if (Incomplete(request.RequestId, request.Operator, request.Reason) ||
             string.IsNullOrWhiteSpace(request.TenantId) || string.IsNullOrWhiteSpace(request.GameId) ||
             string.IsNullOrWhiteSpace(request.RoomId) || string.IsNullOrWhiteSpace(request.ToInstanceId) ||
             request.TickMs <= 0)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The recovery request is incomplete."));
+        // The recovery command is gm (FIX-WEB-01), scoped by the request's own tenant/game.
+        var operatorIdentity = await RequireOperator(context, "gm", request.TenantId, request.GameId);
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
         var acted = await adminStore.WriteAuditAsync(request.RequestId, request.Operator, request.Reason,
             request.RoomId, "RetryRoomRecovery",
             $$"""{"room":"{{request.RoomId}}","to":"{{request.ToInstanceId}}"}""", context.CancellationToken);
@@ -437,10 +480,15 @@ public sealed class AdminGrpcService(
     public override async Task<AdminDrainProcessReply> DrainProcess(
         AdminDrainProcessRequest request, ServerCallContext context)
     {
-        Require(context, "control-server");
         if (Incomplete(request.RequestId, request.Operator, request.Reason) ||
             string.IsNullOrWhiteSpace(request.ProcessInstanceId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The drain request is incomplete."));
+        // The drain command is gm (FIX-WEB-01) and cluster-wide — a process instance spans
+        // tenants, so no tenant/game scope is derivable; the role floor is the whole gate.
+        var operatorIdentity = await RequireOperator(context, "gm", "", "");
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
         var acted = await adminStore.WriteAuditAsync(request.RequestId, request.Operator, request.Reason,
             request.ProcessInstanceId, "DrainProcess",
             $$"""{"process":"{{request.ProcessInstanceId}}"}""", context.CancellationToken);
@@ -466,13 +514,21 @@ public sealed class AdminGrpcService(
     public override async Task<AdminSettlementRetryReply> RetrySettlement(
         AdminSettlementRetryRequest request, ServerCallContext context)
     {
-        Require(context, "control-server");
         if (Incomplete(request.RequestId, request.Operator, request.Reason) ||
             string.IsNullOrWhiteSpace(request.RoomId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The retry request is incomplete."));
+        // The retry command is gm (FIX-WEB-01), scoped by the room's own tenant/game (the
+        // request carries only the room id) — same shape as the room-scoped reads above.
+        var operatorIdentity = await RequireOperator(context, "gm", "", "");
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
         var room = await adminStore.GetRoomSnapshotAsync(request.RoomId, context.CancellationToken);
         if (!room.Found)
             throw new RpcException(new Status(StatusCode.NotFound, "The room does not exist."));
+        if (!OperatorAuthorizer.InScope(operatorIdentity, room.TenantId, room.GameId))
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "Operator scope does not cover the target room."));
         var acted = await adminStore.WriteAuditAsync(request.RequestId, request.Operator, request.Reason,
             request.RoomId, "RetrySettlement",
             $$"""{"room":"{{request.RoomId}}","tenant":"{{room.TenantId}}","game":"{{room.GameId}}"}""",
@@ -505,10 +561,15 @@ public sealed class AdminGrpcService(
     public override async Task<AdminTaskReconcileReply> ReconcilePlatformTask(
         AdminTaskReconcileRequest request, ServerCallContext context)
     {
-        Require(context, "control-server");
         if (Incomplete(request.RequestId, request.Operator, request.Reason) ||
             string.IsNullOrWhiteSpace(request.TaskId))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The reconcile request is incomplete."));
+        // The reconcile command is gm (FIX-WEB-01) and cluster-wide — a platform task names no
+        // tenant/game, so the role floor is the whole gate.
+        var operatorIdentity = await RequireOperator(context, "gm", "", "");
+        if (request.Operator != operatorIdentity.OperatorId)
+            throw new RpcException(new Status(StatusCode.PermissionDenied,
+                "The request operator does not match the authenticated operator."));
         var acted = await adminStore.WriteAuditAsync(request.RequestId, request.Operator, request.Reason,
             request.TaskId, "ReconcilePlatformTask",
             $$"""{"task":"{{request.TaskId}}"}""", context.CancellationToken);

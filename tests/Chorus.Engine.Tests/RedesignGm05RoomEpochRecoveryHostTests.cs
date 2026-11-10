@@ -5,6 +5,7 @@ using Chorus.Platform;
 using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
+using Grpc.Core.Interceptors;
 using Npgsql;
 using RoutingService = Chorus.Rpc.Routing;
 using Xunit;
@@ -67,6 +68,11 @@ public sealed class RedesignGm05RoomEpochRecoveryHostTests
         var control = new ControlService.ControlServiceClient(controlChannel);
         var routing = new RoutingService.RoutingClient(controlChannel);
         var admin = new Admin.AdminClient(controlChannel);
+        // FIX-WEB-03: the recovery entry now requires an operator identity, not a process
+        // certificate — the same gm-carol credential the bump uses drives the recovery calls
+        // (the call sites below keep their shape through the interceptor).
+        var recoveryAdmin = new Admin.AdminClient(
+            controlChannel.Intercept(new OperatorCredentialInterceptor("carol-token")));
 
         // The GM operator who issues the bump (GM-06 identity, GM-03 entry); the recovery entry
         // is the control-plane admin surface, driven here by the same operator identity.
@@ -165,7 +171,7 @@ public sealed class RedesignGm05RoomEpochRecoveryHostTests
         for (var attempt = 1; DateTime.UtcNow < recoverDeadline; attempt++)
         {
             successRecoverId = $"gm05-op-recover-a-{attempt}";
-            recovered = await admin.RetryRoomRecoveryAsync(new AdminRoomRecoveryRequest
+            recovered = await recoveryAdmin.RetryRoomRecoveryAsync(new AdminRoomRecoveryRequest
             {
                 RequestId = successRecoverId, Operator = "gm-carol",
                 Reason = "bump left the room Recovering; recover it on the same owner",
@@ -215,7 +221,7 @@ public sealed class RedesignGm05RoomEpochRecoveryHostTests
 
         // --- Repeated recovery (new id) answers from the live actor, not a new one: same
         // epoch, Running, no second loop. ---
-        var again = await admin.RetryRoomRecoveryAsync(new AdminRoomRecoveryRequest
+        var again = await recoveryAdmin.RetryRoomRecoveryAsync(new AdminRoomRecoveryRequest
         {
             RequestId = "gm05-op-recover-a-again", Operator = "gm-carol",
             Reason = "confirm the recovered room", TenantId = "tenant-a", GameId = "game-a",
@@ -235,7 +241,7 @@ public sealed class RedesignGm05RoomEpochRecoveryHostTests
 
         // --- A lost recovery reply replays against the original operation id as a duplicate:
         // the recovery was already acted, never re-done. ---
-        var lostReply = await admin.RetryRoomRecoveryAsync(new AdminRoomRecoveryRequest
+        var lostReply = await recoveryAdmin.RetryRoomRecoveryAsync(new AdminRoomRecoveryRequest
         {
             RequestId = successRecoverId, Operator = "gm-carol",
             Reason = "bump left the room Recovering; recover it on the same owner",

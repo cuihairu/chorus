@@ -6,6 +6,9 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
+    <!-- The gRPC JSON transcoding the browser Admin face runs on (FIX-WEB-03). Its
+         dependency floor is Grpc.AspNetCore.Server 2.64.0; the 2.83.0 above satisfies it. -->
+    <PackageReference Include="Microsoft.AspNetCore.Grpc.JsonTranscoding" Version="10.0.14" />
     <ProjectReference Include="../Chorus.Data/Chorus.Data.csproj" />
     <ProjectReference Include="../Chorus.Rpc/Chorus.Rpc.csproj" />
   </ItemGroup>

@@ -27,13 +27,16 @@ public static class OperatorAuthorizer
     }
 
     /// <summary>True when the operator may act on the target tenant/game: an empty scope array
-    /// covers every tenant/game, otherwise the target must be listed.</summary>
+    /// covers every tenant/game, otherwise the target must be listed. An empty target scope
+    /// means the action carries no tenant/game constraint (a cluster-wide or partition-wide
+    /// command) — only the non-empty dimensions are checked, so a scope-limited operator is
+    /// not refused a global command it is otherwise role-authorized to run.</summary>
     public static bool InScope(OperatorIdentity operatorIdentity, string tenantId, string gameId)
     {
-        if (operatorIdentity.Tenants.Count > 0 &&
+        if (tenantId.Length > 0 && operatorIdentity.Tenants.Count > 0 &&
             !operatorIdentity.Tenants.Contains(tenantId, StringComparer.Ordinal))
             return false;
-        if (operatorIdentity.Games.Count > 0 &&
+        if (gameId.Length > 0 && operatorIdentity.Games.Count > 0 &&
             !operatorIdentity.Games.Contains(gameId, StringComparer.Ordinal))
             return false;
         return true;

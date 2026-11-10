@@ -1,10 +1,12 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using Chorus.ControlServer;
 using Chorus.Platform;
 using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
+using Grpc.Core.Interceptors;
 using Npgsql;
 using Xunit;
 
@@ -135,7 +137,13 @@ public sealed class RedesignM3AdminHostTests
 
         // The trace before the repair: the whole chain is visible, the grants sit Planned and
         // the ledger is empty — the settlement step is the missing link (AT31).
-        var admin = new Admin.AdminClient(controlChannel);
+        // FIX-WEB-03: the admin surface is now operator-gated, not process-certificate-gated —
+        // the alice credential the command bodies name drives every admin call below (the body
+        // operators were unified on alice so one credential matches the forged-identity check).
+        await new RedesignOperatorStore(environment.DatabaseConnectionString)
+            .RegisterOperatorAsync("alice", "gm", [], [], "alice-token");
+        var admin = new Admin.AdminClient(
+            controlChannel.Intercept(new OperatorCredentialInterceptor("alice-token")));
         var broken = await admin.TraceRoundAsync(new AdminTraceRoundRequest { RoomId = room });
         Assert.True(broken.Found);
         Assert.Equal(2, broken.Events.Count);
@@ -219,7 +227,10 @@ public sealed class RedesignM3AdminHostTests
             "control-server");
         var denied = await Assert.ThrowsAsync<RpcException>(() => new Admin.AdminClient(deniedChannel)
             .GetRoomSnapshotAsync(new AdminRoomSnapshotRequest { RoomId = room }).ResponseAsync);
-        Assert.Equal(StatusCode.PermissionDenied, denied.StatusCode);
+        // FIX-WEB-03: a streamer process certificate is not an operator identity — no bearer
+        // credential, refused before the read (the old process-certificate gate's
+        // PermissionDenied is replaced by the operator gate's Unauthenticated).
+        Assert.Equal(StatusCode.Unauthenticated, denied.StatusCode);
 
         // A task parked in the blind dead end requeues through the audited command. The
         // NeedsAttention state itself is the store-proven territory; here the fixture parks a
@@ -241,7 +252,7 @@ public sealed class RedesignM3AdminHostTests
         }
         var requeued = await admin.ReconcilePlatformTaskAsync(new AdminTaskReconcileRequest
         {
-            RequestId = "m3-9-task-1", Operator = "bob",
+            RequestId = "m3-9-task-1", Operator = "alice",
             Reason = "platform acknowledged the first attempt", TaskId = task.TaskId
         });
         Assert.False(requeued.Duplicate);
@@ -249,7 +260,7 @@ public sealed class RedesignM3AdminHostTests
         Assert.Equal(task.TaskEpoch + 1, requeued.TaskEpoch);
         var requeuedAgain = await admin.ReconcilePlatformTaskAsync(new AdminTaskReconcileRequest
         {
-            RequestId = "m3-9-task-1", Operator = "bob",
+            RequestId = "m3-9-task-1", Operator = "alice",
             Reason = "platform acknowledged the first attempt", TaskId = task.TaskId
         });
         Assert.True(requeuedAgain.Duplicate);
@@ -270,7 +281,7 @@ public sealed class RedesignM3AdminHostTests
             Assert.Equal([
                 ("alice", "RetrySettlement"),
                 ("alice", "RetryRoomRecovery"),
-                ("bob", "ReconcilePlatformTask")
+                ("alice", "ReconcilePlatformTask")
             ], rows);
         }
     }
@@ -311,7 +322,12 @@ public sealed class RedesignM3AdminHostTests
         using var controlCertificate = environment.Certificate("@cluster", "control-server", "control-m3-9");
         using var controlChannel = environment.Channel(environment.ControlPort, controlCertificate,
             "control-server");
-        var admin = new Admin.AdminClient(controlChannel);
+        // FIX-WEB-03: the gate and drain commands are operator-gated (gm) — the carol
+        // credential the command bodies name drives every call below.
+        await new RedesignOperatorStore(environment.DatabaseConnectionString)
+            .RegisterOperatorAsync("carol", "gm", [], [], "carol-token");
+        var admin = new Admin.AdminClient(
+            controlChannel.Intercept(new OperatorCredentialInterceptor("carol-token")));
 
         // The gate lands before the tickets: pairing is parked from the first cycle on.
         var suspended = await admin.SuspendMatchQueueAsync(new AdminQueueGateRequest

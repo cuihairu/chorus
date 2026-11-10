@@ -148,6 +148,11 @@ public sealed class RedesignM0HostTests
         private string _connectionString = "";
         public int ControlPort { get; } = FreePort();
         public int DataPort { get; } = FreePort();
+        // The browser Admin face (FIX-WEB-03) listens on its own port. A test that starts
+        // several ControlServers (two settlement executors) must not hand them one port, so
+        // every started process gets its own; the first is the one browser tests read.
+        private int _browserPort;
+        public int BrowserPort => _browserPort;
         public int StreamerPort { get; } = FreePort();
         public int GamePort { get; } = FreePort();
         public string DatabaseConnectionString => _connectionString;
@@ -263,6 +268,8 @@ public sealed class RedesignM0HostTests
             start.Environment["CHORUS_TLS_CERT_PEM"] = certPath;
             start.Environment["CHORUS_TLS_KEY_PEM"] = keyPath;
             start.Environment["CHORUS_PORT"] = port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var browserPort = _browserPort == 0 ? (_browserPort = FreePort()) : FreePort();
+            start.Environment["CHORUS_BROWSER_PORT"] = browserPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
             // The machine's inotify instance budget (128) is shared with everything else this
             // user runs; a full gate spawns dozens of hosts at once and each would otherwise
             // take a FileSystemWatcher instance for its configuration. Polling costs nothing

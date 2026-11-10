@@ -1,8 +1,10 @@
 using System.Security.Cryptography;
+using Chorus.ControlServer;
 using Chorus.Platform;
 using Chorus.Rpc;
 using Google.Protobuf;
 using Grpc.Core;
+using Grpc.Core.Interceptors;
 using Npgsql;
 
 namespace Chorus.Engine.Tests;
@@ -106,11 +108,17 @@ public sealed class RedesignSettleBlockHostTests
 
         // The condition clears: the admin repair completes the grants, and the coordinator's
         // next pass releases the room without any further human step.
-        await new Admin.AdminClient(controlChannel).RetrySettlementAsync(new AdminSettlementRetryRequest
-        {
-            RequestId = "retry-st5-a", Operator = "test-st5", Reason = "complete the manifest",
-            RoomId = room
-        });
+        // FIX-WEB-03: the retry command now requires an operator identity, not a process
+        // certificate — the test-st5 credential the command body names drives the call.
+        await new RedesignOperatorStore(environment.DatabaseConnectionString)
+            .RegisterOperatorAsync("test-st5", "gm", [], [], "st5-token");
+        await new Admin.AdminClient(
+            controlChannel.Intercept(new OperatorCredentialInterceptor("st5-token")))
+            .RetrySettlementAsync(new AdminSettlementRetryRequest
+            {
+                RequestId = "retry-st5-a", Operator = "test-st5", Reason = "complete the manifest",
+                RoomId = room
+            });
 
         var settled = await PollUntilAsync(environment, room, blocked: false);
         Assert.True(settled, "The room never released after the block cleared.");
@@ -138,7 +146,12 @@ public sealed class RedesignSettleBlockHostTests
     {
         using var certificate = environment.Certificate("@cluster", "control-server", "control-st5-poll");
         using var channel = environment.Channel(environment.ControlPort, certificate, "control-server");
-        var admin = new Admin.AdminClient(channel);
+        // FIX-WEB-03: the room snapshot is a viewer read — the operator credential drives the
+        // poll (the operator is idempotently registered on the ON CONFLICT path).
+        await new RedesignOperatorStore(environment.DatabaseConnectionString)
+            .RegisterOperatorAsync("test-st5", "gm", [], [], "st5-token");
+        var admin = new Admin.AdminClient(
+            channel.Intercept(new OperatorCredentialInterceptor("st5-token")));
         var deadline = DateTime.UtcNow.AddSeconds(30);
         while (DateTime.UtcNow < deadline)
         {

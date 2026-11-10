@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Google.Api.CommonProtos" Version="2.15.0" />
     <PackageReference Include="Google.Protobuf" Version="3.35.0" />
     <PackageReference Include="Grpc.Core.Api" Version="2.83.0" />
     <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
@@ -15,9 +16,15 @@
     <Protobuf Include="Protos/m2.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m3.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m4.proto" GrpcServices="Both" />
-    <!-- The google.api well-knowns the browser Admin contract's http annotations reference
-         (FIX-WEB-01). No services; they only carry the HttpRule messages and the extension. -->
-    <Protobuf Include="Protos/google/api/http.proto" GrpcServices="None" />
-    <Protobuf Include="Protos/google/api/annotations.proto" GrpcServices="None" />
   </ItemGroup>
+  <PropertyGroup>
+    <!-- The google.api well-knowns the browser Admin contract's http annotations reference
+         (FIX-WEB-01): the HttpRule messages and the extension come from the
+         Google.Api.CommonProtos package (the same googleapis sources, precompiled), so
+         `import "google/api/annotations.proto"` in m3.proto resolves against the package's
+         content/protos include path instead of an in-tree copy. (The JsonTranscoding the
+         browser face needs pulls the same package in transitively — one source, no
+         duplicate Google.Api.HttpRule type across assemblies.) -->
+    <IncludeGoogleApiCommonProtos>true</IncludeGoogleApiCommonProtos>
+  </PropertyGroup>
 </Project>
