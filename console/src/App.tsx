@@ -5,6 +5,7 @@ import {
   PartitionOutlined,
   PlayCircleOutlined,
   ThunderboltOutlined,
+  TrophyOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { PageContainer, ProLayout } from '@ant-design/pro-components';
@@ -13,6 +14,7 @@ import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth';
 import EpochPage from './pages/EpochPage';
+import LeaderboardPage from './pages/LeaderboardPage';
 import LoginPage from './pages/LoginPage';
 import OperationsPage from './pages/OperationsPage';
 
@@ -21,7 +23,7 @@ import OperationsPage from './pages/OperationsPage';
 // the header word, and a stored credential survives reloads only while who-am-i still
 // answers for it. The remaining pages arrive with their backing APIs — nodes and
 // processes (WEB-06), rooms (WEB-07), streamers and matching (WEB-08).
-type RouteKey = 'home' | 'nodes' | 'rooms' | 'streamers' | 'operations' | 'epoch';
+type RouteKey = 'home' | 'nodes' | 'rooms' | 'streamers' | 'operations' | 'epoch' | 'leaderboard';
 
 const menuRoutes: Array<{ path: string; name: string; icon: ReactNode; routeKey: RouteKey }> = [
   { path: '/home', name: 'Home', icon: <HomeOutlined />, routeKey: 'home' },
@@ -30,6 +32,7 @@ const menuRoutes: Array<{ path: string; name: string; icon: ReactNode; routeKey:
   { path: '/streamers', name: 'Streamers and matching', icon: <PartitionOutlined />, routeKey: 'streamers' },
   { path: '/operations', name: 'Operations', icon: <ClusterOutlined />, routeKey: 'operations' },
   { path: '/epoch', name: 'Room epoch', icon: <ThunderboltOutlined />, routeKey: 'epoch' },
+  { path: '/leaderboard', name: 'Leaderboards', icon: <TrophyOutlined />, routeKey: 'leaderboard' },
 ];
 
 function Placeholder({ routeKey }: { routeKey: RouteKey }) {
@@ -40,6 +43,7 @@ function Placeholder({ routeKey }: { routeKey: RouteKey }) {
     streamers: 'Streamers and matching',
     operations: 'Operations and receipts',
     epoch: 'Room epoch',
+    leaderboard: 'Leaderboards',
   };
   return (
     <PageContainer>
@@ -112,7 +116,10 @@ function ConsolePages() {
     <ConsoleShell>
       {routeKey === 'operations' && <OperationsPage />}
       {routeKey === 'epoch' && <EpochPage />}
-      {routeKey !== 'operations' && routeKey !== 'epoch' && <Placeholder routeKey={routeKey} />}
+      {routeKey === 'leaderboard' && <LeaderboardPage />}
+      {routeKey !== 'operations' && routeKey !== 'epoch' && routeKey !== 'leaderboard' && (
+        <Placeholder routeKey={routeKey} />
+      )}
     </ConsoleShell>
   );
 }
