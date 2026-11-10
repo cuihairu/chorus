@@ -309,7 +309,8 @@
   - 证据：6052714；七命令页签+回执查询（仅 id+空维、stage 词分色不折叠）；页面测试 5/5（fetch 边界：提交/派发/回执/viewer 命令地板/403）；pnpm build 绿+11/11；pnpm 10 冻结安装+测试+构建绿
 - [x] **FIX-WEB-11 / P1：接入独立房间 epoch 的 GM 表单。** 依赖：FIX-WEB-10、FIX-GM-03、FIX-GM-05。
   - 证据：8fea6af；查/抬两卡（expected 必填 stale 可见拒、target 0 哨兵、routeSync 与提交分显、duplicate 记录值）；页面测试 4/4；pnpm build 绿+15/15；pnpm 10 CI=true 冻结安装+测试+构建绿
-- [ ] **FIX-WEB-12 / P1：为后台提供排行榜查询接口。** 依赖：FIX-WEB-03、FIX-RANK-04、FIX-RANK-05、FIX-RANK-06、FIX-RANK-07。
+- [x] **FIX-WEB-12 / P1：为后台提供排行榜查询接口。** 依赖：FIX-WEB-03、FIX-RANK-04、FIX-RANK-05、FIX-RANK-06、FIX-RANK-07。
+  - 证据：b179c8e；三读 RPC（top/rank/around；操作员只命名读键，写侧描述子中性缺省；read_version 0=从未计分哨兵）；宿主测试 1 fact（分页/续页版本不变/唯一名次/窗口/stale 显式拒+malformed 400/viewer 地板 401/缺字段 400）；顺带修 RANK-06 板版本残余窗假 stale 与 agent 种子 7502 互撞（CI 三连红根因）+WEB-01 漂移表 15→18；回归 RANK 180/180+WEB-01 3/3+WEB-05 1/1+WEB-03 1/1；gate 1882/1887 零新签名（M2 时钟族干净树对照钉死，风暴 4 轮判定细节见 ledger）
 - [ ] **FIX-WEB-13 / P1：实现开箱即用排行榜后台页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-12。
 - [ ] **FIX-WEB-14 / P1：实现排行榜维护操作。** 依赖：FIX-WEB-10、FIX-WEB-13、FIX-RANK-08。
 - [ ] **FIX-WEB-15 / P1：实现操作审计查询。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-WEB-09。
