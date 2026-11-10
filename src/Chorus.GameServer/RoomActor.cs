@@ -91,6 +91,7 @@ internal sealed class RoomActor : IAsyncDisposable
     private static readonly TimeSpan DefaultPresenceTimeout = TimeSpan.FromSeconds(15);
 
     private readonly IRoomLifecycle _runtime;
+    private readonly RoomEventCounters _counters;
     private readonly FrameStore.FrameStoreClient _frames;
     private readonly IRedesignGameModule _module;
     private readonly RoomMetrics _metrics;
@@ -163,9 +164,11 @@ internal sealed class RoomActor : IAsyncDisposable
         long lastTick = 0, long stateVersion = 1, int hangAfterTick = 0, int hangMs = 0,
         RoomMetrics? metrics = null, TimeSpan? commitRetryDelay = null,
         int overBudgetFactor = 0, int overBudgetWindow = 0, int inboundBound = 1024,
-        IRoomInputTranslator? inputTranslator = null, TimeSpan? presenceTimeout = null)
+        IRoomInputTranslator? inputTranslator = null, TimeSpan? presenceTimeout = null,
+        RoomEventCounters? counters = null)
     {
         _runtime = runtime;
+        _counters = counters ?? new RoomEventCounters();
         _frames = frames;
         _module = module;
         _inputTranslator = inputTranslator;
@@ -320,6 +323,9 @@ internal sealed class RoomActor : IAsyncDisposable
                 items = inbox.Items.Select(item => new TickInputItem(item.EventId,
                     item.BindingId is { Length: > 0 } ? item.BindingId : null, item.PayloadJson,
                     item.Platform, item.SourceDedupKey, item.Sequence)).ToList();
+                // FIX-OBS-11: the pull leg's ingests — the recovery catch-up the push face
+                // never seated counts here, batched as the tick took them in.
+                if (items.Count > 0) _counters.Ingested(items.Count);
             }
             // Everything acquired is consumed this tick; only bindings this host mapped at
             // prepare time become module inputs, so a foreign delivery is acknowledged into the
@@ -451,6 +457,9 @@ internal sealed class RoomActor : IAsyncDisposable
         }
         _metrics.Record(_metrics.Commit, commitStart);
         AccountCommitBudget(commitStart, pendingFrame.Tick);
+        // FIX-OBS-11: the verdict landed — the frame's inputs are the events whose effect
+        // this room applied; a refused or parked frame counts nothing.
+        if (pendingFrame.Inputs.Count > 0) _counters.Applied(pendingFrame.Inputs.Count);
         _pending = null;
         // FIX-INPUT-04: the pull leg and a concurrent hand can capture the same accepted
         // event — a tick that drained its seats empty can still have the pull land after a

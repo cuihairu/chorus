@@ -109,6 +109,11 @@ if (controlEndpoint is { Length: > 0 })
         // FIX-LINK-01: the host reports Ready only while the data plane it commits frames
         // through actually answers — an unreachable data channel must never take new rooms.
         readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(dataChannel, cancellationToken)));
+    // FIX-OBS-11: the room face's event-chain counters ride the same self-report the
+    // readiness rides — one snapshot per interval, named by the dictionary metrics.
+    builder.Services.AddHostedService(_ => new AppCounterReporter(
+        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportIntervalMs,
+        runtime.EventCounters.Snapshot));
 }
 builder.Services.AddGrpc();
 

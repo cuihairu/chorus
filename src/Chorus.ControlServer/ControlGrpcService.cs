@@ -109,12 +109,12 @@ public sealed class ControlGrpcService(
     public override async Task<AppCounterReply> ReportAppCounters(
         AppCounterReport request, ServerCallContext context)
     {
-        // A face's own counters (FIX-OBS-10): the certificate decides whose numbers these
-        // are — a process reports only its own instance on its own node, the same identity
-        // a process self-report is held to. No agent row is involved, so the certificate
-        // check is the whole trust chain.
-        var caller = await RequireAsync(context, "platform-gateway");
-        if (caller.Role != "platform-gateway" || caller.TenantId != "@cluster" ||
+        // A face's own counters (FIX-OBS-10, FIX-OBS-11): the certificate decides whose
+        // numbers these are — a process reports only its own instance on its own node, the
+        // same identity a process self-report is held to. No agent row is involved, so the
+        // certificate check is the whole trust chain.
+        var caller = await RequireAsync(context, "platform-gateway", "game-server");
+        if (caller.Role is not ("platform-gateway" or "game-server") || caller.TenantId != "@cluster" ||
             caller.NodeId != request.NodeId ||
             caller.ProcessInstanceId != request.ProcessInstanceId ||
             request.ReportedAtUnixMs <= 0 || request.Counters.Count == 0 ||

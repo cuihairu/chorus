@@ -31,6 +31,10 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     private readonly int _overBudgetWindowOverride;
     private readonly ConcurrentDictionary<string, RoomActor> _actors = new(StringComparer.Ordinal);
 
+    /// <summary>The host's event-chain counters (FIX-OBS-11): one process-wide instance
+    /// every room actor bumps, the snapshot the self-report carries.</summary>
+    public RoomEventCounters EventCounters { get; }
+
     // FIX-PERF-03: rooms whose actor has crossed the start line. Presence means Start ran;
     // a room held by _actors but absent here is prepared and waiting for ActivateRoom.
     private readonly ConcurrentDictionary<string, byte> _activated = new(StringComparer.Ordinal);
@@ -86,14 +90,16 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
         IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
         int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024,
-        RoomEndReporter? endReporter = null, IRoomInputTranslator? inputTranslator = null)
+        RoomEndReporter? endReporter = null, IRoomInputTranslator? inputTranslator = null,
+        RoomEventCounters? eventCounters = null)
         : this(new RoundStore.RoundStoreClient(dataChannel), new FrameStore.FrameStoreClient(dataChannel),
             new Settlement.SettlementClient(dataChannel), dataChannel,
             maxActiveRooms: maxActiveRooms, maxDegradedRooms: maxDegradedRooms,
             maxConcurrentRecoveries: maxConcurrentRecoveries,
             maxQueuedRecoveries: maxQueuedRecoveries, shippedPackages: shippedPackages,
             roomEventInboundLimit: roomEventInboundLimit, roomInboundPerRoom: roomInboundPerRoom,
-            endReporter: endReporter, inputTranslator: inputTranslator) { }
+            endReporter: endReporter, inputTranslator: inputTranslator,
+            eventCounters: eventCounters) { }
 
     /// <summary>Test seam: the data-plane clients scripted, the channel optional.</summary>
     internal RoomRuntime(RoundStore.RoundStoreClient rounds, FrameStore.FrameStoreClient frames,
@@ -103,13 +109,15 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
         int? maxConcurrentRecoveries = null, int? maxQueuedRecoveries = null,
         IReadOnlyCollection<RedesignModulePackage>? shippedPackages = null,
         int roomEventInboundLimit = 256, int roomInboundPerRoom = 1024,
-        RoomEndReporter? endReporter = null, IRoomInputTranslator? inputTranslator = null)
+        RoomEndReporter? endReporter = null, IRoomInputTranslator? inputTranslator = null,
+        RoomEventCounters? eventCounters = null)
     {
         _rounds = rounds;
         _frames = frames;
         _settlement = settlement;
         _dataChannel = dataChannel;
         _metrics = metrics ?? RoomMetrics.Default;
+        EventCounters = eventCounters ?? new RoomEventCounters();
         // FIX-INPUT-08: the platform-event → module-command mapping every room and every
         // recovery replay runs through; null means the delivered payload is a command already.
         _inputTranslator = inputTranslator;
@@ -274,7 +282,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                     hangAfterTick: request.HangAfterTick, hangMs: request.HangMs, metrics: _metrics,
                     overBudgetFactor: _overBudgetFactorOverride,
                     overBudgetWindow: _overBudgetWindowOverride, inboundBound: _inboundBound,
-                    inputTranslator: _inputTranslator);
+                    inputTranslator: _inputTranslator, counters: EventCounters);
                 actor.LoopEnded = Retire;
                 if (!_actors.TryAdd(request.RoomId, actor))
                 {
@@ -926,7 +934,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             plan.LastTick, plan.StateVersion, metrics: _metrics,
             overBudgetFactor: _overBudgetFactorOverride,
             overBudgetWindow: _overBudgetWindowOverride, inboundBound: _inboundBound,
-            inputTranslator: _inputTranslator);
+            inputTranslator: _inputTranslator, counters: EventCounters);
         actor.LoopEnded = Retire;
         // FIX-PERF-07: a recovered room is real load this host must run — a recovery
         // is never refused (the scheduler assigned it here) — but it still reserves a
@@ -1628,9 +1636,17 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             // the delivery row is the truth and the cursor pull consumes it; the wake
             // still fires either way.
             if (!duplicate)
-                actor.TryHandWithSource(seatEventId, seatDedupKey,
-                    request.BindingId is { Length: > 0 } ? request.BindingId : null,
-                    request.PayloadJson, request.Platform, sequence);
+            {
+                // FIX-OBS-11: the session face's own decision — a seated hand is the event
+                // ingested, a refused seat is the face dropping it (the durable delivery row
+                // stays the truth either way; the pull retries what the seat refused).
+                if (actor.TryHandWithSource(seatEventId, seatDedupKey,
+                        request.BindingId is { Length: > 0 } ? request.BindingId : null,
+                        request.PayloadJson, request.Platform, sequence))
+                    EventCounters.Ingested();
+                else
+                    EventCounters.Dropped();
+            }
             actor.Wake();
             return new DeliverRoomEventReply
             {
