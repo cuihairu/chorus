@@ -315,6 +315,72 @@ public sealed class RedesignControlStore(string connectionString)
         return result;
     }
 
+    /// <summary>One mounted filesystem in a machine telemetry snapshot (FIX-OBS-06).</summary>
+    public sealed record MachineDiskMount(string Mount, long TotalBytes, long UsedBytes, double UsedPercent);
+
+    /// <summary>
+    /// Stores one accepted machine telemetry snapshot (FIX-OBS-06): the node agent's sample
+    /// lands as one append-only row (per-mount disk rides a child table). The node row lock
+    /// verifies the reporting agent is still the node's registered agent — a stale agent's
+    /// late sample is refused rather than written under a displaced identity. Telemetry is
+    /// at-least-once: a retry whose first response was lost can duplicate a row, harmless for
+    /// periodic levels.
+    /// </summary>
+    public async Task<bool> ReportMachineTelemetryAsync(
+        string nodeId, string agentInstanceId, DateTime sampledAtUtc, long reportSequence,
+        double? cpuPercent, (long Total, long Used, double Percent)? memory,
+        (double L1, double L5, double L15)? load,
+        IReadOnlyList<MachineDiskMount> disk, CancellationToken cancellationToken = default)
+    {
+        if (reportSequence <= 0) throw new ArgumentOutOfRangeException(nameof(reportSequence));
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using (var node = new NpgsqlCommand(
+            "SELECT agent_instance_id FROM control.node WHERE node_id=@node FOR UPDATE", connection, transaction))
+        {
+            node.Parameters.AddWithValue("node", nodeId);
+            if (await node.ExecuteScalarAsync(cancellationToken) is not string current || current != agentInstanceId)
+                return false;
+        }
+        await using var insert = new NpgsqlCommand("""
+            INSERT INTO ops.machine_sample(node_id, agent_instance_id, sampled_at, report_sequence,
+                cpu_percent, memory_total_bytes, memory_used_bytes, memory_used_percent,
+                load_1m, load_5m, load_15m)
+            VALUES (@node, @agent, @sampled, @sequence, @cpu, @mem_total, @mem_used, @mem_percent,
+                @load_1, @load_5, @load_15)
+            RETURNING id
+            """, connection, transaction);
+        insert.Parameters.AddWithValue("node", nodeId);
+        insert.Parameters.AddWithValue("agent", agentInstanceId);
+        insert.Parameters.AddWithValue("sampled", sampledAtUtc);
+        insert.Parameters.AddWithValue("sequence", reportSequence);
+        insert.Parameters.AddWithValue("cpu", (object?)cpuPercent ?? DBNull.Value);
+        insert.Parameters.AddWithValue("mem_total", (object?)memory?.Total ?? DBNull.Value);
+        insert.Parameters.AddWithValue("mem_used", (object?)memory?.Used ?? DBNull.Value);
+        insert.Parameters.AddWithValue("mem_percent", (object?)memory?.Percent ?? DBNull.Value);
+        insert.Parameters.AddWithValue("load_1", (object?)load?.L1 ?? DBNull.Value);
+        insert.Parameters.AddWithValue("load_5", (object?)load?.L5 ?? DBNull.Value);
+        insert.Parameters.AddWithValue("load_15", (object?)load?.L15 ?? DBNull.Value);
+        var sampleId = (long)(await insert.ExecuteScalarAsync(cancellationToken)
+            ?? throw new InvalidOperationException("Machine telemetry insert returned no row."));
+        foreach (var mount in disk)
+        {
+            await using var diskInsert = new NpgsqlCommand("""
+                INSERT INTO ops.machine_disk_sample(machine_sample_id, mount, total_bytes, used_bytes, used_percent)
+                VALUES (@sample, @mount, @total, @used, @percent)
+                """, connection, transaction);
+            diskInsert.Parameters.AddWithValue("sample", sampleId);
+            diskInsert.Parameters.AddWithValue("mount", mount.Mount);
+            diskInsert.Parameters.AddWithValue("total", mount.TotalBytes);
+            diskInsert.Parameters.AddWithValue("used", mount.UsedBytes);
+            diskInsert.Parameters.AddWithValue("percent", mount.UsedPercent);
+            await diskInsert.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return true;
+    }
+
     /// <summary>The live game-host directory feed (FIX-SCHED-01): game-server processes with
     /// a reported endpoint, alive (Running, or Draining — a drained host keeps serving its
     /// existing rooms, so the control plane keeps its address; only Exited is gone) and

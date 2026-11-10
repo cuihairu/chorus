@@ -56,6 +56,14 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
     private X509Certificate2 _agentCertificate = null!;
     private string _agentInstanceId = Guid.NewGuid().ToString("N");
     private long _reportSequence;
+    // FIX-OBS-06: the machine telemetry leg — the sampler feeds the pipeline, the loop drains
+    // it on its own period, and the flush runs on exit. The sampler/pipeline are the
+    // testable core; this agent only owns the identity, the period and the transport.
+    private MachineTelemetrySampler _telemetrySampler = null!;
+    private MachineTelemetryPipeline _telemetryPipeline = null!;
+    private TimeSpan _telemetryPeriod = TimeSpan.FromSeconds(15);
+    private DateTime _telemetryNextUtc = DateTime.UtcNow;
+    private long _telemetrySequence;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -138,6 +146,7 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                     }
                 }
                 await ReportAsync(stoppingToken);
+                await ReportTelemetryAsync(stoppingToken);
                 await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
             await plans;
@@ -150,6 +159,14 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                 foreach (var slot in _slots.Values) StopSlot(slot);
                 _slots.Clear();
                 SaveJournal();
+            }
+            // FIX-OBS-06: give the buffered telemetry its last chance to land before exit.
+            // The flush is bounded — a dead control plane must not hold the shutdown.
+            if (_telemetryPipeline is not null)
+            {
+                using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try { await _telemetryPipeline.FlushAsync(SendTelemetryAsync, flushCts.Token); }
+                catch (OperationCanceledException) { }
             }
             _agentCertificate.Dispose();
             _nodeAuthority.Dispose();
@@ -185,6 +202,22 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         if (Environment.GetEnvironmentVariable("CHORUS_CRASH_WINDOW_SECONDS") is { Length: > 0 } windowText
             && int.TryParse(windowText, out var windowSeconds) && windowSeconds > 0)
             _crashWindowSeconds = windowSeconds;
+        // FIX-OBS-06: the telemetry leg's tuning. The sampling period and the reliability
+        // knobs (buffer cap, retry budget, backoff) are all configurable; defaults keep a
+        // 15s cadence with a bounded buffer and retry so a long control-plane outage drops
+        // stale samples instead of accumulating a backlog.
+        if (Environment.GetEnvironmentVariable("CHORUS_TELEMETRY_PERIOD_SECONDS") is { Length: > 0 } periodText
+            && int.TryParse(periodText, out var telemetrySeconds) && telemetrySeconds > 0)
+            _telemetryPeriod = TimeSpan.FromSeconds(telemetrySeconds);
+        var maxPending = Environment.GetEnvironmentVariable("CHORUS_TELEMETRY_MAX_PENDING") is { Length: > 0 } pendingText
+            && int.TryParse(pendingText, out var pending) && pending > 0 ? pending : 20;
+        var maxAttempts = Environment.GetEnvironmentVariable("CHORUS_TELEMETRY_MAX_ATTEMPTS") is { Length: > 0 } attemptsText
+            && int.TryParse(attemptsText, out var attempts) && attempts > 0 ? attempts : 5;
+        var backoffMs = Environment.GetEnvironmentVariable("CHORUS_TELEMETRY_RETRY_BACKOFF_MS") is { Length: > 0 } backoffText
+            && int.TryParse(backoffText, out var backoff) && backoff >= 0 ? backoff : 1000;
+        _telemetrySampler = new MachineTelemetrySampler();
+        _telemetryPipeline = new MachineTelemetryPipeline(maxPending, maxAttempts,
+            TimeSpan.FromMilliseconds(backoffMs), logger);
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(_stateDirectory,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         _journalPath = Path.Combine(_stateDirectory, "process-journal.json");
@@ -381,6 +414,39 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
             // stream, or a server-side register rejection all land on this one warning.
             logger.LogWarning(error, "ControlServer is unavailable; signed bootstrap slots remain supervised locally");
         }
+    }
+
+    /// <summary>
+    /// FIX-OBS-06: samples the machine collectors on the telemetry period, buffers the
+    /// snapshot, then drains the buffer to the control plane. The drain stops at the first
+    /// give-up — an outage does not burn its retry budget on every buffered sample, and a
+    /// recovery drains the backlog quickly (each sample sends on its first attempt).
+    /// </summary>
+    private async Task ReportTelemetryAsync(CancellationToken token)
+    {
+        var nowUtc = DateTime.UtcNow;
+        if (nowUtc < _telemetryNextUtc) return;
+        _telemetryNextUtc = nowUtc + _telemetryPeriod;
+        _telemetryPipeline.Enqueue(_telemetrySampler.Sample(
+            new DateTimeOffset(nowUtc).ToUnixTimeMilliseconds()));
+        while (_telemetryPipeline.PendingCount > 0)
+        {
+            if (!await _telemetryPipeline.SendOldestAsync(SendTelemetryAsync, token)) break;
+        }
+    }
+
+    /// <summary>FIX-OBS-06: sends one telemetry snapshot to the control plane over the
+    /// agent's mTLS channel, mirroring the process-report transport. Transport failures
+    /// (refused dial, unavailable) surface as RpcException/HttpRequestException so the
+    /// pipeline's bounded retry can hold or drop the sample.</summary>
+    private async Task SendTelemetryAsync(MachineTelemetrySample sample, CancellationToken token)
+    {
+        using var channel = ProcessGrpcClientFactory.Create(new Uri(_manifest.ControlEndpoint),
+            _agentCertificate, _root, _nodeAuthority, _manifest.ClusterId, "control-server");
+        var control = new ControlService.ControlServiceClient(channel);
+        var request = MachineTelemetryMapper.ToRequest(sample, _manifest.NodeId, _agentInstanceId,
+            Interlocked.Increment(ref _telemetrySequence));
+        await control.ReportMachineTelemetryAsync(request, cancellationToken: token);
     }
 
     /// <summary>

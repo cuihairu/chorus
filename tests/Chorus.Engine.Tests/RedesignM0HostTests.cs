@@ -127,6 +127,49 @@ public sealed class RedesignM0HostTests
         Assert.Equal("RecoveryFailed", process.EntityRecovery);
     }
 
+    [Fact]
+    public async Task NodeAgentReportsMachineTelemetryAndStaleAgentIsRefused()
+    {
+        // FIX-OBS-06: the machine telemetry leg over the real control gRPC face. The node's
+        // registered agent reports a snapshot (with per-mount disk) and it is accepted; a
+        // different agent instance id carrying a valid node-agent certificate is refused by
+        // the store's node-identity check rather than written under a displaced identity.
+        await using var environment = await HostEnvironment.CreateAsync();
+        using var nodeAgent = environment.Certificate("@cluster", "node-agent", "agent-obs06");
+        using var staleAgent = environment.Certificate("@cluster", "node-agent", "agent-stale");
+        await environment.StartAsync("Chorus.ControlServer", environment.ControlPort, "control-server");
+
+        using var nodeChannel = environment.Channel(environment.ControlPort, nodeAgent, "control-server");
+        var control = new ControlService.ControlServiceClient(nodeChannel);
+        await control.RegisterNodeAsync(new RegisterNodeRequest
+        {
+            NodeId = "node-a", AgentInstanceId = "agent-obs06", CapabilitiesJson = "{}"
+        });
+        var request = new MachineTelemetryRequest
+        {
+            NodeId = "node-a", AgentInstanceId = "agent-obs06",
+            SampledAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ReportSequence = 1,
+            CpuPresent = true, CpuPercent = 42.5,
+            MemoryPresent = true, MemoryTotalBytes = 1024, MemoryUsedBytes = 512, MemoryUsedPercent = 50.0,
+            LoadPresent = true, Load1M = 1.5, Load5M = 1.25, Load15M = 1.0,
+        };
+        request.Disk.Add(new MachineDiskMountProto
+        {
+            Mount = "/", TotalBytes = 1000, UsedBytes = 400, UsedPercent = 40.0
+        });
+        var reply = await control.ReportMachineTelemetryAsync(request);
+        Assert.True(reply.Accepted);
+
+        using var staleChannel = environment.Channel(environment.ControlPort, staleAgent, "control-server");
+        var staleControl = new ControlService.ControlServiceClient(staleChannel);
+        var denied = await staleControl.ReportMachineTelemetryAsync(new MachineTelemetryRequest
+        {
+            NodeId = "node-a", AgentInstanceId = "agent-stale",
+            SampledAtUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ReportSequence = 2
+        });
+        Assert.False(denied.Accepted);
+    }
+
     private static OperationKey NewKey(string tenant, string game, string kind, string target, string operation, object canonical)
     {
         var fingerprint = OperationFingerprint.FromCanonicalRequest(1, JsonSerializer.SerializeToUtf8Bytes(canonical));

@@ -80,6 +80,30 @@ public sealed class ControlGrpcService(
             EntityRecovery = status.EntityRecovery };
     }
 
+    public override async Task<MachineTelemetryReply> ReportMachineTelemetry(
+        MachineTelemetryRequest request, ServerCallContext context)
+    {
+        // Only the supervising node agent speaks for the node's machine resources; the
+        // certificate identity must match the report's node and agent id (FIX-OBS-06).
+        var caller = await RequireAsync(context, "node-agent");
+        CheckNode(caller, request.NodeId, request.AgentInstanceId);
+        if (request.SampledAtUnixMs <= 0 || request.ReportSequence <= 0)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "Invalid machine telemetry report."));
+        var accepted = await store.ReportMachineTelemetryAsync(
+            request.NodeId, request.AgentInstanceId,
+            DateTimeOffset.FromUnixTimeMilliseconds(request.SampledAtUnixMs).UtcDateTime,
+            request.ReportSequence,
+            request.CpuPresent ? request.CpuPercent : null,
+            request.MemoryPresent
+                ? (request.MemoryTotalBytes, request.MemoryUsedBytes, request.MemoryUsedPercent) : null,
+            request.LoadPresent ? (request.Load1M, request.Load5M, request.Load15M) : null,
+            request.Disk.Select(d => new RedesignControlStore.MachineDiskMount(
+                d.Mount, d.TotalBytes, d.UsedBytes, d.UsedPercent)).ToList(),
+            context.CancellationToken);
+        return new MachineTelemetryReply { Accepted = accepted };
+    }
+
     /// <summary>Self-report slots follow "{node}/{role}" with an optional "#2", "#3"… replica
     /// suffix — one slot per process instance, instances distinguished by the suffix.</summary>
     private static bool SlotAllowsReplicas(string slotId, string nodeId, string role)

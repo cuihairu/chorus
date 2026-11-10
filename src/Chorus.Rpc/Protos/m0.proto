@@ -82,6 +82,35 @@ message RoomProgressProto {
   string stop_reason = 6;
 }
 message ProcessReply { bool accepted = 1; string readiness = 2; string entity_recovery = 3; }
+
+// One machine telemetry snapshot (FIX-OBS-06): the node agent's periodic resource sample.
+// Scalar families carry a presence flag — the collectors never fake a zero, so absent
+// (non-Linux, no baseline yet, malformed source) is distinct from a real zero value.
+// Disk is repeated per mounted filesystem, empty when none are usable.
+message MachineDiskMountProto {
+  string mount = 1;
+  int64 total_bytes = 2;
+  int64 used_bytes = 3;
+  double used_percent = 4;
+}
+message MachineTelemetryRequest {
+  string node_id = 1;
+  string agent_instance_id = 2;
+  int64 sampled_at_unix_ms = 3;
+  int64 report_sequence = 4;
+  bool cpu_present = 5;
+  double cpu_percent = 6;
+  bool memory_present = 7;
+  int64 memory_total_bytes = 8;
+  int64 memory_used_bytes = 9;
+  double memory_used_percent = 10;
+  bool load_present = 11;
+  double load_1m = 12;
+  double load_5m = 13;
+  double load_15m = 14;
+  repeated MachineDiskMountProto disk = 15;
+}
+message MachineTelemetryReply { bool accepted = 1; }
 message OwnershipRequest {
   string kind = 1;
   string entity_id = 2;
@@ -109,6 +138,7 @@ service ControlService {
   rpc Ready(Empty) returns (ReadyReply);
   rpc RegisterNode(RegisterNodeRequest) returns (NodeReply);
   rpc ReportProcess(ReportProcessRequest) returns (ProcessReply);
+  rpc ReportMachineTelemetry(MachineTelemetryRequest) returns (MachineTelemetryReply);
   rpc ClaimOwnership(OwnershipRequest) returns (OwnershipReply);
   rpc GetOwnership(OwnershipLookup) returns (OwnershipReply);
 }
