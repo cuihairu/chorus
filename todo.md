@@ -340,7 +340,8 @@
   - 证据：e31e794；m0.proto ReportMachineTelemetry（presence 标志族）+0041 迁移（ops.machine_sample+ops.machine_disk_sample）+NodeAgent 三件套（Sampler 聚合四采集器/Pipeline 有界缓冲 drop-oldest+有界重试+退出冲刷/Mapper presence）+BootstrapAgent 5s 循环集成（15s 周期 env 可配）+ControlServer 落库（node 行锁 stale agent 拒）；+16 fact（sampler3+pipeline7+mapper2+store3+M0 host1）+schema 迁移断言更新（表 48→50、迁移 40→41）；全量门 1937 测试 16 失败全为文档化共租 flake 或已修回归（3 宿主断言 solo 全绿）
 - [x] **FIX-OBS-07 / P1：提供机器与进程统计 API。** 依赖：FIX-WEB-03、FIX-OBS-06。
   - 证据：8be0d37；完整链（用户确认范围：完整链+ControlHost /api 挂载）——进程采集 `MachineProcessCollector`（槽表源+/proc stat jiffies comm 括号后字段 14/15+VmRSS；CPU% 是 delta 首样本立基线，读失败跳过绝不假零）+`MachineProcessProto`（request.process=16 复用 ReportMachineTelemetry RPC）+0042 迁移（ops.process_sample）+store 同事务落库+`TelemetryStore`（MachineStats/ProcessStats 只读 ops，同库假设 Control:ConnectionString，Sqlite 答空非 500）+`/api/telemetry/machine|process`（RequireAuthorization）；+17 fact（collector7+sampler2+mapper2+store6）+schema 迁移断言更新（表 50→51、迁移 41→42）；全量门 1954 测试 8 失败全为文档化共租签名或 solo 转绿（M2 trio solo+干净树同败=环境族）
-- [ ] **FIX-OBS-08 / P1：提供房间统计 API。** 依赖：FIX-WEB-03、FIX-OBS-01、FIX-LINK-01。
+- [x] **FIX-OBS-08 / P1：提供房间统计 API。** 依赖：FIX-WEB-03、FIX-OBS-01、FIX-LINK-01。
+  - 证据：c335e9d；混合读数（用户确认模式延续：两平面各答各的维度）——`RoomStatsStore`（total/active/by_state 从控制面 records Live 谓词过滤，直方图只含出现过的态；by_tenant 走 game.room 与 admission 同过滤 NOT IN 终态，Sqlite 答空缺席非 500）+`/api/rooms/stats`（RequireAuthorization）；+4 fact；无迁移变更（51/42 不动）；全量门 1958 测试 9 失败全为文档化共租签名或 solo 转绿（M2 trio 已两树同败=环境族、容量 p95 5.80ms 争抢 solo 绿）
 - [ ] **FIX-OBS-09 / P1：提供分口径在线人数。** 依赖：FIX-WEB-03、FIX-OBS-01。
 - [ ] **FIX-OBS-10 / P1：统计平台原始入口流量。** 依赖：FIX-OBS-01。
 - [ ] **FIX-OBS-11 / P1：统计事件投递与生效链路。** 依赖：FIX-OBS-01、FIX-INPUT-06。
