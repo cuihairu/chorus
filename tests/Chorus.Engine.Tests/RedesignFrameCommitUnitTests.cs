@@ -250,6 +250,59 @@ public sealed class RedesignFrameCommitUnitTests
         Assert.True(beforeDispose >= 2);
     }
 
+    [Fact]
+    public async Task TheCommitAttemptBudgetIsTheTickWindowNotTheCallBudget()
+    {
+        // Audit P0-2: a hung data plane is bounded by the per-attempt deadline — the tick's
+        // own window scaled (a 25ms-tick room commits far inside a couple of seconds), never
+        // the ten-second call budget that left a degraded room blind for tens of seconds.
+        var store = new ScriptedFrameStore();
+        var actor = NewRoom(store, new ScriptedLifecycle());
+        actor.Start();
+        Assert.True(await WaitForAsync(() => Task.FromResult(store.CommitCount >= 2)),
+            "The room never committed a frame.");
+        await actor.DisposeAsync();
+        Assert.NotEmpty(store.CommitDeadlines);
+        foreach (var (requestedUtc, deadline) in store.CommitDeadlines)
+        {
+            Assert.NotNull(deadline);
+            var budget = deadline.Value - requestedUtc;
+            Assert.InRange(budget, TimeSpan.FromSeconds(1.9), TimeSpan.FromSeconds(2.6));
+        }
+    }
+
+    [Fact]
+    public async Task AStuckDataPlaneCostsOneBoundedAttemptThenTheRetryLands()
+    {
+        // Audit P0-2's incident shape: the commit call hangs. The attempt is bounded by the
+        // deadline it carries (the scripted store honors it the way the real gRPC call is
+        // bounded), the retry lands on the second attempt, and the tick's cost stays the
+        // bounded budget — not the old ten-seconds-per-round chain.
+        var store = new ScriptedFrameStore();
+        store.CommitSteps.Enqueue(async _ =>
+        {
+            var (requestedUtc, deadline) = store.CommitDeadlines[^1];
+            var budget = deadline is { } at ? at - requestedUtc : TimeSpan.FromSeconds(10);
+            await Task.Delay(budget);
+            throw RpcError(StatusCode.DeadlineExceeded, "the data plane never answered");
+        });
+        var actor = NewRoom(store, new ScriptedLifecycle());
+        var subscriber = actor.Subscribe(0, 1);
+        var startedUtc = DateTime.UtcNow;
+        actor.Start();
+
+        Assert.NotNull(await NextAsync(subscriber));
+        var cost = DateTime.UtcNow - startedUtc;
+        await actor.DisposeAsync();
+        // The first tick committed only after its hung attempt was bounded and retried — the
+        // very first commit attempt is the hung one and it carried the tick-window budget.
+        Assert.True(store.CommitCount >= 2, "The hung first attempt was never retried.");
+        var (requestedUtc, deadline) = store.CommitDeadlines[0];
+        Assert.InRange(deadline.Value - requestedUtc, TimeSpan.FromSeconds(1.9), TimeSpan.FromSeconds(2.6));
+        Assert.True(cost < TimeSpan.FromSeconds(6),
+            $"The hung first attempt cost {cost.TotalSeconds:F1} seconds, not the bounded budget.");
+    }
+
     private static RpcException RpcError(StatusCode status, string detail) =>
         new(new Status(status, detail));
 
@@ -316,6 +369,10 @@ public sealed class RedesignFrameCommitUnitTests
         public Queue<Func<CommitFrameRequest, Task<FrameReceiptReply>>> CommitSteps { get; } = new();
         public Func<CommitFrameRequest, Task<FrameReceiptReply>>? DefaultCommit { get; set; }
 
+        /// <summary>The (call time, deadline) pair of every commit attempt — the actor's
+        /// per-attempt data-plane budget, recorded the way the real gRPC call receives it.</summary>
+        public List<(DateTime RequestedUtc, DateTime? Deadline)> CommitDeadlines { get; } = new();
+
         public int InboxReadCount { get { lock (_gate) return _inboxReads.Count; } }
         public int CommitCount { get { lock (_gate) return _commitRequests.Count; } }
 
@@ -336,7 +393,11 @@ public sealed class RedesignFrameCommitUnitTests
             Metadata? headers = null, DateTime? deadline = null,
             CancellationToken cancellationToken = default)
         {
-            lock (_gate) _commitRequests.Add(request);
+            lock (_gate)
+            {
+                _commitRequests.Add(request);
+                CommitDeadlines.Add((DateTime.UtcNow, deadline));
+            }
             var step = CommitSteps.Count > 0
                 ? CommitSteps.Dequeue()
                 : DefaultCommit ?? (commit => Task.FromResult(Receipt(commit,

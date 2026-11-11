@@ -399,7 +399,7 @@ internal sealed class RoomActor : IAsyncDisposable
         {
             try
             {
-                receipt = await _frames.CommitFrameAsync(pendingFrame.Request, deadline: Deadline(),
+                receipt = await _frames.CommitFrameAsync(pendingFrame.Request, deadline: CommitAttemptDeadline(),
                     cancellationToken: cancellationToken);
                 break;
             }
@@ -449,8 +449,17 @@ internal sealed class RoomActor : IAsyncDisposable
                         reason, cancellationToken).ConfigureAwait(false);
                     return;
                 }
-                await Task.Delay(_commitRetryDelayOverride ?? CommitRetryBackoff(retry), cancellationToken)
+                // The wait between attempts is interruptible (audit P0-2): the room must
+                // never sit blind in a retry backoff — a stop, a dispose or a state change
+                // ends the retry at the next slice, the tick stays unpublished and the
+                // requester's own path completes the room's story.
+                await WaitForNextRetryAsync(
+                    _commitRetryDelayOverride ?? CommitRetryBackoff(retry), cancellationToken)
                     .ConfigureAwait(false);
+                // The room left Running while the backoff ran (a stop or a dispose): the
+                // retry chain ends with the tick unpublished and the requester's own path
+                // completing the room's story — never a retry on a room that is not live.
+                if (_stopped || _runState != RoomRunState.Running) return;
                 retry++;
                 _metrics.CommitRetries.Add(1);
             }
@@ -952,6 +961,28 @@ internal sealed class RoomActor : IAsyncDisposable
     }
 
     private static DateTime Deadline() => DateTime.UtcNow.AddSeconds(10);
+
+    /// <summary>The data-plane budget for one commit attempt (audit P0-2): the tick's own
+    /// window scaled, floored so a bursty data plane is not falsely parked — a healthy
+    /// commit is far inside one tick, so a floor of a couple of seconds keeps the room
+    /// responsive (a stop or dispose is never more than this far from the loop).</summary>
+    private DateTime CommitAttemptDeadline() => DateTime.UtcNow.AddSeconds(
+        Math.Max(2.0, _module.Manifest.TickMs * 8 / 1000.0));
+
+    /// <summary>The retry backoff as a wait the room can leave early: the loop is the
+    /// room's only reader, so a stop, a dispose or any state change out of Running ends
+    /// the wait at the next slice and the retry with it (audit P0-2).</summary>
+    private async Task WaitForNextRetryAsync(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        var until = DateTime.UtcNow + delay;
+        while (!_stopped && _runState == RoomRunState.Running && DateTime.UtcNow < until)
+        {
+            var remaining = until - DateTime.UtcNow;
+            await Task.Delay(remaining > TimeSpan.FromMilliseconds(250)
+                ? TimeSpan.FromMilliseconds(250) : remaining, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
