@@ -376,7 +376,8 @@
   - 证据：5902fd2；新 dotnet 工具 `src/Chorus.SdkWizard`（`chorus-sdk-wizard <project-root>`，零 Chorus 引用审文件工件）四类检查：①Packages/manifest.json 必含 com.chorus.sdk+平台包（缺则拒并点名 versionDefine 符号）②Assets/**/chorus-sdk-config.json 恰一份、字段恰六项公共配置、未知字段即拒、platform/role 枚举、endpoint 必须 https ③第 3 层秘密扫 Assets/** 九形状子串逐行即拒（从严：漏一次赔应用）④kuaishou ks_manifest.json（launcherFileName 必须 ks<appId>.exe、ipcSetCode/ipcQuit 布尔、captureParam 类型/wndClass/deviceId 规则）；PASS 尾线「A filled appId is not a review waiver」+平台侧待办告警（永不免审）。+8 fact 合成真实 Unity 项目树端到端驱动（完整抖音/快手树过+告警、缺平台包/缺字段/越值/未知字段/藏秘密/坏清单逐项拒并点名、非项目路径答 2）。定向 8/8 绿；pin 8 核全量 2028 测试 4 败=既裁签名（M2 三连+FanoutReclaim）零 NEW 无需 solo。
 - [x] **FIX-U3D-05 / P1：实现抖音官方 SDK 适配。** 依赖：FIX-U3D-03、FIX-U3D-04。
   - 证据：e7d0623；DouyinPlatformAdapter+IDouyinSdkBridge 接缝（零 ByteDance.* 引用）+DouyinSdkUnavailableBridge 拒绝语点名 FIX-ENV-05；+7 fact 全绿；门禁 2035 测试 4 败零 NEW（M2 三连既裁环境族；takeover-kill 新面孔 solo 带 pin Postgres 绿 34s=纯负载）。
-- [ ] **FIX-U3D-06 / P1：实现快手官方 SDK 适配。** 依赖：FIX-U3D-03、FIX-U3D-04。
+- [x] **FIX-U3D-06 / P1：实现快手官方 SDK 适配。** 依赖：FIX-U3D-03、FIX-U3D-04。
+  - 证据：f2de10b；KuaishouPlatformAdapter+IKuaishouSdkBridge 接缝（零原生 IPC 引用）+KuaishouSdkUnavailableBridge 拒绝语点名 FIX-ENV-06；StreamerId=roomCode 语义钉死；+8 fact 全绿；门禁 2043 测试 4 败零 NEW（M2 三连既裁环境族；END barrier 新面孔 solo 带 pin Postgres 绿 55s=纯负载）。
 - [ ] **FIX-U3D-07 / P0：接通 Unity 到 Chorus 的登录链路。** 依赖：FIX-U3D-02、FIX-END-02、FIX-END-17。
 - [ ] **FIX-U3D-08 / P1：接通匹配与原子入房。** 依赖：FIX-U3D-07、FIX-LINK-03、FIX-LINK-04、FIX-END-16。
 - [ ] **FIX-U3D-09 / P0：实现 Unity 快照与增量应用器。** 依赖：FIX-U3D-02、FIX-LINK-10、FIX-SYNC-01。
