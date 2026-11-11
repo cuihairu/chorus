@@ -405,7 +405,8 @@ public sealed class RedesignM0HostTests
         public async Task<Process> StartBootstrapAgentAsync(string? gameProject = null, int? gamePort = null,
             IReadOnlyDictionary<string, string>? toolEnvironment = null,
             IReadOnlyDictionary<string, string>? agentEnvironment = null, bool joinCluster = false,
-            IReadOnlyList<(string Project, string Role, int Port)>? extraSeeds = null)
+            IReadOnlyList<(string Project, string Role, int Port)>? extraSeeds = null,
+            Action? tamperSeed = null)
         {
             var root = FindRoot();
             var configuration = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))!.Name;
@@ -457,6 +458,10 @@ public sealed class RedesignM0HostTests
                 await toolProcess.WaitForExitAsync();
                 if (toolProcess.ExitCode != 0) throw new InvalidOperationException("BootstrapTool failed: " + error);
             }
+            // The window between provisioning and the agent's boot: a seed assembly can be
+            // corrupted here so the agent's hash check (or spawn) fails the way a broken
+            // deployment does — without touching the shared build output the manifest points at.
+            tamperSeed?.Invoke();
 
             var agentPath = Path.Combine(root, "src", "Chorus.NodeAgent", "bin", configuration, "net10.0", "Chorus.NodeAgent.dll");
             var state = Path.Combine(_directory, "agent-state");

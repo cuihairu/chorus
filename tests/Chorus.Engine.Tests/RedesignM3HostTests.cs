@@ -1077,6 +1077,63 @@ public sealed class RedesignM3HostTests
     }
 
     [Fact]
+    public async Task ASeedWhosePackageFailsToStartIsContainedAndTheAgentKeepsSupervising()
+    {
+        // Audit P0-1: one slot whose start fails (here: a package hash that no longer
+        // matches, the shape of a broken deployment) is a contained slot failure — charged
+        // to its own crash window and quarantined after five in-window failures — never a
+        // fault that takes the agent's supervision of the other slots down with it.
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var scratch = Path.Combine(Path.GetTempPath(), "chorus-audit-p01-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(scratch);
+        var broken = Path.Combine(scratch, "broken-game.dll");
+        await File.WriteAllTextAsync(broken, "placeholder assembly");
+        try
+        {
+            var agent = await environment.StartBootstrapAgentAsync(joinCluster: true,
+                toolEnvironment: new Dictionary<string, string>
+                {
+                    ["CHORUS_GAME_DLL"] = broken,
+                    ["CHORUS_GAME_PORT"] = RedesignM0HostTests.HostEnvironment.FreePort()
+                        .ToString(System.Globalization.CultureInfo.InvariantCulture)
+                },
+                // Corrupt the scratch assembly after the tool hashed it: the agent's hash
+                // check throws inside the start, exactly the audit's incident.
+                tamperSeed: () => File.AppendAllText(broken, "tampered after provisioning"));
+
+            // The agent survives the failing start and keeps supervising its healthy slots:
+            // control and data reach Running/Ready and are reported, on the same supervision
+            // loop that the broken slot fails inside. (The old code's uncontained throw took
+            // the whole agent down here.)
+            await environment.WaitForAgentReportsAsync(agent, expectedPreviousAgent: null,
+                expectedReady: 2, nodeId: "node-a");
+            Assert.True(!agent.HasExited, "The agent died on a contained slot start failure.\n"
+                + environment.AgentOutput(agent));
+
+            // The broken slot is quarantined on its own clock: five failed starts inside the
+            // window (one supervisor tick each), its journal row parked at pid 0.
+            const string brokenSlot = "node-a/game-server";
+            var quarantined = await WaitForAsync(() =>
+            {
+                var entry = environment.AgentJournal().SingleOrDefault(item => item.SlotId == brokenSlot);
+                return Task.FromResult(entry is { Pid: 0, QuarantinedAtUtc: not null });
+            }, TimeSpan.FromSeconds(90));
+            Assert.True(quarantined, "The failing slot was never quarantined.\n--- journal ---\n"
+                + string.Join("\n", environment.AgentJournal().Select(entry =>
+                    $"{entry.SlotId} pid={entry.Pid} state={entry.DesiredState} quarantined={entry.QuarantinedAtUtc?.ToString("O") ?? "null"}"))
+                + "\n--- agent output ---\n" + environment.AgentOutput(agent));
+            Assert.Contains("failed to start", environment.AgentOutput(agent));
+            await Task.Delay(TimeSpan.FromSeconds(6));
+            Assert.True(!agent.HasExited, "The agent died after quarantining the slot.\n"
+                + environment.AgentOutput(agent));
+        }
+        finally
+        {
+            try { Directory.Delete(scratch, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public async Task ControlOutagePausesMatchingAndPlansDoNotRepullProcesses()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();

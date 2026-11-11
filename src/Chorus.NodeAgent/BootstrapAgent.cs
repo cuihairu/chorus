@@ -91,8 +91,11 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                             // A slot the agent has never started starts immediately: a fresh
                             // bootstrap (or a restarted agent reclaiming its journal) is not a
                             // crash — it must not wait out a backoff or spend restart budget.
-                            _slots[spec.SlotId] = StartSlot(spec);
-                            SaveJournal();
+                            // A slot a previous start left failed sits behind its own backoff
+                            // (audit P0-1): it retries on its due time, never every tick.
+                            if (_nextRestartUtc.TryGetValue(spec.SlotId, out var notBefore)
+                                && nowUtc < notBefore) continue;
+                            TryStartSlot(spec);
                             continue;
                         }
                         if (!running.Process.HasExited) continue;
@@ -127,8 +130,7 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                             "Slot {SlotId} exited; restart {Restarts} of {Window}s window due in {Backoff}s",
                             spec.SlotId, restarts.Count, _crashWindowSeconds,
                             CrashBackoffSeconds[Math.Min(restarts.Count - 1, CrashBackoffSeconds.Length - 1)]);
-                        _slots[spec.SlotId] = StartSlot(spec);
-                        SaveJournal();
+                        TryStartSlot(spec);
                     }
                     // FIX-AGENT-02: the drain wait is bounded. A Draining slot whose process
                     // outlives the force deadline (CHORUS_DRAIN_FORCE_SECONDS, default 300s)
@@ -237,6 +239,42 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
             _desiredState[entry.SlotId] = entry.DesiredState;
             if (entry.CommandId.Length > 0) _lastCommandBySlot[entry.SlotId] = entry.CommandId;
             if (entry.QuarantinedAtUtc is { } quarantinedUtc) _quarantinedUtc[entry.SlotId] = quarantinedUtc;
+        }
+    }
+
+    /// <summary>Starts one slot under the supervisor's containment (audit P0-1): a slot
+    /// whose start fails (a package hash mismatch, a spawn failure) is a failed slot,
+    /// never a fault that brings the whole agent's supervision down. The failure is
+    /// charged to the slot's own crash window — backoff, quarantine at five in-window
+    /// failures, the report's visible state — exactly as if the slot had crashed, so one
+    /// bad slot cannot stop the other slots' supervision.</summary>
+    private void TryStartSlot(BootstrapSeedSlot spec)
+    {
+        try
+        {
+            _slots[spec.SlotId] = StartSlot(spec);
+            SaveJournal();
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            logger.LogWarning(error, "Slot {SlotId} failed to start; backing off and retrying", spec.SlotId);
+            var nowUtc = DateTime.UtcNow;
+            var attempts = _restartTimesUtc.TryGetValue(spec.SlotId, out var times)
+                ? times : new List<DateTime>();
+            attempts.RemoveAll(at => nowUtc - at > TimeSpan.FromSeconds(_crashWindowSeconds));
+            attempts.Add(nowUtc);
+            _restartTimesUtc[spec.SlotId] = attempts;
+            _nextRestartUtc[spec.SlotId] = nowUtc.AddSeconds(
+                CrashBackoffSeconds[Math.Min(attempts.Count - 1, CrashBackoffSeconds.Length - 1)]);
+            if (attempts.Count >= 5)
+            {
+                _quarantinedUtc[spec.SlotId] = nowUtc;
+                _nextRestartUtc.Remove(spec.SlotId);
+                logger.LogWarning(
+                    "Slot {SlotId} failed to start {Count} times within {Seconds}s; quarantined until a fresh plan",
+                    spec.SlotId, attempts.Count, _crashWindowSeconds);
+            }
+            SaveJournal();
         }
     }
 
@@ -533,8 +571,7 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
                             previous.Job?.Dispose();
                             previous.Process.Dispose();
                         }
-                        _slots[plan.SlotId] = StartSlot(spec);
-                        SaveJournal();
+                        TryStartSlot(spec);
                     }
                     break;
                 case "Draining":
