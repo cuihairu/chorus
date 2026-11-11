@@ -122,16 +122,21 @@ public sealed class RedesignU3D07LoginLinkTests
     }
 
     [Fact]
-    public async Task TheSessionRefusesUnwiredLinksAndDisconnectClosesTheWire()
+    public async Task TheSyncLinkRidesThroughUnwiredIntentsRefuseAndDisconnectClosesTheWire()
     {
         var transport = new FakeTransport();
         var adapter = new FakeAdapter("simulator", "open-1", """{"credential":"c"}""");
         var sdk = new ChorusSdk(_ => transport);
         var session = await sdk.ConnectAsync(Configuration(adapter), adapter, CancellationToken.None);
 
-        var subscribe = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => session.SubscribeAsync("room-1", 0, 0, 0, CancellationToken.None));
-        Assert.Contains("U3D-09", subscribe.Message);
+        // The sync link (FIX-U3D-09) rides through: the position goes to the transport
+        // verbatim and the transport's stream is the session's answer.
+        var stream = await session.SubscribeAsync("room-1", 3, 12, 12, CancellationToken.None);
+        Assert.Equal("room-1", transport.LastSubscribeRoom);
+        Assert.Equal(3, transport.LastSubscribeEpoch);
+        Assert.Equal(12, transport.LastSubscribeTick);
+        Assert.Equal(12, transport.LastSubscribeVersion);
+        Assert.Same(transport.LastStream, stream);
         var intent = await Assert.ThrowsAsync<InvalidOperationException>(
             () => session.SendIntentAsync(new ClientIntent(), CancellationToken.None));
         Assert.Contains("U3D-10", intent.Message);
@@ -328,10 +333,37 @@ public sealed class RedesignU3D07LoginLinkTests
         public Task<JoinedRoom> AwaitRoomAsync(CancellationToken cancellationToken) =>
             throw new InvalidOperationException("the login-link facts never await a room.");
 
+        public string? LastSubscribeRoom { get; private set; }
+        public long LastSubscribeEpoch { get; private set; }
+        public long LastSubscribeTick { get; private set; }
+        public long LastSubscribeVersion { get; private set; }
+        public ISyncStream? LastStream { get; private set; }
+
+        public Task<ISyncStream> SubscribeAsync(string roomId, long epoch, long lastAppliedTick,
+            long lastAppliedStateVersion, CancellationToken cancellationToken)
+        {
+            Sequence.Add("subscribe");
+            LastSubscribeRoom = roomId;
+            LastSubscribeEpoch = epoch;
+            LastSubscribeTick = lastAppliedTick;
+            LastSubscribeVersion = lastAppliedStateVersion;
+            LastStream = new FakeSyncStream();
+            return Task.FromResult<ISyncStream>(LastStream);
+        }
+
         public Task CloseAsync()
         {
             Sequence.Add("close");
             return Task.CompletedTask;
         }
+    }
+
+    /// <summary>A stream that answers closed at once: the sync-link fact only pins that
+    /// the transport's stream is what the session hands back.</summary>
+    private sealed class FakeSyncStream : ISyncStream
+    {
+        public SyncFrame Current { get; } = new SyncFrame();
+
+        public Task<bool> MoveNextAsync(CancellationToken cancellationToken) => Task.FromResult(false);
     }
 }

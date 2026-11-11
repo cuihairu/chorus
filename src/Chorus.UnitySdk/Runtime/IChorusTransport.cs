@@ -42,6 +42,13 @@ namespace Chorus.UnitySdk
         /// the entry, consumed by the subscription link that owns it.</summary>
         Task<JoinedRoom> AwaitRoomAsync(CancellationToken cancellationToken);
 
+        /// <summary>Opens the room's sync stream (FIX-U3D-09): states the subscriber's
+        /// applied position on the wire and answers the pull-style stream that owns the
+        /// downlink from here on. A newer subscribe supersedes the stream it returned
+        /// before; the superseded stream refuses to advance.</summary>
+        Task<ISyncStream> SubscribeAsync(string roomId, long epoch, long lastAppliedTick,
+            long lastAppliedStateVersion, CancellationToken cancellationToken);
+
         /// <summary>Closes the wire. A closed transport answers nothing further.</summary>
         Task CloseAsync();
     }

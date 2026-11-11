@@ -211,6 +211,10 @@ public sealed class RedesignU3D08MatchRoomLinkTests
             ReservationId = "res-1",
         });
 
+        public Task<ISyncStream> SubscribeAsync(string roomId, long epoch, long lastAppliedTick,
+            long lastAppliedStateVersion, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the match-link facts never subscribe.");
+
         public Task CloseAsync() => Task.CompletedTask;
     }
 }

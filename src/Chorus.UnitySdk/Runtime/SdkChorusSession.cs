@@ -6,8 +6,9 @@ namespace Chorus.UnitySdk
 {
     /// <summary>
     /// The session the login link answers: the login's identities, the started gameplay
-    /// binding, and a transport whose sync and intent links arrive with FIX-U3D-09 and
-    /// FIX-U3D-10 — those calls refuse by naming their task, never by failing silently.
+    /// binding, the room's sync stream (FIX-U3D-09), the match leg, and a transport whose
+    /// intent link arrives with FIX-U3D-10 — that call refuses by naming its task, never
+    /// by failing silently.
     /// </summary>
     internal sealed class SdkChorusSession : ChorusSession
     {
@@ -26,9 +27,7 @@ namespace Chorus.UnitySdk
 
         public Task<ISyncStream> SubscribeAsync(string roomId, long epoch, long lastAppliedTick,
             long lastAppliedStateVersion, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException(
-                "the room sync link is not wired yet: subscribe arrives with FIX-U3D-09 " +
-                "(the snapshot and delta applier) driving this transport.");
+            _transport.SubscribeAsync(roomId, epoch, lastAppliedTick, lastAppliedStateVersion, cancellationToken);
 
         public Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken) =>
             throw new InvalidOperationException(

@@ -21,7 +21,10 @@ namespace Chorus.UnitySdk.Edge
     /// The login link drives the transport strictly sequentially (connect → login →
     /// gameplay start), so one frame queue serves every waiter; frames this link does
     /// not claim (session facts pushed early, ping replies) stay queued for the links
-    /// FIX-U3D-09/10 wire onto the same transport.
+    /// FIX-U3D-09/10 wire onto the same transport. The room's sync stream (FIX-U3D-09)
+    /// then owns the downlink: one live stream reads the socket, a newer subscribe
+    /// supersedes it, and the superseded stream refuses to advance rather than race
+    /// its successor for frames.
     /// </summary>
     public sealed class EdgeChorusTransport : IChorusTransport
     {
@@ -32,6 +35,16 @@ namespace Chorus.UnitySdk.Edge
         private readonly RemoteCertificateValidationCallback? _certificateValidationOverride;
         private ClientWebSocket? _socket;
         private readonly Queue<(string Type, string Json)> _unclaimed = new();
+
+        /// <summary>The room facts the wire itself announced: each roomJoined carries
+        /// the module identity every later frame on that room's chain names — the edge's
+        /// snapshot and delta frames deliberately do not (contracts 3.2), so the client
+        /// holds it where the server's fanout holds it, on the room's state.</summary>
+        private readonly Dictionary<string, RoomFacts> _rooms = new();
+
+        private EdgeSyncStream? _activeStream;
+
+        private readonly record struct RoomFacts(long Epoch, string ModuleVersion, string ConfigHash);
 
         /// <summary>Creates the edge transport for one configuration's endpoint. The
         /// certificate validation override exists for test and self-hosted endpoints
@@ -180,6 +193,7 @@ namespace Chorus.UnitySdk.Edge
                 throw new EdgeProtocolException("matchStatus", "the edge answered a match without a room id.");
             var joined = Deserialize<RoomJoinedFrame>(
                 await AwaitFrameAsync(socket, "roomJoined", cancellationToken).ConfigureAwait(false));
+            RememberRoomJoined(joined);
             return new JoinedRoom
             {
                 RoomId = joined.RoomId,
@@ -191,6 +205,48 @@ namespace Chorus.UnitySdk.Edge
                 ReservationId = reservationId ?? string.Empty,
             };
         }
+
+        /// <summary>Opens the room's sync stream (FIX-U3D-09). The edge has no subscribe
+        /// frame — a seat's stream is pushed — so the leg states the subscriber's applied
+        /// position (an ack: the connection's re-baseline fact, contracts 3.1) and asks
+        /// for the room's head snapshot (the re-baseline the applier's rebaseline
+        /// decisions ask for), then hands back the pull-style stream. A stream that
+        /// never received the seat's roomJoined facts stamps empty module identity.</summary>
+        public async Task<ISyncStream> SubscribeAsync(string roomId, long epoch, long lastAppliedTick,
+            long lastAppliedStateVersion, CancellationToken cancellationToken)
+        {
+            var socket = RequireSocket();
+            await SendAsync(socket, new AckFrame
+            {
+                RoomId = roomId,
+                RoomEpoch = epoch,
+                LastAppliedTickId = lastAppliedTick,
+                StateVersion = lastAppliedStateVersion,
+            }, cancellationToken).ConfigureAwait(false);
+            await SendAsync(socket, new RequestSnapshotFrame
+            {
+                RoomId = roomId,
+                RoomEpoch = epoch,
+                Reason = "subscribe",
+            }, cancellationToken).ConfigureAwait(false);
+            var stream = new EdgeSyncStream(this, roomId);
+            _activeStream = stream;
+            return stream;
+        }
+
+        /// <summary>Whether this stream is still the one that owns the downlink.</summary>
+        private bool IsLive(EdgeSyncStream stream) => ReferenceEquals(_activeStream, stream);
+
+        private void RememberRoomJoined(RoomJoinedFrame joined) =>
+            _rooms[joined.RoomId] = new RoomFacts(joined.RoomEpoch, joined.ModuleVersion, joined.ConfigHash);
+
+        private RoomFacts FactsFor(string roomId) =>
+            _rooms.TryGetValue(roomId, out var facts) ? facts : default;
+
+        /// <summary>The oldest parked frame, or null when the queue is empty. The live
+        /// stream is the only reader once subscribed, so no lock guards the queue.</summary>
+        private string? TakeNextUnclaimed() =>
+            _unclaimed.Count == 0 ? null : _unclaimed.Dequeue().Json;
 
         private static MatchTicket TicketFrom(MatchStatusFrame status) => new()
         {
@@ -304,6 +360,195 @@ namespace Chorus.UnitySdk.Edge
                 builder.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
                 if (result.EndOfMessage)
                     return builder.ToString();
+            }
+        }
+
+        /// <summary>The live room subscription (FIX-U3D-09): pull-style, the game's loop
+        /// advances it and hands each frame to its applier. The stream owns the socket's
+        /// downlink while it is live; supersession by a newer subscribe ends that
+        /// ownership visibly. Frames are classified as they arrive: the four sync frames
+        /// map onto the leaf's shapes and deliver, a re-announced roomJoined refreshes
+        /// the room's module identity, refusals and displacement surface as exceptions,
+        /// and every other lane's frames (pongs, straggler match facts, command receipts
+        /// — FIX-U3D-10 owns receipts) ride past. A cancelled advance aborts the wire's
+        /// read, as ClientWebSocket's cancellation does; disconnect afterwards.</summary>
+        private sealed class EdgeSyncStream : ISyncStream
+        {
+            private readonly EdgeChorusTransport _transport;
+            private readonly string _roomId;
+            private long _lastSeenVersion;
+            private bool _resultDelivered;
+
+            public EdgeSyncStream(EdgeChorusTransport transport, string roomId)
+            {
+                _transport = transport;
+                _roomId = roomId;
+            }
+
+            public SyncFrame Current { get; private set; } = new SyncFrame();
+
+            public async Task<bool> MoveNextAsync(CancellationToken cancellationToken)
+            {
+                if (!_transport.IsLive(this))
+                    throw new InvalidOperationException(
+                        "this subscription was superseded by a newer subscribe; its reads belong to the new stream.");
+                if (_resultDelivered)
+                {
+                    // The round's story is told: the terminal frame was the last one this
+                    // subscription carries. A recovered room returns on a bumped epoch,
+                    // which is a new subscribe, not a frame behind this one.
+                    return false;
+                }
+                while (true)
+                {
+                    var json = _transport.TakeNextUnclaimed()
+                        ?? await ReceiveTextAsync(_transport.RequireSocket(), cancellationToken)
+                            .ConfigureAwait(false);
+                    switch (FrameType(json))
+                    {
+                        case "snapshot":
+                            Current = SnapshotFrom(json);
+                            _lastSeenVersion = Current.Snapshot!.StateVersion;
+                            return true;
+                        case "delta":
+                            Current = DeltaFrom(json);
+                            _lastSeenVersion = Current.Delta!.StateVersion;
+                            return true;
+                        case "roundResult":
+                            Current = ResultFrom(json);
+                            _resultDelivered = true;
+                            return true;
+                        case "resyncRequired":
+                            Current = ResyncFrom(json);
+                            return true;
+                        case "roomJoined":
+                            _transport.RememberRoomJoined(Deserialize<RoomJoinedFrame>(json));
+                            continue;
+                        case "sessionReplaced":
+                            var replaced = Deserialize<SessionReplacedFrame>(json);
+                            throw new EdgeProtocolException("session_replaced", replaced.Reason);
+                        case "error":
+                            var error = Deserialize<ErrorFrame>(json);
+                            throw new EdgeProtocolException(error.Code, error.Message);
+                        case "pong":
+                        case "loginReady":
+                        case "gameplayStatus":
+                        case "matchStatus":
+                        case "roomSuspended":
+                        case "commandReceipt":
+                            // Other lanes' frames: diagnostics and links before and after
+                            // the sync stream. Receipts belong to the intent link.
+                            continue;
+                        default:
+                            throw new EdgeProtocolException("invalidFrame",
+                                "the edge sent a frame the sync stream does not know.");
+                    }
+                }
+            }
+
+            private SyncFrame SnapshotFrom(string json)
+            {
+                var frame = Deserialize<SnapshotWireFrame>(json);
+                var facts = _transport.FactsFor(frame.RoomId);
+                return new SyncFrame
+                {
+                    Kind = SyncFrameKind.Snapshot,
+                    Snapshot = new SnapshotFrame
+                    {
+                        RoomId = frame.RoomId,
+                        Epoch = frame.RoomEpoch,
+                        Tick = frame.TickId,
+                        StateVersion = frame.StateVersion,
+                        ModuleVersion = facts.ModuleVersion,
+                        ConfigHash = facts.ConfigHash,
+                        StatePayload = frame.Payload,
+                        StateSchemaVersion = frame.SchemaVersion,
+                    },
+                };
+            }
+
+            private SyncFrame DeltaFrom(string json)
+            {
+                var frame = Deserialize<DeltaWireFrame>(json);
+                var facts = _transport.FactsFor(frame.RoomId);
+                var effects = new List<FrameEffect>();
+                if (frame.Payload.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var effect in frame.Payload.EnumerateArray())
+                    {
+                        effects.Add(new FrameEffect
+                        {
+                            Kind = effect.TryGetProperty("kind", out var kind) ? kind.GetString() ?? string.Empty : string.Empty,
+                            PayloadJson = effect.TryGetProperty("payload", out var payload)
+                                && payload.ValueKind != JsonValueKind.Null
+                                ? payload.GetRawText()
+                                : string.Empty,
+                        });
+                    }
+                }
+                return new SyncFrame
+                {
+                    Kind = SyncFrameKind.Delta,
+                    Delta = new DeltaFrame
+                    {
+                        RoomId = frame.RoomId,
+                        Epoch = frame.RoomEpoch,
+                        Tick = frame.TickId,
+                        StateVersion = frame.StateVersion,
+                        BaseVersion = frame.BaseVersion,
+                        ModuleVersion = facts.ModuleVersion,
+                        ConfigHash = facts.ConfigHash,
+                        Effects = effects.ToArray(),
+                    },
+                };
+            }
+
+            private SyncFrame ResultFrom(string json)
+            {
+                var frame = Deserialize<RoundResultWireFrame>(json);
+                // The resultId is the fanout's composition room:epoch:tick — the parse
+                // below is its exact inverse, keeping a room id that itself carries
+                // colons whole.
+                var tickBoundary = frame.ResultId.LastIndexOf(':');
+                var epochBoundary = tickBoundary > 0 ? frame.ResultId.LastIndexOf(':', tickBoundary - 1) : -1;
+                if (epochBoundary < 0
+                    || !long.TryParse(frame.ResultId[(tickBoundary + 1)..], out var tick)
+                    || !long.TryParse(frame.ResultId[(epochBoundary + 1)..tickBoundary], out var epoch))
+                {
+                    throw new EdgeProtocolException("invalidFrame",
+                        "the edge sent a round result without its room:epoch:tick identity.");
+                }
+                return new SyncFrame
+                {
+                    Kind = SyncFrameKind.RoundResult,
+                    RoundResult = new RoundResultFrame
+                    {
+                        RoomId = frame.ResultId[..epochBoundary],
+                        Epoch = epoch,
+                        Tick = tick,
+                        // The edge wire carries no state version on a round result (the
+                        // composition is room:epoch:tick only): the position this stream
+                        // last saw on the room's chain stands in, and zero on a stream
+                        // that never saw a frame — the wire's own honest boundary.
+                        StateVersion = _lastSeenVersion,
+                        ResultJson = frame.Result.GetRawText(),
+                    },
+                };
+            }
+
+            private SyncFrame ResyncFrom(string json)
+            {
+                var frame = Deserialize<ResyncRequiredWireFrame>(json);
+                return new SyncFrame
+                {
+                    Kind = SyncFrameKind.ResyncRequired,
+                    ResyncRequired = new ResyncRequiredFrame
+                    {
+                        RoomId = frame.RoomId,
+                        CurrentEpoch = frame.RoomEpoch,
+                        Reason = frame.Reason ?? string.Empty,
+                    },
+                };
             }
         }
 
@@ -455,6 +700,108 @@ namespace Chorus.UnitySdk.Edge
 
             [JsonPropertyName("configHash")]
             public string ConfigHash { get; set; } = string.Empty;
+        }
+
+        private sealed class AckFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "ack";
+
+            [JsonPropertyName("roomId")]
+            public string RoomId { get; set; } = string.Empty;
+
+            [JsonPropertyName("roomEpoch")]
+            public long RoomEpoch { get; set; }
+
+            [JsonPropertyName("lastAppliedTickId")]
+            public long LastAppliedTickId { get; set; }
+
+            [JsonPropertyName("stateVersion")]
+            public long StateVersion { get; set; }
+        }
+
+        private sealed class RequestSnapshotFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "requestSnapshot";
+
+            [JsonPropertyName("roomId")]
+            public string RoomId { get; set; } = string.Empty;
+
+            [JsonPropertyName("roomEpoch")]
+            public long RoomEpoch { get; set; }
+
+            [JsonPropertyName("reason")]
+            public string Reason { get; set; } = string.Empty;
+        }
+
+        private sealed class SnapshotWireFrame
+        {
+            [JsonPropertyName("roomId")]
+            public string RoomId { get; set; } = string.Empty;
+
+            [JsonPropertyName("roomEpoch")]
+            public long RoomEpoch { get; set; }
+
+            [JsonPropertyName("tickId")]
+            public long TickId { get; set; }
+
+            [JsonPropertyName("stateVersion")]
+            public long StateVersion { get; set; }
+
+            [JsonPropertyName("schemaVersion")]
+            public int SchemaVersion { get; set; }
+
+            [JsonPropertyName("payload")]
+            public byte[] Payload { get; set; } = Array.Empty<byte>();
+        }
+
+        private sealed class DeltaWireFrame
+        {
+            [JsonPropertyName("roomId")]
+            public string RoomId { get; set; } = string.Empty;
+
+            [JsonPropertyName("roomEpoch")]
+            public long RoomEpoch { get; set; }
+
+            [JsonPropertyName("tickId")]
+            public long TickId { get; set; }
+
+            [JsonPropertyName("baseVersion")]
+            public long BaseVersion { get; set; }
+
+            [JsonPropertyName("stateVersion")]
+            public long StateVersion { get; set; }
+
+            [JsonPropertyName("payload")]
+            public JsonElement Payload { get; set; }
+        }
+
+        private sealed class RoundResultWireFrame
+        {
+            [JsonPropertyName("resultId")]
+            public string ResultId { get; set; } = string.Empty;
+
+            [JsonPropertyName("result")]
+            public JsonElement Result { get; set; }
+        }
+
+        private sealed class ResyncRequiredWireFrame
+        {
+            [JsonPropertyName("roomId")]
+            public string RoomId { get; set; } = string.Empty;
+
+            [JsonPropertyName("roomEpoch")]
+            public long RoomEpoch { get; set; }
+
+            [JsonPropertyName("reason")]
+            public string? Reason { get; set; }
+        }
+
+        private sealed class SessionReplacedFrame
+        {
+            [JsonPropertyName("reason")]
+            public string Reason { get; set; } = string.Empty;
         }
     }
 
