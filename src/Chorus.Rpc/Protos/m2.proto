@@ -977,6 +977,13 @@ message RecoverRoomRequest {
   // persisted cadence". A positive value that disagrees with the persisted cadence is
   // refused, so a takeover or admin retry cannot silently change the room's tick.
   int32 tick_ms = 5;
+  // FIX-REC-01 deferred recovery (architecture 10.3 route barrier): the recovery pins the
+  // verified head, builds the actor and holds it — Recovered=true, Status="Ready" — while
+  // the ownership stays Recovering and nothing ticks. The control plane installs the
+  // gateways' routes, confirms the barrier, and only then calls ActivateRoom, whose fenced
+  // confirm flips the ownership Active and releases the loop. A retry after a lost reply
+  // answers the same Ready from the held actor's own state.
+  bool deferred_activation = 6;
 }
 
 message RecoverRoomReply {

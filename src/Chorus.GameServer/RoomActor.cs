@@ -39,7 +39,8 @@ internal enum RoomRunState
 /// directly pushed events hold an in-memory seat (FIX-ROOM-01, FIX-TAKE-06, FIX-INPUT-03).
 /// </summary>
 internal sealed record RoomActorStatus(RoomRunState State, long Epoch, long LastCommittedTick,
-    string? StopReason, DateTimeOffset? LastCommittedAt = null, int InboundBacklog = 0);
+    string? StopReason, DateTimeOffset? LastCommittedAt = null, int InboundBacklog = 0,
+    bool HeldFromRecovery = false);
 
 /// <summary>The frozen outcome of a finished round (FIX-ROOM-05): the head the result
 /// committed at, and the result itself — all that stays after the actor is released.</summary>
@@ -132,6 +133,10 @@ internal sealed class RoomActor : IAsyncDisposable
     private RoomRunState _runState = RoomRunState.Running;
     private string? _stopReason;
     private DateTimeOffset? _lastCommittedAt;
+    // FIX-REC-01: this actor came from a deferred recovery — it sits held at the verified
+    // head until ActivateRoom's fenced confirm releases it, and a recovery that meets it
+    // answers Ready instead of the common-start refusal.
+    private readonly bool _heldFromRecovery;
     // FIX-TAKE-07 test seam: the frozen-Running producer. Only the actor a prepare built
     // with the seam hangs — the actor a takeover recovers never carries it, so a migrated
     // room resumes from the pinned head instead of freezing again.
@@ -165,7 +170,7 @@ internal sealed class RoomActor : IAsyncDisposable
         RoomMetrics? metrics = null, TimeSpan? commitRetryDelay = null,
         int overBudgetFactor = 0, int overBudgetWindow = 0, int inboundBound = 1024,
         IRoomInputTranslator? inputTranslator = null, TimeSpan? presenceTimeout = null,
-        RoomEventCounters? counters = null)
+        RoomEventCounters? counters = null, bool heldFromRecovery = false)
     {
         _runtime = runtime;
         _counters = counters ?? new RoomEventCounters();
@@ -190,6 +195,7 @@ internal sealed class RoomActor : IAsyncDisposable
         _stateVersion = stateVersion;
         _hangAfterTick = hangAfterTick;
         _hangMs = hangMs;
+        _heldFromRecovery = heldFromRecovery;
         _commitRetryDelayOverride = commitRetryDelay;
         _overBudgetFactorOverride = overBudgetFactor;
         _overBudgetWindowOverride = overBudgetWindow;
@@ -817,13 +823,18 @@ internal sealed class RoomActor : IAsyncDisposable
     public RoomActorStatus Status()
     {
         lock (_publishGate) return new RoomActorStatus(_runState, _epoch, _lastTick, _stopReason,
-            _lastCommittedAt, InboundBacklog);
+            _lastCommittedAt, InboundBacklog, _heldFromRecovery);
     }
 
     /// <summary>The activation fence this actor was built under (FIX-PERF-03 release check;
     /// the epoch itself is the subscriber-facing property above).</summary>
     internal string GameId => _gameId;
     internal string OwnerInstanceId => _ownerInstanceId;
+
+    /// <summary>FIX-REC-01: whether this actor was built by a deferred recovery and sits at
+    /// the verified head awaiting ActivateRoom — the release picks the fenced ownership
+    /// confirm (not the round flip), and a recovery that meets it answers Ready.</summary>
+    internal bool HeldFromRecovery => _heldFromRecovery;
 
     /// <summary>FIX-GM-07: the live binding a participant's seat rides — the inverse of the
     /// prepare-time map, resolved by this host rather than trusted from a caller. The scan is

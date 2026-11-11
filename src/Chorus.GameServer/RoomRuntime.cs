@@ -324,6 +324,9 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     /// Releases a room prepared with deferred activation (FIX-PERF-03): the round flips to
     /// Running and the actor starts. A retry after a lost reply answers duplicate — Start
     /// never runs twice — and a fence that does not match the held room never releases it.
+    /// FIX-REC-01: a room held by a deferred recovery releases through the fenced ownership
+    /// confirm instead of the round flip — the room was never Preparing, and the grant is
+    /// what proves the route barrier already admitted it.
     /// </summary>
     public async Task<ActivateRoomReply> ActivateRoomAsync(ActivateRoomRequest request,
         CancellationToken cancellationToken = default)
@@ -350,13 +353,28 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 };
             try
             {
-                // Running before the first tick: the actor's first commit must meet a Running
-                // round, not race the flip.
-                await _rounds.ActivateRoundAsync(new ActivateRoundRequest
+                if (actor.HeldFromRecovery)
                 {
-                    RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
-                    GameId = request.GameId, OperationId = request.OperationId
-                }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+                    // FIX-REC-01: the deferred recovery's activation grant is the fenced
+                    // ownership confirm (FIX-TAKE-03) — the room was never Preparing, so
+                    // there is no round to flip; the confirm flips Recovering→Active for
+                    // exactly this owner and the loop may only start once it held.
+                    await _rounds.ConfirmRoomOwnershipAsync(new ConfirmRoomOwnershipRequest
+                    {
+                        GameId = request.GameId, RoomId = request.RoomId,
+                        OwnerInstance = request.OwnerInstanceId
+                    }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+                }
+                else
+                {
+                    // Running before the first tick: the actor's first commit must meet a Running
+                    // round, not race the flip.
+                    await _rounds.ActivateRoundAsync(new ActivateRoundRequest
+                    {
+                        RoomId = request.RoomId, OwnerInstanceId = request.OwnerInstanceId, Epoch = request.Epoch,
+                        GameId = request.GameId, OperationId = request.OperationId
+                    }, deadline: DateTime.UtcNow.AddSeconds(10), cancellationToken: cancellationToken);
+                }
             }
             catch
             {
@@ -716,7 +734,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             if (state is null)
                 return await RefuseAndSuspendAsync(request, plan, refusal!, cancellationToken);
             return await AdoptRecoveredStateAsync(request, plan, module, state, participantByBinding,
-                snapshotTick, replayed, note, cancellationToken, pinHead: pinHead);
+                snapshotTick, replayed, note, cancellationToken, pinHead: pinHead,
+                deferActivation: request.DeferredActivation);
         }
     }
 
@@ -884,7 +903,8 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
     private async Task<RecoverRoomReply> AdoptRecoveredStateAsync(RecoverRoomRequest request,
         LoadRecoveryReply plan, IRedesignGameModule module, ExampleGameState state,
         Dictionary<string, string> participantByBinding, long snapshotTick, int replayed,
-        string note, CancellationToken cancellationToken, bool pinHead = true)
+        string note, CancellationToken cancellationToken, bool pinHead = true,
+        bool deferActivation = false)
     {
         var headPayload = module.Serialize(state); // the config fallback below either way
         // Persist a fresh store-verified snapshot at the head so the next recovery starts
@@ -918,17 +938,49 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 };
             }
         }
+        // FIX-REC-01 deferred recovery (FIX-TAKE-03 grant, moved to the release): the
+        // pinned head stays behind the Recovering fence — no confirm, no loop — so the
+        // control plane may install the gateways' routes and only then grant the
+        // activation. The recovery credential is what AdoptRecoveredStateAsync persisted:
+        // the head pin plus this held actor; ActivateRoomAsync's confirm is the grant, and
+        // a lost-reply retry answers Ready from the held actor instead of redoing work.
+        if (deferActivation)
+        {
+            var held = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
+                request.OwnerInstanceId, request.Epoch, HeadConfigHash(plan, headPayload), state,
+                participantByBinding, plan.LastTick, plan.StateVersion, metrics: _metrics,
+                overBudgetFactor: _overBudgetFactorOverride,
+                overBudgetWindow: _overBudgetWindowOverride, inboundBound: _inboundBound,
+                inputTranslator: _inputTranslator, counters: EventCounters, heldFromRecovery: true);
+            held.LoopEnded = Retire;
+            // FIX-PERF-07: a held recovered room is real load this host must run — a
+            // recovery is never refused (the scheduler assigned it here) — but it still
+            // reserves a slot, so a host full of recovered rooms stops accepting new
+            // allocations.
+            _admission.Reserve();
+            if (!_actors.TryAdd(request.RoomId, held))
+            {
+                _admission.Release();
+                await held.DisposeAsync();
+                return AnswerForKnownActor(request, _actors[request.RoomId].Status());
+            }
+            held.HoldForCommonStart();
+            return new RecoverRoomReply
+            {
+                RoomId = request.RoomId, Recovered = true, Status = "Ready",
+                LastTick = plan.LastTick, SnapshotTick = snapshotTick,
+                ReplayedFrames = replayed,
+                Note = $"{note} The room is held: the loop starts when the control plane " +
+                       "activates it after the route barrier."
+            };
+        }
         // FIX-TAKE-03: the pinned head is the activation credential — the fenced
         // confirm flips the ownership Active for exactly this owner and epoch before
         // the loop starts, so a recovery that cannot activate neither ticks nor
         // reports success.
         var activated = await ActivateRecoveredRoomAsync(request, plan, cancellationToken);
         if (activated is not null) return activated;
-        var configHash = plan.Frames.Count > 0
-            ? plan.Frames.Max(frame => frame.Tick) == plan.LastTick
-                ? plan.Frames.First(frame => frame.Tick == plan.LastTick).ConfigHash
-                : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant()
-            : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant();
+        var configHash = HeadConfigHash(plan, headPayload);
         var actor = new RoomActor(this, _frames, module, request.GameId, request.RoomId,
             request.OwnerInstanceId, request.Epoch, configHash, state, participantByBinding,
             plan.LastTick, plan.StateVersion, metrics: _metrics,
@@ -960,6 +1012,15 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
             Note = note
         };
     }
+
+    /// <summary>The config hash a recovered room's frames carry — the committed head
+    /// frame's own hash when it exists, else the head payload's.</summary>
+    private static string HeadConfigHash(LoadRecoveryReply plan, byte[] headPayload) =>
+        plan.Frames.Count > 0
+            ? plan.Frames.Max(frame => frame.Tick) == plan.LastTick
+                ? plan.Frames.First(frame => frame.Tick == plan.LastTick).ConfigHash
+                : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant()
+            : Convert.ToHexString(SHA256.HashData(headPayload)).ToLowerInvariant();
 
     /// <summary>
     /// Refuses a recovery by name and parks the room visibly (architecture 10.3.6):
@@ -1171,6 +1232,18 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                        "budget (FIX-PERF-06); the slowness is observable, not silent."
             };
         if (status.State == RoomRunState.Preparing)
+        {
+            // FIX-REC-01: a deferred recovery's own held actor answers Ready — the pin and
+            // the replay already landed; only the route barrier and the activation are left.
+            // A lost-reply retry continues from here instead of re-recovering the room.
+            if (status.HeldFromRecovery)
+                return new RecoverRoomReply
+                {
+                    RoomId = request.RoomId, Recovered = true, Status = "Ready",
+                    LastTick = status.LastCommittedTick,
+                    Note = "The recovery prepared this room at its verified head; the loop " +
+                           "starts when the control plane activates it after the route barrier."
+                };
             return new RecoverRoomReply
             {
                 RoomId = request.RoomId, Recovered = false, Status = "Preparing",
@@ -1178,6 +1251,7 @@ public sealed class RoomRuntime : IRoomLifecycle, IAsyncDisposable
                 Note = "The room is held for a common start (FIX-PERF-03) and has not begun " +
                        "ticking; recover it only after the start line releases it."
             };
+        }
         if (status.State == RoomRunState.Paused)
             return new RecoverRoomReply
             {
