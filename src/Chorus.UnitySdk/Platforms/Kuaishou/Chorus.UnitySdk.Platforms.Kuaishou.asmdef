@@ -1,0 +1,26 @@
+{
+  "name": "Chorus.UnitySdk.Platforms.Kuaishou",
+  "rootNamespace": "Chorus.UnitySdk.Platforms.Kuaishou",
+  "references": [],
+  "includePlatforms": [
+    "Editor",
+    "WindowsStandalone32",
+    "WindowsStandalone64"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [
+    "CHORUS_PLATFORM_KUAISHOU"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.chorus.kuaishou.ipc",
+      "expression": "",
+      "define": "CHORUS_PLATFORM_KUAISHOU"
+    }
+  ],
+  "noEngineReferences": false
+}

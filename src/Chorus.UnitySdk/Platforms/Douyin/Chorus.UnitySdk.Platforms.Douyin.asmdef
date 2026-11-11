@@ -1,0 +1,22 @@
+{
+  "name": "Chorus.UnitySdk.Platforms.Douyin",
+  "rootNamespace": "Chorus.UnitySdk.Platforms.Douyin",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [
+    "CHORUS_PLATFORM_DOUYIN"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.bytedance.liveopensdk",
+      "expression": "",
+      "define": "CHORUS_PLATFORM_DOUYIN"
+    }
+  ],
+  "noEngineReferences": false
+}
