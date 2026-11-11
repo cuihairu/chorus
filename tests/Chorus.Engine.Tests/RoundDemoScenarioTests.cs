@@ -173,6 +173,11 @@ public sealed class RoundDemoScenarioTests
         public int GamePort => _environment.GamePort;
         public string DatabaseConnectionString => _environment.DatabaseConnectionString;
 
+        /// <summary>The platform gateway's webhook face (FIX-OBS-17 acceptance): the ingress
+        /// listener and the ports the acceptance drives a real push and its retry through.</summary>
+        public int GatewayPort { get; private set; }
+        public int IngressPort { get; private set; }
+
         public async Task StartAllAsync(byte[] simulatorSigningKey, byte[] accessCredentialKey)
         {
             var streamerEnvironment = new Dictionary<string, string>
@@ -208,12 +213,22 @@ public sealed class RoundDemoScenarioTests
             _platform = Chorus.Platform.DevelopmentTaskPlatform.Start(
                 RedesignM0HostTests.HostEnvironment.FreePort);
             var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+            GatewayPort = gatewayPort;
+            IngressPort = RedesignM0HostTests.HostEnvironment.FreePort();
             await _environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
                 new Dictionary<string, string>(RedesignEndOperationHostTests.GatewayEnvironment(
                     DataPort, $"https://localhost:{ControlPort}", gatewayPort))
                 {
                     ["CHORUS_DEV_PLATFORM_ENDPOINT"] = _platform.Url,
-                    ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300"
+                    ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "300",
+                    // The webhook face rides the same gateway process: one real platform keeps
+                    // the verifier router mounted, AllowAll adds the development verifier and
+                    // the simulator mapper — the leg a development fleet can drive home.
+                    ["CHORUS_INGRESS_PORT"] = IngressPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["CHORUS_SIMULATOR_SIGNING_KEY"] = Convert.ToHexString(simulatorSigningKey),
+                    ["Ingress__Platforms__0"] = "douyin",
+                    ["Ingress__Douyin__AppSecret"] = "obs17-douyin-secret",
+                    ["Ingress__AllowAll"] = "true"
                 });
         }
 
