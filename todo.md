@@ -366,7 +366,8 @@
 
 ### 22.18 Unity（U3D）快速接入 SDK：抖音／快手条件编译（P0/P1）
 
-- [ ] **FIX-U3D-01 / P0：确认两平台 SDK 产品形态及准入矩阵。** 依赖：无。
+- [x] **FIX-U3D-01 / P0：确认两平台 SDK 产品形态及准入矩阵。** 依赖：无。
+  - 证据：34f2f63；`docs/reference/platform-unity-sdks.md`（sidebar 已注册，VitePress 构建绿）。2026-11-11 六页官方正文逐页重核（抖音 access/update-log/overview + 快手 introduction/clientside/localdevelopment）产出产品形态确认+三层划分（①平台官方 SDK 抖音=LiveOpenSDK 托管程序集/BGDT 分发、快手=IPC 原生库+Windows-only，各挂条件编译符号 ②Chorus SDK 平台中立 ③服务端秘密永不入包体）+十行×两平台准入矩阵（已确认带日期/需权限/待核实逐格落）。钉死事实：抖音官方 Unity SDK 存在且履约 ACK 强制（审核拒入原文）、公开日志最新仍 2.7.4（2025-08-06）；快手无官方 Unity 礼物 SDK（IPC 库只是伴侣协同通道，互动数据全走服务端推送腿；上线必备=bind+礼物置顶+推送不接不能上线；推送乱序明示不保证、unique_message_id 幂等、stress_ 压测前缀必须特判；两页更新时间 2024-11-22 比基线新）。解堵 U3D-02/03/04/05/06（设计层）+U3D-14（契约层）；U3D-17/19 真实链路验收被需权限行堵（账号/能力开通/测试主播/礼物订阅）。纯文档无 .NET 门；research 基线 §5 清单凭证类未决项保持开放。
 - [ ] **FIX-U3D-02 / P1：定义统一 Unity SDK 接口。** 依赖：FIX-U3D-01、FIX-SYNC-01。
 - [ ] **FIX-U3D-03 / P1：建立 Unity 包及条件编译隔离。** 依赖：FIX-U3D-02。
 - [ ] **FIX-U3D-04 / P1：实现 App 配置及物料检查向导。** 依赖：FIX-U3D-03。
