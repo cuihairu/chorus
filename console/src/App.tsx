@@ -8,8 +8,8 @@ import {
   TrophyOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { PageContainer, ProLayout } from '@ant-design/pro-components';
-import { Button, Result, Spin, Tag } from 'antd';
+import { ProLayout } from '@ant-design/pro-components';
+import { Button, Spin, Tag } from 'antd';
 import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth';
@@ -21,6 +21,7 @@ import NodesPage from './pages/NodesPage';
 import OperationsPage from './pages/OperationsPage';
 import OverviewPage from './pages/OverviewPage';
 import RoomsPage from './pages/RoomsPage';
+import StreamersPage from './pages/StreamersPage';
 
 // The console shell (FIX-WEB-02) with the operator session wired in (FIX-WEB-04):
 // every admin route sits behind the login gate, the signed-in operator's identity is
@@ -28,8 +29,8 @@ import RoomsPage from './pages/RoomsPage';
 // answers for it. The header carries the language toggle (FIX-WEB-16): the two words
 // for a menu entry ride the route table itself. Home is the operations overview
 // (FIX-OBS-14), nodes and processes is the telemetry page (FIX-WEB-06), rooms is the
-// room detail page (FIX-WEB-07); the remaining pages arrive with their backing APIs —
-// streamers and matching (WEB-08).
+// room detail page (FIX-WEB-07), streamers and matching is the match plane's read
+// faces (FIX-WEB-08).
 type RouteKey = 'home' | 'nodes' | 'rooms' | 'streamers' | 'operations' | 'epoch' | 'leaderboard';
 
 const menuRoutes: Array<{
@@ -47,38 +48,6 @@ const menuRoutes: Array<{
   { path: '/epoch', nameEn: 'Room epoch', nameZh: '房间纪元', icon: <ThunderboltOutlined />, routeKey: 'epoch' },
   { path: '/leaderboard', nameEn: 'Leaderboards', nameZh: '排行榜', icon: <TrophyOutlined />, routeKey: 'leaderboard' },
 ];
-
-function Placeholder({ routeKey }: { routeKey: RouteKey }) {
-  const { t } = useI18n();
-  const namesEn: Record<RouteKey, string> = {
-    home: 'Home',
-    nodes: 'Nodes and processes',
-    rooms: 'Rooms',
-    streamers: 'Streamers and matching',
-    operations: 'Operations and receipts',
-    epoch: 'Room epoch',
-    leaderboard: 'Leaderboards',
-  };
-  const namesZh: Record<RouteKey, string> = {
-    home: '主页',
-    nodes: '节点与进程',
-    rooms: '房间',
-    streamers: '主播与匹配',
-    operations: '操作与回执',
-    epoch: '房间纪元',
-    leaderboard: '排行榜',
-  };
-  return (
-    <PageContainer>
-      <Result
-        icon={<Spin size="large" />}
-        title={t(namesEn[routeKey], namesZh[routeKey])}
-        subTitle={t('This page arrives with its backing API line (todo 22.16).',
-          '该页随其后端接口线一起交付（todo 22.16）。')}
-      />
-    </PageContainer>
-  );
-}
 
 /** Every console route but the login page sits behind a resolved operator identity. */
 function RequireOperator({ children }: { children: ReactNode }) {
@@ -145,12 +114,10 @@ function ConsolePages() {
       {routeKey === 'home' && <OverviewPage />}
       {routeKey === 'nodes' && <NodesPage />}
       {routeKey === 'rooms' && <RoomsPage />}
+      {routeKey === 'streamers' && <StreamersPage />}
       {routeKey === 'operations' && <OperationsPage />}
       {routeKey === 'epoch' && <EpochPage />}
       {routeKey === 'leaderboard' && <LeaderboardPage />}
-      {routeKey !== 'home' && routeKey !== 'nodes' && routeKey !== 'rooms' && routeKey !== 'operations' && routeKey !== 'epoch' && routeKey !== 'leaderboard' && (
-        <Placeholder routeKey={routeKey} />
-      )}
     </ConsoleShell>
   );
 }
