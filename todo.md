@@ -378,7 +378,8 @@
   - 证据：e7d0623；DouyinPlatformAdapter+IDouyinSdkBridge 接缝（零 ByteDance.* 引用）+DouyinSdkUnavailableBridge 拒绝语点名 FIX-ENV-05；+7 fact 全绿；门禁 2035 测试 4 败零 NEW（M2 三连既裁环境族；takeover-kill 新面孔 solo 带 pin Postgres 绿 34s=纯负载）。
 - [x] **FIX-U3D-06 / P1：实现快手官方 SDK 适配。** 依赖：FIX-U3D-03、FIX-U3D-04。
   - 证据：f2de10b；KuaishouPlatformAdapter+IKuaishouSdkBridge 接缝（零原生 IPC 引用）+KuaishouSdkUnavailableBridge 拒绝语点名 FIX-ENV-06；StreamerId=roomCode 语义钉死；+8 fact 全绿；门禁 2043 测试 4 败零 NEW（M2 三连既裁环境族；END barrier 新面孔 solo 带 pin Postgres 绿 55s=纯负载）。
-- [ ] **FIX-U3D-07 / P0：接通 Unity 到 Chorus 的登录链路。** 依赖：FIX-U3D-02、FIX-END-02、FIX-END-17。
+- [x] **FIX-U3D-07 / P0：接通 Unity 到 Chorus 的登录链路。** 依赖：FIX-U3D-02、FIX-END-02、FIX-END-17。
+  - 证据：bf31db7；ChorusSdk 编排（挂载恰一次+每连新 attempt/secret+半开必关线）+IChorusTransport 接缝；EdgeChorusTransport 说边线 JSON/WSS（hello→login→startGameplay）+EdgeSdk.Create；+10 fact 全绿含 2 真网关端到端（篡改凭据→session_revoked 线上码）；门禁 2053 测试首轮 99 败 92=inotify(128)耗尽级联，背靠背 99→3 只剩 M2 三连=共租签名非回归。
 - [ ] **FIX-U3D-08 / P1：接通匹配与原子入房。** 依赖：FIX-U3D-07、FIX-LINK-03、FIX-LINK-04、FIX-END-16。
 - [ ] **FIX-U3D-09 / P0：实现 Unity 快照与增量应用器。** 依赖：FIX-U3D-02、FIX-LINK-10、FIX-SYNC-01。
 - [ ] **FIX-U3D-10 / P0：接通 Unity 操作意图发送。** 依赖：FIX-U3D-07、FIX-LINK-09、FIX-SYNC-09。
