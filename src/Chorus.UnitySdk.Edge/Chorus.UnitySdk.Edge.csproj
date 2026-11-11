@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The Chorus edge wire for the Unity SDK (FIX-U3D-07): the reference transport
+       implementation of the SDK's IChorusTransport seam, speaking the gateway's JSON
+       over WSS protocol on .NET's own ClientWebSocket. It lives OUTSIDE the leaf on
+       purpose: netstandard2.1's surface carries no System.Text.Json, and Unity ships
+       its own JSON choices — the Unity-side packaging of this wire (or a Newtonsoft
+       variant) is the U3D-16/17 compatibility work; this project is the reference
+       implementation and the dotnet test vehicle. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Chorus.UnitySdk/Chorus.UnitySdk.csproj" />
+  </ItemGroup>
+
+</Project>
