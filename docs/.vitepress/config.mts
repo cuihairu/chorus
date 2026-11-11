@@ -49,6 +49,7 @@ const referenceLinks = [
   "/reference/platform-kuaishou-mini-game",
   "/reference/platform-bilibili",
   "/reference/platform-integration-matrix",
+  "/reference/platform-unity-sdks",
   "/reference/tuning",
   "/reference/troubleshooting",
   "/reference/adapter-contract",
