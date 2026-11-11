@@ -55,8 +55,46 @@ namespace Chorus.UnitySdk
         /// arrives.</summary>
         Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken);
 
+        /// <summary>Rotates onto a fresh session (FIX-U3D-11): presents the old session's
+        /// resume secret, answers the resumed session's facts — the same shape login
+        /// answered — and leaves the room's re-entry (roomJoined, then the head snapshot
+        /// the declared baseline continues from) to <see cref="AwaitRejoinedRoomAsync"/>.</summary>
+        Task<LoginAnswer> ResumeAsync(ResumeIntent intent, CancellationToken cancellationToken);
+
+        /// <summary>Answers the room the resume re-entered: the server's participation
+        /// record names it, the client's last-seen room was only diagnostics. A resume
+        /// with nowhere to return announces nothing — the caller bounds this wait.</summary>
+        Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken);
+
         /// <summary>Closes the wire. A closed transport answers nothing further.</summary>
         Task CloseAsync();
+    }
+
+    /// <summary>What one resume hands the transport: the session it resumes, the secret
+    /// that session was registered with, and the fresh secret the resumed session
+    /// rotates onto. The room facts ride as diagnostics only — the server's
+    /// participation record decides where the resume lands (contracts 3.1).</summary>
+    public sealed class ResumeIntent
+    {
+        /// <summary>The operation id the SDK generated for this resume (diagnostics).</summary>
+        public string ResumeOperationId { get; set; } = string.Empty;
+
+        /// <summary>The session being resumed.</summary>
+        public string PreviousSessionId { get; set; } = string.Empty;
+
+        /// <summary>The 32-byte secret the previous session was registered with.</summary>
+        public byte[] ResumeCredential { get; set; } = Array.Empty<byte>();
+
+        /// <summary>The 32-byte secret the client generated for the resumed session.</summary>
+        public byte[] NextResumeSecret { get; set; } = Array.Empty<byte>();
+
+        /// <summary>The room the game last saw (diagnostics; the wire logs it, the
+        /// re-entry never trusts it).</summary>
+        public string? LastSeenRoomId { get; set; }
+
+        /// <summary>The state version the game's applier last applied — seeds the
+        /// re-baseline the re-entry's snapshot continues from.</summary>
+        public long LastAppliedStateVersion { get; set; }
     }
 
     /// <summary>One queue intent: which partition and what the match carries.</summary>

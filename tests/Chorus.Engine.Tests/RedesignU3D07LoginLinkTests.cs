@@ -410,6 +410,12 @@ public sealed class RedesignU3D07LoginLinkTests
             });
         }
 
+        public Task<LoginAnswer> ResumeAsync(ResumeIntent intent, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the login-link facts never resume.");
+
+        public Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the login-link facts never await a re-entry.");
+
         public Task CloseAsync()
         {
             Sequence.Add("close");

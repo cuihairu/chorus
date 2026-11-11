@@ -22,6 +22,19 @@ namespace Chorus.UnitySdk
         /// </summary>
         Task<ChorusSession> ConnectAsync(SdkConfiguration configuration, IPlatformAdapter adapter,
             CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Rotates a dropped session onto a fresh one (FIX-U3D-11): presents the session's
+        /// resume secret, answers a new session carrying a new secret to persist, and —
+        /// when the server's participation record still holds a round — the room's
+        /// re-entry rides <see cref="ChorusSession.AwaitRejoinedRoomAsync"/>, whose
+        /// snapshot rebaselines the game's applier. No platform adapter takes part: the
+        /// resume never re-redeems the launch credential, the old session's own secret
+        /// is the whole proof.
+        /// </summary>
+        Task<ChorusSession> ResumeAsync(SdkConfiguration configuration, string previousSessionId,
+            byte[] resumeCredential, string? lastSeenRoomId, long lastAppliedStateVersion,
+            CancellationToken cancellationToken);
     }
 
     /// <summary>One mounted, logged-in session. The session carries the login's answer and
@@ -31,8 +44,15 @@ namespace Chorus.UnitySdk
         /// <summary>The login's answer: the Chorus identities the mount was exchanged for.</summary>
         LoginAnswer Login { get; }
 
-        /// <summary>The gameplay binding the session started with (the mount's game attach).</summary>
-        string BindingId { get; }
+        /// <summary>The gameplay binding the session started with (the mount's game attach).
+        /// Null on a resumed session: the binding lives on the server's mount record, which
+        /// the resume's re-entry restores — the client never starts it again.</summary>
+        string? BindingId { get; }
+
+        /// <summary>The 32-byte secret that resumes this session: persist it next to
+        /// <see cref="Login"/>'s session id. The next resume presents it and answers a
+        /// session whose own secret replaces it — the rotation never reuses a secret.</summary>
+        byte[] ResumeCredential { get; }
 
         /// <summary>
         /// Subscribes to one room's authoritative stream and answers a pull-style stream the
@@ -60,6 +80,13 @@ namespace Chorus.UnitySdk
         /// <summary>Answers the atomic room entry: the committed room and the seat's room
         /// facts together — the match's room and the seat in it, never one without the other.</summary>
         Task<JoinedRoom> AwaitRoomAsync(CancellationToken cancellationToken);
+
+        /// <summary>Answers the room a resume re-entered (FIX-U3D-11): the server's
+        /// participation record names it, and the head snapshot behind the entry is the
+        /// re-baseline the game's applier continues from. A resume with nowhere to
+        /// return announces nothing on the wire, so the game bounds this wait itself —
+        /// a quiet budget means the round was already over.</summary>
+        Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken);
 
         /// <summary>Client-initiated session end: revokes the session and closes the transport.</summary>
         Task DisconnectAsync();

@@ -131,9 +131,20 @@ public sealed class RedesignU3D02UnitySdkContractTests
             [typeof(SdkConfiguration), typeof(IPlatformAdapter), typeof(CancellationToken)],
             connect.GetParameters().Select(p => p.ParameterType).ToList());
 
+        // The resume entry (FIX-U3D-11): the dropped session's own facts rotate onto a
+        // fresh session — no adapter takes part.
+        var resume = Assert.Single(typeof(IChorusSdk).GetMethods(), m => m.Name == "ResumeAsync");
+        Assert.Equal(typeof(Task<ChorusSession>), resume.ReturnType);
+        Assert.Equal(
+            [typeof(SdkConfiguration), typeof(string), typeof(byte[]), typeof(string), typeof(long),
+                typeof(CancellationToken)],
+            resume.GetParameters().Select(p => p.ParameterType).ToList());
+
         // The session: the login's answer, the gameplay binding, the two legs and the end.
         Assert.Equal(typeof(LoginAnswer), typeof(ChorusSession).GetProperty("Login")?.PropertyType);
         Assert.Equal(typeof(string), typeof(ChorusSession).GetProperty("BindingId")?.PropertyType);
+        // The resume rotation: every session carries the secret that resumes it.
+        Assert.Equal(typeof(byte[]), typeof(ChorusSession).GetProperty("ResumeCredential")?.PropertyType);
         var subscribe = Assert.Single(
             typeof(ChorusSession).GetMethods(), m => m.Name == "SubscribeAsync");
         Assert.Equal(typeof(Task<ISyncStream>), subscribe.ReturnType);
@@ -162,6 +173,13 @@ public sealed class RedesignU3D02UnitySdkContractTests
         Assert.Equal(
             [typeof(CancellationToken)],
             room.GetParameters().Select(p => p.ParameterType).ToList());
+        // The re-entry a resume lands (FIX-U3D-11): the participation record's room and
+        // the seat's facts, with the snapshot behind it as the re-baseline.
+        var rejoined = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "AwaitRejoinedRoomAsync");
+        Assert.Equal(typeof(Task<JoinedRoom>), rejoined.ReturnType);
+        Assert.Equal(
+            [typeof(CancellationToken)],
+            rejoined.GetParameters().Select(p => p.ParameterType).ToList());
         Assert.NotNull(typeof(ChorusSession).GetMethod("DisconnectAsync"));
 
         // The stream reads pull-style: Unity's main loop drives it, the SDK never calls

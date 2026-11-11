@@ -303,6 +303,59 @@ namespace Chorus.UnitySdk.Edge
             }
         }
 
+        /// <summary>Rotates onto a fresh session (FIX-U3D-11). The resume frame carries
+        /// both secrets — the old session's proof and the fresh one to register — and the
+        /// room facts as diagnostics; the edge answers loginReady (the login's shape) and
+        /// then, on its own word, re-enters the room the participation record names:
+        /// roomJoined first, then the head snapshot the declared baseline continues from.
+        /// The re-entry's answer is always a snapshot — a resume carries no tick.</summary>
+        public async Task<LoginAnswer> ResumeAsync(ResumeIntent intent, CancellationToken cancellationToken)
+        {
+            var socket = RequireSocket();
+            await SendAsync(socket, new ResumeFrame
+            {
+                ResumeOperationId = intent.ResumeOperationId,
+                PreviousSessionId = intent.PreviousSessionId,
+                ResumeCredential = intent.ResumeCredential,
+                NextResumeSecret = intent.NextResumeSecret,
+                LastSeenRoomId = intent.LastSeenRoomId,
+                LastAppliedStateVersion = intent.LastAppliedStateVersion,
+            }, cancellationToken).ConfigureAwait(false);
+            var json = await AwaitFrameAsync(socket, "loginReady", cancellationToken).ConfigureAwait(false);
+            var ready = Deserialize<LoginReadyFrame>(json);
+            return new LoginAnswer
+            {
+                StreamerId = ready.StreamerId,
+                SessionId = ready.SessionId,
+                SessionVersion = ready.SessionVersion,
+                AccessCredential = ready.AccessCredential,
+                AccessExpiresAtUnixMs = ready.AccessExpiresAt,
+                Duplicate = false,
+                ResumeRegistered = ready.ResumeRegistered,
+            };
+        }
+
+        /// <summary>Answers the room the resume re-entered: roomJoined arrives pushed,
+        /// without a match behind it, so the consumption reads the join directly — the
+        /// ticket and reservation facts a match entry carries are empty here. The room's
+        /// module identity is remembered the same way the match entry remembers it, so
+        /// the re-entry's snapshot stamps its frames whole.</summary>
+        public async Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken)
+        {
+            var socket = RequireSocket();
+            var joined = Deserialize<RoomJoinedFrame>(
+                await AwaitFrameAsync(socket, "roomJoined", cancellationToken).ConfigureAwait(false));
+            RememberRoomJoined(joined);
+            return new JoinedRoom
+            {
+                RoomId = joined.RoomId,
+                RoomEpoch = joined.RoomEpoch,
+                Participation = joined.Participation,
+                ModuleVersion = joined.ModuleVersion,
+                ConfigHash = joined.ConfigHash,
+            };
+        }
+
         /// <summary>Hands a receipt the stream read to its waiter, or drops it: an
         /// unwaited receipt is the Applied word of a send already answered — the durable
         /// proof of consumption is the consuming delta's effects, which the stream
@@ -714,6 +767,30 @@ namespace Chorus.UnitySdk.Edge
 
             [JsonPropertyName("gameId")]
             public string GameId { get; set; } = string.Empty;
+        }
+
+        private sealed class ResumeFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "resume";
+
+            [JsonPropertyName("resumeOperationId")]
+            public string ResumeOperationId { get; set; } = string.Empty;
+
+            [JsonPropertyName("previousSessionId")]
+            public string PreviousSessionId { get; set; } = string.Empty;
+
+            [JsonPropertyName("resumeCredential")]
+            public byte[] ResumeCredential { get; set; } = Array.Empty<byte>();
+
+            [JsonPropertyName("nextResumeSecret")]
+            public byte[] NextResumeSecret { get; set; } = Array.Empty<byte>();
+
+            [JsonPropertyName("lastSeenRoomId")]
+            public string? LastSeenRoomId { get; set; }
+
+            [JsonPropertyName("lastAppliedStateVersion")]
+            public long LastAppliedStateVersion { get; set; }
         }
 
         private sealed class LoginReadyFrame

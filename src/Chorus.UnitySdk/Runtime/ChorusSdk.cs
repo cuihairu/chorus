@@ -6,12 +6,13 @@ using System.Threading.Tasks;
 namespace Chorus.UnitySdk
 {
     /// <summary>
-    /// The login link (FIX-U3D-07): mounts through the platform adapter, opens the
-    /// transport, exchanges the mount for a session and starts the gameplay binding —
-    /// the exact sequence the server's own sample links drive, so the game code the
-    /// SDK serves is written once. Every session-security fact (login attempt id,
-    /// resume secret) is freshly generated per connect; the mount context is consumed
-    /// exactly once and never reused across connects.
+    /// The login link (FIX-U3D-07) and the resume link (FIX-U3D-11): mounts through the
+    /// platform adapter, opens the transport, exchanges the mount for a session and
+    /// starts the gameplay binding — the exact sequence the server's own sample links
+    /// drive, so the game code the SDK serves is written once. Every session-security
+    /// fact (login attempt id, resume secret) is freshly generated per connect and per
+    /// resume; the mount context is consumed exactly once and never reused across
+    /// connects, and a resume never touches the adapter at all.
     /// </summary>
     public sealed class ChorusSdk : IChorusSdk
     {
@@ -46,11 +47,14 @@ namespace Chorus.UnitySdk
             try
             {
                 await transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
-                var answer = await transport.LoginAsync(BuildIntent(mount), cancellationToken).ConfigureAwait(false);
+                var intent = BuildIntent(mount);
+                var answer = await transport.LoginAsync(intent, cancellationToken).ConfigureAwait(false);
                 var bindingId = await transport.StartGameplayAsync(
                     answer.AccessCredential, configuration.GameId, OperationId("mount"),
                     cancellationToken).ConfigureAwait(false);
-                return new SdkChorusSession(transport, answer, bindingId);
+                // The secret this login registered server-side is the session's own resume
+                // credential: the game persists it with the session id for the next resume.
+                return new SdkChorusSession(transport, answer, bindingId, intent.NextResumeSecret);
             }
             catch
             {
@@ -61,20 +65,68 @@ namespace Chorus.UnitySdk
             }
         }
 
-        private static LoginIntent BuildIntent(PlatformMount mount)
+        public async Task<ChorusSession> ResumeAsync(SdkConfiguration configuration, string previousSessionId,
+            byte[] resumeCredential, string? lastSeenRoomId, long lastAppliedStateVersion,
+            CancellationToken cancellationToken)
+        {
+            if (configuration is null) throw new ArgumentNullException(nameof(configuration));
+            Validate(configuration);
+            if (string.IsNullOrWhiteSpace(previousSessionId))
+                throw new ArgumentException("a resume names the session it resumes.", nameof(previousSessionId));
+            if (resumeCredential is null || resumeCredential.Length < 32)
+                throw new ArgumentException(
+                    "a resume presents the 32-byte secret the session was registered with.",
+                    nameof(resumeCredential));
+            if (lastAppliedStateVersion < 0)
+                throw new ArgumentException(
+                    "a resume states the version its applier last applied.", nameof(lastAppliedStateVersion));
+
+            var transport = _transportFactory(configuration)
+                ?? throw new InvalidOperationException("the transport factory answered nothing.");
+            try
+            {
+                await transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
+                var secret = NewSecret();
+                var answer = await transport.ResumeAsync(new ResumeIntent
+                {
+                    ResumeOperationId = "resume-" + Guid.NewGuid().ToString("N"),
+                    PreviousSessionId = previousSessionId,
+                    ResumeCredential = resumeCredential,
+                    NextResumeSecret = secret,
+                    LastSeenRoomId = string.IsNullOrWhiteSpace(lastSeenRoomId) ? null : lastSeenRoomId,
+                    LastAppliedStateVersion = lastAppliedStateVersion,
+                }, cancellationToken).ConfigureAwait(false);
+                // No gameplay start: the binding lives on the mount record and the resume's
+                // re-entry restores it server-side. The fresh secret replaces the one the
+                // game persisted — the rotation never reuses a secret.
+                return new SdkChorusSession(transport, answer, bindingId: null, secret);
+            }
+            catch
+            {
+                await transport.CloseAsync().ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        private static byte[] NewSecret()
         {
             var secret = new byte[32];
             using (var generator = RandomNumberGenerator.Create())
             {
                 generator.GetBytes(secret);
             }
+            return secret;
+        }
+
+        private static LoginIntent BuildIntent(PlatformMount mount)
+        {
             return new LoginIntent
             {
                 Platform = mount.Platform,
                 AppId = mount.AppId,
                 LaunchCredential = mount.SessionContextJson,
                 LoginAttemptId = "attempt-" + Guid.NewGuid().ToString("N"),
-                NextResumeSecret = secret,
+                NextResumeSecret = NewSecret(),
             };
         }
 

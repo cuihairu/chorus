@@ -6,23 +6,27 @@ namespace Chorus.UnitySdk
 {
     /// <summary>
     /// The session the login link answers: the login's identities, the started gameplay
-    /// binding, the room's sync stream and the intent send (FIX-U3D-09/10), and the
-    /// match leg. Disconnect closes the wire.
+    /// binding, the room's sync stream and the intent send (FIX-U3D-09/10), the match
+    /// leg, and the resume leg's re-entry (FIX-U3D-11). Disconnect closes the wire.
     /// </summary>
     internal sealed class SdkChorusSession : ChorusSession
     {
         private readonly IChorusTransport _transport;
 
-        internal SdkChorusSession(IChorusTransport transport, LoginAnswer login, string bindingId)
+        internal SdkChorusSession(IChorusTransport transport, LoginAnswer login, string? bindingId,
+            byte[] resumeCredential)
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             Login = login ?? throw new ArgumentNullException(nameof(login));
-            BindingId = bindingId ?? throw new ArgumentNullException(nameof(bindingId));
+            BindingId = bindingId;
+            ResumeCredential = resumeCredential ?? throw new ArgumentNullException(nameof(resumeCredential));
         }
 
         public LoginAnswer Login { get; }
 
-        public string BindingId { get; }
+        public string? BindingId { get; }
+
+        public byte[] ResumeCredential { get; }
 
         public Task<ISyncStream> SubscribeAsync(string roomId, long epoch, long lastAppliedTick,
             long lastAppliedStateVersion, CancellationToken cancellationToken) =>
@@ -55,6 +59,9 @@ namespace Chorus.UnitySdk
 
         public Task<JoinedRoom> AwaitRoomAsync(CancellationToken cancellationToken) =>
             _transport.AwaitRoomAsync(cancellationToken);
+
+        public Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken) =>
+            _transport.AwaitRejoinedRoomAsync(cancellationToken);
 
         public Task DisconnectAsync() => _transport.CloseAsync();
     }

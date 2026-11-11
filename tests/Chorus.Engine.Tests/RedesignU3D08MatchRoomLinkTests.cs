@@ -218,6 +218,12 @@ public sealed class RedesignU3D08MatchRoomLinkTests
         public Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("the match-link facts never send intents.");
 
+        public Task<LoginAnswer> ResumeAsync(ResumeIntent intent, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the match-link facts never resume.");
+
+        public Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the match-link facts never await a re-entry.");
+
         public Task CloseAsync() => Task.CompletedTask;
     }
 }
