@@ -153,12 +153,17 @@ public sealed class RedesignRoundInputStore(string connectionString, Action? cra
             bindings[bindingId] = (reader.IsDBNull(0) ? null : reader.GetString(0), reader.GetInt64(1));
         }
 
-        // Pass 3: lock the events themselves, skipping anything routed concurrently.
+        // Pass 3: lock the events themselves, skipping anything routed concurrently (audit
+        // P0-3). Pass 2's binding locks already serialize any two passes that share an event
+        // (an event's delivery always follows its own binding's lock), so this claim is
+        // hardening, not the load-bearing wall: it makes the safety local to the event row
+        // itself — a pass can never build a delivery row on a stale read of an event another
+        // pass holds, whatever future edits do to the lock order around it.
         var locked = new List<(string EventId, string BindingId, string PayloadText)>();
         await using (var events = new NpgsqlCommand("""
             SELECT event_id,binding_id,payload::text FROM input.event
             WHERE event_id=ANY(@ids) AND attributed_room_id IS NULL AND disposition='Attributed'
-            ORDER BY event_id
+            ORDER BY event_id FOR UPDATE SKIP LOCKED
             """, connection, transaction))
         {
             events.Parameters.AddWithValue("ids", candidates.Select(candidate => candidate.EventId).ToArray());

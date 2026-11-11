@@ -229,6 +229,100 @@ public sealed class RedesignRoundInputStoreTests
     }
 
     [Fact]
+    public async Task ConcurrentRoutingPassesNeverDoubleDeliverOrRollBack()
+    {
+        // Audit P0-3's surface: two overlapping input.route passes over the same candidate
+        // window. The binding locks of pass 2 serialize any two passes that share an event,
+        // and pass 3's skip-locked claim keeps that safety local to the event row itself —
+        // so the union of both results delivers every event exactly once, no pass rolls back
+        // on input.delivery's (event_id, consumer_scope) primary key, and the window is
+        // empty afterwards.
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var control = new RedesignControlStore(database.ConnectionString);
+        var roomStore = new RedesignRoomStore(database.ConnectionString);
+        var eventStore = new RedesignInputEventStore(database.ConnectionString);
+        var inputStore = new RedesignRoundInputStore(database.ConnectionString);
+
+        var (p1, b1, _) = await MountAsync(identityStore, bindingStore, "live-key-cc1");
+        var (p2, b2, _) = await MountAsync(identityStore, bindingStore, "live-key-cc2");
+        var claim1 = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-cc1", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-cc1", "gs-1", claim1.Epoch,
+            [new RoundParticipant(b1.BindingId, p1.StreamerId, "Host")],
+            "1.0.0", "cfg-1", "pkg-1", "start-cc1");
+        var claim2 = await control.ClaimOwnershipAsync("tenant-a", "game-a", "room", "room-cc2", "gs-1", 60);
+        await roomStore.StartRoundAsync("tenant-a", "game-a", "room-cc2", "gs-1", claim2.Epoch,
+            [new RoundParticipant(b2.BindingId, p2.StreamerId, "Host")],
+            "1.0.0", "cfg-1", "pkg-1", "start-cc2");
+        await eventStore.IngestAsync("simulator", "app-1", "batch-cc1",
+            Enumerable.Range(1, 20).Select(i => new PlatformEventInput($"gift-c1-{i}",
+                RedesignInputEventStore.Durable, "live-key-cc1",
+                $$"""{"kind":"gift","amount":{{i}}}""")).ToArray());
+        await eventStore.IngestAsync("simulator", "app-1", "batch-cc2",
+            Enumerable.Range(1, 20).Select(i => new PlatformEventInput($"gift-c2-{i}",
+                RedesignInputEventStore.Durable, "live-key-cc2",
+                $$"""{"kind":"gift","amount":{{i}}}""")).ToArray());
+
+        var passes = await Task.WhenAll(
+            inputStore.RouteEventsAsync("simulator", "app-1", "route-cc-a", 500),
+            inputStore.RouteEventsAsync("simulator", "app-1", "route-cc-b", 500));
+
+        var routed = passes.SelectMany(pass => pass.Events)
+            .Where(item => item.Disposition == RedesignRoundInputStore.Routed).ToArray();
+        Assert.Equal(40, routed.Length);
+        Assert.Equal(40, routed.Select(item => item.EventId).Distinct().Count());
+        Assert.All(routed, item =>
+        {
+            Assert.True(item.Sequence is > 0);
+            Assert.True(item.RoomId is "room-cc1" or "room-cc2");
+        });
+        // The event id in a routing reply is the internal id, not the source dedup key, so
+        // each room's accepted set is pinned against the store's own attribution: room-cc1's
+        // deliveries are exactly its binding's twenty events, room-cc2's likewise.
+        foreach (var room in (string[])["room-cc1", "room-cc2"])
+        {
+            var roomItems = routed.Where(item => item.RoomId == room).ToArray();
+            Assert.Equal(20, roomItems.Length);
+            Assert.Equal(Enumerable.Range(1, 20).Select(i => (long)i).Order().ToArray(),
+                roomItems.Select(item => item.Sequence!.Value).Order().ToArray());
+        }
+
+        // One delivery per event, the cursors stand past the last sequence, and a follow-up
+        // pass finds nothing: the window drained exactly once.
+        await using (var connection = new NpgsqlConnection(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using (var deliveries = new NpgsqlCommand("SELECT count(*) FROM input.delivery", connection))
+                Assert.Equal(40L, Convert.ToInt64(await deliveries.ExecuteScalarAsync()));
+            await using (var doubled = new NpgsqlCommand("""
+                SELECT count(*) FROM (SELECT event_id FROM input.delivery GROUP BY event_id HAVING count(*) > 1) AS d
+                """, connection))
+                Assert.Equal(0L, Convert.ToInt64(await doubled.ExecuteScalarAsync()));
+            foreach (var (room, prefix) in ((string, string)[]) [("room-cc1", "gift-c1-"), ("room-cc2", "gift-c2-")])
+                await using (var attribution = new NpgsqlCommand("""
+                    SELECT count(*) FROM input.delivery AS d
+                    JOIN input.event AS e ON e.event_id = d.event_id
+                    WHERE d.consumer_scope = @scope AND e.source_dedup_key LIKE @prefix
+                    """, connection))
+                {
+                    attribution.Parameters.AddWithValue("scope", "room:" + room);
+                    attribution.Parameters.AddWithValue("prefix", prefix + "%");
+                    Assert.Equal(20L, Convert.ToInt64(await attribution.ExecuteScalarAsync()));
+                }
+            foreach (var room in (string[])["room-cc1", "room-cc2"])
+                await using (var cursor = new NpgsqlCommand(
+                    "SELECT next_delivery_sequence FROM input.cursor WHERE consumer_scope=@scope", connection))
+                {
+                    cursor.Parameters.AddWithValue("scope", "room:" + room);
+                    Assert.Equal(21L, Convert.ToInt64(await cursor.ExecuteScalarAsync()));
+                }
+        }
+        var followUp = await inputStore.RouteEventsAsync("simulator", "app-1", "route-cc-c", 500);
+        Assert.Empty(followUp.Events);
+    }
+
+    [Fact]
     public async Task ClientInputValidatesSessionAndParticipationAndIsIdempotent()
     {
         await using var database = await TemporaryDatabase.CreateAsync();
