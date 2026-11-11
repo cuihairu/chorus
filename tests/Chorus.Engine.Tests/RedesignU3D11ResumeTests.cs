@@ -431,6 +431,12 @@ public sealed class RedesignU3D11ResumeTests
                 ConfigHash = "cfg-1",
             });
 
+        public Task LeaveRoundAsync(string roomId, string operationId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the resume facts never leave a round.");
+
+        public Task LogoutAsync(string operationId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the resume facts never log out.");
+
         public Task CloseAsync()
         {
             Sequence.Add("close");

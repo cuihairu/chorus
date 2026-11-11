@@ -85,10 +85,42 @@ namespace Chorus.UnitySdk
         /// participation record names it, and the head snapshot behind the entry is the
         /// re-baseline the game's applier continues from. A resume with nowhere to
         /// return announces nothing on the wire, so the game bounds this wait itself —
-        /// a quiet budget means the round was already over.</summary>
+        /// a quiet budget means the round was already over. A seat whose round stands
+        /// parked (FIX-U3D-12) gets the park notice as this call's refusal instead: an
+        /// <see cref="EdgeProtocolException"/> coded roomSuspended, carrying the reason
+        /// and the epoch the recovery will land on — the game re-enters on a later
+        /// resume once the round runs again.</summary>
         Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken);
 
-        /// <summary>Client-initiated session end: revokes the session and closes the transport.</summary>
+        /// <summary>Re-declares the gameplay binding on the open wire (FIX-U3D-12): the
+        /// startGameplay the login already ran, sent again. It is the resume-ready
+        /// declaration (FIX-SYNC-08): while the seat's own round stands paused, the
+        /// mount refusal the call raises IS the readiness report — the store counts the
+        /// seat and the coordinator resumes the round once enough seats stand ready.
+        /// The same call re-opens the door after a release: it answers a fresh binding
+        /// and the wire re-enters any room the mount holds (the entry rides
+        /// <see cref="AwaitRejoinedRoomAsync"/>). The refusal's code is the wire's one
+        /// word for every precondition failure; the game tells a park from a
+        /// displacement by the stream it was reading.</summary>
+        Task<string> RedeclareGameplayAsync(string gameId, CancellationToken cancellationToken);
+
+        /// <summary>Withdraws the seat from one round — the normal exit from play
+        /// (FIX-U3D-12). The wire acknowledges no leave: the call completes when the
+        /// frame is sent, and the room's frames for this seat stop. A refusal (a room
+        /// this mount is not in) names the operation id on the stream and ends it.</summary>
+        Task LeaveRoundAsync(string roomId, CancellationToken cancellationToken);
+
+        /// <summary>Ends the session for good — the normal exit from the service
+        /// (FIX-U3D-12): the logout revokes the session durably before the gateway
+        /// closes, and a later resume with the held secret is refused as revoked. The
+        /// wire acknowledges no logout; the SDK sends the frame and closes its own side.
+        /// A mere <see cref="DisconnectAsync"/> keeps the session resumable — this one
+        /// does not.</summary>
+        Task LogoutAsync(CancellationToken cancellationToken);
+
+        /// <summary>Closes the wire. The session itself survives server-side: a later
+        /// resume with the held secret rotates onto a fresh one (FIX-U3D-11). The session
+        /// end that cannot be resumed is <see cref="LogoutAsync"/>.</summary>
         Task DisconnectAsync();
     }
 

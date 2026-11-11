@@ -308,7 +308,9 @@ namespace Chorus.UnitySdk.Edge
         /// room facts as diagnostics; the edge answers loginReady (the login's shape) and
         /// then, on its own word, re-enters the room the participation record names:
         /// roomJoined first, then the head snapshot the declared baseline continues from.
-        /// The re-entry's answer is always a snapshot — a resume carries no tick.</summary>
+        /// The re-entry's answer is always a snapshot — a resume carries no tick. A seat
+        /// whose round stands parked gets the park notice instead of a join; that answer
+        /// is <see cref="AwaitRejoinedRoomAsync"/>'s to surface.</summary>
         public async Task<LoginAnswer> ResumeAsync(ResumeIntent intent, CancellationToken cancellationToken)
         {
             var socket = RequireSocket();
@@ -339,12 +341,43 @@ namespace Chorus.UnitySdk.Edge
         /// without a match behind it, so the consumption reads the join directly — the
         /// ticket and reservation facts a match entry carries are empty here. The room's
         /// module identity is remembered the same way the match entry remembers it, so
-        /// the re-entry's snapshot stamps its frames whole.</summary>
+        /// the re-entry's snapshot stamps its frames whole. A seat whose round stands
+        /// parked gets the park notice instead of a join: the wire's one roomSuspended
+        /// word is the re-entry's refusal, raised here with the reason and the epoch the
+        /// recovery will land on — the room's story on this wire ends there, and the
+        /// game's way back is a later resume once the round runs again.</summary>
         public async Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken)
         {
             var socket = RequireSocket();
-            var joined = Deserialize<RoomJoinedFrame>(
-                await AwaitFrameAsync(socket, "roomJoined", cancellationToken).ConfigureAwait(false));
+            while (true)
+            {
+                var text = TakeUnclaimed("roomJoined");
+                if (text is not null) return JoinedRoomFrom(text);
+                text = await ReceiveTextAsync(socket, cancellationToken).ConfigureAwait(false);
+                var type = FrameType(text);
+                switch (type)
+                {
+                    case "roomJoined":
+                        return JoinedRoomFrom(text);
+                    case "roomSuspended":
+                        var suspended = Deserialize<RoomSuspendedWireFrame>(text);
+                        throw new EdgeProtocolException("roomSuspended",
+                            suspended.Reason ?? "the seat's round stands parked.", suspended.RecoveryAttempt);
+                    case "error":
+                        var error = Deserialize<ErrorFrame>(text);
+                        throw new EdgeProtocolException(error.Code, error.Message);
+                    default:
+                        // Other lanes' frames (pongs, stale match facts) ride past for
+                        // the link that owns them.
+                        _unclaimed.Enqueue((type, text));
+                        continue;
+                }
+            }
+        }
+
+        private JoinedRoom JoinedRoomFrom(string json)
+        {
+            var joined = Deserialize<RoomJoinedFrame>(json);
             RememberRoomJoined(joined);
             return new JoinedRoom
             {
@@ -354,6 +387,34 @@ namespace Chorus.UnitySdk.Edge
                 ModuleVersion = joined.ModuleVersion,
                 ConfigHash = joined.ConfigHash,
             };
+        }
+
+        /// <summary>Withdraws the seat from one round (FIX-U3D-12). The wire answers no
+        /// leave — the call completes when the frame is sent; the room's frames for this
+        /// connection stop as the fanout drops the seat. A refusal (a room this mount is
+        /// not in) arrives on the stream, naming the operation id.</summary>
+        public async Task LeaveRoundAsync(string roomId, string operationId, CancellationToken cancellationToken)
+        {
+            var socket = RequireSocket();
+            await SendAsync(socket, new LeaveRoundFrame
+            {
+                OperationId = operationId,
+                RoomId = roomId,
+            }, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>Ends the session (FIX-U3D-12): the logout's revocation is durable
+        /// before the gateway closes — a resume with the held secret is refused as
+        /// revoked afterwards. No ack exists; the SDK sends the frame and closes its own
+        /// side (whichever close lands first, both are the normal close).</summary>
+        public async Task LogoutAsync(string operationId, CancellationToken cancellationToken)
+        {
+            var socket = RequireSocket();
+            await SendAsync(socket, new LogoutFrame
+            {
+                OperationId = operationId,
+            }, cancellationToken).ConfigureAwait(false);
+            await CloseAsync().ConfigureAwait(false);
         }
 
         /// <summary>Hands a receipt the stream read to its waiter, or drops it: an
@@ -526,7 +587,8 @@ namespace Chorus.UnitySdk.Edge
         /// downlink while it is live; supersession by a newer subscribe ends that
         /// ownership visibly. Frames are classified as they arrive: the four sync frames
         /// map onto the leaf's shapes and deliver, a re-announced roomJoined refreshes
-        /// the room's module identity, a command receipt resolves its waiting send
+        /// the room's module identity, the park notice delivers as the subscription's
+        /// last frame (FIX-U3D-12), a command receipt resolves its waiting send
         /// (FIX-U3D-10), refusals and displacement surface as exceptions, and every
         /// other lane's frames (pongs, straggler match facts) ride past. A cancelled
         /// advance aborts the wire's read, as ClientWebSocket's cancellation does;
@@ -536,7 +598,7 @@ namespace Chorus.UnitySdk.Edge
             private readonly EdgeChorusTransport _transport;
             private readonly string _roomId;
             private long _lastSeenVersion;
-            private bool _resultDelivered;
+            private bool _terminal;
 
             public EdgeSyncStream(EdgeChorusTransport transport, string roomId)
             {
@@ -551,11 +613,12 @@ namespace Chorus.UnitySdk.Edge
                 if (!_transport.IsLive(this))
                     throw new InvalidOperationException(
                         "this subscription was superseded by a newer subscribe; its reads belong to the new stream.");
-                if (_resultDelivered)
+                if (_terminal)
                 {
-                    // The round's story is told: the terminal frame was the last one this
-                    // subscription carries. A recovered room returns on a bumped epoch,
-                    // which is a new subscribe, not a frame behind this one.
+                    // The room's story is told: the terminal frame — a frozen result or a
+                    // park notice — was the last one this subscription carries. A recovered
+                    // room returns on a bumped epoch, which is a new subscribe, not a frame
+                    // behind this one.
                     return false;
                 }
                 while (true)
@@ -575,10 +638,19 @@ namespace Chorus.UnitySdk.Edge
                             return true;
                         case "roundResult":
                             Current = ResultFrom(json);
-                            _resultDelivered = true;
+                            _terminal = true;
                             return true;
                         case "resyncRequired":
                             Current = ResyncFrom(json);
+                            return true;
+                        case "roomSuspended":
+                            // The room parked itself visibly (a pause, a fault — a business
+                            // pause is not a fault, both surface here). This ends the room's
+                            // story on this stream like a terminal result: the park notice is
+                            // the last frame, and the room's way back — if it returns — is a
+                            // bumped epoch the game re-enters through the resume leg.
+                            Current = SuspendedFrom(json);
+                            _terminal = true;
                             return true;
                         case "roomJoined":
                             _transport.RememberRoomJoined(Deserialize<RoomJoinedFrame>(json));
@@ -602,7 +674,6 @@ namespace Chorus.UnitySdk.Edge
                         case "loginReady":
                         case "gameplayStatus":
                         case "matchStatus":
-                        case "roomSuspended":
                             // Other lanes' frames: diagnostics and links before and after
                             // the sync stream.
                             continue;
@@ -719,6 +790,20 @@ namespace Chorus.UnitySdk.Edge
                         RoomId = frame.RoomId,
                         CurrentEpoch = frame.RoomEpoch,
                         Reason = frame.Reason ?? string.Empty,
+                    },
+                };
+            }
+
+            private SyncFrame SuspendedFrom(string json)
+            {
+                var frame = Deserialize<RoomSuspendedWireFrame>(json);
+                return new SyncFrame
+                {
+                    Kind = SyncFrameKind.Suspended,
+                    Suspended = new RoomSuspendedFrame
+                    {
+                        Reason = frame.Reason ?? string.Empty,
+                        RecoveryAttempt = frame.RecoveryAttempt,
                     },
                 };
             }
@@ -997,6 +1082,15 @@ namespace Chorus.UnitySdk.Edge
             public string? Reason { get; set; }
         }
 
+        private sealed class RoomSuspendedWireFrame
+        {
+            [JsonPropertyName("reason")]
+            public string? Reason { get; set; }
+
+            [JsonPropertyName("recoveryAttempt")]
+            public long RecoveryAttempt { get; set; }
+        }
+
         private sealed class SessionReplacedFrame
         {
             [JsonPropertyName("reason")]
@@ -1035,18 +1129,44 @@ namespace Chorus.UnitySdk.Edge
             [JsonPropertyName("receiptId")]
             public string ReceiptId { get; set; } = string.Empty;
         }
+
+        private sealed class LeaveRoundFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "leaveRound";
+
+            [JsonPropertyName("operationId")]
+            public string OperationId { get; set; } = string.Empty;
+
+            [JsonPropertyName("roomId")]
+            public string RoomId { get; set; } = string.Empty;
+        }
+
+        private sealed class LogoutFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "logout";
+
+            [JsonPropertyName("operationId")]
+            public string OperationId { get; set; } = string.Empty;
+        }
     }
 
     /// <summary>A visible refusal from the edge: the code is the protocol's own error
     /// vocabulary, the message short and safe to show.</summary>
     public sealed class EdgeProtocolException : InvalidOperationException
     {
-        public EdgeProtocolException(string code, string message) : base(message)
+        public EdgeProtocolException(string code, string message, long recoveryAttempt = 0) : base(message)
         {
             Code = code;
+            RecoveryAttempt = recoveryAttempt;
         }
 
         /// <summary>The edge's error code for this refusal.</summary>
         public string Code { get; }
+
+        /// <summary>The epoch a parked room's recovery will land on — set only when this
+        /// refusal is the re-entry's park notice (the roomSuspended answer).</summary>
+        public long RecoveryAttempt { get; }
     }
 }

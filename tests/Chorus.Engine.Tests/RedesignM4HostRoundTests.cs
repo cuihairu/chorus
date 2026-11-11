@@ -839,8 +839,10 @@ public sealed class RedesignM4HostRoundTests
     }
 
     /// <summary>Hand-starts a round whose module fails deterministically at tick 2 (the
-    /// documented fault seam) and parks the room after its strikes. Returns the epoch.</summary>
-    private static async Task<long> StartFailingRoundAsync(
+    /// documented fault seam) and parks the room after its strikes. Returns the epoch.
+    /// Shared with the U3D-12 lifecycle facts, which watch the park arrive on the SDK's
+    /// stream.</summary>
+    internal static async Task<long> StartFailingRoundAsync(
         RedesignM0HostTests.HostEnvironment environment, string roomId, string bindingId,
         string streamerId)
     {

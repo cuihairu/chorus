@@ -416,6 +416,12 @@ public sealed class RedesignU3D07LoginLinkTests
         public Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken) =>
             throw new InvalidOperationException("the login-link facts never await a re-entry.");
 
+        public Task LeaveRoundAsync(string roomId, string operationId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the login-link facts never leave a round.");
+
+        public Task LogoutAsync(string operationId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the login-link facts never log out.");
+
         public Task CloseAsync()
         {
             Sequence.Add("close");

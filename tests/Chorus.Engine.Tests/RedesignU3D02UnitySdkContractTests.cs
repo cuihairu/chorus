@@ -79,16 +79,19 @@ public sealed class RedesignU3D02UnitySdkContractTests
                 $"vs server {Describe(expected)} (deliberately absent: {string.Join(", ", missing)})");
         }
 
-        // The union frame carries the oneof's members plus the kind discriminator.
+        // The union frame carries the oneof's members plus the kind discriminator —
+        // and the park notice (FIX-U3D-12), the edge wire's own lane member, named
+        // deliberately beside the four SyncMessage mirrors.
         var union = PublicProperties(typeof(SyncFrame));
         Assert.Equal(
-            ["Delta", "Kind", "ResyncRequired", "RoundResult", "Snapshot"],
+            ["Delta", "Kind", "ResyncRequired", "RoundResult", "Snapshot", "Suspended"],
             union);
         // The kind strings are the wire's own names, pinned so a rename cannot slip.
         Assert.Equal("snapshot", SyncFrameKind.Snapshot);
         Assert.Equal("delta", SyncFrameKind.Delta);
         Assert.Equal("round_result", SyncFrameKind.RoundResult);
         Assert.Equal("resync_required", SyncFrameKind.ResyncRequired);
+        Assert.Equal("roomSuspended", SyncFrameKind.Suspended);
     }
 
     [Fact]
@@ -180,6 +183,23 @@ public sealed class RedesignU3D02UnitySdkContractTests
         Assert.Equal(
             [typeof(CancellationToken)],
             rejoined.GetParameters().Select(p => p.ParameterType).ToList());
+        // The lifecycle legs (FIX-U3D-12): the resume-ready redeclaration, the round
+        // leave, and the logout that ends the session for good.
+        var redeclare = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "RedeclareGameplayAsync");
+        Assert.Equal(typeof(Task<string>), redeclare.ReturnType);
+        Assert.Equal(
+            [typeof(string), typeof(CancellationToken)],
+            redeclare.GetParameters().Select(p => p.ParameterType).ToList());
+        var leave = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "LeaveRoundAsync");
+        Assert.Equal(typeof(Task), leave.ReturnType);
+        Assert.Equal(
+            [typeof(string), typeof(CancellationToken)],
+            leave.GetParameters().Select(p => p.ParameterType).ToList());
+        var logout = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "LogoutAsync");
+        Assert.Equal(typeof(Task), logout.ReturnType);
+        Assert.Equal(
+            [typeof(CancellationToken)],
+            logout.GetParameters().Select(p => p.ParameterType).ToList());
         Assert.NotNull(typeof(ChorusSession).GetMethod("DisconnectAsync"));
 
         // The stream reads pull-style: Unity's main loop drives it, the SDK never calls

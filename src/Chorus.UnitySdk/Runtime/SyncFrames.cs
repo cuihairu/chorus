@@ -5,7 +5,10 @@ using System.Threading.Tasks;
 
 namespace Chorus.UnitySdk
 {
-    /// <summary>The sync frame kinds the stream can carry (the SyncMessage oneof members).</summary>
+    /// <summary>The sync frame kinds the stream can carry: the SyncMessage oneof members,
+    /// plus the edge wire's own lane frame for a parked room (that lane is the edge
+    /// transport's vocabulary, not a SyncMessage member — the parity pins name it
+    /// deliberately).</summary>
     public static class SyncFrameKind
     {
         /// <summary>A full snapshot the client rebaselines on.</summary>
@@ -19,6 +22,12 @@ namespace Chorus.UnitySdk
 
         /// <summary>The stream cannot continue on the subscriber's epoch; resubscribe.</summary>
         public const string ResyncRequired = "resync_required";
+
+        /// <summary>The room parked itself visibly (a pause, a fault): the chain's story
+        /// ends here and the room returns — if it returns — on the bumped epoch named by
+        /// the recovery attempt. The game handles this frame itself; the applier never
+        /// sees it.</summary>
+        public const string Suspended = "roomSuspended";
     }
 
     /// <summary>
@@ -42,6 +51,10 @@ namespace Chorus.UnitySdk
 
         /// <summary>The resync order, when <see cref="Kind"/> is resync_required.</summary>
         public ResyncRequiredFrame? ResyncRequired { get; set; }
+
+        /// <summary>The park notice, when <see cref="Kind"/> is roomSuspended — the lane
+        /// member of the edge wire, delivered as the subscription's last frame.</summary>
+        public RoomSuspendedFrame? Suspended { get; set; }
     }
 
     /// <summary>A full snapshot. Every message carries the room identity the client validates:
@@ -110,6 +123,20 @@ namespace Chorus.UnitySdk
         public string RoomId { get; set; } = string.Empty;
         public long CurrentEpoch { get; set; }
         public string Reason { get; set; } = string.Empty;
+    }
+
+    /// <summary>The park notice (the edge wire's roomSuspended lane): the room parked
+    /// itself visibly instead of dying — a pause, a fault. A business pause is not a
+    /// fault; both surface here. The recovery attempt is the room's epoch: every
+    /// recovery lands on a bumped one, and the game's way back in is the resume leg it
+    /// already holds (reconnect, re-enter, resubscribe at the new epoch).</summary>
+    public sealed class RoomSuspendedFrame
+    {
+        /// <summary>Why the room's stream ended, as the edge phrased it.</summary>
+        public string Reason { get; set; } = string.Empty;
+
+        /// <summary>The epoch the recovery will land on.</summary>
+        public long RecoveryAttempt { get; set; }
     }
 
     /// <summary>One client intent on its way into the room inbox — a command the authoritative

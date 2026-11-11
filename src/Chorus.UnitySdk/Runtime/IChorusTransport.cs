@@ -63,8 +63,18 @@ namespace Chorus.UnitySdk
 
         /// <summary>Answers the room the resume re-entered: the server's participation
         /// record names it, the client's last-seen room was only diagnostics. A resume
-        /// with nowhere to return announces nothing — the caller bounds this wait.</summary>
+        /// with nowhere to return announces nothing — the caller bounds this wait. A
+        /// seat whose round stands parked gets the park notice as this call's refusal:
+        /// EdgeProtocolException coded roomSuspended, carrying the recovery's epoch.</summary>
         Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken);
+
+        /// <summary>Withdraws the seat from one round (FIX-U3D-12). The wire
+        /// acknowledges no leave; a refusal names the operation id on the stream.</summary>
+        Task LeaveRoundAsync(string roomId, string operationId, CancellationToken cancellationToken);
+
+        /// <summary>Ends the session: the logout revokes durably before the gateway
+        /// closes, and the SDK closes its own side after the send (no ack exists).</summary>
+        Task LogoutAsync(string operationId, CancellationToken cancellationToken);
 
         /// <summary>Closes the wire. A closed transport answers nothing further.</summary>
         Task CloseAsync();

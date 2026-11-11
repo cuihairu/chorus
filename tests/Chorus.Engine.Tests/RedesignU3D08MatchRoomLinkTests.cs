@@ -224,6 +224,12 @@ public sealed class RedesignU3D08MatchRoomLinkTests
         public Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken) =>
             throw new InvalidOperationException("the match-link facts never await a re-entry.");
 
+        public Task LeaveRoundAsync(string roomId, string operationId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the match-link facts never leave a round.");
+
+        public Task LogoutAsync(string operationId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the match-link facts never log out.");
+
         public Task CloseAsync() => Task.CompletedTask;
     }
 }

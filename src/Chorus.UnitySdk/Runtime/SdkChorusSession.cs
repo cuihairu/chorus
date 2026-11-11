@@ -7,7 +7,9 @@ namespace Chorus.UnitySdk
     /// <summary>
     /// The session the login link answers: the login's identities, the started gameplay
     /// binding, the room's sync stream and the intent send (FIX-U3D-09/10), the match
-    /// leg, and the resume leg's re-entry (FIX-U3D-11). Disconnect closes the wire.
+    /// leg, the resume leg's re-entry (FIX-U3D-11), and the lifecycle legs — the
+    /// resume-ready redeclaration, the round leave and the logout (FIX-U3D-12).
+    /// Disconnect closes the wire; logout ends the session.
     /// </summary>
     internal sealed class SdkChorusSession : ChorusSession
     {
@@ -62,6 +64,24 @@ namespace Chorus.UnitySdk
 
         public Task<JoinedRoom> AwaitRejoinedRoomAsync(CancellationToken cancellationToken) =>
             _transport.AwaitRejoinedRoomAsync(cancellationToken);
+
+        public Task<string> RedeclareGameplayAsync(string gameId, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(gameId))
+                throw new ArgumentException("A redeclaration names the game it mounts.", nameof(gameId));
+            return _transport.StartGameplayAsync(Login.AccessCredential, gameId,
+                "attach-" + Guid.NewGuid().ToString("N"), cancellationToken);
+        }
+
+        public Task LeaveRoundAsync(string roomId, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(roomId))
+                throw new ArgumentException("A leave names the room it withdraws from.", nameof(roomId));
+            return _transport.LeaveRoundAsync(roomId, "leave-" + Guid.NewGuid().ToString("N"), cancellationToken);
+        }
+
+        public Task LogoutAsync(CancellationToken cancellationToken) =>
+            _transport.LogoutAsync("logout-" + Guid.NewGuid().ToString("N"), cancellationToken);
 
         public Task DisconnectAsync() => _transport.CloseAsync();
     }
