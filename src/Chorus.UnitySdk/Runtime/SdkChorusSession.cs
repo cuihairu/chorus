@@ -34,6 +34,21 @@ namespace Chorus.UnitySdk
             throw new InvalidOperationException(
                 "the intent link is not wired yet: intent send arrives with FIX-U3D-10.");
 
+        public Task<MatchTicket> JoinMatchAsync(string queueType, string? options,
+            CancellationToken cancellationToken) =>
+            _transport.JoinMatchAsync(new JoinMatchIntent
+            {
+                OperationId = "join-" + Guid.NewGuid().ToString("N"),
+                QueueType = queueType,
+                Options = options ?? string.Empty,
+            }, cancellationToken);
+
+        public Task<MatchTicket> CancelMatchAsync(string ticketId, CancellationToken cancellationToken) =>
+            _transport.CancelMatchAsync("cancel-" + Guid.NewGuid().ToString("N"), ticketId, cancellationToken);
+
+        public Task<JoinedRoom> AwaitRoomAsync(CancellationToken cancellationToken) =>
+            _transport.AwaitRoomAsync(cancellationToken);
+
         public Task DisconnectAsync() => _transport.CloseAsync();
     }
 }

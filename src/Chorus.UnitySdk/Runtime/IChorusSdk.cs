@@ -49,6 +49,18 @@ namespace Chorus.UnitySdk
         /// sequence (or the duplicate flag for a retried command id).</summary>
         Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken);
 
+        /// <summary>Enqueues the mount's ticket into one match partition and answers the
+        /// ticket the queue acknowledged — the match itself rides <see cref="AwaitRoomAsync"/>.</summary>
+        Task<MatchTicket> JoinMatchAsync(string queueType, string? options,
+            CancellationToken cancellationToken);
+
+        /// <summary>Withdraws the ticket and answers its terminal state.</summary>
+        Task<MatchTicket> CancelMatchAsync(string ticketId, CancellationToken cancellationToken);
+
+        /// <summary>Answers the atomic room entry: the committed room and the seat's room
+        /// facts together — the match's room and the seat in it, never one without the other.</summary>
+        Task<JoinedRoom> AwaitRoomAsync(CancellationToken cancellationToken);
+
         /// <summary>Client-initiated session end: revokes the session and closes the transport.</summary>
         Task DisconnectAsync();
     }

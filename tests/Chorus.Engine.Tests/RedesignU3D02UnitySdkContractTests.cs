@@ -145,6 +145,23 @@ public sealed class RedesignU3D02UnitySdkContractTests
         Assert.Equal(
             [typeof(ClientIntent), typeof(CancellationToken)],
             send.GetParameters().Select(p => p.ParameterType).ToList());
+        // The match and room-entry leg (FIX-U3D-08): queue, withdraw, and the atomic
+        // entry answered only when the committed room and the seat's facts are together.
+        var join = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "JoinMatchAsync");
+        Assert.Equal(typeof(Task<MatchTicket>), join.ReturnType);
+        Assert.Equal(
+            [typeof(string), typeof(string), typeof(CancellationToken)],
+            join.GetParameters().Select(p => p.ParameterType).ToList());
+        var cancel = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "CancelMatchAsync");
+        Assert.Equal(typeof(Task<MatchTicket>), cancel.ReturnType);
+        Assert.Equal(
+            [typeof(string), typeof(CancellationToken)],
+            cancel.GetParameters().Select(p => p.ParameterType).ToList());
+        var room = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "AwaitRoomAsync");
+        Assert.Equal(typeof(Task<JoinedRoom>), room.ReturnType);
+        Assert.Equal(
+            [typeof(CancellationToken)],
+            room.GetParameters().Select(p => p.ParameterType).ToList());
         Assert.NotNull(typeof(ChorusSession).GetMethod("DisconnectAsync"));
 
         // The stream reads pull-style: Unity's main loop drives it, the SDK never calls

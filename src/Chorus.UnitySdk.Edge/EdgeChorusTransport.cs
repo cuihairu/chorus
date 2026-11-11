@@ -128,6 +128,78 @@ namespace Chorus.UnitySdk.Edge
             return status.BindingId;
         }
 
+        public async Task<MatchTicket> JoinMatchAsync(JoinMatchIntent intent, CancellationToken cancellationToken)
+        {
+            var socket = RequireSocket();
+            await SendAsync(socket, new JoinQueueFrame
+            {
+                OperationId = intent.OperationId,
+                QueueType = intent.QueueType,
+                Options = intent.Options,
+            }, cancellationToken).ConfigureAwait(false);
+            var json = await AwaitFrameAsync(socket, "matchStatus", cancellationToken).ConfigureAwait(false);
+            return TicketFrom(Deserialize<MatchStatusFrame>(json));
+        }
+
+        public async Task<MatchTicket> CancelMatchAsync(string operationId, string ticketId,
+            CancellationToken cancellationToken)
+        {
+            var socket = RequireSocket();
+            await SendAsync(socket, new CancelQueueFrame
+            {
+                OperationId = operationId,
+                TicketId = ticketId,
+            }, cancellationToken).ConfigureAwait(false);
+            var json = await AwaitFrameAsync(socket, "matchStatus", cancellationToken).ConfigureAwait(false);
+            return TicketFrom(Deserialize<MatchStatusFrame>(json));
+        }
+
+        public async Task<JoinedRoom> AwaitRoomAsync(CancellationToken cancellationToken)
+        {
+            var socket = RequireSocket();
+            // The queue answers queued, then the coordinator's commit arrives as a push;
+            // a cancelled ticket is terminal and refuses instead of waiting forever.
+            string? ticketId = null;
+            string? reservationId = null;
+            string? roomId = null;
+            while (true)
+            {
+                var json = await AwaitFrameAsync(socket, "matchStatus", cancellationToken).ConfigureAwait(false);
+                var status = Deserialize<MatchStatusFrame>(json);
+                ticketId = status.TicketId;
+                if (status.State == "Matched")
+                {
+                    roomId = status.RoomId;
+                    reservationId = status.ReservationId;
+                    break;
+                }
+                if (status.State == "Cancelled")
+                    throw new EdgeProtocolException("matchCancelled", "the ticket was cancelled while awaiting the room.");
+            }
+            if (string.IsNullOrEmpty(roomId))
+                throw new EdgeProtocolException("matchStatus", "the edge answered a match without a room id.");
+            var joined = Deserialize<RoomJoinedFrame>(
+                await AwaitFrameAsync(socket, "roomJoined", cancellationToken).ConfigureAwait(false));
+            return new JoinedRoom
+            {
+                RoomId = joined.RoomId,
+                RoomEpoch = joined.RoomEpoch,
+                Participation = joined.Participation,
+                ModuleVersion = joined.ModuleVersion,
+                ConfigHash = joined.ConfigHash,
+                TicketId = ticketId ?? string.Empty,
+                ReservationId = reservationId ?? string.Empty,
+            };
+        }
+
+        private static MatchTicket TicketFrom(MatchStatusFrame status) => new()
+        {
+            TicketId = status.TicketId,
+            State = status.State,
+            RoomId = status.RoomId ?? string.Empty,
+            ReservationId = status.ReservationId ?? string.Empty,
+        };
+
         public async Task CloseAsync()
         {
             var socket = _socket;
@@ -323,6 +395,66 @@ namespace Chorus.UnitySdk.Edge
 
             [JsonPropertyName("message")]
             public string Message { get; set; } = string.Empty;
+        }
+
+        private sealed class JoinQueueFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "joinQueue";
+
+            [JsonPropertyName("operationId")]
+            public string OperationId { get; set; } = string.Empty;
+
+            [JsonPropertyName("queueType")]
+            public string QueueType { get; set; } = string.Empty;
+
+            [JsonPropertyName("options")]
+            public string Options { get; set; } = string.Empty;
+        }
+
+        private sealed class CancelQueueFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "cancelQueue";
+
+            [JsonPropertyName("operationId")]
+            public string OperationId { get; set; } = string.Empty;
+
+            [JsonPropertyName("ticketId")]
+            public string TicketId { get; set; } = string.Empty;
+        }
+
+        private sealed class MatchStatusFrame
+        {
+            [JsonPropertyName("ticketId")]
+            public string TicketId { get; set; } = string.Empty;
+
+            [JsonPropertyName("state")]
+            public string State { get; set; } = string.Empty;
+
+            [JsonPropertyName("reservationId")]
+            public string? ReservationId { get; set; }
+
+            [JsonPropertyName("roomId")]
+            public string? RoomId { get; set; }
+        }
+
+        private sealed class RoomJoinedFrame
+        {
+            [JsonPropertyName("roomId")]
+            public string RoomId { get; set; } = string.Empty;
+
+            [JsonPropertyName("roomEpoch")]
+            public long RoomEpoch { get; set; }
+
+            [JsonPropertyName("participation")]
+            public string Participation { get; set; } = string.Empty;
+
+            [JsonPropertyName("moduleVersion")]
+            public string ModuleVersion { get; set; } = string.Empty;
+
+            [JsonPropertyName("configHash")]
+            public string ConfigHash { get; set; } = string.Empty;
         }
     }
 

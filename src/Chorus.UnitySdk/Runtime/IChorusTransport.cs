@@ -29,8 +29,80 @@ namespace Chorus.UnitySdk
         Task<string> StartGameplayAsync(string accessCredential, string gameId, string operationId,
             CancellationToken cancellationToken);
 
+        /// <summary>Enqueues the mount's ticket into one match partition and answers
+        /// the ticket facts the queue acknowledged.</summary>
+        Task<MatchTicket> JoinMatchAsync(JoinMatchIntent intent, CancellationToken cancellationToken);
+
+        /// <summary>Withdraws the ticket and answers its terminal state.</summary>
+        Task<MatchTicket> CancelMatchAsync(string operationId, string ticketId,
+            CancellationToken cancellationToken);
+
+        /// <summary>Answers the atomic room entry: the match's committed room identity
+        /// and the seat's room facts — the first frame the room produces rides behind
+        /// the entry, consumed by the subscription link that owns it.</summary>
+        Task<JoinedRoom> AwaitRoomAsync(CancellationToken cancellationToken);
+
         /// <summary>Closes the wire. A closed transport answers nothing further.</summary>
         Task CloseAsync();
+    }
+
+    /// <summary>One queue intent: which partition and what the match carries.</summary>
+    public sealed class JoinMatchIntent
+    {
+        /// <summary>The operation id the SDK generated for this join (diagnostics).</summary>
+        public string OperationId { get; set; } = string.Empty;
+
+        /// <summary>The partition (for example "standard"); the server's partition rules
+        /// decide who meets.</summary>
+        public string QueueType { get; set; } = string.Empty;
+
+        /// <summary>Opaque options the SDK never reads — the partition composes what it
+        /// can name.</summary>
+        public string Options { get; set; } = string.Empty;
+    }
+
+    /// <summary>One ticket's facts as the edge answered them: its identity, where it
+    /// stands, and — once committed — the room that names it.</summary>
+    public sealed class MatchTicket
+    {
+        /// <summary>The ticket's identity.</summary>
+        public string TicketId { get; set; } = string.Empty;
+
+        /// <summary>Where the ticket stands: "Queued", "Matched" or "Cancelled".</summary>
+        public string State { get; set; } = string.Empty;
+
+        /// <summary>The committed room, when the state is "Matched".</summary>
+        public string RoomId { get; set; } = string.Empty;
+
+        /// <summary>The reservation the commit consumed, when matched.</summary>
+        public string ReservationId { get; set; } = string.Empty;
+    }
+
+    /// <summary>The atomic room entry: the room the match committed and the seat's
+    /// room facts — the entry answers only when both the commit and the seat's room
+    /// joined facts are in hand, so the game never sees a match without a room.</summary>
+    public sealed class JoinedRoom
+    {
+        /// <summary>The room the match committed.</summary>
+        public string RoomId { get; set; } = string.Empty;
+
+        /// <summary>The room's epoch at entry.</summary>
+        public long RoomEpoch { get; set; }
+
+        /// <summary>Which side this seat plays, as the room's vocabulary names it.</summary>
+        public string Participation { get; set; } = string.Empty;
+
+        /// <summary>The module identity the room's frames carry.</summary>
+        public string ModuleVersion { get; set; } = string.Empty;
+
+        /// <summary>The rules the room runs, as the module names it.</summary>
+        public string ConfigHash { get; set; } = string.Empty;
+
+        /// <summary>The ticket this entry consumed.</summary>
+        public string TicketId { get; set; } = string.Empty;
+
+        /// <summary>The reservation the commit consumed.</summary>
+        public string ReservationId { get; set; } = string.Empty;
     }
 
     /// <summary>What one login hands the transport: the platform mount's facts plus the
