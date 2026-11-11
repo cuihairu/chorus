@@ -999,8 +999,13 @@ public sealed class RedesignEndOperationHostTests
                 new Chorus.Rpc.RegisterNodeRequest { NodeId = "node-a", AgentInstanceId = "agent-delivery" });
         }
 
-        // Route authorization first: each gateway applied a routing version and the control
-        // plane heard its confirm — the rows the responder set is derived from.
+        // Route authorization first — and the full responder-set membership. The report
+        // ingest refuses a host whose node row is absent (the gateways' first self-report
+        // ticks fire during boot, before the test registers node-a above), so a process
+        // row is born by a later 500 ms tick, not by boot. The process × deployment ×
+        // confirm triple is exactly what the issue's responder insert joins: killing b
+        // before its row is born would drop it from the frozen set — offline must stay
+        // pending, never skipped.
         var authorized = false;
         var authorizedDeadline = DateTime.UtcNow.AddSeconds(20);
         while (DateTime.UtcNow < authorizedDeadline)
@@ -1009,14 +1014,18 @@ public sealed class RedesignEndOperationHostTests
             {
                 await connection.OpenAsync();
                 await using var command = new NpgsqlCommand("""
-                    SELECT count(*) FROM control.routing_confirm
-                    WHERE process_instance_id IN ('gateway-delivery-a','gateway-delivery-b')
+                    SELECT count(DISTINCT p.process_instance_id)
+                    FROM control.process p
+                    JOIN control.deployment d ON d.slot_id = p.slot_id
+                    JOIN control.routing_confirm c ON c.process_instance_id = p.process_instance_id
+                    WHERE d.role = 'platform-gateway'
+                      AND p.process_instance_id IN ('gateway-delivery-a','gateway-delivery-b')
                     """, connection);
                 if (Convert.ToInt64(await command.ExecuteScalarAsync()) == 2) { authorized = true; break; }
             }
             await Task.Delay(150);
         }
-        Assert.True(authorized, "The gateways never confirmed their routing versions.");
+        Assert.True(authorized, "The gateways never stood in the responder set's rows.");
 
         // A mounted binding and a started round — the mounts the begin's fence reads; the round
         // itself never needs to run, the begin freezes what the mounts entered.
