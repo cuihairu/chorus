@@ -384,7 +384,8 @@
   - 证据：e23bed2；ChorusSession 三方法（join/cancel/awaitRoom）+JoinMatchIntent/MatchTicket/JoinedRoom 类型；AwaitRoom 读 matchStatus(Matched)+roomJoined 齐才答；+6 fact 全绿含双客户端同房端到端；门禁 2059 测试 9 败零 NEW（M2 三连+FanoutReclaim+FrameCapacity+TakeoverKill 既裁；三新面孔 solo 全绿=纯负载）。
 - [x] **FIX-U3D-09 / P0：实现 Unity 快照与增量应用器。** 依赖：FIX-U3D-02、FIX-LINK-10、FIX-SYNC-01。
   - 证据：896ad18；叶子 SyncApplier 逐条移植参照应用器（有序规则+13 reason 一字不差）+SubscribeAsync 接线（边线无 subscribe 帧→ack 位置声明+requestSnapshot 重基线，EdgeSyncStream 拉式独占下行、supersession 拒推进、roomJoined 身份盖帧、result 用流上已见版本补齐线缺、终局后收流）；+20 fact 全绿含 4 真集群端到端（头快照+链式增量/重订阅重基线/异房 invalid_message/终局收流）；门禁 2079 测试 4 败零 NEW（M2 三连+FanoutReclaim 既裁）。
-- [ ] **FIX-U3D-10 / P0：接通 Unity 操作意图发送。** 依赖：FIX-U3D-07、FIX-LINK-09、FIX-SYNC-09。
+- [x] **FIX-U3D-10 / P0：接通 Unity 操作意图发送。** 依赖：FIX-U3D-07、FIX-LINK-09、FIX-SYNC-09。
+  - 证据：dd76eb8；SendIntentAsync 接线（会话校验 room/epoch/commandId 幂等键不自造，payload json 规则在边传输未连接也拒）；意图答案骑流的泵送（回执注册表由流读循环裁决，被拒意图按 operationId 点名自答且流存活）；+3 fact 全绿含 2 真集群端到端（boost→score effect faction:red 进消费 delta；异房拒绝后连接与流可用）；门禁 2082 测试 6 败零 NEW（M2 三连+FanoutReclaim+PlatformRoute+EndBarrier 既裁）。
 - [ ] **FIX-U3D-11 / P0：实现 Unity 重连与原局追赶。** 依赖：FIX-U3D-07、FIX-U3D-09、FIX-SYNC-03。
 - [ ] **FIX-U3D-12 / P1：接通暂停、恢复就绪与正常退出。** 依赖：FIX-U3D-09、FIX-U3D-11、FIX-SYNC-08、FIX-LINK-12、FIX-END-13。
 - [ ] **FIX-U3D-13 / P1：提供框架排行榜 Unity 客户端接口。** 依赖：FIX-U3D-07、FIX-RANK-04、FIX-RANK-05、FIX-RANK-06、FIX-RANK-07。
