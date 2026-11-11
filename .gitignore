@@ -39,6 +39,8 @@ ScaffoldingReadMe.txt
 # Others
 ~$*
 *~
+!Samples~/
+!**/Samples~/**
 CodeCoverage/
 
 # Node / VuePress

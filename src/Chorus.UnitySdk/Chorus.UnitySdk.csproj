@@ -15,4 +15,11 @@
        restated platform-neutrally and the parity tests pin it against the server's
        contract, so the Unity package never drags the server stack into a game. -->
 
+  <!-- Samples~ ships as source a game imports (Unity's import-on-demand folder); it
+       never compiles into the SDK assembly. The full-loop sample proves itself in the
+       test project, which link-compiles the same file (FIX-U3D-15). -->
+  <ItemGroup>
+    <Compile Remove="Samples~/**/*.cs" />
+  </ItemGroup>
+
 </Project>

@@ -651,11 +651,17 @@ public sealed class RedesignM4HostTests
     /// control plane pairs queued mounts into rounds behind a game host, exactly like the M3
     /// match cluster.</summary>
     internal static async Task<(int WssPort, DevelopmentPlatformSimulator Simulator)> StartEdgeClusterAsync(
-        RedesignM0HostTests.HostEnvironment environment, bool withMatchmaker = false)
+        RedesignM0HostTests.HostEnvironment environment, bool withMatchmaker = false,
+        int? roundDurationTicks = null)
     {
         var simulatorKey = RandomNumberGenerator.GetBytes(32);
         var accessKey = RandomNumberGenerator.GetBytes(32);
         var controlEnvironment = new Dictionary<string, string>();
+        // A longer round window lets a client act mid-round (the resume's catch-up) instead
+        // of racing the settlement the coordinator's demo cadence asks for.
+        if (roundDurationTicks is { } ticks)
+            controlEnvironment["CHORUS_ROUND_DURATION_TICKS"] = ticks.ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
         if (withMatchmaker)
         {
             controlEnvironment["CHORUS_DATA_ENDPOINT"] = $"https://localhost:{environment.DataPort}";

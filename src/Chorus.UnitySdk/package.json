@@ -3,5 +3,12 @@
   "version": "0.1.0",
   "displayName": "Chorus Unity SDK",
   "description": "The unified Chorus client SDK for Douyin and Kuaishou live games: one surface to program against, the platform specifics behind conditional compilation (FIX-U3D-02/03).",
-  "unity": "2020.3"
+  "unity": "2020.3",
+  "samples": [
+    {
+      "displayName": "Online Loop",
+      "description": "One complete session against a live cluster — login, match, room entry, snapshot baseline, moves, a disconnect and the resume's catch-up mid-round, the round's frozen result, the board reads, the logout — driven by nothing but the sample's configuration (FIX-U3D-15).",
+      "path": "Samples~/OnlineLoop"
+    }
+  ]
 }
