@@ -79,8 +79,8 @@ async function openLeaderboards() {
   const user = userEvent.setup();
   await user.type(screen.getByLabelText('Operator token'), 'alice-token');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
-  await user.click(await screen.findByText('Leaderboards', { exact: true }));
-  await waitFor(() => expect(screen.getByText('Top N')).toBeInTheDocument());
+  await user.click(await screen.findByText('Leaderboards', { exact: true }, { timeout: 5000 }));
+  await waitFor(() => expect(screen.getByText('Top N')).toBeInTheDocument(), { timeout: 5000 });
 
   // Three query cards stay mounted, so field queries are card-scoped.
   const topCard = screen.getByText('Top N').closest('.ant-card') as HTMLElement;

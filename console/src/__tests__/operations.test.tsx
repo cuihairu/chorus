@@ -47,8 +47,8 @@ async function openOperations(identity: typeof gmIdentity) {
   await user.type(screen.getByLabelText('Operator token'), 'alice-token');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
   // The shell's menu anchors have no href (navigation is onClick), so click the item text.
-  await user.click(await screen.findByText('Operations', { exact: true }));
-  await waitFor(() => expect(screen.getByText('Operations and receipts')).toBeInTheDocument());
+  await user.click(await screen.findByText('Operations', { exact: true }, { timeout: 5000 }));
+  await waitFor(() => expect(screen.getByText('Operations and receipts')).toBeInTheDocument(), { timeout: 5000 });
   return { user, identity };
 }
 

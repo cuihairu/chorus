@@ -20,14 +20,16 @@ import LoginPage from './pages/LoginPage';
 import NodesPage from './pages/NodesPage';
 import OperationsPage from './pages/OperationsPage';
 import OverviewPage from './pages/OverviewPage';
+import RoomsPage from './pages/RoomsPage';
 
 // The console shell (FIX-WEB-02) with the operator session wired in (FIX-WEB-04):
 // every admin route sits behind the login gate, the signed-in operator's identity is
 // the header word, and a stored credential survives reloads only while who-am-i still
 // answers for it. The header carries the language toggle (FIX-WEB-16): the two words
 // for a menu entry ride the route table itself. Home is the operations overview
-// (FIX-OBS-14), nodes and processes is the telemetry page (FIX-WEB-06); the remaining
-// pages arrive with their backing APIs — rooms (WEB-07), streamers and matching (WEB-08).
+// (FIX-OBS-14), nodes and processes is the telemetry page (FIX-WEB-06), rooms is the
+// room detail page (FIX-WEB-07); the remaining pages arrive with their backing APIs —
+// streamers and matching (WEB-08).
 type RouteKey = 'home' | 'nodes' | 'rooms' | 'streamers' | 'operations' | 'epoch' | 'leaderboard';
 
 const menuRoutes: Array<{
@@ -142,10 +144,11 @@ function ConsolePages() {
     <ConsoleShell>
       {routeKey === 'home' && <OverviewPage />}
       {routeKey === 'nodes' && <NodesPage />}
+      {routeKey === 'rooms' && <RoomsPage />}
       {routeKey === 'operations' && <OperationsPage />}
       {routeKey === 'epoch' && <EpochPage />}
       {routeKey === 'leaderboard' && <LeaderboardPage />}
-      {routeKey !== 'home' && routeKey !== 'nodes' && routeKey !== 'operations' && routeKey !== 'epoch' && routeKey !== 'leaderboard' && (
+      {routeKey !== 'home' && routeKey !== 'nodes' && routeKey !== 'rooms' && routeKey !== 'operations' && routeKey !== 'epoch' && routeKey !== 'leaderboard' && (
         <Placeholder routeKey={routeKey} />
       )}
     </ConsoleShell>

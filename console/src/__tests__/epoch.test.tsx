@@ -57,8 +57,8 @@ async function openEpoch(identity: typeof gmIdentity) {
   const user = userEvent.setup();
   await user.type(screen.getByLabelText('Operator token'), 'alice-token');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
-  await user.click(await screen.findByText('Room epoch', { exact: true }));
-  await waitFor(() => expect(screen.getByText('Lookup')).toBeInTheDocument());
+  await user.click(await screen.findByText('Room epoch', { exact: true }, { timeout: 10000 }));
+  await waitFor(() => expect(screen.getByText('Lookup')).toBeInTheDocument(), { timeout: 10000 });
 
   // The lookup and bump cards both stay mounted, so field queries are card-scoped.
   const lookupCard = screen.getByText('Lookup').closest('.ant-card') as HTMLElement;

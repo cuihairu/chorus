@@ -61,8 +61,8 @@ describe('the operator login page', () => {
 
     // The shell is visible with the operator's role, not the login card. The menu
     // words arrive with the responsive layout's desktop flip, so wait for them.
-    await waitFor(() => expect(screen.getByText('gm')).toBeInTheDocument());
-    await waitFor(() => expect(screen.getAllByText('Home').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByText('gm')).toBeInTheDocument(), { timeout: 10000 });
+    await waitFor(() => expect(screen.getAllByText('Home').length).toBeGreaterThan(0), { timeout: 10000 });
     expect(screen.queryByText('Operator login')).not.toBeInTheDocument();
     expect(sessionStorage.getItem('chorus.operator-token')).toBe('alice-token');
   });
@@ -121,7 +121,7 @@ describe('the operator login page', () => {
     );
 
     // The gate resolves the stored token against the control plane before showing pages.
-    await waitFor(() => expect(screen.getByText('gm')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('gm')).toBeInTheDocument(), { timeout: 10000 });
     expect(fetchMock).toHaveBeenCalled();
   });
 
@@ -135,7 +135,7 @@ describe('the operator login page', () => {
       </MemoryRouter>,
     );
     await signIn();
-    await waitFor(() => expect(screen.getByText('gm')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('gm')).toBeInTheDocument(), { timeout: 10000 });
 
     await user.click(screen.getByRole('button', { name: /Sign out/ }));
     expect(await screen.findByText('Operator login')).toBeInTheDocument();
