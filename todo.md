@@ -386,7 +386,8 @@
   - 证据：896ad18；叶子 SyncApplier 逐条移植参照应用器（有序规则+13 reason 一字不差）+SubscribeAsync 接线（边线无 subscribe 帧→ack 位置声明+requestSnapshot 重基线，EdgeSyncStream 拉式独占下行、supersession 拒推进、roomJoined 身份盖帧、result 用流上已见版本补齐线缺、终局后收流）；+20 fact 全绿含 4 真集群端到端（头快照+链式增量/重订阅重基线/异房 invalid_message/终局收流）；门禁 2079 测试 4 败零 NEW（M2 三连+FanoutReclaim 既裁）。
 - [x] **FIX-U3D-10 / P0：接通 Unity 操作意图发送。** 依赖：FIX-U3D-07、FIX-LINK-09、FIX-SYNC-09。
   - 证据：dd76eb8；SendIntentAsync 接线（会话校验 room/epoch/commandId 幂等键不自造，payload json 规则在边传输未连接也拒）；意图答案骑流的泵送（回执注册表由流读循环裁决，被拒意图按 operationId 点名自答且流存活）；+3 fact 全绿含 2 真集群端到端（boost→score effect faction:red 进消费 delta；异房拒绝后连接与流可用）；门禁 2082 测试 6 败零 NEW（M2 三连+FanoutReclaim+PlatformRoute+EndBarrier 既裁）。
-- [ ] **FIX-U3D-11 / P0：实现 Unity 重连与原局追赶。** 依赖：FIX-U3D-07、FIX-U3D-09、FIX-SYNC-03。
+- [x] **FIX-U3D-11 / P0：实现 Unity 重连与原局追赶。** 依赖：FIX-U3D-07、FIX-U3D-09、FIX-SYNC-03。
+  - 证据：15bf1c8；ResumeAsync 编排（持久对 sessionId+ResumeCredential 是全部证明、适配器不参与；半开关线纪律；binding 不再 start=null，服务端 mount record 恢复）；秘密逐 resume 轮转（答会话带自己的新 secret）；边线 resume 帧→loginReady 同形+AwaitRejoinedRoomAsync 直读 roomJoined（票/预定空、身份表同路）+seeded 头快照经 _unclaimed 被订阅流领走；+8 fact 全绿含 3 真集群端到端（断线→resume→同房重入→重订阅新 applier 重基线→boost 回执+score effect=座位仍在局中；错 secret 可见拒；无可重返 10s 预算安静裁定）；门禁 2090 测试 6 败零 NEW（M2 三连+FanoutReclaim+FrameChannelCapacity+EndOperation 既裁）。
 - [ ] **FIX-U3D-12 / P1：接通暂停、恢复就绪与正常退出。** 依赖：FIX-U3D-09、FIX-U3D-11、FIX-SYNC-08、FIX-LINK-12、FIX-END-13。
 - [ ] **FIX-U3D-13 / P1：提供框架排行榜 Unity 客户端接口。** 依赖：FIX-U3D-07、FIX-RANK-04、FIX-RANK-05、FIX-RANK-06、FIX-RANK-07。
 - [ ] **FIX-U3D-14 / P0：核定并接通平台履约及状态回报。** 依赖：FIX-U3D-01、FIX-U3D-05、FIX-U3D-06、FIX-INPUT-08、FIX-END-12。
