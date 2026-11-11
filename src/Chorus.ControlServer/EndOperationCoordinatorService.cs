@@ -1,5 +1,6 @@
 using Chorus.Rpc;
 using Grpc.Core;
+using Npgsql;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -32,11 +33,12 @@ namespace Chorus.ControlServer;
 /// </summary>
 public sealed class EndOperationCoordinatorService(RedesignControlStore controlStore,
     StopDeliveryNotifier notifier, ClusterDirectory directory,
-    ILogger<EndOperationCoordinatorService> logger)
+    RoundFulfillmentReader fulfillment, ILogger<EndOperationCoordinatorService> logger)
     : BackgroundService
 {
     private readonly PlatformTask.PlatformTaskClient _tasks = new(directory.DataChannel);
     private readonly Settlement.SettlementClient _settlement = new(directory.DataChannel);
+    private readonly RoundFulfillmentReader _fulfillment = fulfillment;
 
     private static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(int.Parse(
         Environment.GetEnvironmentVariable("CHORUS_END_COORDINATOR_INTERVAL_MS") ?? "1000",
@@ -340,15 +342,25 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
     private async Task EnqueuePlatformEndTasksAsync(StopDeliveryCommand command,
         EndOperation operation, CancellationToken cancellationToken)
     {
+        // The status report's facts (FIX-U3D-14): the round's committed result and each
+        // mount's platform room key, read once per pass — a read fault is the data plane's
+        // outage and lands in the enqueue's own retry cadence below.
+        var facts = await _fulfillment.ReadAsync(command.RoomId,
+            operation.BindingGenerations, cancellationToken);
         foreach (var binding in operation.BindingGenerations)
         {
             var desired = System.Text.Json.JsonSerializer.Serialize(new
             {
                 kind = "end-round",
-                command.TenantId, command.GameId, command.RoomId, command.EndOperationId,
-                command.RoundGeneration, command.CloseRouteVersion,
+                tenantId = command.TenantId, gameId = command.GameId, roomId = command.RoomId,
+                endOperationId = command.EndOperationId,
+                roundGeneration = command.RoundGeneration, closeRouteVersion = command.CloseRouteVersion,
                 bindingId = binding.BindingId, bindingGeneration = binding.Generation,
                 bindingRoundGeneration = binding.RoundGeneration,
+                roomCode = facts.RoomCodes.TryGetValue(binding.BindingId, out var roomCode)
+                    ? roomCode : string.Empty,
+                roundResult = facts.ResultJson,
+                resultVersion = operation.ResultVersion,
                 categories = new Dictionary<string, string>
                 {
                     ["roundEnd"] = "apply",
@@ -366,9 +378,10 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
         }
     }
 
-    /// <summary>The enqueue's transport faults are the data plane's outage, not this
-    /// operation's: logged and retried on the next pass, so a dead data channel holds the
-    /// platform task's recording without ever holding the delivery-stop leg hostage.</summary>
+    /// <summary>The enqueue's faults are the data plane's outage, not this operation's:
+    /// logged and retried on the next pass, so a dead data channel — or the facts reader's
+    /// missing-frozen-result fault — holds the platform task's recording without ever
+    /// holding the delivery-stop leg hostage.</summary>
     private async Task<bool> TryEnqueuePlatformEndTasksAsync(StopDeliveryCommand command,
         EndOperation operation, CancellationToken cancellationToken)
     {
@@ -377,7 +390,8 @@ public sealed class EndOperationCoordinatorService(RedesignControlStore controlS
             await EnqueuePlatformEndTasksAsync(command, operation, cancellationToken);
             return true;
         }
-        catch (Exception error) when (error is RpcException or HttpRequestException)
+        catch (Exception error) when (error is RpcException or HttpRequestException or NpgsqlException
+            or InvalidOperationException)
         {
             logger.LogWarning(error,
                 "Platform end task recording for {RoomId} waits for the data plane: {Message}",

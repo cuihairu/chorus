@@ -59,11 +59,27 @@ var identity = ProcessCertificateValidator.Validate(serverCertificate, root, clu
 Grpc.Net.Client.GrpcChannel DataChannel() => ProcessGrpcClientFactory.Create(
     new Uri(dataEndpoint), serverCertificate, root, nodeAuthority, clusterId, "data-server");
 
-// Task adapters: the development simulator speaks plain HTTP to an endpoint the operator
-// provides; adapters for real platforms stay NotProductionReady until their idempotency and
-// query semantics are proven, so no real platform is wired here yet.
-IPlatformTaskAdapter taskAdapter = new DevelopmentPlatformTaskAdapter(
-    new Uri(Required("CHORUS_DEV_PLATFORM_ENDPOINT")));
+// Task adapters (FIX-U3D-14): the development simulator stays the default mount; the
+// platform fulfillment adapters speak the documented contracts and stay NotProductionReady
+// until their real endpoints are verified (the admission matrix's needs-permission rows).
+// Their credentials are this server process's own environment — the secrets boundary keeps
+// app material out of every client surface.
+var adapterName = Environment.GetEnvironmentVariable("CHORUS_PLATFORM_ADAPTER") ?? "simulator";
+IPlatformTaskAdapter taskAdapter = adapterName switch
+{
+    "simulator" => new DevelopmentPlatformTaskAdapter(
+        new Uri(Required("CHORUS_DEV_PLATFORM_ENDPOINT"))),
+    "kuaishou" => new KuaishouFulfillmentAdapter(
+        new Uri(Required("CHORUS_PLATFORM_ENDPOINT")),
+        Required("CHORUS_PLATFORM_APP_ID"),
+        Required("CHORUS_PLATFORM_ACCESS_TOKEN"),
+        Required("CHORUS_PLATFORM_APP_SECRET")),
+    "douyin" => new DouyinFulfillmentAdapter(
+        new Uri(Required("CHORUS_PLATFORM_ENDPOINT")),
+        Required("CHORUS_PLATFORM_APP_ID")),
+    _ => throw new InvalidOperationException(
+        $"CHORUS_PLATFORM_ADAPTER names no known platform adapter: {adapterName}"),
+};
 
 builder.Services.AddSingleton(trustedCertificates);
 // The stop-delivery record (FIX-END-05/07): the gRPC service is created per request, so
