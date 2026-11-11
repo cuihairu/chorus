@@ -42,6 +42,16 @@ namespace Chorus.UnitySdk.Edge
         /// holds it where the server's fanout holds it, on the room's state.</summary>
         private readonly Dictionary<string, RoomFacts> _rooms = new();
 
+        /// <summary>The sends awaiting their accepted word (FIX-U3D-10), keyed by the
+        /// caller's command id. The stream's read loop resolves them — the intent leg
+        /// never races the stream for the socket.</summary>
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string,
+            TaskCompletionSource<CommandReceiptFrame>> _receipts = new();
+
+        /// <summary>The per-connection client sequence the wire's gameCommand carries
+        /// (diagnostics for the seat's Applied word; the durable store assigns its own).</summary>
+        private long _clientSequence;
+
         private EdgeSyncStream? _activeStream;
 
         private readonly record struct RoomFacts(long Epoch, string ModuleVersion, string ConfigHash);
@@ -234,6 +244,101 @@ namespace Chorus.UnitySdk.Edge
             return stream;
         }
 
+        /// <summary>Sends one game intent and answers its accepted word (FIX-U3D-10).
+        /// The registration precedes the send, so the receipt the stream reads always
+        /// finds its waiter; the wait itself rides the stream's pumping — a game that
+        /// stops advancing the stream stops its own intent answers. The edge merges
+        /// durable-accepted and duplicate dispositions into one "Accepted" word, so the
+        /// duplicate bit the gRPC face carries is always false here.</summary>
+        public async Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken)
+        {
+            // The wire's payload is a parsed JSON element, so an unreadable payload is
+            // refused before anything else — a disconnected transport still refuses it.
+            if (string.IsNullOrEmpty(intent.RoomId))
+                throw new ArgumentException("An intent names the room it plays in.", nameof(intent));
+            if (intent.RoomEpoch <= 0)
+                throw new ArgumentException("An intent names its room's epoch.", nameof(intent));
+            if (string.IsNullOrEmpty(intent.CommandId))
+                throw new ArgumentException(
+                    "An intent carries the caller's idempotency key; the SDK never invents one.", nameof(intent));
+            JsonElement payload;
+            try
+            {
+                payload = JsonDocument.Parse(intent.PayloadJson).RootElement.Clone();
+            }
+            catch (JsonException error)
+            {
+                throw new ArgumentException("An intent's payload must be valid json.", nameof(intent), error);
+            }
+            var socket = RequireSocket();
+            var waiter = new TaskCompletionSource<CommandReceiptFrame>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _receipts[intent.CommandId] = waiter;
+            try
+            {
+                await SendAsync(socket, new GameCommandFrame
+                {
+                    CommandId = intent.CommandId,
+                    RoomId = intent.RoomId,
+                    RoomEpoch = intent.RoomEpoch,
+                    ClientSequence = Interlocked.Increment(ref _clientSequence),
+                    Payload = payload,
+                }, cancellationToken).ConfigureAwait(false);
+                var receipt = await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                var (room, sequence) = ReceiptIdentityFrom(receipt.ReceiptId);
+                return new IntentReply
+                {
+                    CommandId = receipt.CommandId,
+                    RoomId = room,
+                    Sequence = sequence,
+                    // The wire's accepted word merges the durable and duplicate words; the
+                    // delivery's own event id and the route version ride the gRPC face only.
+                    Duplicate = false,
+                    EventId = string.Empty,
+                };
+            }
+            finally
+            {
+                _receipts.TryRemove(intent.CommandId, out _);
+            }
+        }
+
+        /// <summary>Hands a receipt the stream read to its waiter, or drops it: an
+        /// unwaited receipt is the Applied word of a send already answered — the durable
+        /// proof of consumption is the consuming delta's effects, which the stream
+        /// delivers in the ordinary way.</summary>
+        private void ResolveReceipt(string json)
+        {
+            var receipt = Deserialize<CommandReceiptFrame>(json);
+            if (_receipts.TryRemove(receipt.CommandId, out var waiter))
+            {
+                waiter.TrySetResult(receipt);
+            }
+        }
+
+        /// <summary>Answers a waiting send with the edge's refusal of its own command.
+        /// True when the operation id named a send this transport is still waiting on.</summary>
+        private bool RefuseWaitingReceipt(string operationId, string code, string message)
+        {
+            if (!_receipts.TryRemove(operationId, out var waiter)) return false;
+            waiter.TrySetException(new EdgeProtocolException(code, message));
+            return true;
+        }
+
+        /// <summary>The receipt id is the fanout's composition room:sequence — the parse
+        /// below is its exact inverse, keeping a room id that itself carries colons
+        /// whole.</summary>
+        private static (string RoomId, long Sequence) ReceiptIdentityFrom(string receiptId)
+        {
+            var boundary = receiptId.LastIndexOf(':');
+            if (boundary <= 0 || !long.TryParse(receiptId[(boundary + 1)..], out var sequence))
+            {
+                throw new EdgeProtocolException("invalidFrame",
+                    "the edge sent a receipt without its room:sequence identity.");
+            }
+            return (receiptId[..boundary], sequence);
+        }
+
         /// <summary>Whether this stream is still the one that owns the downlink.</summary>
         private bool IsLive(EdgeSyncStream stream) => ReferenceEquals(_activeStream, stream);
 
@@ -368,10 +473,11 @@ namespace Chorus.UnitySdk.Edge
         /// downlink while it is live; supersession by a newer subscribe ends that
         /// ownership visibly. Frames are classified as they arrive: the four sync frames
         /// map onto the leaf's shapes and deliver, a re-announced roomJoined refreshes
-        /// the room's module identity, refusals and displacement surface as exceptions,
-        /// and every other lane's frames (pongs, straggler match facts, command receipts
-        /// — FIX-U3D-10 owns receipts) ride past. A cancelled advance aborts the wire's
-        /// read, as ClientWebSocket's cancellation does; disconnect afterwards.</summary>
+        /// the room's module identity, a command receipt resolves its waiting send
+        /// (FIX-U3D-10), refusals and displacement surface as exceptions, and every
+        /// other lane's frames (pongs, straggler match facts) ride past. A cancelled
+        /// advance aborts the wire's read, as ClientWebSocket's cancellation does;
+        /// disconnect afterwards.</summary>
         private sealed class EdgeSyncStream : ISyncStream
         {
             private readonly EdgeChorusTransport _transport;
@@ -429,15 +535,28 @@ namespace Chorus.UnitySdk.Edge
                             throw new EdgeProtocolException("session_replaced", replaced.Reason);
                         case "error":
                             var error = Deserialize<ErrorFrame>(json);
+                            if (error.OperationId is { Length: > 0 }
+                                && _transport.RefuseWaitingReceipt(error.OperationId, error.Code, error.Message))
+                            {
+                                // A refused command answers its own send (the edge names the
+                                // command id on the refusal): the waiting sender hears it and
+                                // the stream keeps reading — the refusal is per-command, the
+                                // connection survives it.
+                                continue;
+                            }
                             throw new EdgeProtocolException(error.Code, error.Message);
                         case "pong":
                         case "loginReady":
                         case "gameplayStatus":
                         case "matchStatus":
                         case "roomSuspended":
-                        case "commandReceipt":
                             // Other lanes' frames: diagnostics and links before and after
-                            // the sync stream. Receipts belong to the intent link.
+                            // the sync stream.
+                            continue;
+                        case "commandReceipt":
+                            // The accepted word of an intent send (FIX-U3D-10): the stream
+                            // owns the downlink and resolves the waiting send.
+                            _transport.ResolveReceipt(json);
                             continue;
                         default:
                             throw new EdgeProtocolException("invalidFrame",
@@ -640,6 +759,9 @@ namespace Chorus.UnitySdk.Edge
 
             [JsonPropertyName("message")]
             public string Message { get; set; } = string.Empty;
+
+            [JsonPropertyName("operationId")]
+            public string? OperationId { get; set; }
         }
 
         private sealed class JoinQueueFrame
@@ -802,6 +924,39 @@ namespace Chorus.UnitySdk.Edge
         {
             [JsonPropertyName("reason")]
             public string Reason { get; set; } = string.Empty;
+        }
+
+        private sealed class GameCommandFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "gameCommand";
+
+            [JsonPropertyName("commandId")]
+            public string CommandId { get; set; } = string.Empty;
+
+            [JsonPropertyName("roomId")]
+            public string RoomId { get; set; } = string.Empty;
+
+            [JsonPropertyName("roomEpoch")]
+            public long RoomEpoch { get; set; }
+
+            [JsonPropertyName("clientSequence")]
+            public long ClientSequence { get; set; }
+
+            [JsonPropertyName("payload")]
+            public JsonElement Payload { get; set; }
+        }
+
+        private sealed class CommandReceiptFrame
+        {
+            [JsonPropertyName("commandId")]
+            public string CommandId { get; set; } = string.Empty;
+
+            [JsonPropertyName("status")]
+            public string Status { get; set; } = string.Empty;
+
+            [JsonPropertyName("receiptId")]
+            public string ReceiptId { get; set; } = string.Empty;
         }
     }
 

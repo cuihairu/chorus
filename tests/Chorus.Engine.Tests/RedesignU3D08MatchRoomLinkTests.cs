@@ -215,6 +215,9 @@ public sealed class RedesignU3D08MatchRoomLinkTests
             long lastAppliedStateVersion, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("the match-link facts never subscribe.");
 
+        public Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the match-link facts never send intents.");
+
         public Task CloseAsync() => Task.CompletedTask;
     }
 }

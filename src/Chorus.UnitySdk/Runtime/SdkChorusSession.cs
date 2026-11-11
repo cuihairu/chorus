@@ -6,9 +6,8 @@ namespace Chorus.UnitySdk
 {
     /// <summary>
     /// The session the login link answers: the login's identities, the started gameplay
-    /// binding, the room's sync stream (FIX-U3D-09), the match leg, and a transport whose
-    /// intent link arrives with FIX-U3D-10 — that call refuses by naming its task, never
-    /// by failing silently.
+    /// binding, the room's sync stream and the intent send (FIX-U3D-09/10), and the
+    /// match leg. Disconnect closes the wire.
     /// </summary>
     internal sealed class SdkChorusSession : ChorusSession
     {
@@ -29,9 +28,18 @@ namespace Chorus.UnitySdk
             long lastAppliedStateVersion, CancellationToken cancellationToken) =>
             _transport.SubscribeAsync(roomId, epoch, lastAppliedTick, lastAppliedStateVersion, cancellationToken);
 
-        public Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException(
-                "the intent link is not wired yet: intent send arrives with FIX-U3D-10.");
+        public Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken)
+        {
+            if (intent is null) throw new ArgumentNullException(nameof(intent));
+            if (string.IsNullOrWhiteSpace(intent.RoomId))
+                throw new ArgumentException("An intent names the room it plays in.", nameof(intent));
+            if (intent.RoomEpoch <= 0)
+                throw new ArgumentException("An intent names its room's epoch.", nameof(intent));
+            if (string.IsNullOrWhiteSpace(intent.CommandId))
+                throw new ArgumentException(
+                    "An intent carries the caller's idempotency key; the SDK never invents one.", nameof(intent));
+            return _transport.SendIntentAsync(intent, cancellationToken);
+        }
 
         public Task<MatchTicket> JoinMatchAsync(string queueType, string? options,
             CancellationToken cancellationToken) =>

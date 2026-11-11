@@ -122,7 +122,7 @@ public sealed class RedesignU3D07LoginLinkTests
     }
 
     [Fact]
-    public async Task TheSyncLinkRidesThroughUnwiredIntentsRefuseAndDisconnectClosesTheWire()
+    public async Task TheSyncAndIntentLinksRideThroughAndDisconnectClosesTheWire()
     {
         var transport = new FakeTransport();
         var adapter = new FakeAdapter("simulator", "open-1", """{"credential":"c"}""");
@@ -137,12 +137,58 @@ public sealed class RedesignU3D07LoginLinkTests
         Assert.Equal(12, transport.LastSubscribeTick);
         Assert.Equal(12, transport.LastSubscribeVersion);
         Assert.Same(transport.LastStream, stream);
-        var intent = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => session.SendIntentAsync(new ClientIntent(), CancellationToken.None));
-        Assert.Contains("U3D-10", intent.Message);
+
+        // The intent link (FIX-U3D-10) rides through the same way: the intent is the
+        // caller's own idempotency contract, passed verbatim.
+        var intent = new ClientIntent
+        {
+            RoomId = "room-1", RoomEpoch = 3, CommandId = "cmd-1", PayloadJson = """{"action":"boost"}""",
+        };
+        var reply = await session.SendIntentAsync(intent, CancellationToken.None);
+        Assert.Same(intent, transport.LastSentIntent);
+        Assert.Equal("cmd-1", reply.CommandId);
 
         await session.DisconnectAsync();
         Assert.EndsWith("close", string.Join(",", transport.Sequence));
+    }
+
+    [Fact]
+    public async Task AnIntentWithoutItsOwnIdentityIsRefusedBeforeTheWire()
+    {
+        var transport = new FakeTransport();
+        var adapter = new FakeAdapter("simulator", "open-1", """{"credential":"c"}""");
+        var sdk = new ChorusSdk(_ => transport);
+        var session = await sdk.ConnectAsync(Configuration(adapter), adapter, CancellationToken.None);
+
+        var noRoom = new ClientIntent { RoomId = "", RoomEpoch = 3, CommandId = "cmd-1", PayloadJson = "{}" };
+        var roomFailure = await Assert.ThrowsAsync<ArgumentException>(
+            () => session.SendIntentAsync(noRoom, CancellationToken.None));
+        Assert.Contains("room", roomFailure.Message);
+
+        var noEpoch = new ClientIntent { RoomId = "room-1", RoomEpoch = 0, CommandId = "cmd-1", PayloadJson = "{}" };
+        var epochFailure = await Assert.ThrowsAsync<ArgumentException>(
+            () => session.SendIntentAsync(noEpoch, CancellationToken.None));
+        Assert.Contains("epoch", epochFailure.Message);
+
+        // The idempotency key is the caller's own contract: the SDK never invents one.
+        var noCommand = new ClientIntent { RoomId = "room-1", RoomEpoch = 3, CommandId = "", PayloadJson = "{}" };
+        var commandFailure = await Assert.ThrowsAsync<ArgumentException>(
+            () => session.SendIntentAsync(noCommand, CancellationToken.None));
+        Assert.Contains("idempotency", commandFailure.Message);
+
+        Assert.Null(transport.LastSentIntent);
+
+        // The payload's json rule lives where the wire's payload lives: the edge
+        // transport refuses an unreadable payload before anything else — a transport
+        // that never connected still refuses it.
+        var edge = new EdgeChorusTransport(Configuration(adapter));
+        var badPayload = new ClientIntent
+        {
+            RoomId = "room-1", RoomEpoch = 3, CommandId = "cmd-1", PayloadJson = "not-json",
+        };
+        var payloadFailure = await Assert.ThrowsAsync<ArgumentException>(
+            () => edge.SendIntentAsync(badPayload, CancellationToken.None));
+        Assert.Contains("json", payloadFailure.Message);
     }
 
     [Fact]
@@ -338,6 +384,7 @@ public sealed class RedesignU3D07LoginLinkTests
         public long LastSubscribeTick { get; private set; }
         public long LastSubscribeVersion { get; private set; }
         public ISyncStream? LastStream { get; private set; }
+        public ClientIntent? LastSentIntent { get; private set; }
 
         public Task<ISyncStream> SubscribeAsync(string roomId, long epoch, long lastAppliedTick,
             long lastAppliedStateVersion, CancellationToken cancellationToken)
@@ -349,6 +396,18 @@ public sealed class RedesignU3D07LoginLinkTests
             LastSubscribeVersion = lastAppliedStateVersion;
             LastStream = new FakeSyncStream();
             return Task.FromResult<ISyncStream>(LastStream);
+        }
+
+        public Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken)
+        {
+            Sequence.Add("intent");
+            LastSentIntent = intent;
+            return Task.FromResult(new IntentReply
+            {
+                CommandId = intent.CommandId,
+                RoomId = intent.RoomId,
+                Sequence = 7,
+            });
         }
 
         public Task CloseAsync()

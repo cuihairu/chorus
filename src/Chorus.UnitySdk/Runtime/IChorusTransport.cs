@@ -49,6 +49,12 @@ namespace Chorus.UnitySdk
         Task<ISyncStream> SubscribeAsync(string roomId, long epoch, long lastAppliedTick,
             long lastAppliedStateVersion, CancellationToken cancellationToken);
 
+        /// <summary>Sends one game intent into the room's inbox and answers the
+        /// accepted word (FIX-U3D-10). The answer rides the stream's pumping: the
+        /// stream owns the downlink and resolves the waiting send when the receipt
+        /// arrives.</summary>
+        Task<IntentReply> SendIntentAsync(ClientIntent intent, CancellationToken cancellationToken);
+
         /// <summary>Closes the wire. A closed transport answers nothing further.</summary>
         Task CloseAsync();
     }
