@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -82,6 +83,102 @@ namespace Chorus.UnitySdk
 
         public Task LogoutAsync(CancellationToken cancellationToken) =>
             _transport.LogoutAsync("logout-" + Guid.NewGuid().ToString("N"), cancellationToken);
+
+        public async Task<LeaderboardTop> GetTopAsync(LeaderboardKey key, int maxEntries, string? cursor,
+            CancellationToken cancellationToken)
+        {
+            if (key is null || string.IsNullOrWhiteSpace(key.BoardId))
+                throw new ArgumentException("A top page names the board it walks.", nameof(key));
+            var answer = await _transport.LeaderboardQueryAsync(new LeaderboardQueryIntent
+            {
+                OperationId = "lb-" + Guid.NewGuid().ToString("N"),
+                Kind = "top",
+                BoardId = key.BoardId,
+                PeriodId = key.PeriodId,
+                ScopeId = key.ScopeId,
+                Subject = (int)key.Subject,
+                MaxEntries = maxEntries,
+                Cursor = cursor,
+            }, cancellationToken).ConfigureAwait(false);
+            var top = new LeaderboardTop
+            {
+                ReadVersion = answer.ReadVersion,
+                NextCursor = answer.NextCursor,
+                HasMore = answer.HasMore,
+            };
+            var entries = new List<LeaderboardEntry>();
+            foreach (var entry in answer.Entries)
+            {
+                entries.Add(new LeaderboardEntry { SubjectId = entry.SubjectId, Score = entry.Score });
+            }
+            top.Entries = entries;
+            return top;
+        }
+
+        public async Task<LeaderboardRank> GetRankAsync(LeaderboardKey key, string? subjectId,
+            CancellationToken cancellationToken)
+        {
+            var answer = await ReadPositionAsync(key, subjectId, 0, "rank", cancellationToken)
+                .ConfigureAwait(false);
+            var ranked = answer.Entries.Count > 0 ? answer.Entries[0] : null;
+            return new LeaderboardRank
+            {
+                Found = answer.Found,
+                Rank = ranked?.Rank ?? 0,
+                SubjectId = ranked?.SubjectId ?? string.Empty,
+                Score = ranked?.Score ?? 0,
+                ReadVersion = answer.ReadVersion,
+            };
+        }
+
+        public async Task<LeaderboardAround> GetAroundMeAsync(LeaderboardKey key, string? subjectId,
+            int window, CancellationToken cancellationToken)
+        {
+            var answer = await ReadPositionAsync(key, subjectId, window, "around", cancellationToken)
+                .ConfigureAwait(false);
+            var around = new LeaderboardAround
+            {
+                Found = answer.Found,
+                ReadVersion = answer.ReadVersion,
+            };
+            var entries = new List<LeaderboardRankedEntry>();
+            foreach (var entry in answer.Entries)
+            {
+                entries.Add(new LeaderboardRankedEntry
+                {
+                    Rank = entry.Rank,
+                    SubjectId = entry.SubjectId,
+                    Score = entry.Score,
+                });
+            }
+            around.Entries = entries;
+            return around;
+        }
+
+        /// <summary>The shared rank/around leg: the two reads differ only in the wire's
+        /// kind word and the window; the mapping onto the leaf shapes reads the answer's
+        /// own shape (a rank's single entry rides the entries list, an around's window
+        /// rides it whole).</summary>
+        private Task<LeaderboardAnswer> ReadPositionAsync(LeaderboardKey key, string? subjectId,
+            int window, string kind, CancellationToken cancellationToken)
+        {
+            if (key is null || string.IsNullOrWhiteSpace(key.BoardId))
+                throw new ArgumentException("A position read names the board it queries.", nameof(key));
+            if (subjectId is { Length: 0 })
+                throw new ArgumentException("A subject id names its subject or stays null.",
+                    nameof(subjectId));
+            return _transport.LeaderboardQueryAsync(new LeaderboardQueryIntent
+            {
+                OperationId = "lb-" + Guid.NewGuid().ToString("N"),
+                Kind = kind,
+                BoardId = key.BoardId,
+                PeriodId = key.PeriodId,
+                ScopeId = key.ScopeId,
+                Subject = (int)key.Subject,
+                SubjectId = subjectId,
+                Window = window,
+            }, cancellationToken);
+        }
 
         public Task DisconnectAsync() => _transport.CloseAsync();
     }

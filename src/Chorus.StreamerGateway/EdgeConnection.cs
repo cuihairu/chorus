@@ -254,7 +254,7 @@ public sealed class EdgeConnection
                 => _login.TryConsume() ? EdgeRateVerdict.Allowed : EdgeRateVerdict.Rejected,
             EdgeTypes.StartGameplay or EdgeTypes.JoinQueue or EdgeTypes.CancelQueue
                 or EdgeTypes.LeaveRound or EdgeTypes.Logout or EdgeTypes.RequestSnapshot
-                or EdgeTypes.GameCommand
+                or EdgeTypes.GameCommand or EdgeTypes.LeaderboardQuery
                 => _control.TryConsume() ? EdgeRateVerdict.Allowed : EdgeRateVerdict.Rejected,
             EdgeTypes.Ack
                 => _ack.TryConsume() ? EdgeRateVerdict.Allowed : EdgeRateVerdict.Dropped,

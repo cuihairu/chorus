@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -76,8 +77,76 @@ namespace Chorus.UnitySdk
         /// closes, and the SDK closes its own side after the send (no ack exists).</summary>
         Task LogoutAsync(string operationId, CancellationToken cancellationToken);
 
+        /// <summary>Asks one leaderboard read and answers the wire's reply (FIX-U3D-13).
+        /// The answer rides the downlink whoever pumps it — a live stream's loop resolves
+        /// it the way it resolves command receipts, and an unsubscribed transport pumps
+        /// its own short loop until the answer lands. Exactly one reply answers each
+        /// operation id.</summary>
+        Task<LeaderboardAnswer> LeaderboardQueryAsync(LeaderboardQueryIntent intent,
+            CancellationToken cancellationToken);
+
         /// <summary>Closes the wire. A closed transport answers nothing further.</summary>
         Task CloseAsync();
+    }
+
+    /// <summary>One leaderboard read the session asks the transport to send (FIX-U3D-13):
+    /// the board's read key and which of the three reads it wants. The tenant and the
+    /// game never ride the client — the edge names them from the connection's session
+    /// facts.</summary>
+    public sealed class LeaderboardQueryIntent
+    {
+        /// <summary>The operation id the SDK generated for this read (diagnostics and the
+        /// answer's address).</summary>
+        public string OperationId { get; set; } = string.Empty;
+
+        /// <summary>Which read: "top", "rank" or "around".</summary>
+        public string Kind { get; set; } = string.Empty;
+
+        public string BoardId { get; set; } = string.Empty;
+
+        /// <summary>Empty = the all-time bucket.</summary>
+        public string? PeriodId { get; set; }
+
+        /// <summary>Empty = the global scope.</summary>
+        public string? ScopeId { get; set; }
+
+        /// <summary>The RANK-01 subject type: 0 player, 1 streamer, 2 faction.</summary>
+        public int Subject { get; set; }
+
+        /// <summary>The subject a rank or around read names; empty reads the connection's
+        /// own identity.</summary>
+        public string? SubjectId { get; set; }
+
+        /// <summary>Top only: the page size (1..1000).</summary>
+        public int MaxEntries { get; set; }
+
+        /// <summary>Around only: the neighbour window (1..50).</summary>
+        public int Window { get; set; }
+
+        /// <summary>Top only: the previous page's continuation cursor.</summary>
+        public string? Cursor { get; set; }
+    }
+
+    /// <summary>The wire's answer to one leaderboard read: the entries at one read view.
+    /// Ranks ride the entries only for an around read; a top page's order is the board's
+    /// order. <see cref="LeaderboardAnswer.Stale"/> true ends a walk — the session turns
+    /// it into <see cref="LeaderboardStaleException"/>.</summary>
+    public sealed class LeaderboardAnswer
+    {
+        public bool Found { get; set; }
+        public bool Stale { get; set; }
+        public IReadOnlyList<LeaderboardRankedWireEntry> Entries { get; set; }
+            = Array.Empty<LeaderboardRankedWireEntry>();
+        public string ReadVersion { get; set; } = string.Empty;
+        public string? NextCursor { get; set; }
+        public bool HasMore { get; set; }
+    }
+
+    public sealed class LeaderboardRankedWireEntry
+    {
+        public long Rank { get; set; }
+        public string SubjectId { get; set; } = string.Empty;
+        public long Score { get; set; }
     }
 
     /// <summary>What one resume hands the transport: the session it resumes, the secret

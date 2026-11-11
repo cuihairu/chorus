@@ -422,6 +422,10 @@ public sealed class RedesignU3D07LoginLinkTests
         public Task LogoutAsync(string operationId, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("the login-link facts never log out.");
 
+        public Task<LeaderboardAnswer> LeaderboardQueryAsync(LeaderboardQueryIntent intent,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the login-link facts never read a leaderboard.");
+
         public Task CloseAsync()
         {
             Sequence.Add("close");

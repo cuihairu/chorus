@@ -24,7 +24,7 @@ public sealed class EdgeWs(
     EdgeSessionClient sessionClient, string gatewayInstanceId,
     EdgeQueueClient? queueClient = null, EdgeRoutingMonitor? routingMonitor = null,
     EdgeRoundClient? roundClient = null, EdgeRoomFanout? fanout = null,
-    EdgeInputClient? inputClient = null)
+    EdgeInputClient? inputClient = null, EdgeLeaderboardClient? leaderboardClient = null)
 {
     private const int ReceiveChunkBytes = 8 * 1024;
 
@@ -229,6 +229,13 @@ public sealed class EdgeWs(
                     var leave = root.Deserialize<EdgeLeaveRound>(EdgeJson.Options)
                         ?? throw new JsonException();
                     await HandleLeaveRoundAsync(connection, leave, cancellation);
+                    break;
+                }
+                case EdgeTypes.LeaderboardQuery:
+                {
+                    var query = root.Deserialize<EdgeLeaderboardQuery>(EdgeJson.Options)
+                        ?? throw new JsonException();
+                    await HandleLeaderboardQueryAsync(connection, query, cancellation);
                     break;
                 }
                 default:
@@ -594,6 +601,152 @@ public sealed class EdgeWs(
             await RefuseAsync(connection, error, leave.OperationId, cancellation, queueErrors: true,
                 invalidText: "The room is not active for this mount.");
         }
+    }
+
+    /// <summary>LeaderboardQuery (FIX-U3D-13): one read against one board's read key, riding
+    /// the session's own tenant and game — the client never names a tenant, and the game is
+    /// the mount's gameplay binding. The three RANK-04/05 reads answer exactly one reply per
+    /// operation id; a stale continuation answers stale=true (restart the walk, never stitch
+    /// pages across versions) and a malformed key refuses as invalid_message. found=false is
+    /// an answer — the subject has not scored.</summary>
+    private async Task HandleLeaderboardQueryAsync(EdgeConnection connection, EdgeLeaderboardQuery query,
+        CancellationToken cancellation)
+    {
+        if (leaderboardClient is null || !connection.HasGameplay || connection.TenantId is not { Length: > 0 })
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "Start gameplay before reading a leaderboard.",
+                OperationId = query.OperationId
+            }, cancellation);
+            return;
+        }
+        if (query.Kind is not ("top" or "rank" or "around") || query.Board is not { Length: > 0 }
+            || query.Subject is < 0 or > 2)
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "A leaderboard query names its kind, board and a RANK-01 subject type.",
+                OperationId = query.OperationId
+            }, cancellation);
+            return;
+        }
+        if (query.Kind == "top" && query.MaxEntries is < 1 or > 1000)
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "A top page is bounded (1..1000).",
+                OperationId = query.OperationId
+            }, cancellation);
+            return;
+        }
+        if (query.Kind == "around" && query.Window is < 1 or > 50)
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = "An around window is bounded (1..50).",
+                OperationId = query.OperationId
+            }, cancellation);
+            return;
+        }
+        try
+        {
+            switch (query.Kind)
+            {
+                case "top":
+                {
+                    var page = await leaderboardClient.GetTopPageAsync(connection.TenantId!,
+                        connection.GameId!, query, cancellation);
+                    await connection.SendJsonAsync(new EdgeLeaderboardReply
+                    {
+                        OperationId = query.OperationId,
+                        Found = true,
+                        Entries = page.Entries,
+                        ReadVersion = page.ReadVersion,
+                        NextCursor = page.NextCursor,
+                        HasMore = page.HasMore,
+                    }, cancellation);
+                    break;
+                }
+                case "rank":
+                {
+                    var subjectId = SubjectIdFor(connection, query);
+                    var rank = await leaderboardClient.GetRankAsync(connection.TenantId!,
+                        connection.GameId!, query, subjectId, cancellation);
+                    await connection.SendJsonAsync(new EdgeLeaderboardReply
+                    {
+                        OperationId = query.OperationId,
+                        Found = rank is not null,
+                        Entries = rank is null
+                            ? Array.Empty<EdgeLeaderboardEntry>()
+                            : [new EdgeLeaderboardEntry
+                                { Rank = rank.Rank, SubjectId = rank.SubjectId, Score = rank.Score }],
+                        ReadVersion = rank?.ReadVersion ?? string.Empty,
+                    }, cancellation);
+                    break;
+                }
+                case "around":
+                {
+                    var subjectId = SubjectIdFor(connection, query);
+                    var around = await leaderboardClient.GetAroundAsync(connection.TenantId!,
+                        connection.GameId!, query, subjectId, cancellation);
+                    await connection.SendJsonAsync(new EdgeLeaderboardReply
+                    {
+                        OperationId = query.OperationId,
+                        Found = around is not null,
+                        Entries = around?.Entries ?? Array.Empty<EdgeLeaderboardEntry>(),
+                        ReadVersion = around?.ReadVersion ?? string.Empty,
+                    }, cancellation);
+                    break;
+                }
+            }
+        }
+        catch (EdgeLeaderboardStaleException)
+        {
+            // The walk's snapshot changed or expired (RANK-06): an answer, not a failure —
+            // the client restarts from the first page with the same read key.
+            await connection.SendJsonAsync(new EdgeLeaderboardReply
+            {
+                OperationId = query.OperationId,
+                Found = true,
+                Stale = true,
+                Entries = Array.Empty<EdgeLeaderboardEntry>(),
+            }, cancellation);
+        }
+        catch (ArgumentException error)
+        {
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InvalidMessage,
+                Message = error.Message,
+                OperationId = query.OperationId
+            }, cancellation);
+        }
+        catch (Exception)
+        {
+            // Everything else is the internal word: the data plane's own refusals (an
+            // unauthorized role, a dead channel) carry no client-actionable detail.
+            await connection.SendJsonAsync(new EdgeError
+            {
+                Code = EdgeErrorCodes.InternalError,
+                Message = "The leaderboard read failed on the data plane.",
+                OperationId = query.OperationId
+            }, cancellation);
+        }
+    }
+
+    /// <summary>The subject a rank or around read names: the client's own identity when it
+    /// names none (the "me" of GetAroundMe), the login's streamer id.</summary>
+    private static string SubjectIdFor(EdgeConnection connection, EdgeLeaderboardQuery query)
+    {
+        var subjectId = query.SubjectId is { Length: > 0 } named ? named : connection.StreamerId;
+        if (subjectId is not { Length: > 0 })
+            throw new ArgumentException("A rank or around read must name its subject.");
+        return subjectId;
     }
 
     /// <summary>The routing watch callback: the mount's room appeared (or moved). The room

@@ -200,6 +200,31 @@ public sealed class RedesignU3D02UnitySdkContractTests
         Assert.Equal(
             [typeof(CancellationToken)],
             logout.GetParameters().Select(p => p.ParameterType).ToList());
+        // The leaderboard reads (FIX-U3D-13): the three RANK-04/05 queries on the read
+        // key — the tenant and the game are the session's own facts, never parameters.
+        var top = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "GetTopAsync");
+        Assert.Equal(typeof(Task<LeaderboardTop>), top.ReturnType);
+        Assert.Equal(
+            [typeof(LeaderboardKey), typeof(int), typeof(string), typeof(CancellationToken)],
+            top.GetParameters().Select(p => p.ParameterType).ToList());
+        var rank = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "GetRankAsync");
+        Assert.Equal(typeof(Task<LeaderboardRank>), rank.ReturnType);
+        Assert.Equal(
+            [typeof(LeaderboardKey), typeof(string), typeof(CancellationToken)],
+            rank.GetParameters().Select(p => p.ParameterType).ToList());
+        var around = Assert.Single(typeof(ChorusSession).GetMethods(), m => m.Name == "GetAroundMeAsync");
+        Assert.Equal(typeof(Task<LeaderboardAround>), around.ReturnType);
+        Assert.Equal(
+            [typeof(LeaderboardKey), typeof(string), typeof(int), typeof(CancellationToken)],
+            around.GetParameters().Select(p => p.ParameterType).ToList());
+        // The read key names board/period/scope/subject — the storage key plus the row
+        // filter, and nothing of the write side's descriptors.
+        Assert.Equal(typeof(string), typeof(LeaderboardKey).GetProperty("BoardId")?.PropertyType);
+        Assert.Equal(typeof(string), typeof(LeaderboardKey).GetProperty("PeriodId")?.PropertyType);
+        Assert.Equal(typeof(string), typeof(LeaderboardKey).GetProperty("ScopeId")?.PropertyType);
+        Assert.Equal(typeof(LeaderboardSubject), typeof(LeaderboardKey).GetProperty("Subject")?.PropertyType);
+        Assert.Equal(2, (int)LeaderboardSubject.Faction);
+        Assert.NotNull(typeof(LeaderboardStaleException).GetConstructor([typeof(string)]));
         Assert.NotNull(typeof(ChorusSession).GetMethod("DisconnectAsync"));
 
         // The stream reads pull-style: Unity's main loop drives it, the SDK never calls

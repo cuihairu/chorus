@@ -99,7 +99,7 @@ public sealed class LeaderboardGrpcService(
     /// next page's cursor exactly when more entries remain.</summary>
     public override async Task<TopNReply> GetTop(GetTopRequest request, ServerCallContext context)
     {
-        var caller = Require(context, "control-server", "game-server", "streamer-server");
+        var caller = Require(context, "control-server", "game-server", "streamer-server", "streamer-gateway");
         var tenantId = ResolveTenant(caller, request.TenantId);
         try
         {
@@ -148,7 +148,7 @@ public sealed class LeaderboardGrpcService(
     /// and tenant; an absent subject answers <c>found=false</c> (it has not scored).</summary>
     public override async Task<RankReply> GetRank(GetRankRequest request, ServerCallContext context)
     {
-        var caller = Require(context, "control-server", "game-server", "streamer-server");
+        var caller = Require(context, "control-server", "game-server", "streamer-server", "streamer-gateway");
         var tenantId = ResolveTenant(caller, request.TenantId);
         try
         {
@@ -174,7 +174,7 @@ public sealed class LeaderboardGrpcService(
     /// <c>found=false</c>.</summary>
     public override async Task<AroundReply> GetAroundMe(GetAroundMeRequest request, ServerCallContext context)
     {
-        var caller = Require(context, "control-server", "game-server", "streamer-server");
+        var caller = Require(context, "control-server", "game-server", "streamer-server", "streamer-gateway");
         var tenantId = ResolveTenant(caller, request.TenantId);
         try
         {

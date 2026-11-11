@@ -118,6 +118,33 @@ namespace Chorus.UnitySdk
         /// does not.</summary>
         Task LogoutAsync(CancellationToken cancellationToken);
 
+        /// <summary>Reads one page of a board's TopN (FIX-U3D-13): the board's declared
+        /// order (score descending, subject id ascending) at one read view, bounded and
+        /// paginated. The tenant and the game are the session's own facts — the key names
+        /// only board/period/scope/subject. <paramref name="cursor"/> continues the walk a
+        /// previous page's <see cref="LeaderboardTop.NextCursor"/> opened; a continuation
+        /// whose board changed or whose snapshot expired throws
+        /// <see cref="LeaderboardStaleException"/> — restart from a cursor-less call,
+        /// never stitch pages across versions.</summary>
+        Task<LeaderboardTop> GetTopAsync(LeaderboardKey key, int maxEntries, string? cursor,
+            CancellationToken cancellationToken);
+
+        /// <summary>Reads one subject's position on a board (FIX-U3D-13): its unique
+        /// ordinal rank and its score, never from different versions.
+        /// <paramref name="subjectId"/> null reads this session's own identity;
+        /// <see cref="LeaderboardRank.Found"/> false is an answer — the subject has not
+        /// scored — not an error.</summary>
+        Task<LeaderboardRank> GetRankAsync(LeaderboardKey key, string? subjectId,
+            CancellationToken cancellationToken);
+
+        /// <summary>Reads the bounded window around one subject's rank (FIX-U3D-13): the
+        /// subject plus this many neighbours on each side, in rank order, at one read
+        /// view. <paramref name="subjectId"/> null centres the window on this session's
+        /// own identity; a subject that has not scored answers
+        /// <see cref="LeaderboardAround.Found"/> false. The window is bounded (1..50).</summary>
+        Task<LeaderboardAround> GetAroundMeAsync(LeaderboardKey key, string? subjectId, int window,
+            CancellationToken cancellationToken);
+
         /// <summary>Closes the wire. The session itself survives server-side: a later
         /// resume with the held secret rotates onto a fresh one (FIX-U3D-11). The session
         /// end that cannot be resumed is <see cref="LogoutAsync"/>.</summary>

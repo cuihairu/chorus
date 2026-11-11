@@ -230,6 +230,10 @@ public sealed class RedesignU3D08MatchRoomLinkTests
         public Task LogoutAsync(string operationId, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("the match-link facts never log out.");
 
+        public Task<LeaderboardAnswer> LeaderboardQueryAsync(LeaderboardQueryIntent intent,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the match-link facts never read a leaderboard.");
+
         public Task CloseAsync() => Task.CompletedTask;
     }
 }

@@ -437,6 +437,10 @@ public sealed class RedesignU3D11ResumeTests
         public Task LogoutAsync(string operationId, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("the resume facts never log out.");
 
+        public Task<LeaderboardAnswer> LeaderboardQueryAsync(LeaderboardQueryIntent intent,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the resume facts never read a leaderboard.");
+
         public Task CloseAsync()
         {
             Sequence.Add("close");

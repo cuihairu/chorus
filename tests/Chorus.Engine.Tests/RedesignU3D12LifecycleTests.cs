@@ -455,6 +455,10 @@ public sealed class RedesignU3D12LifecycleTests
             return Task.CompletedTask;
         }
 
+        public Task<LeaderboardAnswer> LeaderboardQueryAsync(LeaderboardQueryIntent intent,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the lifecycle facts never read a leaderboard.");
+
         public Task CloseAsync()
         {
             Sequence.Add("close");

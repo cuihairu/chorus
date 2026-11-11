@@ -20,6 +20,7 @@ public static class EdgeTypes
     public const string RequestSnapshot = "requestSnapshot";
     public const string LeaveRound = "leaveRound";
     public const string Logout = "logout";
+    public const string LeaderboardQuery = "leaderboardQuery";
     public const string Ping = "ping";
 
     // Downlink (contracts 3.2) plus the transport-level replies.
@@ -30,6 +31,7 @@ public static class EdgeTypes
     public const string Snapshot = "snapshot";
     public const string Delta = "delta";
     public const string CommandReceipt = "commandReceipt";
+    public const string LeaderboardReply = "leaderboardReply";
     public const string SessionReplaced = "sessionReplaced";
     public const string RoomSuspended = "roomSuspended";
     public const string RoundResult = "roundResult";
@@ -39,11 +41,12 @@ public static class EdgeTypes
 
     /// <summary>The uplinks that need an established session (contracts 3.1: no gameplay
     /// traffic before the login establishes one). Login, resume, logout and ping build or end
-    /// the session and are not guarded by it.</summary>
+    /// the session and are not guarded by it. A leaderboard read rides the session's own
+    /// tenant and game (FIX-U3D-13) — the connection names them, never the client.</summary>
     public static bool RequiresSession(string type) => type switch
     {
         StartGameplay or JoinQueue or CancelQueue or GameCommand or Ack or RequestSnapshot
-            or LeaveRound => true,
+            or LeaveRound or LeaderboardQuery => true,
         _ => false,
     };
 }

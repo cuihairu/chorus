@@ -48,6 +48,12 @@ namespace Chorus.UnitySdk.Edge
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string,
             TaskCompletionSource<CommandReceiptFrame>> _receipts = new();
 
+        /// <summary>The leaderboard reads awaiting their reply (FIX-U3D-13), keyed by the
+        /// operation id. The same reader resolves them as the receipts: a live stream's
+        /// loop, or the query leg's own short pump when no stream owns the downlink.</summary>
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string,
+            TaskCompletionSource<LeaderboardReplyFrame>> _leaderboards = new();
+
         /// <summary>The per-connection client sequence the wire's gameCommand carries
         /// (diagnostics for the seat's Applied word; the durable store assigns its own).</summary>
         private long _clientSequence;
@@ -417,6 +423,104 @@ namespace Chorus.UnitySdk.Edge
             await CloseAsync().ConfigureAwait(false);
         }
 
+        /// <summary>Asks one leaderboard read (FIX-U3D-13). The registration precedes the
+        /// send, so the reply whoever reads always finds its waiter. With no live stream
+        /// the query leg pumps its own short loop — reads happen in the lobby too, where
+        /// no stream owns the downlink — lending every frame that is not the answer to
+        /// the unclaimed queue for the stream that may subscribe later; with a live
+        /// stream the answer rides the pumping exactly like an intent's receipt, and a
+        /// game that stops advancing the stream stops its own reads.</summary>
+        public async Task<LeaderboardAnswer> LeaderboardQueryAsync(LeaderboardQueryIntent intent,
+            CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrEmpty(intent.OperationId))
+                throw new ArgumentException("A read carries the operation id the SDK generated.",
+                    nameof(intent));
+            if (string.IsNullOrEmpty(intent.BoardId))
+                throw new ArgumentException("A read names the board it queries.", nameof(intent));
+            if (intent.Subject is < 0 or > 2)
+                throw new ArgumentException("The subject type is not a RANK-01 subject type.",
+                    nameof(intent));
+            if (intent.Kind == "top")
+            {
+                if (intent.MaxEntries is < 1 or > 1000)
+                    throw new ArgumentException("A top page is bounded (1..1000).", nameof(intent));
+            }
+            else if (intent.Kind == "around")
+            {
+                if (intent.Window is < 1 or > 50)
+                    throw new ArgumentException("An around window is bounded (1..50).", nameof(intent));
+            }
+            else if (intent.Kind != "rank")
+            {
+                throw new ArgumentException("A read is one of top, rank or around.", nameof(intent));
+            }
+            var socket = RequireSocket();
+            var waiter = new TaskCompletionSource<LeaderboardReplyFrame>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _leaderboards[intent.OperationId] = waiter;
+            try
+            {
+                await SendAsync(socket, new LeaderboardQueryFrame
+                {
+                    OperationId = intent.OperationId,
+                    Kind = intent.Kind,
+                    Board = intent.BoardId,
+                    PeriodId = intent.PeriodId ?? string.Empty,
+                    ScopeId = intent.ScopeId ?? string.Empty,
+                    Subject = intent.Subject,
+                    SubjectId = intent.SubjectId,
+                    MaxEntries = intent.MaxEntries,
+                    Window = intent.Window,
+                    Cursor = intent.Cursor,
+                }, cancellationToken).ConfigureAwait(false);
+                if (_activeStream is null)
+                {
+                    // The lobby pump: no live stream owns the downlink, so this leg reads
+                    // until its answer lands. Everything else — the room lanes a later
+                    // subscribe will want, another read's reply — resolves or parks in the
+                    // ordinary way.
+                    while (!waiter.Task.IsCompleted)
+                    {
+                        var text = await ReceiveTextAsync(socket, cancellationToken)
+                            .ConfigureAwait(false);
+                        if (!DispatchDownlink(text))
+                        {
+                            _unclaimed.Enqueue((FrameType(text), text));
+                        }
+                    }
+                }
+                var reply = await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (reply.Stale)
+                    throw new LeaderboardStaleException(
+                        "the read's snapshot changed or expired; restart the walk.");
+                var answer = new LeaderboardAnswer
+                {
+                    Found = reply.Found,
+                    Stale = reply.Stale,
+                    ReadVersion = reply.ReadVersion,
+                    NextCursor = reply.NextCursor,
+                    HasMore = reply.HasMore,
+                };
+                var entries = new List<LeaderboardRankedWireEntry>();
+                foreach (var entry in reply.Entries)
+                {
+                    entries.Add(new LeaderboardRankedWireEntry
+                    {
+                        Rank = entry.Rank,
+                        SubjectId = entry.SubjectId,
+                        Score = entry.Score,
+                    });
+                }
+                answer.Entries = entries;
+                return answer;
+            }
+            finally
+            {
+                _leaderboards.TryRemove(intent.OperationId, out _);
+            }
+        }
+
         /// <summary>Hands a receipt the stream read to its waiter, or drops it: an
         /// unwaited receipt is the Applied word of a send already answered — the durable
         /// proof of consumption is the consuming delta's effects, which the stream
@@ -430,11 +534,61 @@ namespace Chorus.UnitySdk.Edge
             }
         }
 
+        /// <summary>Hands a leaderboard reply to its waiter, or drops it: an unwaited
+        /// reply is a read the caller gave up on — the wire answers every operation id
+        /// exactly once, and a reply with no waiter has no reader left.</summary>
+        private void ResolveLeaderboard(string json)
+        {
+            var reply = Deserialize<LeaderboardReplyFrame>(json);
+            if (_leaderboards.TryRemove(reply.OperationId, out var waiter))
+            {
+                waiter.TrySetResult(reply);
+            }
+        }
+
+        /// <summary>One downlink frame, dispatched the way a reader would: a receipt or
+        /// leaderboard reply resolves its waiter, an error names its operation's waiter,
+        /// and the room lanes stay for whoever reads next. True when the frame resolved
+        /// a waiter (the lobby pump then does not park it).</summary>
+        private bool DispatchDownlink(string text)
+        {
+            var type = FrameType(text);
+            switch (type)
+            {
+                case "commandReceipt":
+                    ResolveReceipt(text);
+                    return true;
+                case "leaderboardReply":
+                    ResolveLeaderboard(text);
+                    return true;
+                case "error":
+                    var error = Deserialize<ErrorFrame>(text);
+                    if (error.OperationId is { Length: > 0 }
+                        && RefuseWaiting(error.OperationId, error.Code, error.Message))
+                    {
+                        return true;
+                    }
+                    throw new EdgeProtocolException(error.Code, error.Message);
+                default:
+                    return false;
+            }
+        }
+
         /// <summary>Answers a waiting send with the edge's refusal of its own command.
         /// True when the operation id named a send this transport is still waiting on.</summary>
         private bool RefuseWaitingReceipt(string operationId, string code, string message)
         {
             if (!_receipts.TryRemove(operationId, out var waiter)) return false;
+            waiter.TrySetException(new EdgeProtocolException(code, message));
+            return true;
+        }
+
+        /// <summary>The refusal names a receipt waiter first, then a leaderboard read —
+        /// both are operation-id-addressed answers on the same wire (FIX-U3D-13).</summary>
+        private bool RefuseWaiting(string operationId, string code, string message)
+        {
+            if (RefuseWaitingReceipt(operationId, code, message)) return true;
+            if (!_leaderboards.TryRemove(operationId, out var waiter)) return false;
             waiter.TrySetException(new EdgeProtocolException(code, message));
             return true;
         }
@@ -661,7 +815,7 @@ namespace Chorus.UnitySdk.Edge
                         case "error":
                             var error = Deserialize<ErrorFrame>(json);
                             if (error.OperationId is { Length: > 0 }
-                                && _transport.RefuseWaitingReceipt(error.OperationId, error.Code, error.Message))
+                                && _transport.RefuseWaiting(error.OperationId, error.Code, error.Message))
                             {
                                 // A refused command answers its own send (the edge names the
                                 // command id on the refusal): the waiting sender hears it and
@@ -681,6 +835,12 @@ namespace Chorus.UnitySdk.Edge
                             // The accepted word of an intent send (FIX-U3D-10): the stream
                             // owns the downlink and resolves the waiting send.
                             _transport.ResolveReceipt(json);
+                            continue;
+                        case "leaderboardReply":
+                            // The answer to a leaderboard read (FIX-U3D-13): the stream
+                            // owns the downlink and resolves the waiting read, the same
+                            // ride the receipts take.
+                            _transport.ResolveLeaderboard(json);
                             continue;
                         default:
                             throw new EdgeProtocolException("invalidFrame",
@@ -1149,6 +1309,81 @@ namespace Chorus.UnitySdk.Edge
 
             [JsonPropertyName("operationId")]
             public string OperationId { get; set; } = string.Empty;
+        }
+
+        private sealed class LeaderboardQueryFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "leaderboardQuery";
+
+            [JsonPropertyName("operationId")]
+            public string OperationId { get; set; } = string.Empty;
+
+            [JsonPropertyName("kind")]
+            public string Kind { get; set; } = string.Empty;
+
+            [JsonPropertyName("board")]
+            public string Board { get; set; } = string.Empty;
+
+            [JsonPropertyName("periodId")]
+            public string PeriodId { get; set; } = string.Empty;
+
+            [JsonPropertyName("scopeId")]
+            public string ScopeId { get; set; } = string.Empty;
+
+            [JsonPropertyName("subject")]
+            public int Subject { get; set; }
+
+            [JsonPropertyName("subjectId")]
+            public string? SubjectId { get; set; }
+
+            [JsonPropertyName("maxEntries")]
+            public int MaxEntries { get; set; }
+
+            [JsonPropertyName("window")]
+            public int Window { get; set; }
+
+            [JsonPropertyName("cursor")]
+            public string? Cursor { get; set; }
+        }
+
+        private sealed class LeaderboardReplyFrame
+        {
+            [JsonPropertyName("type")]
+            public string Type => "leaderboardReply";
+
+            [JsonPropertyName("operationId")]
+            public string OperationId { get; set; } = string.Empty;
+
+            [JsonPropertyName("found")]
+            public bool Found { get; set; }
+
+            [JsonPropertyName("stale")]
+            public bool Stale { get; set; }
+
+            [JsonPropertyName("entries")]
+            public List<LeaderboardWireEntry> Entries { get; set; } = new();
+
+            [JsonPropertyName("readVersion")]
+            public string ReadVersion { get; set; } = string.Empty;
+
+            [JsonPropertyName("nextCursor")]
+            public string? NextCursor { get; set; }
+
+            [JsonPropertyName("hasMore")]
+            public bool HasMore { get; set; }
+        }
+
+        private sealed class LeaderboardWireEntry
+        {
+            [JsonPropertyName("rank")]
+            public long Rank { get; set; }
+
+            [JsonPropertyName("subjectId")]
+            public string SubjectId { get; set; } = string.Empty;
+
+            [JsonPropertyName("score")]
+            public long Score { get; set; }
         }
     }
 

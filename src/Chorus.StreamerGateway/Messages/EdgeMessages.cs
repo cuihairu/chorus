@@ -289,3 +289,58 @@ public sealed record EdgeCommandReceipt
     public required string Status { get; init; }
     public required string ReceiptId { get; init; }
 }
+
+/// <summary>LeaderboardQuery (FIX-U3D-13): one read against one board's read key — board,
+/// period bucket (empty = the all-time bucket), scope (empty = the global scope), subject
+/// type and one of three kinds. The tenant and the game ride the connection's session facts
+/// (the edge names them, never the client); a rank or around read with no subject id reads
+/// the connection's own identity. Exactly one leaderboardReply answers each operation id.</summary>
+public sealed record EdgeLeaderboardQuery
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.LeaderboardQuery;
+    public required string OperationId { get; init; }
+    /// <summary>"top", "rank" or "around" — the three RANK-04/05 reads.</summary>
+    public required string Kind { get; init; }
+    public required string Board { get; init; }
+    public string PeriodId { get; init; } = string.Empty;
+    public string ScopeId { get; init; } = string.Empty;
+    /// <summary>The RANK-01 subject type: 0 player, 1 streamer, 2 faction.</summary>
+    public int Subject { get; init; }
+    public string? SubjectId { get; init; }
+    /// <summary>Top only: the bounded page size (1..1000).</summary>
+    public int MaxEntries { get; init; }
+    /// <summary>Around only: the bounded neighbour window (1..50).</summary>
+    public int Window { get; init; }
+    /// <summary>Top only: the previous page's continuation cursor (empty starts a walk).</summary>
+    public string? Cursor { get; init; }
+}
+
+/// <summary>LeaderboardReply (FIX-U3D-13): the answer to one leaderboard read, at one read
+/// view. The entries carry ranks only for an around read (a top page's ordinals ride its
+/// order, not a rank column). found=false is an answer (the subject has not scored), not an
+/// error; stale=true ends a walk whose snapshot changed or expired — the client restarts
+/// from the first page, never stitching across versions.</summary>
+public sealed record EdgeLeaderboardReply
+{
+    [JsonPropertyName("type")]
+    public string Type => EdgeTypes.LeaderboardReply;
+    public required string OperationId { get; init; }
+    public bool Found { get; init; }
+    public bool Stale { get; init; }
+    public required IReadOnlyList<EdgeLeaderboardEntry> Entries { get; init; }
+    /// <summary>The board's read version at the same snapshot (the opaque "O" string;
+    /// empty when the board has never scored).</summary>
+    public string ReadVersion { get; init; } = string.Empty;
+    /// <summary>Top only: the next page's cursor, present exactly when hasMore.</summary>
+    public string? NextCursor { get; init; }
+    public bool HasMore { get; init; }
+}
+
+public sealed record EdgeLeaderboardEntry
+{
+    /// <summary>Zero on a top entry — the page's order is the board's order.</summary>
+    public long Rank { get; init; }
+    public required string SubjectId { get; init; }
+    public long Score { get; init; }
+}

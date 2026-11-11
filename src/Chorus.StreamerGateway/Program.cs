@@ -148,8 +148,14 @@ if (routingMonitor is not null)
         }
     };
 }
+// The leaderboard read boundary (FIX-U3D-13) rides the same data-plane endpoint as the
+// queue and the input legs; the data host authorizes the gateway's role on the three reads.
+var leaderboardClient = new EdgeLeaderboardClient(
+    () => ProcessGrpcClientFactory.Create(new Uri(dataEndpoint), serverCertificate,
+        root, nodeAuthority, clusterId, "data-server"));
 var edgeWs = new EdgeWs(edgeOptions, registry, tenantApplications, sessionClient,
-    identity.ProcessInstanceId, queueClient, routingMonitor, roundClient, fanout, inputClient);
+    identity.ProcessInstanceId, queueClient, routingMonitor, roundClient, fanout, inputClient,
+    leaderboardClient);
 
 // Instance self-registration (architecture 4.4): the gateway reports its internal gRPC
 // endpoint — routing consumers are cluster processes, never public clients. The same control
