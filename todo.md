@@ -382,7 +382,8 @@
   - 证据：bf31db7；ChorusSdk 编排（挂载恰一次+每连新 attempt/secret+半开必关线）+IChorusTransport 接缝；EdgeChorusTransport 说边线 JSON/WSS（hello→login→startGameplay）+EdgeSdk.Create；+10 fact 全绿含 2 真网关端到端（篡改凭据→session_revoked 线上码）；门禁 2053 测试首轮 99 败 92=inotify(128)耗尽级联，背靠背 99→3 只剩 M2 三连=共租签名非回归。
 - [x] **FIX-U3D-08 / P1：接通匹配与原子入房。** 依赖：FIX-U3D-07、FIX-LINK-03、FIX-LINK-04、FIX-END-16。
   - 证据：e23bed2；ChorusSession 三方法（join/cancel/awaitRoom）+JoinMatchIntent/MatchTicket/JoinedRoom 类型；AwaitRoom 读 matchStatus(Matched)+roomJoined 齐才答；+6 fact 全绿含双客户端同房端到端；门禁 2059 测试 9 败零 NEW（M2 三连+FanoutReclaim+FrameCapacity+TakeoverKill 既裁；三新面孔 solo 全绿=纯负载）。
-- [ ] **FIX-U3D-09 / P0：实现 Unity 快照与增量应用器。** 依赖：FIX-U3D-02、FIX-LINK-10、FIX-SYNC-01。
+- [x] **FIX-U3D-09 / P0：实现 Unity 快照与增量应用器。** 依赖：FIX-U3D-02、FIX-LINK-10、FIX-SYNC-01。
+  - 证据：896ad18；叶子 SyncApplier 逐条移植参照应用器（有序规则+13 reason 一字不差）+SubscribeAsync 接线（边线无 subscribe 帧→ack 位置声明+requestSnapshot 重基线，EdgeSyncStream 拉式独占下行、supersession 拒推进、roomJoined 身份盖帧、result 用流上已见版本补齐线缺、终局后收流）；+20 fact 全绿含 4 真集群端到端（头快照+链式增量/重订阅重基线/异房 invalid_message/终局收流）；门禁 2079 测试 4 败零 NEW（M2 三连+FanoutReclaim 既裁）。
 - [ ] **FIX-U3D-10 / P0：接通 Unity 操作意图发送。** 依赖：FIX-U3D-07、FIX-LINK-09、FIX-SYNC-09。
 - [ ] **FIX-U3D-11 / P0：实现 Unity 重连与原局追赶。** 依赖：FIX-U3D-07、FIX-U3D-09、FIX-SYNC-03。
 - [ ] **FIX-U3D-12 / P1：接通暂停、恢复就绪与正常退出。** 依赖：FIX-U3D-09、FIX-U3D-11、FIX-SYNC-08、FIX-LINK-12、FIX-END-13。
