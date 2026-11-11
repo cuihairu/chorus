@@ -302,7 +302,8 @@
   - 证据：22900c1；生成器+漂移门（重渲染==已提交，CHORUS_REGEN_ADMIN_TS=1 再生）；int64 族实测为 JSON 数字（WEB-03 真端点见证断言钉死）；pnpm build 绿+页面测试 6/6+.NET 定向 5/5
 - [x] **FIX-WEB-06 / P1：实现节点与进程管理页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-07。
   - 证据：55b9fe8；`NodesPage` 接 nodes 路由：机器卡（60m 窗每节点最新样本：CPU/内存/负载三点/末次样本/样本数，disk 挂载行走展开行）+ 进程卡（每受监督进程一行：进程实例/角色/CPU/内存 MB/运行时长）双面独立应答（loading|error|data、Promise.allSettled、一卡之败是该卡的错误词）；节点筛选 Select（选项来自机器面节点清单，选中后两 face 都带 `&nodeId=` 收窄重取）+ 刷新；+3 console fact（29→32：两 face 数字按面渲染含展开行与 bearer 核对、一 face 500 只错该卡、命名节点两 face 收窄重取+刷新保窄）；**抓出并修 OBS-14 真缺陷**：总览页统计 GET 用了裸 `/rooms/stats` 路径而统计面实际住在控制面 `/api` 组（`/api/rooms/stats` 等）——后缀匹配的测试 mock 掩盖了前缀错误，生产上七卡全 404；修页路径+`getAdminJson` 文档注明 `/api` 前缀+vite dev proxy 增 `/api` 转发+overview/nodes 测试钉死全 URL 防回归；pnpm frozen install+test 32/32 三连绿+build 绿；无 .NET 改动（遥测面已各自门禁于 OBS-07/15），全量门不重跑（同 WEB-10 先例）。
-- [ ] **FIX-WEB-07 / P1：实现房间详情页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-08。
+- [x] **FIX-WEB-07 / P1：实现房间详情页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-08。
+  - 证据：62d22b4；`RoomsPage` 接 rooms 路由：三面各自应答（Face 三态+形状守卫）——活值统计卡（total/active/byState/byTenant）、房间记录卡（行点击选中）、房间详情卡（选中才取 `/api/rooms/{id}`：生命周期 Descriptions+待处理事件+连接表，无选中只给提示词零请求）；刷新保窄重取详情。+3 console fact（两活值面+bearer/全 URL 钉死、点击行读详情面恰一次精确 URL、详情 500 只错该卡）；fixture 两房间不同 region 防 getByText 多元素撞车。pnpm frozen 绿；`vitest run --maxWorkers=2` 三连 35/35 绿（co-tenancy 震荡 2..26 下全并行 jsdom 实例挤压菜单竞态连片败——solo 全绿+干净树对照同败 6/32 零 NEW，绑 2 worker 稳定，同 dotnet 门 taskset 精神）+build 绿；无 .NET 改动不重跑全量门（WEB-10/OBS-14 先例）；顺带统一加厚菜单挂载竞态吸收垫（epoch/operations/leaderboard 菜单点击 5s、login/i18n 等 waitFor 5s、epoch/login 10s——测试基建非产品）。
 - [ ] **FIX-WEB-08 / P1：实现主播与匹配页面。** 依赖：FIX-WEB-04、FIX-WEB-05、FIX-OBS-09。
 - [x] **FIX-WEB-09 / P0：接通管理操作提交与结果查询 API。** 依赖：FIX-WEB-03、FIX-GM-07。
   - 证据：a890110；store 2/2 + 浏览器 face host 1/1（dispatch→DurableAccepted→Applied 数字 tick→无 scope 同答→Audited 证据→NotFound）；回归 9 绿；gate 1880/1886（6 既有文档签名零新）
