@@ -197,15 +197,22 @@ public sealed class RedesignU3D07LoginLinkTests
         Assert.Equal("session_revoked", failure.Code);
     }
 
-    private static SdkConfiguration Configuration(IPlatformAdapter adapter) => new()
+    private static SdkConfiguration Configuration(IPlatformAdapter adapter) => ConfigurationLike(adapter, 9);
+
+    /// <summary>The configuration the match-link facts share with the login-link facts.</summary>
+    internal static SdkConfiguration ConfigurationLike(IPlatformAdapter adapter, int gatewayPort) => new()
     {
         Platform = adapter.PlatformName,
         AppId = "app-1",
         Tenant = "tenant-a",
         GameId = "game-a",
-        Endpoint = "https://gateway.test:9",
+        Endpoint = $"https://localhost:{gatewayPort}",
         Role = "streamer",
     };
+
+    /// <summary>The platform adapter the match-link facts share with the login-link facts.</summary>
+    internal static IPlatformAdapter FakeAdapterLike(string platform, string streamerId, string credential) =>
+        new FakeAdapter(platform, streamerId, credential);
 
     /// <summary>The test certificates chain to a private root: the transport's
     /// certificate override validates against that root and its node authority, the
@@ -310,6 +317,16 @@ public sealed class RedesignU3D07LoginLinkTests
             Assert.Equal("game-a", gameId);
             return Task.FromResult("binding-1");
         }
+
+        public Task<MatchTicket> JoinMatchAsync(JoinMatchIntent intent, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the login-link facts never join a match.");
+
+        public Task<MatchTicket> CancelMatchAsync(string operationId, string ticketId,
+            CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the login-link facts never cancel a match.");
+
+        public Task<JoinedRoom> AwaitRoomAsync(CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("the login-link facts never await a room.");
 
         public Task CloseAsync()
         {
