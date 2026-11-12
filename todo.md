@@ -550,3 +550,13 @@
 - [ ] 旧 `Chorus.SampleGame` 与新 `Chorus.ExampleGame` 并存，模块目录按时代切分而非玩法域；接口差异需要同时读两个项目。（src/Chorus.SampleGame/SampleGameModule.cs:6，src/Chorus.ExampleGame/ExampleGameModule.cs:9）
 - [ ] `Chorus.Control`/`Chorus.ControlHost` 与 `Chorus.ControlServer` 都使用控制域命名，但前者是旧控制台/持久化路径，后者是重设计控制面，入口命名不足以区分。（src/Chorus.Control/ControlDatabase.cs:13，src/Chorus.ControlServer/RedesignControlStore.cs:170）
 - [ ] `Chorus.RoundDemo` 位于 src 但承担演示/验收场景，与正式服务目录和 tests 目录都存在归类歧义。（src/Chorus.RoundDemo/RoundDemoScenario.cs:40，tests/Chorus.Engine.Tests/RoundDemoScenarioTests.cs:1）
+
+## Codex 深审发现（2026-11-12，luna profile 近5 commit+工作区审核，1C/3M/3m，待修）
+
+- [x] [C] 回滚 RedesignMatchReservationStore.cs:217 约束名——**裁定为误报，fix 保留（2026-11-13）**：DDL `src/Chorus.Data/Schema/0002_core_schema.sql:205-207` 为 `CREATE TABLE match.reservation (... room_id text NOT NULL UNIQUE ...)`，PG 默认唯一约束名 = `<不带 schema 前缀的表名>_room_id_key` = **`reservation_room_id_key`**（Codex 主张的 `match_reservation_room_id_key` 在 DDL 中不存在，永远无法匹配——旧名下 23505 分支是死代码、裸 23505 穿面，恰是 Codex 所担心的事）。修复 commit `524a43d`；回归证据 `RedesignMatchGrpcFaceTests.ReserveMatchRefusesASecondReservationOfTheSameRoom`（RedesignMatchGrpcFaceTests.cs:205，新名下命中映射拒绝 `FailedPrecondition "The room is already reserved by another match."` 而非裸 23505，45/45 绿）。
+- [ ] [M] 全部 69 个含 DROP DATABASE 的测试夹具补 42501 有界重试（现只修 3 个新夹具）——锁外 pid 权限竞态同型残留
+- [ ] [M] PlatformIngestGrpcService.IngestBatch 捕获 JsonException 映射 InvalidArgument（src/Chorus.DataServer/PlatformIngestGrpcService.cs:26）——非法 JSON 无法按 gRPC 状态分支
+- [ ] [M] GetCloseCompletion 显式校验负数 ExpectedTasks 抛 RpcException（src/Chorus.DataServer/PlatformTaskGrpcService.cs:144）——裸 CLR 异常穿 gRPC 面
+- [ ] [m] Ingest 坏 JSON 幂等键不消耗的可重试性测试——明确失败路径能否原样重发同一 OperationId
+- [ ] [m] COV-02d 的 CI/coverage 结论补仓库内可复核证据（todo.md:507）——外部 run/Codecov 数字无法从 git 树验证
+- [ ] [m] 收敛新增 gRPC face 测试对内部 .Parameter 消息后缀的强耦合断言（RedesignPlatformTaskGrpcFaceTests.cs:107）——参数名不应成为隐式公共契约
