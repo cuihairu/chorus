@@ -138,7 +138,18 @@ public sealed class RedesignSettlementStore(string connectionString, Action<int>
             ledger.Parameters.AddWithValue("delta", grant.Delta);
             ledger.Parameters.AddWithValue("reason", $"settlement:{roomId}/{grant.GrantKey}");
             ledger.Parameters.AddWithValue("balance", balance);
-            await ledger.ExecuteNonQueryAsync(cancellationToken);
+            try
+            {
+                await ledger.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (PostgresException error) when (error.SqlState == "23505")
+            {
+                // The grant identity is scoped by its room, but the ledger key spans the
+                // game: a grant id already spent under another room lands here instead of
+                // the receipt conflict, and it must refuse before any account moves twice.
+                throw new SettlementRejectedException(
+                    $"The grant operation id {grant.OperationId} was already spent under another room.");
+            }
         }
         await using (var mark = new NpgsqlCommand("""
             UPDATE settlement.grant SET status='Granted'
