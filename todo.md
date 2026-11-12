@@ -399,6 +399,13 @@
 - [x] **审核修复批（2026-10-20）P0 三项。** 依据：~/.hermes/cache/scratch/tasks/chorus-audit-fix.md。
   - 证据：b6999e4/fd6a9d2/3cec846；**P0-1** BootstrapAgent.cs:251 TryStartSlot 三调用点含异常（包 hash 不符、Process.Start 失败原在 `_gate` 锁内冒出 supervisor 放倒全 agent）——记 warning+slot 自身崩溃窗（剪枝/退避 `CrashBackoffSeconds`/窗内 5 败隔离 `_quarantinedUtc`）+SaveJournal，绝不冒泡；回归 M3 fact（临时破 DLL+provision 后 tamperSeed，agent 存活+control/data Ready+破 slot 隔离+输出 "failed to start"，旧码首 tick 即死）。**P0-2** RoomActor.cs:969 CommitAttemptDeadline=max(2s,TickMs*8)+:975 WaitForNextRetryAsync 250ms 分片 `_stopped`/`_runState==Running` 检查（重试链以 tick 未发布收尾）——原 10s/轮×8 轮 30s+ 卡死 loop；回归 FrameCommit 两 fact（deadline≈2s 记录；首攻挂起 DeadlineExceeded→二攻落成、总代价<6s）。**P0-3** RedesignRoundInputStore.cs:166 Pass 3 FOR UPDATE SKIP LOCKED——**诚实评估：Pass 2 binding FOR UPDATE 已序列化共享事件的两次 pass**（落败方 ReadCommitted 新快照见胜方已提交 Routed 被过滤），主键冲突在可达交错下不可发生，本修复是加固（安全局部化事件行、抗锁序改动）；并发回归 RoundInputStore fact（两房两绑定各 20 事件、并集 40 无重复、每房序列 1..20、按 source_dedup_key 断言每房交割恰 20、cursor=21、跟进空窗）；定向 P0 族 28/28 绿（1m59s）、四 commit 全推。
 - [ ] **FIX-U3D-16 / P1：验收平台条件编译与 Unity 运行兼容性。** 依赖：FIX-U3D-05、FIX-U3D-06、FIX-U3D-09。
+  - 阻塞：无 Unity Editor（本机 headless；asmdef defineConstraints 是 Unity 侧条件编译，非 dotnet 可测）。诚实：U3D-04/05/06 已交付的 headless 部分（包源结构/asmdef 零约束/符号互锁）为本项可验子集，其余待 Unity Editor 环境；dotnet 侧无可验增量。
+- [ ] **FIX-U3D-17 / P0：验收抖音从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。
+  - 阻塞：需真实平台凭证（抖音开发者账号+能力开通+测试主播+礼物订阅；U3D-14 研究已钉「需权限」行）。诚实：无凭证则真实链路不可跑，契约面已由 U3D-14/15 交付。
+- [ ] **FIX-U3D-18 / P1：发布可复用 SDK 包及中英文快速接入文档。** 依赖：FIX-U3D-04、FIX-U3D-15、FIX-U3D-16、FIX-U3D-17、FIX-U3D-19。
+  - 阻塞：依赖 U3D-16/17/19（Unity Editor + 双平台真实凭证）。诚实：U3D-06 已交付包源双主业化（dotnet 契约源+UPM 包源零同步），待前项放行后包装发布。
+- [ ] **FIX-U3D-19 / P0：验收快手从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。
+  - 阻塞：需真实平台凭证（快手开放平台账号+能力开通+测试主播+礼物订阅；快手 IPC 原生库 Windows-only 亦需 Windows 环境）。诚实：无凭证/Windows 环境则真实链路不可跑，契约面已由 U3D-14/15 交付。
 - [ ] **FIX-U3D-17 / P0：验收抖音从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。
 - [ ] **FIX-U3D-18 / P1：发布可复用 SDK 包及中英文快速接入文档。** 依赖：FIX-U3D-04、FIX-U3D-15、FIX-U3D-16、FIX-U3D-17、FIX-U3D-19。
 - [ ] **FIX-U3D-19 / P0：验收快手从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。
@@ -436,7 +443,8 @@
 
 ### 22.20 房间恢复方案的跨阶段屏障与容量验收（P0/P1）
 
-- [ ] **FIX-REC-01 / P0：接通恢复准备、双 Gateway 路由与 Actor 激活屏障。** 依赖：FIX-TAKE-03、FIX-TAKE-04、FIX-LINK-08、FIX-END-03。
+- [x] **FIX-REC-01 / P0：接通恢复准备、双 Gateway 路由与 Actor 激活屏障。** 依赖：FIX-TAKE-03、FIX-TAKE-04、FIX-LINK-08、FIX-END-03。
+  - 证据：de6eb0c/60710ce；恢复不再「恢复即开跑」——RecoverRoom 延迟持有（Recovered=true/Status="Ready"，绝不重 pin）+恢复操作新增 Prepared 相位（MarkRoomRecoveryPreparedAsync 延 deadline +45s 挺过 transfer lease）+按角色路由屏障（WaitForRecoveryRoutesConfirmedAsync 150ms 轮询/10s 超时，任一已部署网关角色有注册进程但零确认当前快照版本即关、无人部署角色空泛、裸集群空泛、确认=该版本 routing_confirm 行）+屏障通过才 ActivateRoom fenced confirm 授予（授予=激活，保真 sweep 收敛不变式：持有期 ownership 仍 Recovering，过期 Prepared 可被 sweep 换代重派、旧目标持 Actor 被 fence）+共享 RecoverRoomWithBarrierAsync（TakeoverRoom 与 AdminGrpcService.RetryRoomRecovery 同驱，admin 重复流删）+回复 Status 激活后回真实后调用状态 "Running"；测试 RedesignRec01DeferredRecoveryUnitTests 4 + RedesignRec01RouteBarrierStoreTests 4 + RedesignRecoveryOperationTests +2；定向 33/33 绿（28s）；M3 家族 7/9（M3TakeoverHost/M3RecoverySweep/M3DoubleTakeover/Gm05 四逻辑关键全绿；M3AdminHost 队列配对 solo 绿=负载 flake；M3TakeoverKill 重派三棵树同败=既有环境族先于 REC-01）；台账 redesign-m3-implementation.md（FIX-REC-01）。
 - [ ] **FIX-REC-02 / P1：验收长局及批量房间恢复容量。** 依赖：FIX-READ-05、FIX-TAKE-08、FIX-REC-01。
 
 ### 22.21 测试覆盖率补测（2026-10-20 巡检单）
