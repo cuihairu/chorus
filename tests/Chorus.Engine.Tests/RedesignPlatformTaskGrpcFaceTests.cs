@@ -470,20 +470,7 @@ public sealed class RedesignPlatformTaskGrpcFaceTests
             // milliseconds, so a short bounded retry settles it.
             await using var admin = new NpgsqlConnection(_admin.ConnectionString);
             await admin.OpenAsync();
-            for (var attempt = 1; ; attempt++)
-            {
-                try
-                {
-                    await using var drop = new NpgsqlCommand(
-                        $"DROP DATABASE IF EXISTS \"{_name}\" WITH (FORCE)", admin);
-                    await drop.ExecuteNonQueryAsync();
-                    return;
-                }
-                catch (PostgresException error) when (error.SqlState == "42501" && attempt < 5)
-                {
-                    await Task.Delay(100 * attempt);
-                }
-            }
+            await TestDatabaseDrop.DropAsync(admin, _name);
         }
     }
 }

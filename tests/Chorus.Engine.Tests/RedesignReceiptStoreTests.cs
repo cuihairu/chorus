@@ -11,7 +11,7 @@ public sealed class RedesignReceiptStoreTests
     [Fact]
     public async Task ConcurrentRetry_AppliesEffectOnceAndReturnsOriginalReceipt()
     {
-        using var database = new IsolatedReceiptDatabase();
+        await using var database = new IsolatedReceiptDatabase();
         await database.MigrateAsync();
         var store = new PostgresOperationReceiptStore(database.ConnectionString);
         var identity = NewIdentity();
@@ -38,7 +38,7 @@ public sealed class RedesignReceiptStoreTests
     [Fact]
     public async Task ChangedRequest_ConflictsWithoutApplyingAnotherEffect()
     {
-        using var database = new IsolatedReceiptDatabase();
+        await using var database = new IsolatedReceiptDatabase();
         await database.MigrateAsync();
         var store = new PostgresOperationReceiptStore(database.ConnectionString);
         var identity = NewIdentity();
@@ -52,7 +52,7 @@ public sealed class RedesignReceiptStoreTests
     [Fact]
     public async Task FailedEffect_RollsBackClaimAndAllowsSameOperationToRetry()
     {
-        using var database = new IsolatedReceiptDatabase();
+        await using var database = new IsolatedReceiptDatabase();
         await database.MigrateAsync();
         var store = new PostgresOperationReceiptStore(database.ConnectionString);
         var identity = NewIdentity();
@@ -83,7 +83,7 @@ public sealed class RedesignReceiptStoreTests
         return """{"balance":10}""";
     }
 
-    private sealed class IsolatedReceiptDatabase : IDisposable
+    private sealed class IsolatedReceiptDatabase : IAsyncDisposable
     {
         private readonly string _adminConnectionString;
         private readonly string _databaseName = "chorus_receipt_test_" + Guid.NewGuid().ToString("N");
@@ -123,12 +123,11 @@ public sealed class RedesignReceiptStoreTests
             return Convert.ToInt32(await command.ExecuteScalarAsync());
         }
 
-        public void Dispose()
+        public async ValueTask DisposeAsync()
         {
-            using var admin = new NpgsqlConnection(_adminConnectionString);
-            admin.Open();
-            using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{_databaseName}\" WITH (FORCE)", admin);
-            drop.ExecuteNonQuery();
+            await using var admin = new NpgsqlConnection(_adminConnectionString);
+            await admin.OpenAsync();
+            await TestDatabaseDrop.DropAsync(admin, _databaseName);
         }
     }
 }

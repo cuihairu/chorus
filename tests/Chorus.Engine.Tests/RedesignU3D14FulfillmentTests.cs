@@ -609,9 +609,7 @@ public sealed class RedesignU3D14FulfillmentTests
         {
             await using var admin = new NpgsqlConnection(_admin.ConnectionString);
             await admin.OpenAsync();
-            await using (var drop = new NpgsqlCommand(
-                $"DROP DATABASE IF EXISTS \"{_name}\" WITH (FORCE)", admin))
-                await drop.ExecuteNonQueryAsync();
+            await TestDatabaseDrop.DropAsync(admin, _name);
         }
     }
 }

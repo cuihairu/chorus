@@ -54,8 +54,7 @@ public sealed class RedesignSchemaMigrationTests
         }
         finally
         {
-            await using var drop = new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{databaseName}\" WITH (FORCE)", admin);
-            await drop.ExecuteNonQueryAsync();
+            await TestDatabaseDrop.DropAsync(admin, databaseName);
         }
     }
 }
