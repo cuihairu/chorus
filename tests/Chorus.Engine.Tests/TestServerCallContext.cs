@@ -33,6 +33,10 @@ internal sealed class TestServerCallContext : ServerCallContext
         UserState[HttpContextKey] = HttpContext;
     }
 
+    /// <summary>Adds a request header the handler reads from the metadata — the operator
+    /// bearer credential rides "Authorization" or "x-operator-token".</summary>
+    public void AddHeader(string key, string value) => _requestHeaders.Add(key, value);
+
     private static DefaultHttpContext BuildHttpContext(X509Certificate2? clientCertificate)
     {
         var context = new DefaultHttpContext();
