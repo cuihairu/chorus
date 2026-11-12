@@ -145,6 +145,9 @@ public sealed class PlatformTaskGrpcService(
         ServerCallContext context)
     {
         Require(context, "control-server");
+        if (request.ExpectedTasks < 0)
+            throw new RpcException(new Status(StatusCode.InvalidArgument,
+                "The expected task count cannot be negative."));
         var close = await taskStore.GetCloseCompletionAsync(request.EndOperationId,
             request.ExpectedTasks, context.CancellationToken);
         return new TaskCloseReply

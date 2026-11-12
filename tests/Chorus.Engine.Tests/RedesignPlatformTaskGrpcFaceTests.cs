@@ -329,14 +329,13 @@ public sealed class RedesignPlatformTaskGrpcFaceTests
     public async Task GetCloseCompletionRefusesANegativeExpectedCount()
     {
         await using var rig = await TaskRig.CreateAsync();
-        // The store's guard leaves the face unwrapped: a negative count reaches the caller as
-        // the argument exception itself, which gRPC turns into an InvalidArgument status.
-        var error = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
-            () => rig.Service.GetCloseCompletion(new TaskCloseRequest
+        // The count is the caller's claim about the ladder it is reading: a negative one is
+        // refused at the face as InvalidArgument, before the store's own guard is reached.
+        await rig.Rejects(() => rig.Service.GetCloseCompletion(new TaskCloseRequest
             {
                 EndOperationId = "end-op-1", ExpectedTasks = -1
-            }, rig.Context("control-server", "control-1")));
-        Assert.Equal("expectedTasks", error.ParamName);
+            }, rig.Context("control-server", "control-1")),
+            StatusCode.InvalidArgument, "The expected task count cannot be negative.");
     }
 
     [Fact]
