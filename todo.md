@@ -552,12 +552,12 @@
 - [ ] `Chorus.Control`/`Chorus.ControlHost` 与 `Chorus.ControlServer` 都使用控制域命名，但前者是旧控制台/持久化路径，后者是重设计控制面，入口命名不足以区分。（src/Chorus.Control/ControlDatabase.cs:13，src/Chorus.ControlServer/RedesignControlStore.cs:170）
 - [ ] `Chorus.RoundDemo` 位于 src 但承担演示/验收场景，与正式服务目录和 tests 目录都存在归类歧义。（src/Chorus.RoundDemo/RoundDemoScenario.cs:40，tests/Chorus.Engine.Tests/RoundDemoScenarioTests.cs:1）
 
-## Codex 深审发现（2026-11-12，luna profile 近5 commit+工作区审核，1C/3M/3m，待修）
+## Codex 深审发现（2026-11-12，luna profile 近5 commit+工作区审核，1C/3M/3m，**2026-11-13 已全部处置**：1 误报裁定 + 6 修复，逐项证据见下；全量门禁裁决见本节末）
 
 - [x] [C] 回滚 RedesignMatchReservationStore.cs:217 约束名——**裁定为误报，fix 保留（2026-11-13）**：DDL `src/Chorus.Data/Schema/0002_core_schema.sql:205-207` 为 `CREATE TABLE match.reservation (... room_id text NOT NULL UNIQUE ...)`，PG 默认唯一约束名 = `<不带 schema 前缀的表名>_room_id_key` = **`reservation_room_id_key`**（Codex 主张的 `match_reservation_room_id_key` 在 DDL 中不存在，永远无法匹配——旧名下 23505 分支是死代码、裸 23505 穿面，恰是 Codex 所担心的事）。修复 commit `524a43d`；回归证据 `RedesignMatchGrpcFaceTests.ReserveMatchRefusesASecondReservationOfTheSameRoom`（RedesignMatchGrpcFaceTests.cs:205，新名下命中映射拒绝 `FailedPrecondition "The room is already reserved by another match."` 而非裸 23505，45/45 绿）。
-- [ ] [M] 全部 69 个含 DROP DATABASE 的测试夹具补 42501 有界重试（现只修 3 个新夹具）——锁外 pid 权限竞态同型残留
-- [ ] [M] PlatformIngestGrpcService.IngestBatch 捕获 JsonException 映射 InvalidArgument（src/Chorus.DataServer/PlatformIngestGrpcService.cs:26）——非法 JSON 无法按 gRPC 状态分支
-- [ ] [M] GetCloseCompletion 显式校验负数 ExpectedTasks 抛 RpcException（src/Chorus.DataServer/PlatformTaskGrpcService.cs:144）——裸 CLR 异常穿 gRPC 面
-- [ ] [m] Ingest 坏 JSON 幂等键不消耗的可重试性测试——明确失败路径能否原样重发同一 OperationId
-- [ ] [m] COV-02d 的 CI/coverage 结论补仓库内可复核证据（todo.md:507）——外部 run/Codecov 数字无法从 git 树验证
-- [ ] [m] 收敛新增 gRPC face 测试对内部 .Parameter 消息后缀的强耦合断言（RedesignPlatformTaskGrpcFaceTests.cs:107）——参数名不应成为隐式公共契约
+- [x] [M] 全部 69 个含 DROP DATABASE 的测试夹具补 42501 有界重试——**已修 commit `34d9637`**（77 文件，+117/-257）：新 helper `tests/Chorus.Engine.Tests/TestDatabaseDrop.cs:17-33`（`DROP DATABASE ... WITH (FORCE)` 外包 SqlState=42501 有界重试，5 次 × 100ms×attempt），65 个 store/host 夹具类 + 12 个 GrpcFace 类的 `DisposeAsync` 全部改为 helper 调用；同型残留一并清掉：7 个 face rig 里的 inline 重试循环也并入 helper。**验证（2026-11-13 fresh rebuild 后）**：69 夹具类批 **326/326** 绿、8 个 GrpcFace 类批 **215/215** 绿（日志 /home/cui/audit_fixture_verify.log）。
+- [x] [M] PlatformIngestGrpcService.IngestBatch 捕获 JsonException 映射 InvalidArgument——**已修 commit `e1d4904`**：`src/Chorus.DataServer/PlatformIngestGrpcService.cs:51` 新增 `catch (JsonException)` → `InvalidArgument`（置于 ArgumentException catch 之前）；回归 `RedesignPlatformIngestGrpcFaceTests.cs:111`（坏 JSON 断言 InvalidArgument + inbox 无污染）。
+- [x] [M] GetCloseCompletion 显式校验负数 ExpectedTasks 抛 RpcException——**已修 commit `54b0570`**：`src/Chorus.DataServer/PlatformTaskGrpcService.cs:148` 显式 `ExpectedTasks < 0` → `InvalidArgument "The expected task count cannot be negative."`（不再依赖裸 ArgumentOutOfRangeException 穿面）；回归 `RedesignPlatformTaskGrpcFaceTests.GetCloseCompletionRefusesANegativeExpectedCount`（精确消息断言）。
+- [x] [m] Ingest 坏 JSON 幂等键不消耗的可重试性测试——**已修 commit `e5b126f`**：新事实 `RedesignPlatformIngestGrpcFaceTests.cs:125` `IngestBatchRefusalLeavesTheOperationIdUnspent`——坏 JSON 被拒后同 OperationId 原样重发 → `Duplicate=false` 落为新提交（拒绝发生在未提交事务内，幂等键不消耗）。
+- [x] [m] COV-02d 的 CI/coverage 结论补仓库内可复核证据——**已修 commit `ce8af9c`**：02d CI bullet 增补 `.github/workflows/ci.yml:104-105`（XPlat Code Coverage）、`:110-114`（cobertura artifact）、`:118-121`（codecov-action@v7.1.1）+ cobertura XML 本地复算路径（74.47% project / 95.4% 处理器增量均可由 XML 按 (file,line) 去重复算）。
+- [x] [m] 收敛新增 gRPC face 测试对内部 .Parameter 消息后缀的强耦合断言——**已修 commit `86887c4`**（7 文件，+41/-30）：20 处 ` (Parameter 'x')` 全文断言 → `detailContains` 弱耦合断言，各 rig `Rejects` 签名扩展为 `(call, code, detail?, detailContains?)`（Data/Match/MatchQueue/Ingest/Task/Retention/Coordinator）。
