@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Chorus.Data;
 using Chorus.DataServer;
 using Chorus.Rpc;
@@ -113,12 +112,11 @@ public sealed class RedesignPlatformIngestGrpcFaceTests
     public async Task IngestBatchRefusesAnUnparseablePayload()
     {
         await using var rig = await IngestRig.CreateAsync();
-        // A contract gap, recorded rather than smoothed over: the face maps argument refusals
-        // to InvalidArgument but not JSON parsing failures, so an unparseable payload leaves
-        // the face as the parser's own exception. The observable fact is what matters — the
-        // batch was refused, so nothing of it reached the durable inbox.
-        await Assert.ThrowsAnyAsync<JsonException>(() => rig.Service.IngestBatch(
-            Batch(payloadJson: "not json"), rig.Context("platform-gateway", "gw-1")));
+        // A malformed payload is the caller's broken batch: the parser's refusal is mapped
+        // onto InvalidArgument, and nothing of the batch reaches the durable inbox.
+        await rig.Rejects(() => rig.Service.IngestBatch(
+            Batch(payloadJson: "not json"), rig.Context("platform-gateway", "gw-1")),
+            StatusCode.InvalidArgument);
         var reply = await rig.Service.GetPendingInbox(new PendingInboxRequest { Platform = "simulator" },
             rig.Context("platform-gateway", "gw-1"));
         Assert.Empty(reply.Events);

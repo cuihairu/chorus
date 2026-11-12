@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Chorus.Data;
 using Chorus.Protocol;
 using Chorus.Rpc;
@@ -47,6 +48,7 @@ public sealed class PlatformIngestGrpcService(
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The operation was retried with a different request."));
         }
+        catch (JsonException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
         catch (ArgumentException error) { throw new RpcException(new Status(StatusCode.InvalidArgument, error.Message)); }
     }
 
