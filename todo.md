@@ -461,6 +461,32 @@
 
 
 
+### 22.22 覆盖率补测第二轮：运行时服务面（coverage-gate 派单，2026-11-12）
+
+- [x] **COV-02 / P1：控制面 gRPC 服务面与主播会话面的进程内覆盖。** 依赖：COV-01。共 **+129 个测试**，全部落在 `tests/Chorus.Engine.Tests`，**不改动任何生产代码**。
+  - **口径**（承 COV-01，按 (file,line) 去重的行命中；per-file 增量才是可归因口径，跨运行总数受失败测试数摆动）：这 8 个服务类在补测前**零测试引用**（`git ls-tree` 对 `85b8a7c^` 的 tests/ 全树扫这些类名，命中 0 处），故基线即 0%。
+  - **手法**：这批类全是「薄壳 + 依赖注入」——不真开端口，改为伪造 `ServerCallContext`（把 `DefaultHttpContext` 与真客户端证书挂进 `UserState["__HttpContext"]`，`Grpc.AspNetCore` 的 `GetHttpContext()` 扩展会回落到该键）直接调 public 方法。证书走 `ProcessCertificateIssuer` 真签发 + `TrustedProcessCertificates.ValidateAndRemember` 真校验 → 角色栅栏/租户栅栏/跨集群拒收是真逻辑不是 stub。
+  - **COV-02a（证据：85b8a7c）**：StreamerSessionGrpcService 34 fact + ParticipationNotifyGrpcService 11 fact = **45 个测试**，3 个新文件（TestServerCallContext、TestProcessCertificates、两个测试类）。
+  - **COV-02b（证据：7498b99）**：控制面六个服务面 **84 个测试**，6 个新文件——Coordinator 14、Control 24、Deployment 8、Routing 13、RoundEnd 14、MatchIntent 11。真 Postgres（每文件自带 `TemporaryDatabase`，库名前缀唯一）；MatchIntent 的「过了栅栏就交给队列」用不可达端点 `https://127.0.0.1:9` 钉住（`ProcessGrpcClientFactory` 无重试策略 → 单次尝试即 `Unavailable`，正是「栅栏通过后再转发」这一条契约）。
+  - **处理器文件增量（确定性，仅由新测试驱动；分母=非生成代码有效行）**：
+    - ParticipationNotifyGrpcService **0→27/27**（100%）
+    - DeploymentGrpcService **0→52/54**（96.30%）
+    - ControlGrpcService **0→135/141**（95.74%）
+    - CoordinatorGrpcService **0→41/46**（89.13%）
+    - MatchIntentGrpcService **0→52/61**（85.25%）
+    - RoutingGrpcService **0→71/85**（83.53%）
+    - RoundEndGrpcService **0→69/84**（82.14%）
+    - StreamerSessionGrpcService **0→139/171**（81.29%）
+    - 合计 **0→586/669**（87.59%）。COV-01 里记的 StreamerSessionGrpcService 171 行全部不可达，本批取回 139 行。
+  - **踩到的两个真实契约（非凑数，是被源码纠正的）**：
+    ① 自写的 `CaptureStream` 必须实现**带 `CancellationToken` 的 `WriteAsync` 重载**——生产处理器调的是 `WriteAsync(msg, context.CancellationToken)`，只实现单参版会落到接口默认实现并抛 `NotSupportedException: Cancellation of stream writes is not supported by this gRPC implementation.`，watch 测试表现为**假超时**（看着像「快照永远不变」，实际是写出被拒）。配套诊断：等待循环加「把被观测 Task 本身异常抛出来」的能力，否则该异常被掩盖成超时。
+    ② `BeginEnd` 的前置是「房间内仍有参与者挂载」（迟到栅栏从挂载派生轮次），故面测试要先走 `ClaimOwnershipAsync` + `StartRoundAsync` 造真房间；`control.deployment.node_id` 是外键，`ApplyPlanAsync` 之前必须先 `RegisterNodeAsync`。另有 `StartGameplayAsync` **每次新建 binding 行**（不复用旧绑定）、`ContentHash` 合法返回**负** long（版本比较只能与实际快照值相等，不能做符号判断）。
+  - **门禁裁决（2026-11-12）**：全量 **2227/2255**，28 个失败全部落在既有共租/负载族（M2 clock trio、M3TakeoverKill、ModuleCheckpoint、PlatformRoute、FrameChannelCapacity、FanoutReclaim、EndOperation barrier、inotify-128、42501 teardown），无一为新增 face 测试；本批 face 测试在门禁内出现的 2 例（Routing 的 stale-generation fact、MatchIntent 的 cancel 镜像 fact）均为 42501 teardown 共租签名，隔离复跑 2/2 绿。
+  - **CI 状态（如实记录）**：85b8a7c 的 `Test (with coverage)` 腿 **2169/2171**，2 个失败均为**既有测试类**、本批未触及——`RedesignDataDiagnosticsTests.RowLockBlockingPaysInsideTheTransactionBodyNotTheOpen`（断言是墙钟延迟地板 `data.tx.work >= 300.0`ms，CI 实测最小值 260.14ms，与 M2 clock-window 三连同族的时间预算型负载族）与 `RedesignFanoutReclaimUnitTests.AFailedResubscriptionLeavesTheExistingStreamServingTheRoom`（本台账多处记载的既裁文档族，见 22.18 等行）；两者本地隔离复跑 2/2 双轮全绿。7498b99 的门跑在本次裁决时点仍 `in_progress`。
+  - **codecov ≥85% 未达（如实记录，不硬凑）**：codecov 全口径（含生成 proto/镜像代码）约 47%，非生成代码口径 73.88%（COV-01，2026-11-09）；本批把 8 个服务类从 0 提到 87.59%。剩余大项仍是 COV-01 已论证的架构性不可达：子进程专属编排（EdgeWs 483、RoomRuntime 332、AdminGrpcService 325、MatchCoordinatorService 220、EndOperationCoordinatorService 201）、五个顶层 Program.cs 入口约 730 行、以及 `RequireCertificate` 下 TLS 握手即断的两条 Unauthenticated 行。下一批目标按派单批次序：SdkWizard 33.6% → UnitySdk.Edge 41.7% → StreamerGateway 44.6% → DataServer 58.6% → GameServer 62.9%，以及尚未覆盖的 Takeover/Admin GrpcService 与托管 BackgroundService 清扫类。
+  - **基础设施事件（如实记录）**：本批次首次门禁遭遇**根分区写满**（1.5T / 剩 519MB）把 Postgres 集群打崩 → 589/2255 失败（~501 连接失败 + 67 个 `53100: could not extend file ... No space left on device`）。`sudo pg_ctlcluster 18 main start` 拉起集群、磁盘回升至 20G+ 后冒烟验证 temp-db 生命周期再重跑，签名恢复为正常负载族。**该次运行的失败清单未用于任何裁决。**
+
+
 ## 源码分层分析 2026-11-07
 
 ### a) 抽象层清单
