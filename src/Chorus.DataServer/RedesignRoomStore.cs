@@ -1088,7 +1088,8 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
             recorded.Parameters.AddWithValue("game", gameId);
             recorded.Parameters.AddWithValue("operation", operationId);
             await using var reader = await recorded.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken) || reader.GetString(3) != "Transferred")
+            if (!await reader.ReadAsync(cancellationToken)
+                || reader.GetString(3) is not ("Transferred" or "Prepared"))
                 throw new InvalidOperationException("The recovery operation is no longer open.");
             if (reader.GetString(0) != roomId || reader.GetString(1) != fromInstance)
                 throw new InvalidOperationException(
@@ -1140,7 +1141,7 @@ public sealed class RedesignRoomStore(string connectionString, Action? crashAfte
                 last_error='The recovery deadline passed before activation.',
                 updated_at=clock_timestamp()
             WHERE tenant_id=@tenant AND game_id=@game AND operation_id=@operation
-              AND phase='Transferred'
+              AND phase IN ('Transferred','Prepared')
             """, connection, transaction))
         {
             closed.Parameters.AddWithValue("tenant", tenantId);

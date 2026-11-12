@@ -632,9 +632,11 @@ public sealed class RedesignControlStore(string connectionString)
     }
 
     /// <summary>
-    /// The open (still Transferred) room-recovery operation, or null (FIX-TAKE-04). A
-    /// restarted control plane continues from here — a timed-out recovery RPC left the
-    /// operation open, and continuing it never needs a second transfer or epoch bump.
+    /// The open (still Transferred or Prepared) room-recovery operation, or null
+    /// (FIX-TAKE-04). A restarted control plane continues from here — a timed-out recovery
+    /// RPC left the operation open, and continuing it never needs a second transfer or
+    /// epoch bump. FIX-REC-01: a Prepared row counts as open too — the room recovered but
+    /// awaits its route barrier and activation, still fenced Recovering.
     /// </summary>
     public async Task<RoomRecoveryOperation?> GetOpenRoomRecoveryAsync(string tenantId, string gameId,
         string roomId, CancellationToken cancellationToken = default)
@@ -644,7 +646,8 @@ public sealed class RedesignControlStore(string connectionString)
         await using var command = new NpgsqlCommand("""
             SELECT operation_id,from_instance,to_instance,target_epoch,phase,deadline_at,last_tick,last_error
             FROM control.recovery_operation
-            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room AND phase='Transferred'
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room
+              AND phase IN ('Transferred','Prepared')
             ORDER BY created_at DESC LIMIT 1
             """, connection);
         command.Parameters.AddWithValue("tenant", tenantId);
@@ -663,6 +666,9 @@ public sealed class RedesignControlStore(string connectionString)
     /// (Activated on success, Failed with the reason otherwise) and the committed progress.
     /// The row is progress, never authority — the ownership row stays the fence. A no-op
     /// when no open row exists, so rooms transferred before the record landed still recover.
+    /// FIX-REC-01: the record also lands from the Prepared phase — a control-plane restart
+    /// between the recovery's Ready and its activation completes from there instead of
+    /// re-reading an RPC reply.
     /// </summary>
     public async Task CompleteRoomRecoveryAsync(string tenantId, string gameId, string roomId,
         bool recovered, long lastTick, string? lastError, CancellationToken cancellationToken = default)
@@ -673,7 +679,8 @@ public sealed class RedesignControlStore(string connectionString)
             UPDATE control.recovery_operation
             SET phase=@phase, last_tick=GREATEST(last_tick,@tick),
                 last_error=@error, updated_at=clock_timestamp()
-            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room AND phase='Transferred'
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room
+              AND phase IN ('Transferred','Prepared')
             """, connection);
         command.Parameters.AddWithValue("tenant", tenantId);
         command.Parameters.AddWithValue("game", gameId);
@@ -682,6 +689,93 @@ public sealed class RedesignControlStore(string connectionString)
         command.Parameters.AddWithValue("tick", lastTick);
         command.Parameters.AddWithValue("error", lastError is null ? DBNull.Value : lastError);
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    // FIX-REC-01: how long a Prepared recovery (recovery landed, routes installing) may sit
+    // past its preparation before the deadline sweep treats it as expired. Covers the route
+    // barrier wait (10 s), the activation RPC (10 s) and one retry margin.
+    private const int PreparedGraceSeconds = 45;
+
+    /// <summary>
+    /// Records the recovery preparation on the room's open operation row (FIX-REC-01): the
+    /// target pinned the verified head and holds the actor, so the phase becomes Prepared
+    /// and the deadline extends — the barrier wait and the activation must not be swept away
+    /// by the transfer's own lease. A barrier that never confirms re-marks the same phase
+    /// with the error for the operator and the sweep. Idempotent from Transferred or
+    /// Prepared; a no-op on any other phase.
+    /// </summary>
+    public async Task MarkRoomRecoveryPreparedAsync(string tenantId, string gameId, string roomId,
+        string? error, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            UPDATE control.recovery_operation
+            SET phase='Prepared', deadline_at=clock_timestamp()+@grace*interval '1 second',
+                last_error=@error, updated_at=clock_timestamp()
+            WHERE tenant_id=@tenant AND game_id=@game AND room_id=@room
+              AND phase IN ('Transferred','Prepared')
+            """, connection);
+        command.Parameters.AddWithValue("tenant", tenantId);
+        command.Parameters.AddWithValue("game", gameId);
+        command.Parameters.AddWithValue("room", roomId);
+        command.Parameters.AddWithValue("grace", PreparedGraceSeconds);
+        command.Parameters.AddWithValue("error", error is null ? DBNull.Value : error);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// FIX-REC-01, the recovery route barrier (architecture 10.3): the control plane
+    /// activates a recovered room only once every deployed gateway kind has installed and
+    /// confirmed the routing version that carries the room's takeover (the snapshot row
+    /// already carries the new epoch and the Recovering status since the transfer). Per
+    /// role — platform-gateway and streamer-gateway — the version must be confirmed by an
+    /// instance of that role while any instance of it is registered; a role with no
+    /// registered process is no delivery path to wait for (the FIX-END-16 boundary, per
+    /// kind). The confirmations are the persisted routing_confirm rows, never "the notice
+    /// was sent". Times out false: the caller must not grant the activation.
+    /// </summary>
+    public async Task<bool> WaitForRecoveryRoutesConfirmedAsync(string roomId, TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            var snapshot = await ReadRoutingSnapshotAsync(cancellationToken);
+            if (snapshot.Rooms.Any(room => room.RoomId == roomId)
+                && await AreGatewayRoutesConfirmedAsync(snapshot.Version, cancellationToken))
+                return true;
+            if (DateTime.UtcNow >= deadline) return false;
+            await Task.Delay(RouteConfirmPollMs, cancellationToken);
+        }
+    }
+
+    /// <summary>Whether every gateway role with a registered process confirmed this exact
+    /// snapshot version. A version carries all rooms, so one confirm per role is the role's
+    /// installation evidence (the room's presence in the snapshot is what ties the version
+    /// to the room).</summary>
+    private async Task<bool> AreGatewayRoutesConfirmedAsync(long version,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            SELECT d.role,
+                   count(DISTINCT p.process_instance_id) AS registered,
+                   count(DISTINCT CASE WHEN rc.version=@version THEN p.process_instance_id END) AS confirmed
+            FROM control.process p
+            JOIN control.deployment d ON d.slot_id=p.slot_id
+            LEFT JOIN control.routing_confirm rc ON rc.process_instance_id=p.process_instance_id
+            WHERE d.role IN ('platform-gateway','streamer-gateway')
+            GROUP BY d.role
+            """, connection);
+        command.Parameters.AddWithValue("version", version);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            if (reader.GetInt64(2) == 0) return false;
+        // Every registered role confirmed (an empty result is the bare cluster FIX-END-16
+        // boundary — no gateway process at all, no delivery path to wait for).
+        return true;
     }
 
     /// <summary>
@@ -698,7 +792,7 @@ public sealed class RedesignControlStore(string connectionString)
             SELECT tenant_id,game_id,operation_id,room_id,from_instance,to_instance,
                 target_epoch,phase,deadline_at,last_tick,last_error
             FROM control.recovery_operation
-            WHERE phase='Transferred' AND deadline_at<clock_timestamp()
+            WHERE phase IN ('Transferred','Prepared') AND deadline_at<clock_timestamp()
             ORDER BY deadline_at LIMIT 50
             """, connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);

@@ -283,6 +283,86 @@ public sealed class RedesignRecoveryOperationTests
                 "recovery-op-1", "recovery-op-2", "gs-3", "gs-1", 15));
     }
 
+    [Fact]
+    public async Task APreparedRecoveryExtendsItsDeadlineAndReassignsOnlyPastIt()
+    {
+        await using var arrange = await Arrange.RunningRoomAsync();
+        var control = new RedesignControlStore(arrange.Database.ConnectionString);
+        var moved = await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-1", "gs-2", 1, "recovery-op-1");
+
+        // FIX-REC-01: the recovery landed and the operation stands Prepared — the
+        // deadline extends so the barrier wait and the activation survive the transfer's
+        // own lease, and the error slot says the room is held, not failed.
+        await control.MarkRoomRecoveryPreparedAsync("tenant-a", "game-a", "room-1", null);
+        await using (var connection = new NpgsqlConnection(arrange.Database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var operation = new NpgsqlCommand("""
+                SELECT phase,deadline_at>clock_timestamp()+interval '40 seconds',last_error
+                FROM control.recovery_operation WHERE operation_id='recovery-op-1'
+                """, connection);
+            await using var reader = await operation.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("Prepared", reader.GetString(0));
+            Assert.True(reader.GetBoolean(1));
+            Assert.True(reader.IsDBNull(2));
+        }
+        // Not yet expired: the reassignment keeps refusing — the barrier window is the
+        // target's chance to install routes and activate.
+        Assert.DoesNotContain(await control.ListExpiredOpenRoomRecoveriesAsync(),
+            operation => operation.OperationId == "recovery-op-1");
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            arrange.RoomStore.ReassignRoomRecoveryAsync("tenant-a", "game-a", "room-1",
+                "recovery-op-1", "recovery-op-2", "gs-2", "gs-3", 15));
+
+        // Past the extended deadline the Prepared operation is still an open one: the
+        // sweep closes it Failed and reassigns under a newer epoch — the held actor on
+        // the old target is fenced away by the epoch bump, never reactivated.
+        await using (var connection = new NpgsqlConnection(arrange.Database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var expire = new NpgsqlCommand(
+                "UPDATE control.recovery_operation SET deadline_at=clock_timestamp()-interval '1 second' WHERE operation_id='recovery-op-1'",
+                connection);
+            await expire.ExecuteNonQueryAsync();
+        }
+        Assert.Contains(await control.ListExpiredOpenRoomRecoveriesAsync(),
+            operation => operation.OperationId == "recovery-op-1");
+        var reassigned = await arrange.RoomStore.ReassignRoomRecoveryAsync("tenant-a", "game-a", "room-1",
+            "recovery-op-1", "recovery-op-2", "gs-2", "gs-3", 15);
+        Assert.Equal(moved.Epoch + 1, reassigned.Epoch);
+        Assert.Equal("gs-3", reassigned.OwnerInstanceId);
+    }
+
+    [Fact]
+    public async Task ARecoveryCompletesFromThePreparedPhase()
+    {
+        await using var arrange = await Arrange.RunningRoomAsync();
+        var control = new RedesignControlStore(arrange.Database.ConnectionString);
+        await arrange.RoomStore.TransferRoomOwnershipAsync("tenant-a", "game-a", "room-1",
+            "gs-1", "gs-2", 15, "recovery-op-1");
+        await control.MarkRoomRecoveryPreparedAsync("tenant-a", "game-a", "room-1", null);
+        // The route barrier held and the activation granted: the completion lands from
+        // the Prepared phase (a control-plane restart between the two reads the phase
+        // and finishes — never a second pin or a second epoch bump).
+        await control.CompleteRoomRecoveryAsync("tenant-a", "game-a", "room-1",
+            recovered: true, lastTick: 7, lastError: null);
+        await using (var connection = new NpgsqlConnection(arrange.Database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var operation = new NpgsqlCommand("""
+                SELECT phase,last_tick FROM control.recovery_operation WHERE operation_id='recovery-op-1'
+                """, connection);
+            await using var reader = await operation.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("Activated", reader.GetString(0));
+            Assert.Equal(7, reader.GetInt64(1));
+        }
+        // Completed is closed: nothing about this operation is open anymore.
+        Assert.Null(await control.GetOpenRoomRecoveryAsync("tenant-a", "game-a", "room-1"));
+    }
+
     /// <summary>Test arrange: an admitted, activated room under a live ownership fence.</summary>
     private sealed class Arrange : IAsyncDisposable
     {

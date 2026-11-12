@@ -22,6 +22,11 @@ public sealed class AdminGrpcService(
 
     private readonly Settlement.SettlementClient _settlement = new(directory.DataChannel);
     private readonly PlatformTask.PlatformTaskClient _tasks = new(directory.DataChannel);
+    // The one room-recovery flow (architecture 10.3, FIX-REC-01): the operator's retry
+    // drives the same barriered orchestration TakeoverRoom does — never a second
+    // implementation.
+    private readonly TakeoverGrpcService _takeover =
+        new(directory, controlStore, trustedCertificates);
 
     public override Task<ReadyReply> Ready(Empty request, ServerCallContext context)
     {
@@ -736,40 +741,16 @@ public sealed class AdminGrpcService(
             $$"""{"room":"{{request.RoomId}}","to":"{{request.ToInstanceId}}"}""", context.CancellationToken);
         if (!acted)
             return new AdminRoomRecoveryReply { Duplicate = true };
-        // The same completion TakeoverRoom drives (FIX-TAKE-03): no Active confirm before
-        // the recovery — the named instance replays the round under the Recovering fence,
-        // pins the verified head and executes the fenced activation itself; a failed
-        // recovery leaves the ownership Recovering, never a ready room nothing runs.
-        var channel = directory.GameHostChannel(request.ToInstanceId)
-            ?? throw new RpcException(new Status(StatusCode.NotFound,
-                $"The recovery target '{request.ToInstanceId}' is not a known game host."));
-        var ownership = await controlStore.GetOwnershipAsync(
-            request.TenantId, request.GameId, "room", request.RoomId, context.CancellationToken)
-            ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
-                "The room has no ownership row to recover."));
-        if (ownership.OwnerInstanceId != request.ToInstanceId)
-            throw new RpcException(new Status(StatusCode.FailedPrecondition,
-                $"The room is held by '{ownership.OwnerInstanceId}', not '{request.ToInstanceId}'."));
-        var recovered = await new GameHost.GameHostClient(channel).RecoverRoomAsync(
-            new RecoverRoomRequest
-            {
-                RoomId = request.RoomId, GameId = request.GameId, OwnerInstanceId = request.ToInstanceId,
-                Epoch = ownership.Epoch, TickMs = request.TickMs
-            }, deadline: DateTime.UtcNow.Add(CallTimeout), cancellationToken: context.CancellationToken);
-        var after = await controlStore.GetOwnershipAsync(
-            request.TenantId, request.GameId, "room", request.RoomId, context.CancellationToken)
-            ?? throw new RpcException(new Status(StatusCode.FailedPrecondition,
-                "The room's ownership vanished during recovery."));
-        if (recovered.Recovered && after.Status != "Active")
-            throw new RpcException(new Status(StatusCode.FailedPrecondition,
-                $"The recovery reported success but the ownership is {after.Status}."));
-        // The same FIX-TAKE-04 outcome record TakeoverRoom writes.
-        await controlStore.CompleteRoomRecoveryAsync(request.TenantId, request.GameId, request.RoomId,
-            recovered.Recovered, recovered.LastTick, recovered.Recovered ? null : recovered.Note,
-            context.CancellationToken);
+        // The one barriered recovery flow (FIX-REC-01): the named instance replays the
+        // round under the Recovering fence, holds at the pinned head, the gateways confirm
+        // the route, and only then the fenced grant activates the loop — a failed recovery
+        // or an unconfirmed barrier leaves the ownership Recovering, never a ready room
+        // nothing runs.
+        var recovered = await _takeover.RecoverRoomWithBarrierAsync(request.TenantId, request.GameId,
+            request.RoomId, request.ToInstanceId, request.TickMs, context.CancellationToken);
         return new AdminRoomRecoveryReply
         {
-            OwnerInstanceId = after.OwnerInstanceId, Epoch = after.Epoch,
+            OwnerInstanceId = recovered.OwnerInstanceId, Epoch = recovered.Epoch,
             Recovered = recovered.Recovered, Status = recovered.Status, LastTick = recovered.LastTick
         };
     }
