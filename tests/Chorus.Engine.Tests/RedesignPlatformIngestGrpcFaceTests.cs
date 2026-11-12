@@ -123,6 +123,21 @@ public sealed class RedesignPlatformIngestGrpcFaceTests
     }
 
     [Fact]
+    public async Task IngestBatchRefusalLeavesTheOperationIdUnspent()
+    {
+        await using var rig = await IngestRig.CreateAsync();
+        var gateway = rig.Context("platform-gateway", "gw-1");
+        // The refusal happens inside the uncommitted transaction, so the operation id is
+        // not consumed: resending a well-formed batch under the same id lands as a fresh
+        // commit, not a replay or a conflict.
+        await rig.Rejects(() => rig.Service.IngestBatch(
+            Batch(payloadJson: "not json"), gateway), StatusCode.InvalidArgument);
+        var reply = await rig.Service.IngestBatch(Batch(), gateway);
+        Assert.False(reply.Duplicate);
+        Assert.Single(reply.Receipts);
+    }
+
+    [Fact]
     public async Task GetPendingInboxListsTheUnattributedDurableEvents()
     {
         await using var rig = await IngestRig.CreateAsync();
