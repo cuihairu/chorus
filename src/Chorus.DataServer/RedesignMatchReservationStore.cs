@@ -214,7 +214,7 @@ public sealed class RedesignMatchReservationStore(string connectionString,
                 expiresUnixMs = Convert.ToInt64(await insert.ExecuteScalarAsync(cancellationToken));
             }
             catch (PostgresException error) when (error.SqlState == "23505"
-                && error.ConstraintName == "match_reservation_room_id_key")
+                && error.ConstraintName == "reservation_room_id_key")
             {
                 throw new RedesignMatchException("The room is already reserved by another match.");
             }
