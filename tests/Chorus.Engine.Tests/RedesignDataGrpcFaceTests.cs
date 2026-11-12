@@ -471,11 +471,13 @@ public sealed class RedesignDataGrpcFaceTests
         public TestServerCallContext Context(string role, string instance) =>
             Certificates.Context(Certificates.Issue("@cluster", role, instance));
 
-        public async Task Rejects(Func<Task> call, StatusCode code, string detail)
+        public async Task Rejects(Func<Task> call, StatusCode code, string? detail = null,
+            string? detailContains = null)
         {
             var error = await Assert.ThrowsAsync<RpcException>(call);
             Assert.Equal(code, error.Status.StatusCode);
-            Assert.Equal(detail, error.Status.Detail);
+            if (detail is not null) Assert.Equal(detail, error.Status.Detail);
+            if (detailContains is not null) Assert.Contains(detailContains, error.Status.Detail);
         }
 
         public async ValueTask DisposeAsync() => await Database.DisposeAsync();

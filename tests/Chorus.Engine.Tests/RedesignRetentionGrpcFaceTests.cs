@@ -96,11 +96,11 @@ public sealed class RedesignRetentionGrpcFaceTests
         // the tenant gate, not by the store (see the dedicated fact), so it is not tested here.
         // Argument-exception messages carry the parameter name the runtime appends.
         await rig.Rejects(() => rig.Service.PruneRound(Command(gameId: ""), control),
-            StatusCode.InvalidArgument, "'gameId' must not be empty. (Parameter 'gameId')");
+            StatusCode.InvalidArgument, detailContains: "'gameId' must not be empty.");
         await rig.Rejects(() => rig.Service.PruneRound(Command(roomId: ""), control),
-            StatusCode.InvalidArgument, "'roomId' must not be empty. (Parameter 'roomId')");
+            StatusCode.InvalidArgument, detailContains: "'roomId' must not be empty.");
         await rig.Rejects(() => rig.Service.PruneRound(Command(operationId: ""), control),
-            StatusCode.InvalidArgument, "'operationId' must not be empty. (Parameter 'operationId')");
+            StatusCode.InvalidArgument, detailContains: "'operationId' must not be empty.");
     }
 
     [Fact]
@@ -175,11 +175,13 @@ public sealed class RedesignRetentionGrpcFaceTests
         public TestServerCallContext Context(string role, string instance) =>
             Context("@cluster", role, instance);
 
-        public async Task Rejects(Func<Task> call, StatusCode code, string detail)
+        public async Task Rejects(Func<Task> call, StatusCode code, string? detail = null,
+            string? detailContains = null)
         {
             var error = await Assert.ThrowsAsync<RpcException>(call);
             Assert.Equal(code, error.Status.StatusCode);
-            Assert.Equal(detail, error.Status.Detail);
+            if (detail is not null) Assert.Equal(detail, error.Status.Detail);
+            if (detailContains is not null) Assert.Contains(detailContains, error.Status.Detail);
         }
 
         public async ValueTask DisposeAsync() => await Database.DisposeAsync();

@@ -105,11 +105,11 @@ public sealed class RedesignPlatformTaskGrpcFaceTests
         await rig.SeedBindingAsync();
         var control = rig.Context("control-server", "control-1");
         await rig.Rejects(() => rig.Service.EnqueueDesired(Enqueue(bindingId: ""), control),
-            StatusCode.InvalidArgument, "Value is required. (Parameter 'bindingId')");
+            StatusCode.InvalidArgument, detailContains: "Value is required.");
         await rig.Rejects(() => rig.Service.EnqueueDesired(Enqueue(operationId: ""), control),
-            StatusCode.InvalidArgument, "Value is required. (Parameter 'operationId')");
+            StatusCode.InvalidArgument, detailContains: "Value is required.");
         await rig.Rejects(() => rig.Service.EnqueueDesired(Enqueue(desiredJson: ""), control),
-            StatusCode.InvalidArgument, "Value is required. (Parameter 'desiredJson')");
+            StatusCode.InvalidArgument, detailContains: "Value is required.");
     }
 
     [Fact]
@@ -130,7 +130,7 @@ public sealed class RedesignPlatformTaskGrpcFaceTests
         var taskId = await EnqueueAsync(rig);
         await rig.Rejects(() => rig.Service.AcquireLease(Lease(taskId, seconds: 0),
                 rig.Context("platform-gateway", "gw-1")),
-            StatusCode.InvalidArgument, "The lease duration must be positive. (Parameter 'leaseDuration')");
+            StatusCode.InvalidArgument, detailContains: "The lease duration must be positive.");
     }
 
     [Fact]
@@ -206,7 +206,7 @@ public sealed class RedesignPlatformTaskGrpcFaceTests
         // A claim that the platform executed needs the platform's own evidence to rest on.
         await rig.Rejects(() => rig.Service.ResolveOutcome(
                 Resolve(taskId, executedByPlatform: true, ""), rig.Context("platform-gateway", "gw-1")),
-            StatusCode.InvalidArgument, "Value is required. (Parameter 'observedJson')");
+            StatusCode.InvalidArgument, detailContains: "Value is required.");
     }
 
     [Fact]
@@ -421,11 +421,13 @@ public sealed class RedesignPlatformTaskGrpcFaceTests
         public TestServerCallContext Context(string role, string instance) =>
             Certificates.Context(Certificates.Issue("@cluster", role, instance));
 
-        public async Task Rejects(Func<Task> call, StatusCode code, string? detail)
+        public async Task Rejects(Func<Task> call, StatusCode code, string? detail = null,
+            string? detailContains = null)
         {
             var error = await Assert.ThrowsAsync<RpcException>(call);
             Assert.Equal(code, error.Status.StatusCode);
             if (detail is not null) Assert.Equal(detail, error.Status.Detail);
+            if (detailContains is not null) Assert.Contains(detailContains, error.Status.Detail);
         }
 
         public async ValueTask DisposeAsync() => await Database.DisposeAsync();

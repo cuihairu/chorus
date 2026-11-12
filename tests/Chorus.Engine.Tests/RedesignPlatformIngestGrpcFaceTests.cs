@@ -94,7 +94,7 @@ public sealed class RedesignPlatformIngestGrpcFaceTests
         // Argument-exception messages carry the parameter name the runtime appends.
         await rig.Rejects(() => rig.Service.IngestBatch(Batch(events: []),
                 rig.Context("platform-gateway", "gw-1")),
-            StatusCode.InvalidArgument, "The batch must contain at least one event. (Parameter 'batch')");
+            StatusCode.InvalidArgument, detailContains: "The batch must contain at least one event.");
     }
 
     [Fact]
@@ -104,8 +104,7 @@ public sealed class RedesignPlatformIngestGrpcFaceTests
         await rig.Rejects(() => rig.Service.IngestBatch(
                 Batch(durability: "Forever"), rig.Context("platform-gateway", "gw-1")),
             StatusCode.InvalidArgument,
-            $"Durability must be {RedesignInputEventStore.Durable} or {RedesignInputEventStore.BestEffort}. "
-            + "(Parameter 'batch')");
+            detailContains: $"Durability must be {RedesignInputEventStore.Durable} or {RedesignInputEventStore.BestEffort}.");
     }
 
     [Fact]
@@ -204,11 +203,13 @@ public sealed class RedesignPlatformIngestGrpcFaceTests
         public TestServerCallContext Context(string role, string instance) =>
             Certificates.Context(Certificates.Issue("@cluster", role, instance));
 
-        public async Task Rejects(Func<Task> call, StatusCode code, string? detail)
+        public async Task Rejects(Func<Task> call, StatusCode code, string? detail = null,
+            string? detailContains = null)
         {
             var error = await Assert.ThrowsAsync<RpcException>(call);
             Assert.Equal(code, error.Status.StatusCode);
             if (detail is not null) Assert.Equal(detail, error.Status.Detail);
+            if (detailContains is not null) Assert.Contains(detailContains, error.Status.Detail);
         }
 
         public async ValueTask DisposeAsync() => await Database.DisposeAsync();

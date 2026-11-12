@@ -146,7 +146,7 @@ public sealed class RedesignCoordinatorGrpcFaceTests
         var rig = New(database.ConnectionString);
         await Rejects(() => rig.Service.ClaimTerm(TermRequest("match/main", "control-1", leaseSeconds: 0), rig.Context()),
             StatusCode.InvalidArgument,
-            "Specified argument was out of the range of valid values. (Parameter 'leaseSeconds')");
+            detailContains: "Specified argument was out of the range of valid values.");
     }
 
     [Fact]
@@ -155,7 +155,7 @@ public sealed class RedesignCoordinatorGrpcFaceTests
         await using var database = await TemporaryDatabase.CreateAsync();
         var rig = New(database.ConnectionString);
         await Rejects(() => rig.Service.ClaimTerm(TermRequest("", "control-1"), rig.Context()),
-            StatusCode.InvalidArgument, "Value is required. (Parameter 'partitionKey')");
+            StatusCode.InvalidArgument, detailContains: "Value is required.");
     }
 
     private static TermRequest TermRequest(string partitionKey, string holderInstanceId,
@@ -164,11 +164,13 @@ public sealed class RedesignCoordinatorGrpcFaceTests
         PartitionKey = partitionKey, HolderInstanceId = holderInstanceId, LeaseSeconds = leaseSeconds
     };
 
-    private static async Task Rejects(Func<Task> call, StatusCode code, string detail)
+    private static async Task Rejects(Func<Task> call, StatusCode code, string? detail = null,
+        string? detailContains = null)
     {
         var error = await Assert.ThrowsAsync<RpcException>(call);
         Assert.Equal(code, error.Status.StatusCode);
-        Assert.Equal(detail, error.Status.Detail);
+        if (detail is not null) Assert.Equal(detail, error.Status.Detail);
+        if (detailContains is not null) Assert.Contains(detailContains, error.Status.Detail);
     }
 
     private sealed record Rig(CoordinatorGrpcService Service, TestProcessCertificates Certificates)

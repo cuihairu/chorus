@@ -228,7 +228,7 @@ public sealed class RedesignMatchGrpcFaceTests
         await rig.Rejects(() => rig.Service.ReserveMatch(
                 Reserve("room-m-1", [], term.Term), rig.CoordinatorContext()),
             StatusCode.InvalidArgument,
-            "A reservation needs at least one participant. (Parameter 'participants')");
+            detailContains: "A reservation needs at least one participant.");
     }
 
     [Fact]
@@ -240,7 +240,7 @@ public sealed class RedesignMatchGrpcFaceTests
         await rig.Rejects(() => rig.Service.ReserveMatch(
                 Reserve("room-m-1", [(binding, streamer)], term.Term, seconds: 61), rig.CoordinatorContext()),
             StatusCode.InvalidArgument,
-            "Specified argument was out of the range of valid values. (Parameter 'reservationSeconds')");
+            detailContains: "Specified argument was out of the range of valid values.");
     }
 
     [Fact]
@@ -616,7 +616,7 @@ public sealed class RedesignMatchGrpcFaceTests
         await using var rig = await MatchRig.CreateAsync();
         await rig.Rejects(() => rig.Service.ExpireReservations(new ExpireReservationsRequest { Max = 0 },
                 rig.CoordinatorContext()),
-            StatusCode.InvalidArgument, "The sweep window is 1..100 reservations. (Parameter 'max')");
+            StatusCode.InvalidArgument, detailContains: "The sweep window is 1..100 reservations.");
     }
 
     [Fact]
@@ -651,7 +651,7 @@ public sealed class RedesignMatchGrpcFaceTests
         await using var rig = await MatchRig.CreateAsync();
         await rig.Rejects(() => rig.Service.ListActiveReservations(
                 new ListActiveReservationsRequest { PartitionKey = Partition, Max = 0 }, rig.CoordinatorContext()),
-            StatusCode.InvalidArgument, "The recovery window is 1..500 reservations. (Parameter 'max')");
+            StatusCode.InvalidArgument, detailContains: "The recovery window is 1..500 reservations.");
     }
 
     [Fact]

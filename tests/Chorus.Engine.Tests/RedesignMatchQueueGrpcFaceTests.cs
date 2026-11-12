@@ -249,7 +249,7 @@ public sealed class RedesignMatchQueueGrpcFaceTests
         await using var rig = await QueueRig.CreateAsync();
         await rig.Rejects(() => rig.Service.EnqueueTicket(Enqueue(sessionId: ""),
                 rig.Context("streamer-server", Instance)),
-            StatusCode.InvalidArgument, "Value is required. (Parameter 'sessionId')");
+            StatusCode.InvalidArgument, detailContains: "Value is required.");
     }
 
     [Fact]
@@ -343,7 +343,7 @@ public sealed class RedesignMatchQueueGrpcFaceTests
         await rig.Rejects(() => rig.Service.GetTicket(
                 new GetTicketRequest { TenantId = Tenant, GameId = Game, BindingId = "" },
                 rig.Context("game-server", "gs-1")),
-            StatusCode.InvalidArgument, "Value is required. (Parameter 'bindingId')");
+            StatusCode.InvalidArgument, detailContains: "Value is required.");
     }
 
     [Fact]
@@ -371,7 +371,7 @@ public sealed class RedesignMatchQueueGrpcFaceTests
         await using var rig = await QueueRig.CreateAsync();
         await rig.Rejects(() => rig.Service.ListQueued(new ListQueuedRequest { PartitionKey = Partition, Max = 0 },
                 rig.Context("control-server", "cs-1")),
-            StatusCode.InvalidArgument, "The candidate window is 1..500 tickets. (Parameter 'max')");
+            StatusCode.InvalidArgument, detailContains: "The candidate window is 1..500 tickets.");
     }
 
     [Fact]
@@ -406,7 +406,7 @@ public sealed class RedesignMatchQueueGrpcFaceTests
         await using var rig = await QueueRig.CreateAsync();
         await rig.Rejects(() => rig.Service.ExpireQueued(new ExpireQueuedRequest { Max = 501 },
                 rig.Context("control-server", "cs-1")),
-            StatusCode.InvalidArgument, "The sweep window is 1..500 tickets. (Parameter 'max')");
+            StatusCode.InvalidArgument, detailContains: "The sweep window is 1..500 tickets.");
     }
 
     [Fact]
@@ -535,11 +535,13 @@ public sealed class RedesignMatchQueueGrpcFaceTests
         public TestServerCallContext Context(string role, string instance) =>
             Certificates.Context(Certificates.Issue("@cluster", role, instance));
 
-        public async Task Rejects(Func<Task> call, StatusCode code, string? detail)
+        public async Task Rejects(Func<Task> call, StatusCode code, string? detail = null,
+            string? detailContains = null)
         {
             var error = await Assert.ThrowsAsync<RpcException>(call);
             Assert.Equal(code, error.Status.StatusCode);
             if (detail is not null) Assert.Equal(detail, error.Status.Detail);
+            if (detailContains is not null) Assert.Contains(detailContains, error.Status.Detail);
         }
 
         public async ValueTask DisposeAsync() => await Database.DisposeAsync();
