@@ -445,7 +445,8 @@
 
 - [x] **FIX-REC-01 / P0：接通恢复准备、双 Gateway 路由与 Actor 激活屏障。** 依赖：FIX-TAKE-03、FIX-TAKE-04、FIX-LINK-08、FIX-END-03。
   - 证据：de6eb0c/60710ce；恢复不再「恢复即开跑」——RecoverRoom 延迟持有（Recovered=true/Status="Ready"，绝不重 pin）+恢复操作新增 Prepared 相位（MarkRoomRecoveryPreparedAsync 延 deadline +45s 挺过 transfer lease）+按角色路由屏障（WaitForRecoveryRoutesConfirmedAsync 150ms 轮询/10s 超时，任一已部署网关角色有注册进程但零确认当前快照版本即关、无人部署角色空泛、裸集群空泛、确认=该版本 routing_confirm 行）+屏障通过才 ActivateRoom fenced confirm 授予（授予=激活，保真 sweep 收敛不变式：持有期 ownership 仍 Recovering，过期 Prepared 可被 sweep 换代重派、旧目标持 Actor 被 fence）+共享 RecoverRoomWithBarrierAsync（TakeoverRoom 与 AdminGrpcService.RetryRoomRecovery 同驱，admin 重复流删）+回复 Status 激活后回真实后调用状态 "Running"；测试 RedesignRec01DeferredRecoveryUnitTests 4 + RedesignRec01RouteBarrierStoreTests 4 + RedesignRecoveryOperationTests +2；定向 33/33 绿（28s）；M3 家族 7/9（M3TakeoverHost/M3RecoverySweep/M3DoubleTakeover/Gm05 四逻辑关键全绿；M3AdminHost 队列配对 solo 绿=负载 flake；M3TakeoverKill 重派三棵树同败=既有环境族先于 REC-01）；台账 redesign-m3-implementation.md（FIX-REC-01）。
-- [ ] **FIX-REC-02 / P1：验收长局及批量房间恢复容量。** 依赖：FIX-READ-05、FIX-TAKE-08、FIX-REC-01。
+- [x] **FIX-REC-02 / P1：验收长局及批量房间恢复容量。** 依赖：FIX-READ-05、FIX-TAKE-08、FIX-REC-01。
+  - 证据：77e8db5；定向 4/4 绿（2s）；全量门两轮 2106/2126、2098/2126（28 败零 NEW：18×42501 teardown + 10 件既有文档族与 REC-01 基树族全重合；solo 十连 4 绿 6 族内复现）；REC-02 自身测试门内全绿；**容量实测 NOT RUN**（夹具+预声明长局 SLO 已交付，实测待静默机器，同 FIX-PERF-08 先例）；CI 43145094281 四跑败者全为既有族轮换（U3D12 ×2、M3Host agent、M2 ADeeplyCorruptWindow；U3D12 姊妹 fact 在纯 docs commit 43024343581 同 5m5s 签名在案=慢性非本项，本项 0 个 src/ 文件）；台账 redesign-m3-implementation.md（FIX-REC-02）。
 
 ### 22.21 测试覆盖率补测（2026-10-20 巡检单）
 
