@@ -1,0 +1,16 @@
+{
+    "rooms": 3,
+    "sessionTicks": 4000,
+    "recoveryTicksPerRoom": 2000,
+    "tickMs": 50,
+    "concurrentRecoveries": 3,
+    "queuedRecoveries": 9,
+    "detectP95BudgetMs": 5000,
+    "queueP95BudgetMs": 8000,
+    "readP95BudgetMs": 5000,
+    "replayP95BudgetMs": 5000,
+    "activateP95BudgetMs": 5000,
+    "totalP95BudgetMs": 10000,
+    "peakMemoryBudgetMb": 4096,
+    "recoveredRoomsFloor": 3
+}

@@ -13,6 +13,7 @@ namespace Chorus.Engine.Tests;
 /// </summary>
 public sealed record RecoveryAcceptanceConfig(
     int Rooms,
+    int SessionTicks,
     int RecoveryTicksPerRoom,
     int TickMs,
     int ConcurrentRecoveries,
@@ -71,7 +72,7 @@ public sealed record RecoveryReport(
         };
         return
             FormattableString.Invariant($"""
-        recovery acceptance: {verdictText} (target: {Config.Rooms} rooms, {Config.RecoveryTicksPerRoom} committed ticks each @ {Config.TickMs} ms)
+        recovery acceptance: {verdictText} (target: {Config.Rooms} rooms, {Config.RecoveryTicksPerRoom} committed ticks each @ {Config.TickMs} ms, session {Config.SessionTicks} ticks)
           environment: {Environment}  started {StartedUtc:HH:mm:ss'Z'}  ran {(EndedUtc - StartedUtc).TotalSeconds:0.0}s
           gate: {Config.ConcurrentRecoveries} concurrent recoveries, {Config.QueuedRecoveries} queued
           budgets: detect p95 <= {Config.DetectP95BudgetMs:0} ms, queue p95 <= {Config.QueueP95BudgetMs:0} ms, read p95 <= {Config.ReadP95BudgetMs:0} ms, replay p95 <= {Config.ReplayP95BudgetMs:0} ms, activate p95 <= {Config.ActivateP95BudgetMs:0} ms, total p95 <= {Config.TotalP95BudgetMs:0} ms, peak memory <= {Config.PeakMemoryBudgetMb:0} MB, recovered >= {Config.RecoveredRoomsFloor}/{Config.Rooms}
@@ -103,7 +104,8 @@ public static class RecoveryAcceptance
             throw new InvalidOperationException(
                 $"the recovery acceptance config is missing at {file} — the gate refuses to run without its budgets");
         var config = JsonSerializer.Deserialize<RecoveryAcceptanceConfig>(File.ReadAllText(file), JsonOptions);
-        if (config is null || config.Rooms <= 0 || config.RecoveryTicksPerRoom <= 0 || config.TickMs <= 0
+        if (config is null || config.Rooms <= 0 || config.SessionTicks <= 0
+            || config.RecoveryTicksPerRoom <= 0 || config.TickMs <= 0
             || config.ConcurrentRecoveries <= 0 || config.QueuedRecoveries < 0
             || config.DetectP95BudgetMs <= 0 || config.QueueP95BudgetMs <= 0 || config.ReadP95BudgetMs <= 0
             || config.ReplayP95BudgetMs <= 0 || config.ActivateP95BudgetMs <= 0
