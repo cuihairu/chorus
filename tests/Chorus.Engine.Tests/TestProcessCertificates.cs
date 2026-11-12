@@ -23,6 +23,10 @@ internal sealed class TestProcessCertificates
 
     public TrustedProcessCertificates Trusted { get; } = new();
 
+    public X509Certificate2 Root => _root;
+
+    public X509Certificate2 NodeAuthority => _nodeAuthority;
+
     public TestProcessCertificates()
     {
         _root = ProcessCertificateIssuer.CreateRoot("cluster-a", _notAfter);
