@@ -586,7 +586,7 @@
 - [x] 让 mapper 声明所属平台并校验模块注册完整性（IPlatformEventMapper.cs:5）—— [M6] 编译通过不能掩盖 mapper/verifier 漏接。✅ 695d9d3（IPlatformEventMapper 增 PlatformName，六个 mapper 全部声明；PlatformModuleAssembly 在 ingest 模块挂载后用一次性 provider 解析注册面，缺声明平台的 mapper 或具名 verifier 即启动拒绝（消息点名模块名与缺的半边）；launch-only 的 minigame 模块不受检；docs 84dba1d；回归：assembly/face/stats/router 批 52 绿 + 真宿主 gateway 启动批 12 绿（probe 在真实装配链内通过））
 - [x] 对重复 named verifier 注册直接报错（PlatformEventVerifierRouter.cs:25）—— [M6] 禁止按注册顺序静默替换安全实现。✅ 9e14a09（构造期字典 TryAdd 碰撞即抛 InvalidOperationException，消息点名平台名与两个实现类名；大小写不敏感碰撞同拒；docs 无需变更；回归：router/assembly/host 批 32 绿）
 - [x] 抽取共享抖音认证客户端供 launch 使用（DouyinMiniGameLaunchAdapter.cs:82）—— [M7] 消除相同 OpenAPI 请求和响应处理的双份实现（审核明确不建议仅为目录整齐把 launch 类搬入 Adapters.Platforms）。✅ 8dd9691（launch 适配器委托 DouyinMiniGameAuthClient：URL 构造/响应解析/fail-closed 错误抽取单份实现，launch 只保留凭据编码/app 绑定/错误类别映射；DouyinCode2SessionResult 增 MalformedResponse 区分畸形成功与平台错误；构造缝不变（HttpMessageInvoker+baseUrl）；Chorus.Platform 增 Adapters.Platforms 引用 + DI.Abstractions 升 10.0.0 解 NU1605；docs fad4f44；回归：launch/client/U3D14/task-assembly 批 35 绿（原 10 例金测零改动全绿））
-- [ ] 统一共享平台标识及入口规范化规则（PlatformNames.cs:3）—— [m1] 避免跨宿主字符串与大小写语义漂移。
+- [x] 统一共享平台标识及入口规范化规则（PlatformNames.cs:3）—— [m1] 避免跨宿主字符串与大小写语义漂移。✅ 2bef0f3（PlatformNames.Normalize（trim+invariant 小写）单份规则；单机 PlatformIngressFace 与 gateway PlatformIngressEndpoint 两个入口在 HandleAsync 顶部统一规范化，验证/映射/去重键/存储 Platform/OperationId/routing/metrics 全部只见规范拼写；docs 无需变更；回归：face/app-identity/router/push-retry/obs10/端点批 70 绿 + 真宿主批 3 绿）
 - [ ] 删除旧宿主重复能力表注册（Chorus.Server/Program.cs:88）—— [m2] 保留单一有效装配位置。
 - [ ] 修正缺 verifier 行为的接口注释及 AllowAll 启动提示（IPlatformNamedEventVerifier.cs:5）—— [m2] 文档应准确反映 fallback 及已注册平台仍须验签的行为。
 
