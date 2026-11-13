@@ -165,6 +165,14 @@ public sealed class RedesignFanoutReclaimUnitTests
         throw new TimeoutException($"Timed out waiting for: {what}");
     }
 
+    private static List<JsonElement> Frames(RecordedConnection connection)
+    {
+        lock (connection.Frames)
+            return connection.Frames.Select(frame => JsonDocument.Parse(frame).RootElement).ToList();
+    }
+
+    private static string FrameType(JsonElement frame) => frame.GetProperty("type").GetString()!;
+
     [Fact]
     public void ThePoolDisposesAChannelOnlyWhenItsLastReferenceDrops()
     {
@@ -319,11 +327,21 @@ public sealed class RedesignFanoutReclaimUnitTests
             fanout.Join("room-1", "game-1", "ep-a", 4, "challenger", b.Connection));
         Assert.Equal(2, sync.Requests.Count);
         Assert.Equal(1, releases);
-        // The live stream was not torn down by the failed re-baseline: it still delivers.
+        // The live stream was not torn down by the failed re-baseline: it still
+        // delivers its delta behind the snapshot. The scripted end's honest resync
+        // verdict rides the direct send lane while the delta sits queued in the
+        // outbox pump — the shared lane serializes the two, it does not sequence
+        // them — so the pinned fact is the delta's delivery, never its exact
+        // frame index (CI run 43497806583 saw the verdict overtake the queue).
         release.SetResult();
-        var frames = await WaitAsync(a, 3);   // roomJoined, snapshot, delta
-        Assert.Equal("delta", frames[2].GetProperty("type").GetString());
-        Assert.Equal(2, frames[2].GetProperty("stateVersion").GetInt64());
+        await WaitForAsync(() => Frames(a).Any(frame => FrameType(frame) == EdgeTypes.Delta),
+            "the live stream still delivers its delta");
+        var frames = Frames(a);
+        var delta = frames.First(frame => FrameType(frame) == EdgeTypes.Delta);
+        Assert.Equal(2, delta.GetProperty("stateVersion").GetInt64());
+        Assert.True(frames.FindIndex(frame => FrameType(frame) == EdgeTypes.Snapshot)
+            < frames.FindIndex(frame => FrameType(frame) == EdgeTypes.Delta),
+            "the delta arrived without the snapshot it chains onto.");
         // The stream ends naturally: the room resolves and releases once more — total
         // releases match total subscriptions (one success, one failed attempt).
         await WaitForAsync(() => releases == 2, "the live stream releases when it ends");
