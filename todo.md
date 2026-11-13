@@ -565,3 +565,27 @@
 - [x] [m] 收敛新增 gRPC face 测试对内部 .Parameter 消息后缀的强耦合断言——**已修 commit `86887c4`**（7 文件，+41/-30）：20 处 ` (Parameter 'x')` 全文断言 → `detailContains` 弱耦合断言，各 rig `Rejects` 签名扩展为 `(call, code, detail?, detailContains?)`（Data/Match/MatchQueue/Ingest/Task/Retention/Coordinator）。
 
 **门禁裁决（2026-11-13，全量 taskset -c 0-7 pinned）**：**2521/2532**（1h20m+，含本批新增的 item-5 可重试性事实，较上批 2531 多 1 对账吻合），11 失败 = **9 个既有负载族**（M2 clock trio ×3、M3TakeoverKill、PlatformGatewayRouting ×2、EndOperation barrier、FanoutReclaim、FrameChannelCapacity）+ **2 个负载档 host 测试 solo 复跑全绿**（DirectPushChain 3/3、ParticipationCommit 4/4，日志 /home/cui/solo_pushchain.log、/home/cui/solo_participation.log）。**零产品缺陷、零新增签名**；且本门禁 **42501 teardown 首次零出现**（上批 28×，item-2 的 77 文件 helper 在满负载下全覆盖）。门禁日志 /home/cui/audit_gate.log。
+
+## 平台适配层架构深审落账（2026-11-13，codex exec --profile luna -s read-only，HEAD `1cd55b8`，3C/7M/2m，tokens used 125482）
+
+报告全文：`docs/analysis/platform-architecture-review-2026-11-13.md`（五平台信任链对照表、快手两文件「结构差异合理但直播协议未完成」判断、斗鱼触碰面清单 19 行）。**发现不修，落账即可（修复另派）**；以下原子项每项=一个独立 commit，均需带针对性回归证据：
+
+- [ ] 让事件验签产生受信任的应用身份并拒绝应用头冒用（PlatformIngressEndpoint.cs:105）—— [C1] 调用方不能自行选择事件的应用及去重命名空间。
+- [ ] 为事件归属查询加入受信任的应用作用域（RedesignInputEventStore.cs:195）—— [C1] 去重作用域与绑定归属必须一致。
+- [ ] 为任务存储及 RPC 暴露从绑定解析的平台/应用身份（m1.proto:386）—— [C2] 执行器目前无法可靠识别任务所属凭据域。
+- [ ] 按平台/应用筛选任务发现并在执行前检查适配器身份（TaskReconciler.cs:47）—— [C2] 防止不同平台或应用执行器串领任务。
+- [ ] 为 B 站桥转发补齐受信任的应用身份契约（BilibiliOpenLiveClient.cs:365）—— [C3] 当前直连新入口会被固定拒绝（400 missing_app_id）。
+- [ ] 为 B 站桥增加持久待投递及失败恢复（BilibiliOpenLiveClient.cs:361）—— [C3] 接收过的 WSS 消息不能因一次 HTTP 失败直接丢弃。
+- [ ] 移除抖音生产事件缺 ID 时的随机兜底（DouyinPlatformEventMapper.cs:60）—— [M1] 相同报文重试必须保持来源标识不变。
+- [ ] 移除 B 站生产事件缺 ID 时的随机兜底（BilibiliPlatformEventMapper.cs:66）—— [M1] 当前兜底会绕过所有下游来源去重。
+- [ ] 在事件模块装配阶段执行生产准入检查（PlatformModuleAssembly.cs:77）—— [M2] 占位协议不能仅凭存在配置键就进入生产。
+- [ ] 在任务适配器装配阶段检查 ProductionReady（Chorus.PlatformGateway/Program.cs:68）—— [M2] 当前 readiness 属性没有执行效果。
+- [ ] 将开发事件放行限定为明确的 test/simulator 身份并限制宿主环境（PlatformEventVerifierRouter.cs:40）—— [M3] 消除未知平台注册缺口被 fallback 掩盖的问题（已注册平台验签失败不会进入 fallback）。
+- [ ] 区分处理中与已提交的去重结果（PlatformIngressFace.cs:98）—— [M4] 避免尚未投递就成功确认重复（旧 PlatformIngressFace；新入口用持久回执不受影响）。
+- [ ] 为抖音/快手补齐协议支持的持久防重放边界（KuaishouPlatformEventVerifier.cs:73）—— [M5] 有效签名不能被无限期当作新鲜事件使用。
+- [ ] 让 mapper 声明所属平台并校验模块注册完整性（IPlatformEventMapper.cs:5）—— [M6] 编译通过不能掩盖 mapper/verifier 漏接。
+- [ ] 对重复 named verifier 注册直接报错（PlatformEventVerifierRouter.cs:25）—— [M6] 禁止按注册顺序静默替换安全实现。
+- [ ] 抽取共享抖音认证客户端供 launch 使用（DouyinMiniGameLaunchAdapter.cs:82）—— [M7] 消除相同 OpenAPI 请求和响应处理的双份实现（审核明确不建议仅为目录整齐把 launch 类搬入 Adapters.Platforms）。
+- [ ] 统一共享平台标识及入口规范化规则（PlatformNames.cs:3）—— [m1] 避免跨宿主字符串与大小写语义漂移。
+- [ ] 删除旧宿主重复能力表注册（Chorus.Server/Program.cs:88）—— [m2] 保留单一有效装配位置。
+- [ ] 修正缺 verifier 行为的接口注释及 AllowAll 启动提示（IPlatformNamedEventVerifier.cs:5）—— [m2] 文档应准确反映 fallback 及已注册平台仍须验签的行为。
