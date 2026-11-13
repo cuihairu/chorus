@@ -133,7 +133,7 @@ Acceptance criteria: correct signature → pass; tampered body → reject; diffe
 ```json
 {
   "event": "comment | gift | like | <other>",
-  "event_id": "Platform event unique ID (a douyin:<guid> placeholder is generated when missing)",
+  "event_id": "Platform event unique ID (required; payloads without one are refused as unmapped - a random stand-in would let the same retry bypass dedup)",
   "session_id": "Chorus session ID (required; returns 400 when missing)",
   "user_id": "Viewer ID (default anonymous)",
   "content": "Danmaku content (comment)",

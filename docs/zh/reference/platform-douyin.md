@@ -133,7 +133,7 @@ StreamerServer 的主播登录校验（contracts §5 `VerifyLaunch` / `RedesignP
 ```json
 {
   "event": "comment | gift | like | <other>",
-  "event_id": "平台事件唯一 ID（缺失时生成 douyin:<guid> 占位）",
+  "event_id": "平台事件唯一 ID（必填；缺失即拒绝为 unmapped——随机占位会让同一报文的重试绕过去重）",
   "session_id": "Chorus 会话 ID（必填；缺失返回 400）",
   "user_id": "观众 ID（默认 anonymous）",
   "content": "弹幕内容（comment）",
