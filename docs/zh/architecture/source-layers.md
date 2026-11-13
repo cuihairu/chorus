@@ -24,14 +24,14 @@ title: 源码分层解说
 
 - **实现：** `src/Chorus.GameServer/RoomRuntime.cs:18` 拥有房间生命周期与恢复；`src/Chorus.GameServer/RoomActor.cs:160` 运行单个串行 tick 执行器；`src/Chorus.GameServer/Program.cs:116` 映射运行时 RPC 面。
 - **配置 schema：** 宿主上限解析在 `src/Chorus.GameServer/Program.cs:51`；模块包与输入翻译解析在 `src/Chorus.GameServer/Program.cs:146` 和 `src/Chorus.GameServer/Program.cs:156`。
-- **专属协议文件：** `src/Chorus.Rpc/Protos/m2.proto:609` 定义 `GameHost`；`src/Chorus.Rpc/Protos/m2.proto:737` 定义 `RoundSync`；`src/Chorus.Rpc/Protos/m2.proto:701` 定义房间事件投递。
+- **专属协议文件：** `src/Chorus.Rpc/Protos/m2.proto:171` 定义 `GameHost`；`src/Chorus.Rpc/Protos/m2.proto:224` 定义 `RoundSync`；`src/Chorus.Rpc/Protos/m2.proto:207` 定义房间事件投递（服务域拆分见 `src/Chorus.Rpc/Protos/m2.round.proto:1` 等 7 个消息文件）。
 - **文案挂载：** 房间状态与停止原因在 `src/Chorus.GameServer/RoomActor.cs:16`；恢复叙事在 `docs/design/room-recovery.md:1`。
 
 ## 玩法模块层
 
-- **实现：** `src/Chorus.ExampleGame/IRedesignGameModule.cs:1` 是模块契约；`src/Chorus.ExampleGame/ExampleGameModule.cs:9` 声明清单、状态、效果和结果；`src/Chorus.GameServer/RedesignModuleCatalog.cs:37` 按哈希索引随附包。
+- **实现：** `src/Chorus.ExampleGame/IRedesignGameModule.cs:1` 是模块契约；`src/Chorus.ExampleGame/ExampleGameModule.cs:9` 声明清单、状态、效果和结果；`src/Chorus.GameServer/RedesignModuleCatalog.cs:37` 按哈希索引随附包。旧引擎示例模块集为 `src/Chorus.SampleGame/SampleGameModule.cs:6`（旧 `IGameModule` 契约，冻结兼容面，仅旧宿主 `Chorus.Server`/`EngineHost` 消费）。
 - **配置 schema：** `CHORUS_MODULE_PACKAGES` 与 `CHORUS_INPUT_TRANSLATION` 在 `src/Chorus.GameServer/Program.cs:146` 校验。
-- **专属协议文件：** 模块身份由 `src/Chorus.Rpc/GameModuleIdentity.cs:14` 承载；模块输入/效果是 `src/Chorus.Rpc/Protos/m2.proto:115` 中的 protobuf 字段。
+- **专属协议文件：** 模块身份由 `src/Chorus.Rpc/GameModuleIdentity.cs:14` 承载；模块输入/效果是 `src/Chorus.Rpc/Protos/m2.frame.proto:46`（`ClientInputRequest`）与 `src/Chorus.Rpc/Protos/m2.frame.proto:146`（`FrameEffectProto`）中的 protobuf 字段。
 - **文案挂载：** 模块指南为 `docs/guide/game-module.md:1`；面向模块的启动拒绝文案在 `src/Chorus.GameServer/Program.cs:169`。
 
 ## 持久数据层

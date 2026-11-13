@@ -24,14 +24,14 @@ This page is deliberately responsibility-based. Directory names overlap because 
 
 - **Implementation:** `src/Chorus.GameServer/RoomRuntime.cs:18` owns room lifecycle and recovery; `src/Chorus.GameServer/RoomActor.cs:160` runs one serial tick executor; `src/Chorus.GameServer/Program.cs:116` maps the runtime RPC faces.
 - **Configuration schema:** host limits are parsed in `src/Chorus.GameServer/Program.cs:51`; module-package selection and input translation are parsed at `src/Chorus.GameServer/Program.cs:146` and `src/Chorus.GameServer/Program.cs:156`.
-- **Dedicated protocol files:** `src/Chorus.Rpc/Protos/m2.proto:609` defines `GameHost`; `src/Chorus.Rpc/Protos/m2.proto:737` defines `RoundSync`; `src/Chorus.Rpc/Protos/m2.proto:701` defines room-event delivery.
+- **Dedicated protocol files:** `src/Chorus.Rpc/Protos/m2.proto:171` defines `GameHost`; `src/Chorus.Rpc/Protos/m2.proto:224` defines `RoundSync`; `src/Chorus.Rpc/Protos/m2.proto:207` defines room-event delivery (the service-domain split leaves messages in `m2.round.proto` and six sibling files).
 - **Copy:** room-state names and reasons are owned in `src/Chorus.GameServer/RoomActor.cs:16`; recovery narrative is documented in `docs/design/room-recovery.md:1`.
 
 ## Gameplay Module
 
-- **Implementation:** `src/Chorus.ExampleGame/IRedesignGameModule.cs:1` is the module contract; `src/Chorus.ExampleGame/ExampleGameModule.cs:9` declares manifest, state, effects, and results. `src/Chorus.GameServer/RedesignModuleCatalog.cs:37` indexes shipped packages by hash.
+- **Implementation:** `src/Chorus.ExampleGame/IRedesignGameModule.cs:1` is the module contract; `src/Chorus.ExampleGame/ExampleGameModule.cs:9` declares manifest, state, effects, and results. `src/Chorus.GameServer/RedesignModuleCatalog.cs:37` indexes shipped packages by hash. The legacy-engine sample set is `src/Chorus.SampleGame/SampleGameModule.cs:6` (old `IGameModule` contract, frozen compatibility surface consumed only by the legacy hosts `Chorus.Server`/`EngineHost`).
 - **Configuration schema:** `CHORUS_MODULE_PACKAGES` and `CHORUS_INPUT_TRANSLATION` are validated in `src/Chorus.GameServer/Program.cs:146`.
-- **Dedicated protocol files:** module identity is carried by `src/Chorus.Rpc/GameModuleIdentity.cs:14`; module inputs/effects are protobuf fields inside `src/Chorus.Rpc/Protos/m2.proto:115`.
+- **Dedicated protocol files:** module identity is carried by `src/Chorus.Rpc/GameModuleIdentity.cs:14`; module inputs/effects are protobuf fields in `src/Chorus.Rpc/Protos/m2.frame.proto:46` (`ClientInputRequest`) and `src/Chorus.Rpc/Protos/m2.frame.proto:146` (`FrameEffectProto`).
 - **Copy:** module guide is `docs/guide/game-module.md:1`; module-facing validation copy is embedded in `src/Chorus.GameServer/Program.cs:169`.
 
 ## Durable Data
