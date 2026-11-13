@@ -6,7 +6,7 @@ title: "Platform Integration Reference: Bilibili"
 # Platform Integration Reference: Bilibili
 
 > Routing: `POST /ingress/{platform}` (`platform=bilibili`, monolith and Gateway are isomorphic).
-> Signature verification is fail-closed; deduplication goes through `EventDeduplicator` (`msg_id` + TTL).
+> Signature verification is fail-closed; deduplication goes through `EventDeduplicator` (`msg_id` + TTL). `msg_id` is required: payloads without one are refused as unmapped (400), not given a random stand-in - a random id would let the same retry bypass dedup.
 > Unlike Douyin/Kuaishou, **the Bilibili open-live protocol details have a verified source** (the blivedm open-source implementation, field-by-field verified against the original),
 > this document records verified facts and the current implementation contract; real joint debugging awaits the streamer's authorized credentials.
 

@@ -6,7 +6,7 @@ title: "平台接入参考：B 站"
 # 平台接入参考：B 站
 
 > 路由：`POST /ingress/{platform}`（`platform=bilibili`，单机与 Gateway 同构）。
-> 签名校验 fail-closed；去重走 `EventDeduplicator`（`msg_id` + TTL）。
+> 签名校验 fail-closed；去重走 `EventDeduplicator`（`msg_id` + TTL）。`msg_id` 必填：缺失即拒绝为 unmapped（400），不合成随机占位——随机 id 会让同一报文的重试绕过去重。
 > 与抖音/快手不同，**B 站 open-live 协议细节有已核实的来源**（blivedm 开源实现，逐字段对照原文核实），
 > 本文记录已核实事实与当前实现契约；真实联调等主播授权凭据。
 
