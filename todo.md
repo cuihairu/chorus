@@ -589,3 +589,14 @@
 - [ ] 统一共享平台标识及入口规范化规则（PlatformNames.cs:3）—— [m1] 避免跨宿主字符串与大小写语义漂移。
 - [ ] 删除旧宿主重复能力表注册（Chorus.Server/Program.cs:88）—— [m2] 保留单一有效装配位置。
 - [ ] 修正缺 verifier 行为的接口注释及 AllowAll 启动提示（IPlatformNamedEventVerifier.cs:5）—— [m2] 文档应准确反映 fallback 及已注册平台仍须验签的行为。
+
+## 集成火焰图（2026-11-13 用户令，任务单 ~/.hermes/cache/scratch/tasks/chorus-flamegraph.md）
+
+- [x] Chorus.LoadTool 集成 dotnet-trace 火焰图采集——**已修 commit `3282267`（2026-11-14）**：
+  - 路线（任务单钦定外部进程路线）：`FlameGraphProfiler`（src/Chorus.LoadTool/FlameGraphProfiler.cs 新文件）spawn `dotnet-trace collect --profile cpu-sampling --process-id <self> --duration <n> -o <nettrace>`（n = min(--flamegraph-seconds, --duration)，`TraceDurationSeconds` 收窄保证 trace 不越过压测窗），collect 出口后 `dotnet-trace convert <nettrace> --format speedscope`；产物 `flamegraphs/loadtool_<UTC时间戳>_<pid>.nettrace` + 同名 `.speedscope.json`（speedscope.app 打开指引随附输出）。
+  - LoadToolOptions 加 FlameGraphEnabled/FlameGraphSeconds(默认30)/FlameGraphDir(默认flamegraphs) 三字段 + 三 flag（--flamegraph/--flamegraph-seconds/--flamegraph-dir）+ 三 env（CHORUS_LOAD_FLAMEGRAPH=1|true / _SECONDS / _DIR，env 赢过 flag 同既有口径）+ 校验（seconds≥1、dir 非空）+ usage 三行。
+  - 行为中性（门禁红线）：disabled（默认）= 纯 no-op——不建目录/不 spawn/零输出（`TryStart_Disabled_IsPureNoOp` 断言目录不存在）；缺 dotnet-trace=三行安装指引后照常跑（任务单「自动装或报缺依赖指引」——本机 nuget 443 断装不上，选指引路线）；采集/转换失败绝不中断压测不改退出码（真二进制冒烟：`--duration 3` 带与不带 `--flamegraph` 退出码同为 1，指引三行落 stderr）；多进程 `--driver-processes N` 每分片采自身进程，文件名含 pid 防碰撞；完成等待有界（duration+60s，可注入缩短），悬挂 collect 超时杀整树。
+  - 测试（Engine.Tests 10 新 fact）：`LoadToolFlameGraphTests` 6 个——stub dotnet-trace 脚本注入（记录 argv/伪造产物），collect/convert 全流程+输出路径契约（pid 命名+speedscope 同名）+时长收窄双例+collect 失败跳转换+悬挂 collect 超时杀+缺工具指引+disabled no-op；`LoadToolTests` 4 个——flags 解析/默认值/env 启用与 env 赢过 flag/非法值拒绝。**成功路径 stub 全覆盖，不依赖真 dotnet-trace（CI 亦无）**。
+  - **验证**：sln Release build 0 错；定向 LoadTool+FlameGraph **42/42**（新文件单独复跑 **6/6**）；夹具批 **326/326**（/home/cui/fg_fixture.log）；钉核全量门 **2533/2542**（1h29m，9 失败=8 文档化负载族 M2 trio×3/M3TakeoverKill/ModuleCheckpoint/ModuleUpgrade/PlatformGatewayRouting/FrameChannelCapacity + M3Host.TheAgentSupervises 14m58s 超时形状 **solo 隔离复跑 1/1 绿 46s** 判负载窗 flake——零新增签名零产品缺陷，日志 /home/cui/fg_gate.log、/home/cui/fg_solo_m3host.log）；docs 站构建绿（106s）。
+  - 诚实边界：top-10 热点栈/collapsed stacks 未做——TraceEvent 解析需引 Microsoft.Diagnostics.Tracing.TraceEvent 重包（本机 nuget 443 断，引入即破坏本地构建），按任务单「成本高就只输出 speedscope 文件+打开指引，诚实边界注明」执行；NodeAgent 运行时采集面（任务单可选加分）**待二期**；本机无 dotnet-trace，真实成功路径（真 collect→真 speedscope 文件）未经实跑——以 stub 契约测试+结构 review 为准，装有 dotnet-trace 的机器 `--flamegraph` 即可验证。
+  - README.md/README.zh.md 各补「Load Tool and Flame Graphs / 压测工具与火焰图」一节；CI 不集成（本地/真机诊断工具）。
