@@ -206,6 +206,49 @@ public sealed class RedesignInputEventStoreTests
         Assert.Equal(0, await eventStore.ReconcilePendingAsync("simulator", "live-key-late"));
     }
 
+    [Fact]
+    public async Task IngestAndReconcileAttributeOnlyWithinTheirOwnAppScope()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var eventStore = new RedesignInputEventStore(database.ConnectionString);
+
+        // Two apps each hold an active binding on their own room key.
+        var (liveA, sessionA) = await MountAsync(identityStore, bindingStore, "live-key-appa");
+        var mountedA = await bindingStore.StartGameplayAsync("tenant-a", liveA, sessionA.SessionId, "game-a", "op-1");
+        var streamerB = await identityStore.ResolveIdentityAsync("tenant-a", "simulator", "app-2", "appa-open-id");
+        var liveB = await bindingStore.OpenLiveSessionAsync("tenant-a", streamerB.StreamerId, "simulator", "app-2",
+            "room-b", "live-key-appb");
+        var sessionB = await identityStore.LoginAsync(streamerB.StreamerId, "gateway-b", "connection-b",
+            RandomNumberGenerator.GetBytes(32));
+        var mountedB = await bindingStore.StartGameplayAsync("tenant-a", liveB, sessionB.SessionId, "game-a", "op-b");
+
+        // Each app's event attributes to its own binding.
+        var own = await eventStore.IngestAsync("simulator", "app-1", "batch-own",
+            [new PlatformEventInput("gift-a", RedesignInputEventStore.Durable, "live-key-appa",
+                """{"kind":"gift","amount":1}""")]);
+        Assert.Equal(mountedA.BindingId, own.Receipts[0].BindingId);
+
+        // The dedup key is (platform, app, key), so attribution must stay in the same app
+        // scope: a foreign app's event on app-1's room key cannot reach app-1's binding —
+        // neither at ingest nor through the reconcile pass — and waits in the inbox instead.
+        var foreign = await eventStore.IngestAsync("simulator", "app-2", "batch-foreign",
+            [new PlatformEventInput("gift-f", RedesignInputEventStore.Durable, "live-key-appa",
+                """{"kind":"gift","amount":1}""")]);
+        Assert.Equal(RedesignInputEventStore.PendingAttribution, foreign.Receipts[0].Disposition);
+        Assert.Null(foreign.Receipts[0].BindingId);
+        Assert.Equal(0, await eventStore.ReconcilePendingAsync("simulator", "live-key-appa"));
+        var stillPending = Assert.Single(await eventStore.GetPendingAsync("simulator"));
+        Assert.Equal("gift-f", stillPending.SourceDedupKey);
+
+        // App-2's own room still attributes to app-2's binding.
+        var ownB = await eventStore.IngestAsync("simulator", "app-2", "batch-ownb",
+            [new PlatformEventInput("gift-b", RedesignInputEventStore.Durable, "live-key-appb",
+                """{"kind":"gift","amount":1}""")]);
+        Assert.Equal(mountedB.BindingId, ownB.Receipts[0].BindingId);
+    }
+
     private static async Task<(string Live, SessionGrant Session)> MountAsync(
         RedesignIdentityStore identityStore, RedesignBindingStore bindingStore, string canonicalKey)
     {

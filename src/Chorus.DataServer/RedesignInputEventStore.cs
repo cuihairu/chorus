@@ -116,7 +116,9 @@ public sealed class RedesignInputEventStore(string connectionString, Action? cra
 
     /// <summary>
     /// Reconciliation: once a binding is active on the room key, pending inbox events are
-    /// attributed to it in one statement. Receive time is never rewritten.
+    /// attributed to it in one statement — each event only to a binding its own app mounted
+    /// (review C1; the event's stored app id must equal the binding session's). Receive time
+    /// is never rewritten.
     /// </summary>
     public async Task<int> ReconcilePendingAsync(string platform, string canonicalRoomKey,
         CancellationToken cancellationToken = default)
@@ -126,18 +128,15 @@ public sealed class RedesignInputEventStore(string connectionString, Action? cra
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand($"""
-            WITH candidate AS (
-                SELECT s.active_binding_id AS binding_id, s.generation AS generation
-                FROM live.slot s
-                JOIN live.binding b ON b.binding_id = s.active_binding_id
-                WHERE s.platform=@platform AND s.canonical_live_session_key=@room
-                  AND b.state IN {ActiveStates}
-            )
             UPDATE input.event e
-            SET binding_id=candidate.binding_id, binding_generation=candidate.generation,
+            SET binding_id=s.active_binding_id, binding_generation=s.generation,
                 disposition=@attributed
-            FROM candidate
-            WHERE e.platform=@platform AND e.canonical_room_key=@room
+            FROM live.slot s
+            JOIN live.binding b ON b.binding_id = s.active_binding_id
+            JOIN live.session ls ON ls.live_session_id = b.live_session_id
+            WHERE s.platform=e.platform AND s.canonical_live_session_key=e.canonical_room_key
+              AND ls.app_id=e.app_id AND b.state IN {ActiveStates}
+              AND e.platform=@platform AND e.canonical_room_key=@room
               AND e.disposition=@pending
             """, connection);
         command.Parameters.AddWithValue("platform", platform);
@@ -190,18 +189,24 @@ public sealed class RedesignInputEventStore(string connectionString, Action? cra
                 continue;
             }
 
+            // Attribution stays inside the ingest's own app scope (review C1): dedup is keyed
+            // (platform, app, key), so the binding an event can reach must live in the same
+            // app namespace — a foreign app's active binding on the same room key is invisible
+            // here and the event waits in the pending inbox instead.
             string? bindingId = null;
             long generation = 0;
             await using (var slot = new NpgsqlCommand($"""
                 SELECT s.active_binding_id, s.generation
                 FROM live.slot s
                 JOIN live.binding b ON b.binding_id = s.active_binding_id
+                JOIN live.session ls ON ls.live_session_id = b.live_session_id
                 WHERE s.platform=@platform AND s.canonical_live_session_key=@room
-                  AND b.state IN {ActiveStates}
+                  AND ls.app_id=@app AND b.state IN {ActiveStates}
                 """, connection, transaction))
             {
                 slot.Parameters.AddWithValue("platform", platform);
                 slot.Parameters.AddWithValue("room", input.CanonicalRoomKey);
+                slot.Parameters.AddWithValue("app", appId);
                 await using var reader = await slot.ExecuteReaderAsync(cancellationToken);
                 if (await reader.ReadAsync(cancellationToken))
                 {
