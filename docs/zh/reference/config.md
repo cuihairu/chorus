@@ -247,6 +247,7 @@ maxResyncReplayTicks = 128
 | `Ingress:Bilibili:RoomOwnerAuthCode` | 无 | 主播身份鉴权码（app_start 使用）；桥启动前提 |
 | `Ingress:Bilibili:SessionId` | 无 | 房间 → chorus 会话绑定（P1 单绑定；多房间归属控制面 todo §14）；缺失时事件映射失败（400） |
 | `Ingress:Bilibili:IngressUrl` | 无 | 桥转发目标（如 `http://127.0.0.1:5083/ingress/bilibili`）；四件套加该键齐备时桥才启动（`BilibiliIngressBridgeHostedService`） |
+| `Ingress:Bilibili:SpoolDirectory` | 无 | ingress 转发的持久待投递目录：配置后，未获成功应答的转发以文件落盘于此，按最旧优先重发直至落地（重启不丢）；未配置时仅进程内有界队列兜底（仅本进程存活期内） |
 | `Faces:PlatformIngress:MaxBodyBytes` | `65536` | platform-ingress 面请求体上限；超限 413 |
 | `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | platform-ingress 面按来源每分钟限额；超限 429 |
 | `Faces:PlatformIngress:TimeoutMs` | `5000` | platform-ingress 面单请求预算；超时 504 |

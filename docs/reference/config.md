@@ -247,6 +247,7 @@ counters are exposed via `GET /faces`.
 | `Ingress:Bilibili:RoomOwnerAuthCode` | none | Streamer identity authentication code (used by app_start); prerequisite for bridge startup |
 | `Ingress:Bilibili:SessionId` | none | Room → chorus session binding (P1 single binding; multiple rooms belong to control-plane todo §14); when missing, event mapping fails (400) |
 | `Ingress:Bilibili:IngressUrl` | none | Bridge forwarding target (e.g. `http://127.0.0.1:5083/ingress/bilibili`); the bridge only starts when the four-piece set plus this key are complete (`BilibiliIngressBridgeHostedService`) |
+| `Ingress:Bilibili:SpoolDirectory` | none | Durable pending lane for ingress posts: when set, a post the face does not answer success waits as a file there and is re-posted oldest-first until it lands (survives restarts); when unset, a bounded in-process queue rides out transient failures for this process's lifetime only |
 | `Faces:PlatformIngress:MaxBodyBytes` | `65536` | platform-ingress face request body limit; 413 when exceeded |
 | `Faces:PlatformIngress:RateLimitPerMinute` | `1200` | platform-ingress face per-source per-minute limit; 429 when exceeded |
 | `Faces:PlatformIngress:TimeoutMs` | `5000` | platform-ingress face single-request budget; 504 on timeout |

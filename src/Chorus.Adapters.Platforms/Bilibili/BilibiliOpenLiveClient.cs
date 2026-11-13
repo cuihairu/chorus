@@ -30,12 +30,20 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
     private static readonly TimeSpan DefaultWsHeartbeatInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultReconnectMinDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DefaultReconnectMaxDelay = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DefaultSpoolRedeliveryInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan AuthReplyTimeout = TimeSpan.FromSeconds(10);
+    /// <summary>The in-memory pending lane's cap (no spool directory configured): beyond it
+    /// the oldest payload is dropped and counted — the honest limit of a non-durable lane.</summary>
+    private const int MemoryPendingCap = 10000;
 
     private readonly BilibiliOpenLiveOptions _options;
     private readonly HttpMessageInvoker _http;
     private readonly Func<Uri, CancellationToken, Task<WebSocket>>? _connect;
     private readonly ILogger<BilibiliOpenLiveClient>? _logger;
+    private readonly BilibiliIngressSpool? _spool;
+    private readonly object _pendingGate = new();
+    private readonly Queue<string> _memoryPending = new();
+    private Task _pendingLoop = Task.CompletedTask;
 
     private readonly CancellationTokenSource _loopCts = new();
     private readonly SemaphoreSlim _sendGate = new(1, 1);
@@ -53,6 +61,8 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
     public long AuthFailures;
     public long EventsPosted;
     public long PostFailures;
+    /// <summary>Only the non-durable lane drops: its overflow counter (review C3's honest limit).</summary>
+    public long PendingDrops;
 
     public BilibiliOpenLiveClient(
         BilibiliOpenLiveOptions options,
@@ -64,6 +74,9 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
         _http = http;
         _connect = connect;
         _logger = logger;
+        _spool = string.IsNullOrWhiteSpace(options.SpoolDirectory)
+            ? null
+            : new BilibiliIngressSpool(options.SpoolDirectory);
     }
 
     public void Start()
@@ -75,6 +88,7 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
 
         _started = true;
         _loop = RunAsync(_loopCts.Token);
+        _pendingLoop = RunPendingAsync(_loopCts.Token);
     }
 
     public async Task StopAsync()
@@ -90,6 +104,18 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
         catch (Exception ex)
         {
             _logger?.LogError(ex, "bilibili open-live loop stopped with error");
+        }
+
+        try
+        {
+            await _pendingLoop.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "bilibili open-live pending loop stopped with error");
         }
 
         await EndGameAsync().ConfigureAwait(false);
@@ -365,6 +391,99 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
 
     private async Task PostEventAsync(string json, CancellationToken ct)
     {
+        if (await PostIngressAsync(json, ct).ConfigureAwait(false))
+        {
+            return;
+        }
+        // One failed post is never a dropped event (review C3): the payload waits in the
+        // pending lane — the durable spool when one is configured, else the process-local
+        // queue — and the recovery pass re-posts oldest-first until it lands.
+        try
+        {
+            if (_spool is not null)
+            {
+                _spool.Save(json);
+            }
+            else
+            {
+                lock (_pendingGate)
+                {
+                    if (_memoryPending.Count >= MemoryPendingCap)
+                    {
+                        _memoryPending.Dequeue();
+                        Interlocked.Increment(ref PendingDrops);
+                    }
+                    _memoryPending.Enqueue(json);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "bilibili open-live pending write failed; the event is lost");
+        }
+    }
+
+    /// <summary>The recovery pass: drains the pending lane oldest-first, deleting each
+    /// durable file its re-post lands, and stops the pass at the first failure so a down
+    /// ingress is not hammered and the oldest pressure is kept.</summary>
+    private async Task RunPendingAsync(CancellationToken ct)
+    {
+        var interval = _options.SpoolRedeliveryInterval ?? DefaultSpoolRedeliveryInterval;
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(interval, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            if (_spool is not null)
+            {
+                foreach (var (path, json) in _spool.Take(32))
+                {
+                    if (await PostIngressAsync(json, ct).ConfigureAwait(false))
+                    {
+                        _spool.Remove(path);
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                continue;
+            }
+            while (true)
+            {
+                string? json;
+                lock (_pendingGate)
+                {
+                    json = _memoryPending.Count > 0 ? _memoryPending.Peek() : null;
+                }
+                if (json is null)
+                {
+                    break;
+                }
+                if (await PostIngressAsync(json, ct).ConfigureAwait(false))
+                {
+                    lock (_pendingGate)
+                    {
+                        _memoryPending.Dequeue();
+                    }
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>One signed ingress post with the app-identity header. True only when the
+    /// face answered success — anything else leaves the payload to the pending lane.</summary>
+    private async Task<bool> PostIngressAsync(string json, CancellationToken ct)
+    {
         try
         {
             using var request = SignedRequest(HttpMethod.Post, _options.IngressUrl, json);
@@ -376,20 +495,19 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
             if (response.IsSuccessStatusCode)
             {
                 Interlocked.Increment(ref EventsPosted);
+                return true;
             }
-            else
-            {
-                Interlocked.Increment(ref PostFailures);
-                _logger?.LogWarning(
-                    "bilibili open-live event post rejected: {Status} body={Body}",
-                    (int)response.StatusCode, json);
-            }
+            Interlocked.Increment(ref PostFailures);
+            _logger?.LogWarning(
+                "bilibili open-live event post rejected: {Status} body={Body}",
+                (int)response.StatusCode, json);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Interlocked.Increment(ref PostFailures);
             _logger?.LogWarning(ex, "bilibili open-live event post failed");
         }
+        return false;
     }
 
     private async Task EndGameAsync()
@@ -493,4 +611,9 @@ public sealed record BilibiliOpenLiveOptions(
     TimeSpan? GameHeartbeatInterval = null,
     TimeSpan? WsHeartbeatInterval = null,
     TimeSpan? ReconnectMinDelay = null,
-    TimeSpan? ReconnectMaxDelay = null);
+    TimeSpan? ReconnectMaxDelay = null,
+    // The durable pending lane (review C3): with a directory, failed ingress posts wait
+    // as files and survive restarts; without one, a bounded in-memory queue rides out
+    // transient failures for this process's lifetime only.
+    string? SpoolDirectory = null,
+    TimeSpan? SpoolRedeliveryInterval = null);

@@ -63,7 +63,8 @@ public sealed class BilibiliIngressBridgeHostedService : IHostedService
             AccessKeySecret: configuration["Ingress:Bilibili:AccessKeySecret"]!,
             AppId: long.Parse(configuration["Ingress:Bilibili:AppId"]!, System.Globalization.CultureInfo.InvariantCulture),
             RoomOwnerAuthCode: configuration["Ingress:Bilibili:RoomOwnerAuthCode"]!,
-            IngressUrl: configuration["Ingress:Bilibili:IngressUrl"]!);
+            IngressUrl: configuration["Ingress:Bilibili:IngressUrl"]!,
+            SpoolDirectory: configuration["Ingress:Bilibili:SpoolDirectory"]);
         var client = new BilibiliOpenLiveClient(
             options,
             new HttpMessageInvoker(new HttpClientHandler()),

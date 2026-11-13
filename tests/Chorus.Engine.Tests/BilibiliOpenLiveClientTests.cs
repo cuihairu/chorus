@@ -57,6 +57,20 @@ public sealed class BilibiliOpenLiveClientTests
         ReconnectMinDelay: TimeSpan.FromMilliseconds(10),
         ReconnectMaxDelay: TimeSpan.FromMilliseconds(50));
 
+    private static BilibiliOpenLiveOptions PendingOptions(string? spoolDirectory, TimeSpan? spoolInterval) => new(
+        AccessKeyId: KeyId,
+        AccessKeySecret: Secret,
+        AppId: 1001,
+        RoomOwnerAuthCode: "auth-code",
+        IngressUrl: "http://test/ingress/bilibili",
+        StartUrl: "http://test/app_start",
+        HeartbeatUrl: "http://test/app/heartbeat",
+        EndUrl: "",
+        ReconnectMinDelay: TimeSpan.FromMilliseconds(10),
+        ReconnectMaxDelay: TimeSpan.FromMilliseconds(50),
+        SpoolDirectory: spoolDirectory,
+        SpoolRedeliveryInterval: spoolInterval);
+
     /// <summary>按 URL 分发的 open-live HTTP 桩：记录全部请求，ingress 可断言签名。</summary>
     private sealed class FakeOpenLiveHttp : HttpMessageInvoker
     {
@@ -300,6 +314,70 @@ public sealed class BilibiliOpenLiveClientTests
         Assert.True(appStart.Headers.ContainsKey(BilibiliSigner.AuthorizationHeader));
         Assert.False(appStart.Headers.ContainsKey(BilibiliOpenLiveClient.ChorusAppIdHeader));
         Assert.Equal(0, Volatile.Read(ref client.PostFailures));
+    }
+
+    /// <summary>Review C3 的持久待投递：一次 HTTP 失败不丢事件——载荷落盘（spool 目录），
+    /// 另一个客户端（重启形态）从同一目录把它重新投出并删掉文件。</summary>
+    [Fact]
+    public async Task AFailedIngressPostWaitsDurablyAndIsRedelivered()
+    {
+        var spoolDirectory = Path.Combine(Path.GetTempPath(),
+            "chorus-bili-spool-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var http = new FakeOpenLiveHttp(AppStartJson()) { IngressStatus = HttpStatusCode.InternalServerError };
+            var remote = new ScriptedRemoteSocket();
+            remote.Push(AuthReplyOkPacket());
+            remote.Push(MessagePacket(DanmuJson));
+            await using var failed = new BilibiliOpenLiveClient(
+                PendingOptions(spoolDirectory, TimeSpan.FromMilliseconds(30)), http,
+                connect: (_, _) => Task.FromResult<WebSocket>(remote));
+            failed.Start();
+            await WaitUntilAsync(() => Volatile.Read(ref failed.PostFailures) >= 1);
+            await WaitUntilAsync(() => new BilibiliIngressSpool(spoolDirectory).Count() >= 1);
+            await failed.StopAsync();
+
+            // 重启形态：全新客户端扫同一目录，把待投递重新签发出去，成功后文件消失。
+            var recoveryHttp = new FakeOpenLiveHttp(AppStartJson());
+            await using var recovery = new BilibiliOpenLiveClient(
+                PendingOptions(spoolDirectory, TimeSpan.FromMilliseconds(30)), recoveryHttp,
+                connect: (_, _) => Task.FromResult<WebSocket>(new ScriptedRemoteSocket()));
+            recovery.Start();
+            await WaitUntilAsync(() => Volatile.Read(ref recovery.EventsPosted) >= 1);
+            Assert.Contains(DanmuJson, recoveryHttp.IngressBodies);
+            await WaitUntilAsync(() => new BilibiliIngressSpool(spoolDirectory).Count() == 0);
+            Assert.Equal(KeyId, recoveryHttp.Requests.Single(r => r.Path.EndsWith("ingress/bilibili"))
+                .Headers[BilibiliOpenLiveClient.ChorusAppIdHeader]);
+            await recovery.StopAsync();
+        }
+        finally
+        {
+            if (Directory.Exists(spoolDirectory))
+            {
+                Directory.Delete(spoolDirectory, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>Review C3 的进程内兜底：未配置 spool 目录时，内存待投递队列同样让一次
+    /// 失败不丢事件——同一客户端内恢复成功。</summary>
+    [Fact]
+    public async Task WithoutASpoolDirectoryTheMemoryLaneStillRidesOutAFailure()
+    {
+        var http = new FakeOpenLiveHttp(AppStartJson()) { IngressStatus = HttpStatusCode.InternalServerError };
+        var remote = new ScriptedRemoteSocket();
+        remote.Push(AuthReplyOkPacket());
+        remote.Push(MessagePacket(DanmuJson));
+        await using var client = new BilibiliOpenLiveClient(
+            PendingOptions(null, TimeSpan.FromMilliseconds(30)), http,
+            connect: (_, _) => Task.FromResult<WebSocket>(remote));
+        client.Start();
+        await WaitUntilAsync(() => Volatile.Read(ref client.PostFailures) >= 1);
+        http.IngressStatus = HttpStatusCode.OK;
+        await WaitUntilAsync(() => Volatile.Read(ref client.EventsPosted) >= 1);
+        Assert.Contains(DanmuJson, http.IngressBodies);
+        Assert.Equal(0, Volatile.Read(ref client.PendingDrops));
+        await client.StopAsync();
     }
 
     [Fact]
