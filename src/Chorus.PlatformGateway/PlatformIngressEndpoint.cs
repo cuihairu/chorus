@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Chorus.Adapters.Abstractions;
+using Chorus.Adapters.Platforms;
 using Chorus.Protocol.Models;
 using Chorus.Rpc;
 using Grpc.Core;
@@ -98,6 +99,11 @@ public sealed class PlatformIngressEndpoint(
 
     public async Task<IResult> HandleAsync(string platform, HttpContext context)
     {
+        // One canonical spelling enters the pipeline (review 2026-11-13 m1): the routing
+        // lookup, the stored batch platform, the operation ids, and the metrics labels all
+        // see the same normalized identifier instead of the callback URL's casing.
+        platform = PlatformNames.Normalize(platform) ?? string.Empty;
+
         if (verifier is null)
         {
             return Results.NotFound(new { error = "no_event_platforms", platform });

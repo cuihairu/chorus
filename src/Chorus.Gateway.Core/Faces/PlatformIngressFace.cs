@@ -51,6 +51,11 @@ public sealed class PlatformIngressFace
 
     public async Task<IResult> HandleAsync(string platform, HttpContext context)
     {
+        // One canonical spelling enters the pipeline (review 2026-11-13 m1): verification,
+        // mapping, and the dedup namespace below all see the same normalized identifier
+        // instead of whatever casing the callback URL happened to carry.
+        platform = PlatformNames.Normalize(platform) ?? string.Empty;
+
         var sourceKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         if (!_faceGuard.AllowRequest(sourceKey, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
         {

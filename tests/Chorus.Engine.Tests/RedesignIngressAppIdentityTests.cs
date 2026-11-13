@@ -46,12 +46,14 @@ public sealed class RedesignIngressAppIdentityTests
     private sealed class ScriptedIngest : PlatformIngest.PlatformIngestClient
     {
         public int Calls;
+        public readonly List<IngestBatchRequest> Seen = [];
 
         public override AsyncUnaryCall<IngestBatchReply> IngestBatchAsync(
             IngestBatchRequest request, Metadata? headers = null, DateTime? deadline = null,
             CancellationToken cancellationToken = default)
         {
             Calls++;
+            Seen.Add(request);
             var reply = new IngestBatchReply();
             if (request.Events.Count > 0)
             {
@@ -68,7 +70,7 @@ public sealed class RedesignIngressAppIdentityTests
     }
 
     private static async Task<(int Status, string? Error, ScriptedIngest Ingest)> PostAsync(
-        IPlatformEventVerifier verifier, string? appId)
+        IPlatformEventVerifier verifier, string? appId, string platform = PlatformNames.Simulator)
     {
         var ingest = new ScriptedIngest();
         var endpoint = new PlatformIngressEndpoint(verifier,
@@ -91,7 +93,7 @@ public sealed class RedesignIngressAppIdentityTests
         }
         context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(Body));
         context.Response.Body = new MemoryStream();
-        await (await endpoint.HandleAsync(PlatformNames.Simulator, context)).ExecuteAsync(context);
+        await (await endpoint.HandleAsync(platform, context)).ExecuteAsync(context);
         context.Response.Body.Position = 0;
         string? error = null;
         using (var document = JsonDocument.Parse(context.Response.Body))
@@ -132,6 +134,21 @@ public sealed class RedesignIngressAppIdentityTests
         Assert.Equal(StatusCodes.Status200OK, status);
         Assert.Null(error);
         Assert.Equal(1, ingest.Calls);
+    }
+
+    // Ingress normalization (review m1): the batch stored in the data plane carries the
+    // canonical spelling — platform label and operation id — whatever casing the URL had.
+    [Fact]
+    public async Task MixedCasePlatformIsNormalizedBeforeStorage()
+    {
+        var (status, error, ingest) = await PostAsync(new PlainVerifier(), appId: "whatever-app",
+            platform: "SIMULATOR");
+
+        Assert.Equal(StatusCodes.Status200OK, status);
+        Assert.Null(error);
+        var request = Assert.Single(ingest.Seen);
+        Assert.Equal("simulator", request.Platform);
+        Assert.StartsWith("ingress:simulator:", request.OperationId);
     }
 
     [Fact]

@@ -128,7 +128,8 @@ public sealed class PlatformIngressFaceTests
         public static readonly IServiceProvider Services = WebApplication.Create().Services;
     }
 
-    private static async Task<(int Status, string Body)> SendAsync(PlatformIngressFace face, string body = "{}")
+    private static async Task<(int Status, string Body)> SendAsync(PlatformIngressFace face, string body = "{}",
+        string platform = "douyin")
     {
         var context = new DefaultHttpContext
         {
@@ -142,12 +143,31 @@ public sealed class PlatformIngressFaceTests
         context.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(body));
         context.Response.Body = new MemoryStream();
 
-        var result = await face.HandleAsync("douyin", context);
+        var result = await face.HandleAsync(platform, context);
         await result.ExecuteAsync(context);
 
         context.Response.Body.Position = 0;
         using var reader = new StreamReader(context.Response.Body);
         return (context.Response.StatusCode, await reader.ReadToEndAsync());
+    }
+
+    // Ingress normalization (review m1): "/ingress/DouYin" and "/ingress/douyin" are one
+    // platform namespace — the shared rule canonicalizes the name before the dedup key is
+    // built, so the case variant cannot smuggle the same event through as "new".
+    [Fact]
+    public async Task MixedCasePlatformSharesTheCanonicalDedupNamespace()
+    {
+        var actor = new ScriptedActorRef("s-face", tickId: null,
+            new[] { SessionTellOutcome.Accepted, SessionTellOutcome.Accepted });
+        var face = CreateFace(actor);
+
+        var (firstStatus, _) = await SendAsync(face, platform: "DouYin");
+        var (secondStatus, secondBody) = await SendAsync(face, platform: "douyin");
+
+        Assert.Equal(200, firstStatus);
+        Assert.Equal(200, secondStatus);
+        Assert.Contains("\"duplicated\":true", secondBody);
+        Assert.Equal(1, actor.Tells);
     }
 
     [Fact]

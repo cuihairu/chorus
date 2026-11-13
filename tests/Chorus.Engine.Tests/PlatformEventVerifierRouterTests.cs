@@ -178,4 +178,16 @@ public sealed class PlatformEventVerifierRouterTests
         Assert.Null(router.GetTrustedAppId(PlatformNames.Test));
         Assert.Null(router.GetTrustedAppId(""));
     }
+
+    // The shared ingress normalization rule (review m1): every host's entry point funnels
+    // through this one trim+lowercase, so platform casing never becomes a namespace split.
+    [Fact]
+    public void PlatformNames_Normalize_IsTheSharedIngressRule()
+    {
+        Assert.Equal("douyin", PlatformNames.Normalize("DouYin "));
+        Assert.Equal("simulator", PlatformNames.Normalize("SIMULATOR"));
+        Assert.Equal("kuaishou", PlatformNames.Normalize("kuaishou"));
+        Assert.Null(PlatformNames.Normalize(" "));
+        Assert.Null(PlatformNames.Normalize(null));
+    }
 }
