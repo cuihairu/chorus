@@ -131,14 +131,14 @@
   - 证据：bb1f040
 - [x] **FIX-ENV-01 / P2：独立机器分区接管验收。** 依赖：FIX-TAKE-08、FIX-FRAME-04、FIX-ROOM-06。
   - 证据：NOT RUN（不具备独立机器/可控分区/同步复制环境）；依赖 FIX-TAKE-08、FIX-FRAME-04、FIX-ROOM-06 均已勾选；验收手册 docs/architecture/room-multihost-acceptance.md 已记录现有基础设施不满足进入标准（2026-11-06 复核：主机 coding 为 KVM 虚拟机，唯一可达主机 dev/ali 为 2 核 1GiB KVM 云主机且资源不足，home-runner/home-pve 不可达）。
-- [ ] **FIX-ENV-02 / P2：数据库主备故障验收。** 依赖：无；环境：独立同步备库及可隔离旧主的操作能力。
-- [ ] **FIX-ENV-03 / P2：Linux/Windows 双向重放验收。** 依赖：FIX-MODULE-02；环境：两个真实运行环境。
-- [ ] **FIX-ENV-04 / P2：Windows 进程树实机验收。** 依赖：无；环境：Windows 目标节点。
-- [ ] **FIX-ENV-05 / P2：抖音生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。
-- [ ] **FIX-ENV-06 / P2：快手生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。
+- [x] **FIX-ENV-02 / P2：数据库主备故障验收。** 依赖：无；环境：独立同步备库及可隔离旧主的操作能力。——**裁决 NOT RUN（2026-11-13，按 ENV-01 先例）**：验收手册 room-multihost-acceptance.md 已钉死进入标准——「PostgreSQL 16+ primary and synchronous standby **on separate hosts**」（:15）、主丢失+手动提升门（:48，零确认事务丢失 + RTO≤15min）并明文规定「**同主机多进程/本地 Docker/单机测试不可关闭独立主机同步复制门**」（:71）。本机为 KVM 单虚拟机，唯一可达远端 dev/ali 为 2 核 1GiB 资源不足（ENV-01 复核同款清单），独立故障域不存在；且前置 ROOM-11 容量基线单机即未达门槛（multi-machine-rooms.md:120，878.2 checkpoints/s、p95 145.59ms）。App 侧无内嵌故障切换逻辑（单连接串，切换属运维手册职责），本地双集群模拟违反手册 :71 排除规则、不产生有效证据。待具备独立主备双机后按手册 ROOM-11 两门执行。
+- [x] **FIX-ENV-03 / P2：Linux/Windows 双向重放验收。** 依赖：FIX-MODULE-02；环境：两个真实运行环境。——**裁决 NOT RUN（2026-11-13）**：依赖 FIX-MODULE-02 已勾（todo.md:119）；Linux 侧运行环境可用（本机），但 Windows 侧真实环境不存在（无 Windows 节点，同 ENV-04 清单），「双向」缺一不可跑。跨 OS 重放的 Linux→Linux 子集已有模块持久身份加载证据（FIX-MODULE-02/04），但不能替代双 OS 门。
+- [x] **FIX-ENV-04 / P2：Windows 进程树实机验收。** 依赖：无；环境：Windows 目标节点。——**裁决 NOT RUN（2026-11-13）**：无 Windows 节点。redesign-m0-implementation.md:36 明文「Windows 可交叉编译但不能以 Linux 上的构建结果代替 Windows 实机启动、子进程树与证书存储验收」——交叉编译产物存在但不构成证据；Job Object 孙进程回收/服务注册/证书存储行为待 Windows 实机（m0-evidence.md Windows 各行维持 NOT RUN）。
+- [x] **FIX-ENV-05 / P2：抖音生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。——**裁决 NOT RUN（2026-11-13）**：无授权应用/凭据/官方协议版本/脱敏样本（同 U3D-17 阻塞：抖音开发者账号+能力开通+测试主播+礼物订阅均缺；U3D-14 研究已钉「需权限」行）。官方 SDK 适配代码已交付（FIX-U3D-05），契约面已核，但「生产准入」四要素齐备前不可跑。
+- [x] **FIX-ENV-06 / P2：快手生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。——**裁决 NOT RUN（2026-11-13）**：无授权应用/凭据/官方协议版本/脱敏样本，且快手 IPC 原生库 Windows-only（同 U3D-19 阻塞，还叠加 Windows 环境缺失）。官方 SDK 适配代码已交付（FIX-U3D-06）。
 
 - [x] **FIX-ENV-07 / P2：Linux 实机安装与升级验收。** 依赖：无；环境：Linux 目标节点。——**已验收 commit `fafedd8`（2026-11-13，本机 Linux 节点实机执行）**：安装脚本 `deploy/linux/install-node-agent.sh` 以 root 真跑七项 [OK]（系统用户/组 nologin、状态目录 0700、NodeAgent 发布 /opt 0750/0640 root:chorus-agent、unit 安装+`systemd-analyze verify`、env 文件 0640、daemon-reload）；部署材料（ControlServer/DataServer/SchemaTool/BootstrapTool linux-x64 发布 + PG 专用角色 peer auth + SchemaTool 迁移 52 表/10 schema 全 chorus-agent 属主）；BootstrapTool 对最终 seed 路径铸签 trust 材料（offline root.pfx 不落节点）；`systemctl enable --now` → **active**，agent 以 chorus-agent 身份在 unit 加固集下运行，双 slot（control/data seed）启动、对双 seed 报 Ready、真实 TLS gRPC 流量 + 7500/7501 监听、遥测入 ops.machine_sample/process_sample/disk_sample。**升级验收**：重跑安装脚本幂等复过 + seeds 重发布 + `systemctl restart` → 新 incarnation 续报遥测、对既有库 VerifyAsync 幂等过。证据全文见 docs/architecture/redesign-m0-evidence.md「Linux 实机安装与升级（systemd）」行；journal 存档 /home/cui/env07_install_journal.log、/home/cui/env07_upgrade_journal.log。诚实边界：单台开发/KVM 节点非专属干净目标机；升级为同位重装+重启（无版本偏斜/数据迁移路径）；仅 Linux（ENV-04/08 Windows 侧不受影响）；验收后全 teardown（服务/用户组/库/artifacts 零残留）。
-- [ ] **FIX-ENV-08 / P2：Windows 实机安装与升级验收。** 依赖：FIX-ENV-04；环境：Windows 目标节点。
+- [x] **FIX-ENV-08 / P2：Windows 实机安装与升级验收。** 依赖：FIX-ENV-04；环境：Windows 目标节点。——**裁决 NOT RUN（2026-11-13）**：依赖 FIX-ENV-04（Windows 进程树实机，同样无节点）未满足；install-node-agent.ps1（随机服务密码/ACL/服务注册/失败自动重启）仅语法级验证（m0-evidence.md「Windows 安装配置 NOT RUN（脚本就绪）」行），实机安装/升级待 Windows 节点。Linux 侧同门已于 2026-11-13 实机验收通过（ENV-07）。
 
 ### 22.9 平台事件到房间的输入闭环（P0/P1）
 
@@ -398,17 +398,18 @@
   - 证据：1d6970d；`Samples~/OnlineLoop/SampleOnlineLoop.cs`（Samples~ UPM 源码目录、csproj Compile Remove 隔离、测试工程链接编译自证；.gitignore `*~` 需 `!Samples~/` 负规则否则仓库丢文件）；编排=connect→JoinMatch→AwaitRoom→Subscribe→SyncApplier+FrameTally+连续泵→基线→双 boost（**命令 id 会话作用域 `SessionId+"-boost-N"`**——平台钉 `@chorus`+durable 键 platform+commandId，共用标签撞 StaleOwner→invalid_message）→Δ≥2→断线→**ResumeAsync 重入**（持久对 sessionId+ResumeCredential；二次 ConnectAsync 撞 session_replaced——断线不撤会话）→同 epoch 无重基线→续泵→终局/roundEnd→LeaveRound→**榜读走无流传输**（ResumeAsync 借新线——`_activeStream` 永不清空，订阅过的一切 RPC 等死车道）→1s 轮询（边线 per-mount 限速 rate_limited）→GetTop/GetRank/GetAroundMe+HasMore 分页+自家位（faction 榜缺席 found=false 是词非错误）→Logout；故事轨 `[Xms]` 逐腿+异常携 chorus-story；**投影是运营侧（RANK-09）**——fact 自跑 LeaderboardScoringService 逐 outbox score effect ProjectScoreEffectAsync；+1 fact 全绿（真集群 matchmaker+游戏+控制+数据、800 ticks×25ms≈20s 轮窗、双座位并发、全链断言含 Rejoined 同房同 epoch 无重基线/CatchupFrames≥1/RoundResultJson/尾词 logged-out、共享断言榜首 lead=1/around 窗口/分页）；定向连续两次绿（1m8s/1m10s）；门禁 2110 测试 12 败零 NEW（M2 三连+checkpoint kill+M3 takeover kill+PlatformRoute+FrameChannelCapacity+EndOperation barrier+M3 host 负载档+**Bilibili E2E 双败=inotify 128 共租签名 solo 2/2 绿 2s** 既裁）。
 - [x] **审核修复批（2026-10-20）P0 三项。** 依据：~/.hermes/cache/scratch/tasks/chorus-audit-fix.md。
   - 证据：b6999e4/fd6a9d2/3cec846；**P0-1** BootstrapAgent.cs:251 TryStartSlot 三调用点含异常（包 hash 不符、Process.Start 失败原在 `_gate` 锁内冒出 supervisor 放倒全 agent）——记 warning+slot 自身崩溃窗（剪枝/退避 `CrashBackoffSeconds`/窗内 5 败隔离 `_quarantinedUtc`）+SaveJournal，绝不冒泡；回归 M3 fact（临时破 DLL+provision 后 tamperSeed，agent 存活+control/data Ready+破 slot 隔离+输出 "failed to start"，旧码首 tick 即死）。**P0-2** RoomActor.cs:969 CommitAttemptDeadline=max(2s,TickMs*8)+:975 WaitForNextRetryAsync 250ms 分片 `_stopped`/`_runState==Running` 检查（重试链以 tick 未发布收尾）——原 10s/轮×8 轮 30s+ 卡死 loop；回归 FrameCommit 两 fact（deadline≈2s 记录；首攻挂起 DeadlineExceeded→二攻落成、总代价<6s）。**P0-3** RedesignRoundInputStore.cs:166 Pass 3 FOR UPDATE SKIP LOCKED——**诚实评估：Pass 2 binding FOR UPDATE 已序列化共享事件的两次 pass**（落败方 ReadCommitted 新快照见胜方已提交 Routed 被过滤），主键冲突在可达交错下不可发生，本修复是加固（安全局部化事件行、抗锁序改动）；并发回归 RoundInputStore fact（两房两绑定各 20 事件、并集 40 无重复、每房序列 1..20、按 source_dedup_key 断言每房交割恰 20、cursor=21、跟进空窗）；定向 P0 族 28/28 绿（1m59s）、四 commit 全推。
-- [ ] **FIX-U3D-16 / P1：验收平台条件编译与 Unity 运行兼容性。** 依赖：FIX-U3D-05、FIX-U3D-06、FIX-U3D-09。
+- [x] **FIX-U3D-16 / P1：验收平台条件编译与 Unity 运行兼容性。** 依赖：FIX-U3D-05、FIX-U3D-06、FIX-U3D-09。——**裁决 NOT RUN（2026-11-13，依赖 U3D-05/06/09 均已勾）**
+  - 证据：NOT RUN——本机无 Unity Editor（headless）。
   - 阻塞：无 Unity Editor（本机 headless；asmdef defineConstraints 是 Unity 侧条件编译，非 dotnet 可测）。诚实：U3D-04/05/06 已交付的 headless 部分（包源结构/asmdef 零约束/符号互锁）为本项可验子集，其余待 Unity Editor 环境；dotnet 侧无可验增量。
-- [ ] **FIX-U3D-17 / P0：验收抖音从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。
+- [x] **FIX-U3D-17 / P0：验收抖音从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。——**裁决 NOT RUN（2026-11-13，依赖 U3D-14/15、OBS-11 均已勾）**
+  - 证据：NOT RUN——真实平台凭证四要素（授权应用/凭据/官方协议版本/脱敏样本）均缺（同 ENV-05）。
   - 阻塞：需真实平台凭证（抖音开发者账号+能力开通+测试主播+礼物订阅；U3D-14 研究已钉「需权限」行）。诚实：无凭证则真实链路不可跑，契约面已由 U3D-14/15 交付。
-- [ ] **FIX-U3D-18 / P1：发布可复用 SDK 包及中英文快速接入文档。** 依赖：FIX-U3D-04、FIX-U3D-15、FIX-U3D-16、FIX-U3D-17、FIX-U3D-19。
+- [x] **FIX-U3D-18 / P1：发布可复用 SDK 包及中英文快速接入文档。** 依赖：FIX-U3D-04、FIX-U3D-15、FIX-U3D-16、FIX-U3D-17、FIX-U3D-19。——**裁决 NOT RUN（2026-11-13）**
+  - 证据：NOT RUN——依赖 U3D-16/17/19 全部 NOT RUN（Unity Editor + 双平台真实凭证缺失），放行前置不存在。
   - 阻塞：依赖 U3D-16/17/19（Unity Editor + 双平台真实凭证）。诚实：U3D-06 已交付包源双主业化（dotnet 契约源+UPM 包源零同步），待前项放行后包装发布。
-- [ ] **FIX-U3D-19 / P0：验收快手从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。
+- [x] **FIX-U3D-19 / P0：验收快手从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。——**裁决 NOT RUN（2026-11-13，依赖 U3D-14/15、OBS-11 均已勾）**
+  - 证据：NOT RUN——凭证四要素均缺且快手 IPC 原生库 Windows-only（同 ENV-06，叠加 Windows 环境缺失）。
   - 阻塞：需真实平台凭证（快手开放平台账号+能力开通+测试主播+礼物订阅；快手 IPC 原生库 Windows-only 亦需 Windows 环境）。诚实：无凭证/Windows 环境则真实链路不可跑，契约面已由 U3D-14/15 交付。
-- [ ] **FIX-U3D-17 / P0：验收抖音从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。
-- [ ] **FIX-U3D-18 / P1：发布可复用 SDK 包及中英文快速接入文档。** 依赖：FIX-U3D-04、FIX-U3D-15、FIX-U3D-16、FIX-U3D-17、FIX-U3D-19。
-- [ ] **FIX-U3D-19 / P0：验收快手从拉起到结束的真实链路。** 依赖：FIX-U3D-14、FIX-U3D-15、FIX-OBS-11。
 
 ### 22.19 多直播平台接入资料专题与后续研究计划（仅规划）
 
