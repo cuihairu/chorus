@@ -431,11 +431,21 @@ public sealed class RedesignEnd15ChainOrderHostTests
         {
             Apply = true, HangAnswer = TimeSpan.FromSeconds(60)
         });
+        // The parked window must be held, not flashed through: at the default 1s
+        // pass the reconciler resolves parked OutcomeUnknown tasks through the
+        // operation id's official record within a second of the attempt deadline,
+        // and an executor starved under suite load parks late enough that the
+        // all-unknown instant falls between this loop's reads (CI run 43497806583:
+        // the phase held PlatformTaskAuthorized across a dozen reads while every
+        // read missed the all-unknown set). The slow pass keeps the tasks parked
+        // until the crash below, so the resolution happens through the recovery —
+        // exactly the path this fact is here to pin.
         await StartGatewayAsync(environment, platform, gatewayPort, "gateway-e15c",
             new Dictionary<string, string>
             {
                 ["CHORUS_TASK_ATTEMPT_DEADLINE_SECONDS"] = "5",
-                ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "3"
+                ["CHORUS_TASK_CALL_TIMEOUT_SECONDS"] = "3",
+                ["CHORUS_TASK_RECONCILE_INTERVAL_MS"] = "15000"
             });
         var samples = new List<Sample>();
         var parked = false;
