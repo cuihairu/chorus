@@ -570,7 +570,7 @@
 
 报告全文：`docs/analysis/platform-architecture-review-2026-11-13.md`（五平台信任链对照表、快手两文件「结构差异合理但直播协议未完成」判断、斗鱼触碰面清单 19 行）。**发现不修，落账即可（修复另派）**；以下原子项每项=一个独立 commit，均需带针对性回归证据：
 
-- [ ] 让事件验签产生受信任的应用身份并拒绝应用头冒用（PlatformIngressEndpoint.cs:105）—— [C1] 调用方不能自行选择事件的应用及去重命名空间。
+- [x] 让事件验签产生受信任的应用身份并拒绝应用头冒用（PlatformIngressEndpoint.cs:105）—— [C1] 调用方不能自行选择事件的应用及去重命名空间。✅ `33f4e10` feat: bind app header to verified identity：新 `IPlatformTrustedAppIdSource`（bilibili 证明 AccessKeyId；douyin/kuaishou 仅在配置 `Ingress:{Douyin,Kuaishou}:AppId` 时声明，router 透传具名声明、不向 fallback 复活）；endpoint 验签后绑定 `X-Chorus-App-Id`，不一致 403 `app_id_mismatch`（复用 Unverified 计数、不回显受信值；missing_app_id 400 前置序不变，additive-only）。Server/Program.cs 与 PlatformModuleAssembly 两条装配线均接 AppId。回归：`RedesignIngressAppIdentityTests` 4 fact（403 拒绝且零 ingest / 匹配放行 / 无声明验证器保持原语义 / 缺头仍 400）+ router 5 fact + 三平台 verifier trusted-id fact 共 67 绿；endpoint 邻接回归（PushRetry/OBS-10/ModuleAssembly）30 绿；build Release 0 错。
 - [ ] 为事件归属查询加入受信任的应用作用域（RedesignInputEventStore.cs:195）—— [C1] 去重作用域与绑定归属必须一致。
 - [ ] 为任务存储及 RPC 暴露从绑定解析的平台/应用身份（m1.proto:386）—— [C2] 执行器目前无法可靠识别任务所属凭据域。
 - [ ] 按平台/应用筛选任务发现并在执行前检查适配器身份（TaskReconciler.cs:47）—— [C2] 防止不同平台或应用执行器串领任务。
