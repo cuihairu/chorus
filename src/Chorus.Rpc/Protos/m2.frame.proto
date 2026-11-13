@@ -1,0 +1,260 @@
+syntax = "proto3";
+
+package chorus.m2;
+option csharp_namespace = "Chorus.Rpc";
+
+import "Protos/m2.settle.proto";
+
+// Frame commitment, input admission, event delivery and snapshot contracts.
+
+message RouteEventsRequest {
+  string platform = 1;
+  string app_id = 2;
+  string operation_id = 3;
+  int32 max_events = 4;
+  // FIX-SYNC-07: the gateway's post-ingest routing trigger sets this so the pass
+  // retires only events whose binding's current room stands paused — a paused room
+  // has no other production routing driver, while a live room's attributed events
+  // keep waiting for their owner (the push leg) or a closed round's drain pass.
+  bool paused_only = 5;
+}
+
+// The per-event outcome of a RouteEvents pass. Disposition is one of these strings
+// (no enum, per repo convention):
+//   Routed           — the event became one Pending delivery in the room's inbox;
+//                      sequence is its position under the consumer cursor.
+//   OutOfRound       — no current room or a terminal/non-live room; no delivery.
+//   AmbiguousRound   — the round hint is not trustable membership; held for review.
+//   Skipped          — the event stayed attributed (window/order bookkeeping).
+//   PausedBufferFull — a paused room's bounded buffer is at capacity; the event is
+//                      attributed to the room but no delivery was written (FIX-SYNC-07).
+//   PausedRejected   — the paused room's policy refused the event explicitly.
+//   Compensated      — the paused room's policy disposed the event out-of-round.
+//   PausedPolicyUnset— the paused room declared no policy; the gate failed closed.
+message RoutedEventProto {
+  string event_id = 1;
+  string room_id = 2;
+  int64 sequence = 3;
+  string disposition = 4;
+}
+
+message RouteEventsReply {
+  bool duplicate = 1;
+  repeated RoutedEventProto events = 2;
+}
+
+message ClientInputRequest {
+  string session_id = 1;
+  string room_id = 2;
+  int64 room_epoch = 3;
+  string game_id = 4;
+  string command_id = 5;
+  string payload_json = 6;
+  // A cluster-scoped caller names the tenant; empty means the caller's own.
+  string tenant_id = 7;
+}
+
+message ClientInputReply {
+  string command_id = 1;
+  string room_id = 2;
+  int64 sequence = 3;
+  int64 route_version = 4;
+  bool duplicate = 5;
+  // FIX-LINK-09: the delivery row's own event id, distinct from the client's command id. A
+  // room's frame commit must reference the delivery id, so the direct-push leg surfaces it
+  // for the seat while the Applied word keeps the command id (the dedup key).
+  string event_id = 6;
+}
+
+// FIX-INPUT-01: one directly pushed room event on its way to the durable store. The
+// event id is the business identity the producer keeps across retries; the store keys
+// both the operation receipt and the dedup unique on it. The binding is the mount the
+// producer attributed the event to — it must point at this room for the event to reach
+// a module seat; an empty binding is a room-scoped event with no seat.
+message AcceptRoomEventRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string owner_instance_id = 4;
+  int64 epoch = 5;
+  string event_id = 6;
+  string platform = 7;
+  string app_id = 8;
+  string binding_id = 9;
+  string payload_json = 10;
+  // FIX-END-06: the caller's routing-snapshot claim of the binding's round generation
+  // (live.binding.round_generation — the counter each mount bumps on entering a round, not
+  // the mount incarnation). Required whenever binding_id names a binding; the store refuses
+  // a claim that differs from the freshly read row, so a stale snapshot's push for a closed
+  // round never lands in a newer one.
+  int64 round_generation = 11;
+}
+
+message AcceptRoomEventReply {
+  string event_id = 1;
+  string room_id = 2;
+  int64 sequence = 3;
+  int64 route_version = 4;
+  bool duplicate = 5;
+}
+
+// FIX-INPUT-01: the direct-push room-event contract the routing layer calls. The reply
+// disposition is one of these strings (no enum, per repo convention):
+//   DurableAccepted — the event, its inbox delivery and the cursor advance committed;
+//                     only a durable success confirms an important input.
+//   Duplicate       — the same event id arrived before; the stored outcome replays,
+//                     nothing is written twice.
+//   StaleOwner      — the caller's owner instance or epoch is not the room's current
+//                     authority; re-resolve routing, then retry the same event id.
+//   Overloaded      — the host's inbound bound refused the event before any durable
+//                     write; retry the same event id after backoff.
+//   OutcomeUnknown  — the durable leg timed out or the store became unreachable; the
+//                     transaction may or may not have committed. Retry the same event
+//                     id — the receipt decides between Duplicate and DurableAccepted.
+message DeliverRoomEventRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string owner_instance_id = 4;
+  int64 epoch = 5;
+  string event_id = 6;
+  string platform = 7;
+  string app_id = 8;
+  string binding_id = 9;
+  string payload_json = 10;
+  // FIX-END-06: the round generation the caller's installed route snapshot claims for the
+  // binding; forwarded as the AcceptRoomEvent claim the store checks against
+  // live.binding.round_generation.
+  int64 round_generation = 11;
+  // FIX-LINK-09: the client session a @chorus (client-command) push belongs to. The direct
+  // push carries the platform push's room attribution; a client command needs its session so
+  // the durable leg can run the session/participation/rate-cap fence it is authoritative for.
+  // Empty for platform events, which are room-attributed and carry no session.
+  string session_id = 12;
+}
+
+message DeliverRoomEventReply {
+  string disposition = 1;
+  string note = 2;
+  int64 sequence = 3;
+  int64 route_version = 4;
+}
+
+// One authoritative tick commit (architecture 8.2). The owner states the tick and state
+// version it derived the candidate from; the store validates the fence, the prev frame and
+// every input ref before anything is consumed.
+message FrameEffectProto {
+  string kind = 1;
+  string payload_json = 2;
+}
+
+message CommitFrameRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  string commit_id = 5;
+  int64 prev_tick = 6;
+  int64 prev_state_version = 7;
+  repeated string input_event_ids = 8;
+  bytes state_hash = 9;
+  repeated FrameEffectProto effects = 10;
+  string module_version = 11;
+  string config_hash = 12;
+  // FullCheckpoint mode: the candidate state joins the frame transaction (8.2); absent
+  // fields mean a regular deterministic tick.
+  bytes snapshot_payload = 13;
+  bytes snapshot_hash = 14;
+  int32 snapshot_schema_version = 15;
+  bool final = 16;
+  string result_json = 17;
+  bytes plan_hash = 18;
+  repeated PlannedGrantProto grants = 19;
+}
+
+message FrameReceiptReply {
+  string commit_id = 1;
+  string room_id = 2;
+  int64 tick = 3;
+  int64 state_version = 4;
+  int64 watermark = 5;
+  bool duplicate = 6;
+}
+
+// FIX-SYNC-08: the pause-timeout terminal result request (authoritative-sync.md:54). The
+// result is the module's FinishFrozen outcome — derived from the frozen state, no new frame,
+// no tick advance. The store writes game.result (result_version 1 at the frozen frame) and
+// the grant plan, flips Paused→Finishing, and clears the spent ready rows.
+message CommitPausedResultRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  string operation_id = 5;
+  int64 tick = 6;
+  bytes plan_hash = 7;
+  string result_json = 8;
+  repeated PlannedGrantProto grants = 9;
+}
+
+message ReadInboxRequest {
+  string room_id = 1;
+  string game_id = 2;
+  int32 max_events = 3;
+}
+
+message InboxItemProto {
+  string event_id = 1;
+  int64 sequence = 2;
+  int64 route_version = 3;
+  string binding_id = 4;
+  string payload_json = 5;
+  // Client commands (platform @chorus) carry the command id as their dedup key so the
+  // host can acknowledge the exact command a committed frame consumed.
+  string platform = 6;
+  string source_dedup_key = 7;
+}
+
+message ReadInboxReply {
+  int64 watermark = 1;
+  repeated InboxItemProto items = 2;
+}
+
+// Snapshot persistence and recovery reads (architecture 8.2, 10.3). PutSnapshot attaches a
+// store-verified full snapshot to the last committed frame; LoadRecovery hands the recoverer
+// everything a room needs to rebuild: the room head, every snapshot, the frames after the
+// oldest snapshot and the full delivery log in routing order.
+message PutSnapshotRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  int64 tick = 5;
+  bytes snapshot_payload = 6;
+  bytes snapshot_hash = 7;
+  int32 snapshot_schema_version = 8;
+  string operation_id = 9;
+}
+
+// The Recovering-state twin of PutSnapshotRequest (contracts 6.2.1): same payload, but the
+// fence admits exactly the takeover-named owner at the bumped epoch while the room ownership
+// is Recovering — a normal frame or snapshot write still refuses.
+message PutRecoverySnapshotRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  int64 tick = 5;
+  bytes snapshot_payload = 6;
+  bytes snapshot_hash = 7;
+  int32 snapshot_schema_version = 8;
+  string operation_id = 9;
+}
+
+message SnapshotReceiptReply {
+  string room_id = 1;
+  int64 tick = 2;
+  int32 snapshot_schema_version = 3;
+  bool verified = 4;
+  bool duplicate = 5;
+}

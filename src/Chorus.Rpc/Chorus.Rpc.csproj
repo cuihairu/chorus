@@ -14,6 +14,13 @@
     <Protobuf Include="Protos/m0.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m1.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m2.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos/m2.round.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos/m2.frame.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos/m2.settle.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos/m2.board.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos/m2.sync.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos/m2.host.proto" GrpcServices="Both" />
+    <Protobuf Include="Protos/m2.retention.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m3.proto" GrpcServices="Both" />
     <Protobuf Include="Protos/m4.proto" GrpcServices="Both" />
   </ItemGroup>

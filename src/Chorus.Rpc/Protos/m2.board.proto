@@ -1,0 +1,200 @@
+syntax = "proto3";
+
+package chorus.m2;
+option csharp_namespace = "Chorus.Rpc";
+
+
+// Leaderboard read and administration contracts.
+
+message LeaderboardEntryProto {
+  string player_id = 1;
+  int64 score = 2;
+}
+
+message ReadLeaderboardRequest {
+  string game_id = 1;
+  string board_id = 2;
+  int32 max_entries = 3;
+  string tenant_id = 4;
+}
+
+message LeaderboardReply {
+  string board_id = 1;
+  repeated LeaderboardEntryProto entries = 2;
+}
+
+// FIX-RANK-03: the RANK-01 board definition as the business module selected it (the
+// business layer owns board/period/scope selection; the data plane stores under it).
+message BoardDefinitionProto {
+  string board_id = 1;
+  // RankSubject (0 Player, 1 Streamer, 2 Faction).
+  int32 subject = 2;
+  // RankAggregation (0 Sum, 1 Max).
+  int32 aggregation = 3;
+  // RankPeriodKind (0 AllTime, 1 Daily, 2 Weekly, 3 Season).
+  int32 period_kind = 4;
+  string period_id = 5;
+  string period_timezone = 6;
+  // ISO-8601 (UTC) bucket bounds; empty when unbounded (AllTime).
+  string period_start_utc = 7;
+  string period_end_utc = 8;
+  string period_version = 9;
+  string scope_id = 10;
+  int64 bounds_min = 11;
+  int64 bounds_max = 12;
+  bool bounds_allow_negative = 13;
+}
+
+// FIX-RANK-08: the GM correction of one subject's entry of a named board/period/scope. The
+// board definition carries the board/period/scope the operation names; the delta is the signed
+// correction; expected_version is the board's read version the operator last saw (an empty
+// board answers the empty version, so a correction over an empty board requires the empty
+// version); operation_id is the idempotency key and the audit anchor; reason is the audit
+// evidence. The data plane never invents a correction amount — it applies exactly what the
+// operation names, exactly once per operation id.
+message AdjustBoardRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  string subject_id = 4;
+  int64 delta = 5;
+  string expected_version = 6;
+  string operation_id = 7;
+  string reason = 8;
+}
+
+message AdjustBoardReply {
+  int64 score = 1;
+  bool duplicate = 2;
+  string version = 3;
+}
+
+// FIX-RANK-08: the GM reset of one subject's entry (or the whole board's when subject_id is
+// empty). Same guards and evidence as the adjustment.
+message ResetBoardRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  string subject_id = 4;
+  string expected_version = 5;
+  string operation_id = 6;
+  string reason = 7;
+}
+
+message ResetBoardReply {
+  bool duplicate = 1;
+  string version = 2;
+}
+
+// FIX-RANK-08: the projection rebuild of one board. The board definition names the
+// board/period/scope to rebuild; the data plane re-derives the entries from the effect ledger
+// (game effects and GM rows in apply order). A rebuild never reads the entries it is about to
+// rewrite and never touches the committed outbox rows — original scoring evidence remains.
+message RebuildBoardRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+}
+
+message RebuildBoardReply {
+  int32 entries = 1;
+  string version = 2;
+}
+
+// FIX-RANK-04: the bounded TopN of a board. The board definition is the RANK-01 contract
+// (the caller names the board it queries); max_entries is the bounded page size.
+message GetTopRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  int32 max_entries = 4;
+  // The read version the caller's page is bound to; empty means no staleness check. A
+  // non-empty value that differs from the board's current version is a stale read (the
+  // board changed; the caller must restart), never a cross-version page.
+  string expected_version = 5;
+  // FIX-RANK-06: an opaque continuation cursor issued with the previous page (empty on a
+  // first page). It carries the snapshot's write version and its bounded lifetime — a
+  // continuation whose board changed or whose snapshot expired is a stale read (an explicit
+  // error), never a cross-version seemingly-contiguous page.
+  string cursor = 6;
+}
+
+message RankEntryProto {
+  // RankSubject (0 Player, 1 Streamer, 2 Faction) — the board's single declared subject.
+  int32 subject = 1;
+  string subject_id = 2;
+  int64 score = 3;
+}
+
+message TopNReply {
+  string board_id = 1;
+  // The board's read version (ISO-8601 UTC; empty when the board has never scored).
+  string read_version = 2;
+  repeated RankEntryProto entries = 3;
+  // FIX-RANK-06: the continuation cursor for the next page of the same snapshot; empty when
+  // this page is the last (the store read one row past the page bound to know).
+  string next_cursor = 4;
+}
+
+// FIX-RANK-06: the pagination cursor — the snapshot a page belongs to (board identity +
+// write version + bounded lifetime) and where to resume (the last entry's keyset). The data
+// plane encodes it opaquely; a continuation is valid only while the board's write version is
+// unchanged and the lifetime has not expired, so a walk can never stitch pages across
+// versions.
+message LeaderboardCursorProto {
+  string tenant_id = 1;
+  string game_id = 2;
+  string board_id = 3;
+  // The snapshot's write version (the board's read version when the walk began; ISO-8601
+  // UTC, empty when the board had never scored).
+  string write_version = 4;
+  // The snapshot's expiry (Unix ms UTC). Issued at the first page; continuations keep it,
+  // so the whole walk is bounded, not refreshed per page.
+  int64 deadline_utc_ms = 5;
+  // The last entry of the page read so far — the next page resumes strictly after this
+  // keyset (score descending, subject id ascending).
+  int64 last_score = 6;
+  string last_subject_id = 7;
+}
+
+// FIX-RANK-05: one subject's position. The board definition names the queried board; the
+// subject id names the identity whose rank is asked (the rank is unique and gapless in the
+// board's declared order).
+message GetRankRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  string subject_id = 4;
+}
+
+message RankReply {
+  // False when the subject has not scored on the board (no rank exists).
+  bool found = 1;
+  int32 rank = 2;
+  RankEntryProto entry = 3;
+  // The board's read version at the same snapshot (empty when the board has never scored).
+  string read_version = 4;
+}
+
+// FIX-RANK-05: the around-me window. The subject plus this many neighbours on each side of
+// its rank; bounded (LeaderboardQueryLimits.MaxAroundWindow).
+message GetAroundMeRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  BoardDefinitionProto board = 3;
+  string subject_id = 4;
+  int32 window = 5;
+}
+
+message RankedEntryProto {
+  int32 rank = 1;
+  RankEntryProto entry = 2;
+}
+
+message AroundReply {
+  // False when the subject has not scored on the board (no rank to centre on).
+  bool found = 1;
+  // The board's read version at the same snapshot (empty when the board has never scored).
+  string read_version = 2;
+  repeated RankedEntryProto entries = 3;
+}

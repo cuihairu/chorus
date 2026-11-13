@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package chorus.m2;
+option csharp_namespace = "Chorus.Rpc";
+
+
+// Game host control command contracts.
+
+// FIX-GM-07: one operator-delegated room command. The operation id is the business identity
+// the whole chain keys on — the durable input row, the frame's input refs and the status
+// query all answer it; a lost reply is retried verbatim and the store's receipt decides
+// between Duplicate and DurableAccepted.
+message DeliverRoomCommandRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string operation_id = 4;
+  string participant_id = 5;
+  string payload_json = 6;
+}
+
+message DeliverRoomCommandReply {
+  string operation_id = 1;
+  // "DurableAccepted", "Duplicate" or the refusal word ("StaleOwner", "Overloaded",
+  // "UnknownParticipant"). Never "Applied" — application happens at a committed tick.
+  string disposition = 2;
+  string owner_instance_id = 3;
+  int64 epoch = 4;
+  string note = 5;
+}
+
+message DestroyRoomRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  // The released ownership epoch (the finalize transaction's own bump): actors strictly
+  // below it are the settled round's incarnations; an actor at or above it is a newer
+  // generation. A caller naming a pre-release row's epoch therefore spares everything —
+  // the normal destroy cannot run before the finalize.
+  int64 release_epoch = 4;
+  string end_operation_id = 5;
+}
+
+message DestroyRoomReply {
+  string room_id = 1;
+  // This call removed an entity. A repeated destroy (or a room this host never ran, or
+  // one whose entities already died with a restart) answers false — clean, never a throw.
+  bool destroyed = 2;
+  // A newer-generation actor of this room stands at or above the ceiling and was not
+  // touched: the old round's destroy is complete, the new round's entity stays.
+  bool spared_new_generation = 3;
+}
+
+// FIX-SYNC-08: the control plane's coordinator asks the room's owner host to lift a paused
+// room back to Running at its frozen head. The host commits the resume boundary through the
+// data plane, then starts the room's actor from that head (the same recovery path a crash
+// uses); a repeated resume answers the existing actor — no double tick loop.
+message ResumeRoomRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string owner_instance_id = 4;
+  int64 epoch = 5;
+}
+
+message ResumeRoomReply {
+  string room_id = 1;
+  string status = 2;
+  // True when this host already ran the room's actor (a repeated resume); the caller treats
+  // it as converged, never as a second loop.
+  bool actor_running = 3;
+}
+
+// FIX-SYNC-08: the pause-timeout termination the coordinator drives. The host derives the
+// module's terminal result from the frozen state (FinishFrozen), commits it through the data
+// plane (Paused→Finishing), and enters the end-operation ladder — so the timeout ends per the
+// module's own rule and never bypasses platform-close confirmation.
+message FinishPausedRoomRequest {
+  string tenant_id = 1;
+  string game_id = 2;
+  string room_id = 3;
+  string owner_instance_id = 4;
+  int64 epoch = 5;
+  string reason = 6;
+}
+
+message FinishPausedRoomReply {
+  string room_id = 1;
+  string status = 2;
+  // The frozen frame the terminal result was derived at (the room's head).
+  int64 final_tick = 3;
+  int32 result_version = 4;
+}

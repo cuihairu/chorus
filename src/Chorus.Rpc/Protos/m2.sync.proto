@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package chorus.m2;
+option csharp_namespace = "Chorus.Rpc";
+
+import "Protos/m2.frame.proto";
+
+// Round sync subscription stream contracts.
+
+message SubscribeRequest {
+  string room_id = 1;
+  string game_id = 2;
+  // The epoch the subscriber last knew. A room that moved on answers ResyncRequired
+  // instead of streaming an epoch the client cannot validate (architecture 8.3).
+  int64 epoch = 3;
+  // The subscriber's applied baseline: (tick, state version) of the last message it
+  // applied. A baseline at the current head continues with deltas alone; anything
+  // older receives a full snapshot first.
+  int64 last_applied_tick = 4;
+  int64 last_applied_state_version = 5;
+}
+
+message SyncMessage {
+  oneof kind {
+    SnapshotMessage snapshot = 1;
+    DeltaMessage delta = 2;
+    RoundResultMessage round_result = 3;
+    ResyncRequiredMessage resync_required = 4;
+  }
+}
+
+// Every message carries the room identity the client validates: room, epoch, tick,
+// state version, module version and config hash (architecture 8.3).
+message SnapshotMessage {
+  string room_id = 1;
+  int64 epoch = 2;
+  int64 tick = 3;
+  int64 state_version = 4;
+  string module_version = 5;
+  string config_hash = 6;
+  bytes state_payload = 7;
+  int32 state_schema_version = 8;
+}
+
+message DeltaMessage {
+  string room_id = 1;
+  int64 epoch = 2;
+  int64 tick = 3;
+  int64 state_version = 4;
+  // The version this delta applies to — the client rejects a delta whose base it never
+  // applied instead of guessing the gap.
+  int64 base_version = 5;
+  string module_version = 6;
+  string config_hash = 7;
+  bytes state_hash = 8;
+  repeated string input_event_ids = 9;
+  repeated FrameEffectProto effects = 10;
+  repeated CommandReceiptProto commands = 11;
+}
+
+// Acknowledges that a client command became part of the authoritative frame record.
+message CommandReceiptProto {
+  string command_id = 1;
+  int64 sequence = 2;
+}
+
+message RoundResultMessage {
+  string room_id = 1;
+  int64 epoch = 2;
+  int64 tick = 3;
+  int64 state_version = 4;
+  string result_json = 5;
+}
+
+message ResyncRequiredMessage {
+  string room_id = 1;
+  int64 current_epoch = 2;
+  string reason = 3;
+}

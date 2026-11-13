@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package chorus.m2;
+option csharp_namespace = "Chorus.Rpc";
+
+
+// Retention pruning contracts.
+
+message PruneRoundRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string operation_id = 3;
+  string tenant_id = 4;
+  // A deliberate ops override of the settled-round retention window. The default keeps raw
+  // events and frames for troubleshooting; pressure never prunes quietly (AT21).
+  bool override_retention_window = 5;
+}
+
+message PruneRoundReply {
+  string room_id = 1;
+  // The anchor the prefix was released below: everything at or after it stays.
+  int64 keep_tick = 2;
+  int64 frames_deleted = 3;
+  int64 snapshots_deleted = 4;
+  bool duplicate = 5;
+}

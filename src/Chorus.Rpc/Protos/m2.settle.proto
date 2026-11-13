@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package chorus.m2;
+option csharp_namespace = "Chorus.Rpc";
+
+
+// Result commitment and grant settlement contracts.
+
+message PlannedGrantProto {
+  string player_id = 1;
+  string grant_key = 2;
+  string operation_id = 3;
+  // The immutable reward manifest (architecture 9.3): each grant carries its own asset
+  // and amount, so the settler applies committed values, never re-derived ones.
+  string asset_id = 4;
+  int64 delta = 5;
+}
+
+message CommitResultRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string operation_id = 3;
+  // Cluster-scope callers (control plane) name the tenant they act for; tenant-scope
+  // callers inherit their certificate tenant and must not name another one.
+  string tenant_id = 4;
+}
+
+message CommitResultReply {
+  string room_id = 1;
+  int64 result_version = 2;
+  int32 grants_total = 3;
+  int32 grants_granted = 4;
+  int32 grants_pending = 5;
+  bool duplicate = 6;
+}
+
+message FinalizeRoundRequest {
+  string room_id = 1;
+  string game_id = 2;
+  string operation_id = 3;
+  string tenant_id = 4;
+}
+
+message FinalizeRoundReply {
+  string room_id = 1;
+  string status = 2;
+  int64 epoch = 3;
+  bool duplicate = 4;
+  string note = 5;
+}
+
+message ListPendingSettlementsRequest {
+  string game_id = 1;
+  // Page size; the store clamps it into 1..500 and refuses anything outside.
+  int32 limit = 2;
+  // Empty starts from the beginning; otherwise the previous reply's next_cursor, so the
+  // walk resumes past the last room it carried. No page holds server state.
+  string cursor = 3;
+  string tenant_id = 4;
+}
+
+message ListPendingSettlementsReply {
+  repeated PendingSettlementProto settlements = 1;
+  // Present when the page filled to its limit — more rooms may follow; empty on the
+  // last page. Send it back verbatim as the next request's cursor.
+  string next_cursor = 2;
+}
+
+message SettleGrantsRequest {
+  string game_id = 1;
+  string room_id = 2;
+  string tenant_id = 3;
+}
+
+message PendingSettlementProto {
+  string room_id = 1;
+  int64 result_version = 2;
+  int32 grants_total = 3;
+  int32 grants_granted = 4;
+  int32 grants_pending = 5;
+}
