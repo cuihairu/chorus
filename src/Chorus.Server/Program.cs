@@ -126,7 +126,7 @@ app.UseWebSockets();
 if (builder.Configuration.GetValue("Ingress:AllowAll", false))
 {
     app.Logger.LogError(
-        "Ingress:AllowAll is ENABLED: platform callbacks are accepted WITHOUT signature verification. Dev/demo only - never enable in production.");
+        "Ingress:AllowAll is ENABLED: platforms without a registered verifier (test/simulator only) are accepted unsigned; platforms with a registered verifier still verify signatures. Dev/demo only - never enable in production.");
 }
 
 var streamerWsFaces = app.Services.GetRequiredService<StreamerWsFaceOptions>();

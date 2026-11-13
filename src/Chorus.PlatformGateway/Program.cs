@@ -183,7 +183,7 @@ if (builder.Configuration.GetValue(PlatformModuleAssembly.AllowAllConfigurationK
             $"{PlatformModuleAssembly.AllowAllConfigurationKey} is a development switch and is refused in the Production environment.");
     }
     Console.Error.WriteLine(
-        $"{PlatformModuleAssembly.AllowAllConfigurationKey} is enabled; platform signatures are not required. Development only.");
+        $"{PlatformModuleAssembly.AllowAllConfigurationKey} is enabled; unsigned acceptance covers only platforms without a registered verifier (test/simulator). Platforms with a named verifier still verify signatures. Development only.");
 }
 app.MapGrpcService<GatewayGrpcService>();
 if (ingressPort > 0)
