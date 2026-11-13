@@ -548,9 +548,9 @@
 
 ### c) 目录/分类问题
 
-- [ ] 旧 `Chorus.SampleGame` 与新 `Chorus.ExampleGame` 并存，模块目录按时代切分而非玩法域；接口差异需要同时读两个项目。（src/Chorus.SampleGame/SampleGameModule.cs:6，src/Chorus.ExampleGame/ExampleGameModule.cs:9）
-- [ ] `Chorus.Control`/`Chorus.ControlHost` 与 `Chorus.ControlServer` 都使用控制域命名，但前者是旧控制台/持久化路径，后者是重设计控制面，入口命名不足以区分。（src/Chorus.Control/ControlDatabase.cs:13，src/Chorus.ControlServer/RedesignControlStore.cs:170）
-- [ ] `Chorus.RoundDemo` 位于 src 但承担演示/验收场景，与正式服务目录和 tests 目录都存在归类歧义。（src/Chorus.RoundDemo/RoundDemoScenario.cs:40，tests/Chorus.Engine.Tests/RoundDemoScenarioTests.cs:1）
+- [x] 旧 `Chorus.SampleGame` 与新 `Chorus.ExampleGame` 并存，模块目录按时代切分而非玩法域；接口差异需要同时读两个项目。——**已修 commit `cb2518a`（2026-11-13）**：两项目各有 README（`src/Chorus.SampleGame/README.md`、`src/Chorus.ExampleGame/README.md`）钉住 era/角色/消费宿主：SampleGame = 旧 `IGameModule`（`Chorus.Engine.Abstractions`）示例集，冻结兼容面，仅旧宿主 `Chorus.Server`/`EngineHost` 消费；ExampleGame = 重设计契约 `IRedesignGameModule`（架构 8.1 清单：tick 节奏/检查点策略/离线策略为模块事实），由 `GameServer.RedesignModuleCatalog` 按哈希消费，活跃示例集。玩法模块层账本（docs/architecture/source-layers.md 与 docs/zh/... 同节）增补该边界。两项目接口本就不共享（契约不同代），并存是刻意的兼容面而非可合并的重叠。**未做**：物理删除 SampleGame——兼容运行层账本与旧路径测试（`SampleGameModuleTests`/`ModuleRestoreTests`/`LeaderboardEndpointTests`）仍依赖它。
+- [x] `Chorus.Control`/`Chorus.ControlHost` 与 `Chorus.ControlServer` 都使用控制域命名，但前者是旧控制台/持久化路径，后者是重设计控制面，入口命名不足以区分。——**已修 commit `cb2518a`（2026-11-13）**：三个项目各加 README 明确区分——`Chorus.Control` = 旧控制台事务权威存储（SQLite/PostgreSQL，非重设计控制面）；`Chorus.ControlHost` = 运营控制台宿主（认证 minimal-API + `wwwroot/admin.js`，自有持久化、不复用 Admin RPC，操作面隔离），是人用操作面而非控制面；`Chorus.ControlServer` = 重设计控制面（gRPC `Control`/`Admin`/`MatchCoordinator`、节点/进程注册表、`ops.*` Postgres schema）。**未做**：重命名项目（`ControlServer`→`ControlPlane` 之类）被拒——跨 csproj/程序集/rootNamespace/sln/CI/数十处 docs file:line 指针的整仓 churn，收益仅为命名，与「入口命名不足以区分」的实际认知缺口不符（该缺口由 README + 账本分层解决）。
+- [x] `Chorus.RoundDemo` 位于 src 但承担演示/验收场景，与正式服务目录和 tests 目录都存在归类歧义。——**已修 commit `cb2518a`（2026-11-13）**：`src/Chorus.RoundDemo/README.md` 钉死归类：端到端演示/验收驱动（`RoundDemoScenario` 跑完整轮次旅程含 guest edge 掉线变体，产出证据），只驱动公开 RPC 面，与 `Chorus.LoadTool` 同类属客户端与工具层——刻意在 `src/` 下（非生产服务、非测试夹具），被 `Chorus.Engine.Tests` 三个验收测试消费。账本 principle 8「客户端/工具隔离：压测与演示只驱动公开面，不导入生产存储」即为该归类。
 
 ## Codex 深审发现（2026-11-12，luna profile 近5 commit+工作区审核，1C/3M/3m，**2026-11-13 已全部处置**：1 误报裁定 + 6 修复，逐项证据见下；全量门禁裁决见本节末）
 
