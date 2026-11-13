@@ -13,7 +13,9 @@ namespace Chorus.Adapters.Platforms;
 /// official Douyin schema:
 ///
 ///   event       (string)  "comment" | "gift" | "like" | anything else -> Unknown
-///   event_id    (string)  stable id used for dedup; synthesized when absent
+///   event_id    (string)  required, stable id used for dedup; events without
+///                         one are refused (unmapped) - a random substitute would
+///                         let the same payload retry as different "new" events
 ///   session_id  (string)  required, selects the Chorus session
 ///   user_id     (string)  defaults to "anonymous"
 ///   content     (string)  comment text
@@ -57,11 +59,13 @@ public sealed class DouyinPlatformEventMapper : IPlatformEventMapper
 
             var sessionId = sessionIdEl.GetString()!;
 
+            // event_id is the source-identity key every downstream dedup answers on:
+            // without it the same payload would retry as distinct events, so refuse
+            // (unmapped -> 400) instead of inventing a random stand-in.
             var eventId = TryGetString(root, "event_id");
             if (string.IsNullOrWhiteSpace(eventId))
             {
-                // Keep dedup stable for events without an id instead of crashing.
-                eventId = $"{PlatformNames.Douyin}:{Guid.NewGuid():N}";
+                return null;
             }
 
             var userId = TryGetString(root, "user_id");

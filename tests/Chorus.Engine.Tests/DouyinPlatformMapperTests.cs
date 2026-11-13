@@ -122,15 +122,30 @@ public sealed class DouyinPlatformMapperTests
     }
 
     [Fact]
-    public void TryMap_MissingEventId_GeneratesStablePrefixEventId()
+    public void TryMap_MissingEventId_IsRefused()
     {
         var mapper = new DouyinPlatformEventMapper();
         const string raw = """{"event":"comment","session_id":"s1"}""";
 
-        var ev = mapper.TryMap(PlatformNames.Douyin, raw, IngestTimeMs);
+        // 无来源 ID 即拒绝映射（端点答 400 unmapped_event），不再随机兜底：
+        // 随机 id 会让同一报文的每次重试都绕过去重。
+        Assert.Null(mapper.TryMap(PlatformNames.Douyin, raw, IngestTimeMs));
+        Assert.Null(mapper.TryMap(PlatformNames.Douyin, """{"event":"comment","event_id":"","session_id":"s1"}""", IngestTimeMs));
+    }
 
-        Assert.NotNull(ev);
-        Assert.StartsWith($"{PlatformNames.Douyin}:", ev!.EventId, StringComparison.Ordinal);
+    [Fact]
+    public void TryMap_SamePayloadRetry_KeepsSourceIdentity()
+    {
+        var mapper = new DouyinPlatformEventMapper();
+        const string raw = """{"event":"comment","event_id":"dy-retry","session_id":"s1"}""";
+
+        // 相同报文重试必须保持来源标识不变，下游去重才能应答重放。
+        var first = mapper.TryMap(PlatformNames.Douyin, raw, IngestTimeMs);
+        var retry = mapper.TryMap(PlatformNames.Douyin, raw, IngestTimeMs + 100);
+
+        Assert.NotNull(first);
+        Assert.NotNull(retry);
+        Assert.Equal(first!.EventId, retry!.EventId);
     }
 
     [Fact]
