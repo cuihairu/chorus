@@ -401,6 +401,11 @@ message TaskStateReply {
   int64 attempt_deadline_unix_ms = 15;
   bool duplicate = 16;
   string barrier_end_operation_id = 17;
+  // The credential domain the task's binding resolves to (review C2): the platform and
+  // the platform application whose mounted credentials this task's external calls belong
+  // to. Resolved from the binding at the store, never carried by the caller.
+  string platform = 18;
+  string app_id = 19;
 }
 
 // FIX-END-09: the executor's pre-call validation of one task's barrier credential. The

@@ -193,6 +193,7 @@ public sealed class PlatformTaskGrpcService(
     private static TaskStateReply Reply(PlatformTaskState state) => new()
     {
         TaskId = state.TaskId, BindingId = state.BindingId, BindingGeneration = state.BindingGeneration,
+        Platform = state.Platform, AppId = state.AppId,
         TaskEpoch = state.TaskEpoch, OperationId = state.OperationId, Status = state.Status,
         AttemptCount = state.AttemptCount, DesiredJson = state.DesiredJson,
         ObservedJson = state.ObservedJson ?? "", LastError = state.LastError ?? "",

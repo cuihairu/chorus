@@ -7,7 +7,8 @@ using Npgsql;
 namespace Chorus.DataServer;
 
 public sealed record PlatformTaskState(
-    string TaskId, string BindingId, long BindingGeneration, long TaskEpoch, string OperationId,
+    string TaskId, string BindingId, long BindingGeneration, string Platform, string AppId,
+    long TaskEpoch, string OperationId,
     string Status, int AttemptCount, string DesiredJson, string? ObservedJson, string? LastError,
     DateTimeOffset? NextAttemptUtc, string? LeaseOwner, DateTimeOffset? LeaseUntilUtc,
     string? AttemptOwner, DateTimeOffset? AttemptDeadlineUtc, bool Duplicate,
@@ -505,14 +506,17 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
-            SELECT task_id,binding_id,binding_generation,task_epoch,operation_id,status,attempt_count,
-                desired::text,observed::text,last_error,next_attempt,lease_owner,lease_until,
-                attempt_owner,attempt_deadline,barrier_end_operation_id
-            FROM live.task
-            WHERE (status IN ('Pending','Retryable','OutcomeUnknown')
-                    AND (next_attempt IS NULL OR next_attempt<=clock_timestamp()))
-               OR (status='Executing' AND lease_until IS NOT NULL AND lease_until<clock_timestamp())
-            ORDER BY next_attempt NULLS FIRST, task_id
+            SELECT t.task_id,t.binding_id,t.binding_generation,t.task_epoch,t.operation_id,t.status,
+                t.attempt_count,t.desired::text,t.observed::text,t.last_error,t.next_attempt,
+                t.lease_owner,t.lease_until,t.attempt_owner,t.attempt_deadline,
+                t.barrier_end_operation_id,ls.platform,ls.app_id
+            FROM live.task t
+            JOIN live.binding b ON b.binding_id = t.binding_id
+            JOIN live.session ls ON ls.live_session_id = b.live_session_id
+            WHERE (t.status IN ('Pending','Retryable','OutcomeUnknown')
+                    AND (t.next_attempt IS NULL OR t.next_attempt<=clock_timestamp()))
+               OR (t.status='Executing' AND t.lease_until IS NOT NULL AND t.lease_until<clock_timestamp())
+            ORDER BY t.next_attempt NULLS FIRST, t.task_id
             LIMIT @max
             """, connection);
         command.Parameters.AddWithValue("max", max);
@@ -527,7 +531,8 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         string TaskId, string BindingId, long BindingGeneration, long TaskEpoch, string OperationId,
         string Status, int AttemptCount, string Desired, string? Observed, string? LastError,
         DateTimeOffset? NextAttempt, string? LeaseOwner, DateTimeOffset? LeaseUntil,
-        string? AttemptOwner, DateTimeOffset? AttemptDeadline, string? BarrierEndOperationId);
+        string? AttemptOwner, DateTimeOffset? AttemptDeadline, string? BarrierEndOperationId,
+        string Platform, string AppId);
 
     /// <summary>The standing end operation phases at or past the platform-task authorization
     /// (architecture 6.4's ladder, mirrored here because the ladder's home is the control
@@ -571,11 +576,18 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         NpgsqlTransaction? transaction, string taskId, CancellationToken cancellationToken,
         bool forUpdate = false)
     {
+        // The task's credential domain is its binding's (review C2): resolved from the live
+        // session the binding was opened under, never carried by the caller. `OF t` keeps
+        // FOR UPDATE scoped to the task row, exactly the pre-join locking.
         await using var command = new NpgsqlCommand($"""
-            SELECT task_id,binding_id,binding_generation,task_epoch,operation_id,status,attempt_count,
-                desired::text,observed::text,last_error,next_attempt,lease_owner,lease_until,
-                attempt_owner,attempt_deadline,barrier_end_operation_id
-            FROM live.task WHERE task_id=@task{(forUpdate ? " FOR UPDATE" : "")}
+            SELECT t.task_id,t.binding_id,t.binding_generation,t.task_epoch,t.operation_id,t.status,
+                t.attempt_count,t.desired::text,t.observed::text,t.last_error,t.next_attempt,
+                t.lease_owner,t.lease_until,t.attempt_owner,t.attempt_deadline,
+                t.barrier_end_operation_id,ls.platform,ls.app_id
+            FROM live.task t
+            JOIN live.binding b ON b.binding_id = t.binding_id
+            JOIN live.session ls ON ls.live_session_id = b.live_session_id
+            WHERE t.task_id=@task{(forUpdate ? " FOR UPDATE OF t" : "")}
             """, connection, transaction);
         command.Parameters.AddWithValue("task", taskId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -593,10 +605,12 @@ public sealed class RedesignPlatformTaskStore(string connectionString)
         reader.IsDBNull(12) ? null : new DateTimeOffset(reader.GetDateTime(12), TimeSpan.Zero),
         reader.IsDBNull(13) ? null : reader.GetString(13),
         reader.IsDBNull(14) ? null : new DateTimeOffset(reader.GetDateTime(14), TimeSpan.Zero),
-        reader.IsDBNull(15) ? null : reader.GetString(15));
+        reader.IsDBNull(15) ? null : reader.GetString(15),
+        reader.GetString(16), reader.GetString(17));
 
     private static PlatformTaskState ToState(TaskRow row, bool Duplicate) => new(
-        row.TaskId, row.BindingId, row.BindingGeneration, row.TaskEpoch, row.OperationId, row.Status,
+        row.TaskId, row.BindingId, row.BindingGeneration, row.Platform, row.AppId, row.TaskEpoch,
+        row.OperationId, row.Status,
         row.AttemptCount, row.Desired, row.Observed, row.LastError, row.NextAttempt, row.LeaseOwner,
         row.LeaseUntil, row.AttemptOwner, row.AttemptDeadline, Duplicate, row.BarrierEndOperationId);
 

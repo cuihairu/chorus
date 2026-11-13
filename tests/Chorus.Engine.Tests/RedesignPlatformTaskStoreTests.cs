@@ -67,6 +67,34 @@ public sealed class RedesignPlatformTaskStoreTests
     }
 
     [Fact]
+    public async Task TaskStateNamesTheCredentialDomainOfItsBinding()
+    {
+        await using var database = await TemporaryDatabase.CreateAsync();
+        var identityStore = new RedesignIdentityStore(database.ConnectionString);
+        var bindingStore = new RedesignBindingStore(database.ConnectionString);
+        var taskStore = new RedesignPlatformTaskStore(database.ConnectionString);
+        var binding = await MountAsync(identityStore, bindingStore, "live-key-identity");
+
+        // The executor sees which platform application's credentials a task belongs to —
+        // resolved from the binding at the store, never chosen by the caller (review C2).
+        var task = await taskStore.EnqueueDesiredAsync(binding.BindingId, "op-id-1",
+            """{"kind":"screen-link","state":"active"}""");
+        Assert.Equal("simulator", task.Platform);
+        Assert.Equal("app-1", task.AppId);
+
+        var fetched = await taskStore.GetTaskAsync(task.TaskId);
+        Assert.Equal("simulator", fetched!.Platform);
+        Assert.Equal("app-1", fetched.AppId);
+
+        // Discovery carries the same identity, so executor filtering can scope by it.
+        await taskStore.AcquireLeaseAsync(task.TaskId, "gw-a", TimeSpan.FromMinutes(5));
+        var listed = await taskStore.ListReadyTasksAsync(10);
+        var match = Assert.Single(listed, item => item.TaskId == task.TaskId);
+        Assert.Equal("simulator", match.Platform);
+        Assert.Equal("app-1", match.AppId);
+    }
+
+    [Fact]
     public async Task UnknownOutcomeRequiresResolutionAndNeverRetriesBlindly()
     {
         await using var database = await TemporaryDatabase.CreateAsync();
