@@ -54,10 +54,11 @@ public interface IAudienceFactionRule
 2. Request body limit (`Faces:PlatformIngress:MaxBodyBytes`, default 64KB) → **413**
 3. Processing timeout (`Faces:PlatformIngress:TimeoutMs`, default 5000ms, covers the whole read+process duration; client cancellation does not count) → **504**
 4. Signature verification → **401** (`Ingress:AllowAll` defaults to false; missing verifier also gives 401)
-5. Mapping (iterate over all `IPlatformEventMapper`; null return goes to the next) → if none match **400** `{"error":"unmapped_event"}`
-6. Faction rule completion (`Ingress:FactionRules:CommentKeywords` / `GiftIds`)
-7. Deduplication (`Ingress:DedupTtlSeconds`, default 600s, reserve/commit/rollback) → duplicates return `{"duplicated":true}` **200**
-8. Enter the SessionActor event lane → lane full with timeout **503** (at this point the dedup marker rolls back, and the platform can retry)
+5. Trusted app identity binding → **403** `{"error":"app_id_mismatch"}` (when the mounted verifier proves an app identity, a disagreeing `X-Chorus-App-Id` header is refused; verifiers that claim no identity leave the header's meaning untouched)
+6. Mapping (iterate over all `IPlatformEventMapper`; null return goes to the next) → if none match **400** `{"error":"unmapped_event"}`
+7. Faction rule completion (`Ingress:FactionRules:CommentKeywords` / `GiftIds`)
+8. Deduplication (`Ingress:DedupTtlSeconds`, default 600s, reserve/commit/rollback) → duplicates return `{"duplicated":true}` **200**
+9. Enter the SessionActor event lane → lane full with timeout **503** (at this point the dedup marker rolls back, and the platform can retry)
 
 Metrics: `chorus_ingress_*` / `chorus_events_*`, see [Observability](../reference/observability.md).
 
@@ -223,17 +224,19 @@ builder.Services.AddSingleton<IPlatformEventMapper, MyPlatformMapper>();
 Two things to note:
 
 - The Router routes by `PlatformName` (case-insensitive), and a named verifier takes precedence over the fallback: even if `Ingress:AllowAll=true`, Douyin callbacks still go through `DouyinPlatformEventVerifier`.
+- A verifier whose mounted credentials prove an app identity also implements `IPlatformTrustedAppIdSource` (`GetTrustedAppId`): the ingress binds the caller's `X-Chorus-App-Id` header to that identity and refuses a disagreeing header with **403** `app_id_mismatch`. A verifier whose credentials name nothing (secret/token only, or the dev fallback) implements nothing and claims no identity — the header keeps its pre-existing meaning (Bilibili proves its AccessKeyId; Douyin/Kuaishou claim only when `Ingress:Douyin:AppId` / `Ingress:Kuaishou:AppId` is configured).
 - Mapper iteration order = registration order. Put a mapper that "unconditionally swallows all bodies" last, or have it check `platform` first and then decide whether to take over.
 
 ## Acceptance Tests (every adapter must pass)
 
 1. Correct signature passes (200)
 2. Tampered body / missing signature / wrong secret → 401
-3. Duplicate `eventId` → `{"duplicated":true}` 200
-4. Unknown event type → no crash, mapped to `Unknown`
-5. Oversized body → 413
-6. Rate limit exceeded → 429
-7. Event lane full (`Session:MaxPendingEvents`) → 503 and dedup marker rolls back (platform retry can re-enter)
+3. Verifier claiming an app identity: `X-Chorus-App-Id` disagreeing with it → **403** `app_id_mismatch`, matching header passes
+4. Duplicate `eventId` → `{"duplicated":true}` 200
+5. Unknown event type → no crash, mapped to `Unknown`
+6. Oversized body → 413
+7. Rate limit exceeded → 429
+8. Event lane full (`Session:MaxPendingEvents`) → 503 and dedup marker rolls back (platform retry can re-enter)
 
 ## Convention for Pending Joint Debugging Field Markers
 

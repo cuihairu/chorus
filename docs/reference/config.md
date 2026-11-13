@@ -236,8 +236,10 @@ counters are exposed via `GET /faces`.
 | `Ingress:FactionRules:CommentKeywords` | empty | Danmaku keywords → faction mapping |
 | `Ingress:FactionRules:GiftIds` | empty | Gift ID → faction mapping |
 | `Ingress:Douyin:AppSecret` | none | Douyin callback signature verification secret; when missing, `/ingress/douyin` rejects everything (fail-closed) |
+| `Ingress:Douyin:AppId` | none | Douyin app id the mounted secret belongs to; when set, `/ingress/douyin` refuses a disagreeing `X-Chorus-App-Id` header (403 `app_id_mismatch`) |
 | `Ingress:Douyin:SignatureHeader` | `X-Douyin-Signature` | Signature header name (pending joint debugging confirmation, see platform reference docs) |
 | `Ingress:Kuaishou:VerifyToken` | none | Kuaishou message verification Token; when missing, `/ingress/kuaishou` rejects everything (fail-closed) |
+| `Ingress:Kuaishou:AppId` | none | Kuaishou app id the mounted token belongs to; when set, `/ingress/kuaishou` refuses a disagreeing `X-Chorus-App-Id` header (403 `app_id_mismatch`) |
 | `Ingress:Kuaishou:MsgEncryptKey` | none | Kuaishou message encryption/decryption KEY (base64, 32 bytes); when missing, events cannot be decrypted (400) |
 | `Ingress:Kuaishou:SignatureHeader` | `kwaisign` | Official signature header name |
 | `Ingress:Bilibili:AccessKeyId` / `AccessKeySecret` | none | Bilibili open-live signature credentials (authorized by the streamer personally, never in the repo or logs); when missing, `/ingress/bilibili` rejects everything (fail-closed) |

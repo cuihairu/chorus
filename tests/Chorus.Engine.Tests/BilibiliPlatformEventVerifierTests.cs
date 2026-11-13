@@ -66,4 +66,31 @@ public sealed class BilibiliPlatformEventVerifierTests
 
         Assert.True(verifier.Verify(PlatformNames.Bilibili, Body, Signed()));
     }
+
+    // The AccessKeyId is the credential the x-bili-* signature binds, so a verified
+    // callback has proved exactly this app identity (review C1): the ingress refuses a
+    // disagreeing X-Chorus-App-Id header against this claim.
+    [Fact]
+    public void TrustedAppId_IsTheNormalizedAccessKeyId()
+    {
+        var verifier = new BilibiliPlatformEventVerifier($"  {KeyId}  ", Secret);
+
+        Assert.Equal(KeyId, verifier.GetTrustedAppId(PlatformNames.Bilibili));
+    }
+
+    [Fact]
+    public void TrustedAppId_UnconfiguredCredentials_ClaimNothing()
+    {
+        var verifier = new BilibiliPlatformEventVerifier(null, null);
+
+        Assert.Null(verifier.GetTrustedAppId(PlatformNames.Bilibili));
+    }
+
+    [Fact]
+    public void TrustedAppId_OtherPlatform_ClaimsNothing()
+    {
+        var verifier = new BilibiliPlatformEventVerifier(KeyId, Secret);
+
+        Assert.Null(verifier.GetTrustedAppId(PlatformNames.Douyin));
+    }
 }

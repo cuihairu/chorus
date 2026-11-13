@@ -134,6 +134,21 @@ public sealed class PlatformIngressEndpoint(
             return Results.Unauthorized();
         }
 
+        // The app header is the caller's claim, not an identity (architecture review
+        // C1): when the mounted credentials prove one, a disagreeing header is an
+        // attribution spoof — it would re-scope dedup and the whole attribution chain
+        // downstream. Refused here, counted in the same unverified family, and the
+        // trusted value is never echoed back. A verifier that claims no identity
+        // leaves the header's pre-existing meaning untouched.
+        if (verifier is IPlatformTrustedAppIdSource trustedSource
+            && trustedSource.GetTrustedAppId(platform) is { Length: > 0 } trustedAppId
+            && !string.Equals(appId, trustedAppId, StringComparison.Ordinal))
+        {
+            _counters.Unverified();
+            return Results.Json(new { error = "app_id_mismatch", platform },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
         var ingestTimeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         AudienceEvent? mapped = null;
         foreach (var mapper in mappers)

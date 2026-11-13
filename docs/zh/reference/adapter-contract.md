@@ -54,10 +54,11 @@ public interface IAudienceFactionRule
 2. 请求体上限（`Faces:PlatformIngress:MaxBodyBytes`，默认 64KB）→ **413**
 3. 处理超时（`Faces:PlatformIngress:TimeoutMs`，默认 5000ms，覆盖整个读取+处理时长；客户端取消不计）→ **504**
 4. 验签 → **401**（`Ingress:AllowAll` 默认 false；缺验证器同样 401）
-5. 映射（遍历所有 `IPlatformEventMapper`；返回 null 交给下一个）→ 全都不匹配则 **400** `{"error":"unmapped_event"}`
-6. 阵营规则补全（`Ingress:FactionRules:CommentKeywords` / `GiftIds`）
-7. 去重（`Ingress:DedupTtlSeconds`，默认 600s，reserve/commit/rollback）→ 重复返回 `{"duplicated":true}` **200**
-8. 进入 SessionActor 事件通道 → 通道满且超时 **503**（此时去重标记回滚，平台可重试）
+5. 受信任应用身份绑定 → **403** `{"error":"app_id_mismatch"}`（挂载验证器证明了应用身份时，`X-Chorus-App-Id` 头与之不一致即拒绝；不声明身份的验证器不改变该头的既有含义）
+6. 映射（遍历所有 `IPlatformEventMapper`；返回 null 交给下一个）→ 全都不匹配则 **400** `{"error":"unmapped_event"}`
+7. 阵营规则补全（`Ingress:FactionRules:CommentKeywords` / `GiftIds`）
+8. 去重（`Ingress:DedupTtlSeconds`，默认 600s，reserve/commit/rollback）→ 重复返回 `{"duplicated":true}` **200**
+9. 进入 SessionActor 事件通道 → 通道满且超时 **503**（此时去重标记回滚，平台可重试）
 
 指标：`chorus_ingress_*` / `chorus_events_*`，见[可观测性](../reference/observability.md)。
 
@@ -223,17 +224,19 @@ builder.Services.AddSingleton<IPlatformEventMapper, MyPlatformMapper>();
 两个注意点：
 
 - Router 按 `PlatformName`（大小写不敏感）路由，具名验证器优先于 fallback：即使 `Ingress:AllowAll=true`，抖音回调仍走 `DouyinPlatformEventVerifier`。
+- 验证器的挂载凭据能证明应用身份时，同时实现 `IPlatformTrustedAppIdSource`（`GetTrustedAppId`）：ingress 将调用方的 `X-Chorus-App-Id` 头绑定到该身份，不一致即 **403** `app_id_mismatch` 拒绝。凭据指不出名字的验证器（只有 secret/token，或开发 fallback）不实现、不声明——该头保持既有含义（B 站证明 AccessKeyId；抖音/快手仅在配置 `Ingress:Douyin:AppId` / `Ingress:Kuaishou:AppId` 时声明）。
 - Mapper 的遍历顺序 = 注册顺序。把"无条件吞掉所有 body"的 mapper 放最后，或让它先判断 `platform` 再决定是否接管。
 
 ## 验收测试（每个适配器必须通过）
 
 1. 正确签名通过（200）
 2. 篡改 body / 缺签名 / 错密钥 → 401
-3. 重复 `eventId` → `{"duplicated":true}` 200
-4. 未知事件类型 → 不崩溃，映射为 `Unknown`
-5. 超大 body → 413
-6. 超限流 → 429
-7. 事件通道满（`Session:MaxPendingEvents`）→ 503 且去重标记回滚（平台重试可再进）
+3. 声明应用身份的验证器：`X-Chorus-App-Id` 与受信任身份不一致 → **403** `app_id_mismatch`，一致则放行
+4. 重复 `eventId` → `{"duplicated":true}` 200
+5. 未知事件类型 → 不崩溃，映射为 `Unknown`
+6. 超大 body → 413
+7. 超限流 → 429
+8. 事件通道满（`Session:MaxPendingEvents`）→ 503 且去重标记回滚（平台重试可再进）
 
 ## 待联调字段标记约定
 

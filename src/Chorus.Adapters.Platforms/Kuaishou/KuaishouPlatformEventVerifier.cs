@@ -19,11 +19,12 @@ namespace Chorus.Adapters.Platforms;
 /// at joint debugging - see docs/reference/platform-kuaishou.md.
 /// Fails closed when the token is not configured.
 /// </summary>
-public sealed class KuaishouPlatformEventVerifier : IPlatformNamedEventVerifier
+public sealed class KuaishouPlatformEventVerifier : IPlatformNamedEventVerifier, IPlatformTrustedAppIdSource
 {
     public const string DefaultSignatureHeader = "kwaisign";
 
     private readonly string? _token;
+    private readonly string? _appId;
     private readonly string _signatureHeader;
     private readonly ILogger<KuaishouPlatformEventVerifier>? _logger;
     private int _missingTokenLogged;
@@ -32,15 +33,25 @@ public sealed class KuaishouPlatformEventVerifier : IPlatformNamedEventVerifier
 
     public KuaishouPlatformEventVerifier(
         string? verifyToken,
+        string? appId = null,
         string? signatureHeader = null,
         ILogger<KuaishouPlatformEventVerifier>? logger = null)
     {
         _token = NormalizeToken(verifyToken);
+        _appId = NormalizeAppId(appId);
         _signatureHeader = string.IsNullOrWhiteSpace(signatureHeader)
             ? DefaultSignatureHeader
             : signatureHeader.Trim();
         _logger = logger;
     }
+
+    // The verify token alone proves nothing nameable, so no trusted identity is
+    // claimed by default; when Ingress:Kuaishou:AppId is configured it binds the
+    // ingress X-Chorus-App-Id header to the credential's app (review C1).
+    public string? GetTrustedAppId(string platform)
+        => string.Equals(platform, PlatformNames.Kuaishou, StringComparison.OrdinalIgnoreCase)
+            ? _appId
+            : null;
 
     public bool Verify(string platform, string rawBody, IReadOnlyDictionary<string, string> headers)
     {
@@ -89,6 +100,17 @@ public sealed class KuaishouPlatformEventVerifier : IPlatformNamedEventVerifier
         }
 
         var trimmed = token.Trim();
+        return trimmed.Length == 0 ? null : trimmed;
+    }
+
+    private static string? NormalizeAppId(string? appId)
+    {
+        if (string.IsNullOrWhiteSpace(appId))
+        {
+            return null;
+        }
+
+        var trimmed = appId.Trim();
         return trimmed.Length == 0 ? null : trimmed;
     }
 }

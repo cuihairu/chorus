@@ -8,7 +8,7 @@ namespace Chorus.Adapters.Platforms;
 /// Platforms without a registered verifier fall back to the development stub
 /// (if one is configured); with no fallback at all, requests fail closed.
 /// </summary>
-public sealed class PlatformEventVerifierRouter : IPlatformEventVerifier
+public sealed class PlatformEventVerifierRouter : IPlatformEventVerifier, IPlatformTrustedAppIdSource
 {
     private readonly IReadOnlyDictionary<string, IPlatformEventVerifier> _named;
     private readonly IPlatformEventVerifier? _fallback;
@@ -46,5 +46,19 @@ public sealed class PlatformEventVerifierRouter : IPlatformEventVerifier
             "Ingress rejected platform {Platform}: no verifier registered and no fallback configured",
             platform);
         return false;
+    }
+
+    /// <summary>The trusted app identity of whichever verifier answered this platform —
+    /// the named one when it claims an identity, else the fallback's (a development
+    /// fallback claims none). Null when nothing can be claimed.</summary>
+    public string? GetTrustedAppId(string platform)
+    {
+        if (!string.IsNullOrWhiteSpace(platform) && _named.TryGetValue(platform, out var verifier)
+            && verifier is IPlatformTrustedAppIdSource source)
+        {
+            return source.GetTrustedAppId(platform);
+        }
+
+        return (_fallback as IPlatformTrustedAppIdSource)?.GetTrustedAppId(platform);
     }
 }

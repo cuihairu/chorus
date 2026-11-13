@@ -19,6 +19,23 @@ public sealed class PlatformEventVerifierRouterTests
         public bool Verify(string platform, string rawBody, IReadOnlyDictionary<string, string> headers) => Result;
     }
 
+    private sealed class IdentityVerifier : IPlatformNamedEventVerifier, IPlatformTrustedAppIdSource
+    {
+        public IdentityVerifier(string platformName, string? trustedAppId)
+        {
+            PlatformName = platformName;
+            TrustedAppId = trustedAppId;
+        }
+
+        public string PlatformName { get; }
+        public string? TrustedAppId { get; }
+
+        public bool Verify(string platform, string rawBody, IReadOnlyDictionary<string, string> headers) => true;
+
+        public string? GetTrustedAppId(string platform)
+            => string.Equals(platform, PlatformName, StringComparison.OrdinalIgnoreCase) ? TrustedAppId : null;
+    }
+
     private static readonly IReadOnlyDictionary<string, string> Headers =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -68,5 +85,53 @@ public sealed class PlatformEventVerifierRouterTests
             new IPlatformNamedEventVerifier[] { new RejectAllVerifier(PlatformNames.Douyin, result: true) });
 
         Assert.False(router.Verify("", "{}", Headers));
+    }
+
+    // The trusted app identity (review C1) is the mounted verifier's claim about the
+    // credentials it holds; the router surfaces whichever verifier answers the platform.
+    [Fact]
+    public void TrustedAppId_NamedVerifier_SurfacesItsClaim()
+    {
+        var router = new PlatformEventVerifierRouter(
+            new IPlatformNamedEventVerifier[] { new IdentityVerifier(PlatformNames.Douyin, "app-dy") });
+
+        Assert.Equal("app-dy", router.GetTrustedAppId(PlatformNames.Douyin));
+        // A platform the claiming verifier does not answer has no claim of its own.
+        Assert.Null(router.GetTrustedAppId(PlatformNames.Kuaishou));
+        Assert.Null(router.GetTrustedAppId("unknown"));
+    }
+
+    [Fact]
+    public void TrustedAppId_NamedClaimOfNone_IsAuthoritative_OverFallback()
+    {
+        var router = new PlatformEventVerifierRouter(
+            new IPlatformNamedEventVerifier[] { new IdentityVerifier(PlatformNames.Douyin, trustedAppId: null) },
+            fallback: new IdentityVerifier(PlatformNames.Douyin, "app-fallback"));
+
+        // The named verifier answered the platform and named no identity; the dev
+        // fallback's claim must not resurrect one behind it.
+        Assert.Null(router.GetTrustedAppId(PlatformNames.Douyin));
+    }
+
+    [Fact]
+    public void TrustedAppId_PlainNamedVerifier_FallsBackToFallbackClaim()
+    {
+        var router = new PlatformEventVerifierRouter(
+            new IPlatformNamedEventVerifier[] { new RejectAllVerifier(PlatformNames.Douyin, result: true) },
+            fallback: new IdentityVerifier(PlatformNames.Douyin, "app-fallback"));
+
+        // The named verifier is not an identity source, so the fallback's claim for the
+        // same platform is what the router surfaces.
+        Assert.Equal("app-fallback", router.GetTrustedAppId(PlatformNames.Douyin));
+    }
+
+    [Fact]
+    public void TrustedAppId_NoNamedNoFallback_Null()
+    {
+        var router = new PlatformEventVerifierRouter(
+            new IPlatformNamedEventVerifier[] { new IdentityVerifier(PlatformNames.Douyin, "app-dy") });
+
+        Assert.Null(router.GetTrustedAppId(PlatformNames.Test));
+        Assert.Null(router.GetTrustedAppId(""));
     }
 }

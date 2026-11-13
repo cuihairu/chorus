@@ -28,6 +28,7 @@ public sealed class DouyinPlatformModule : IPlatformModule
     {
         services.AddSingleton(_ => new DouyinPlatformEventVerifier(
             secret: configuration["Ingress:Douyin:AppSecret"],
+            appId: configuration["Ingress:Douyin:AppId"],
             signatureHeader: configuration["Ingress:Douyin:SignatureHeader"]));
         services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredService<DouyinPlatformEventVerifier>());
         services.AddSingleton<IPlatformEventMapper, DouyinPlatformEventMapper>();

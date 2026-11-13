@@ -100,7 +100,7 @@ public sealed class DouyinPlatformVerifierTests
     [Fact]
     public void Verify_AcceptsCustomSignatureHeader()
     {
-        var verifier = new DouyinPlatformEventVerifier(Secret, "X-Custom-Signature");
+        var verifier = new DouyinPlatformEventVerifier(Secret, signatureHeader: "X-Custom-Signature");
         var signature = DouyinPlatformEventVerifier.ComputeSignature(Body, Secret);
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -118,5 +118,32 @@ public sealed class DouyinPlatformVerifierTests
         var signature = DouyinPlatformEventVerifier.ComputeSignature(Body, Secret).ToUpperInvariant();
 
         Assert.True(verifier.Verify(PlatformNames.Douyin, Body, Headers(signature)));
+    }
+
+    // The secret proves nothing nameable, so the trusted app identity (review C1) exists
+    // only when Ingress:Douyin:AppId is configured — then the ingress binds the
+    // X-Chorus-App-Id header to it.
+    [Fact]
+    public void TrustedAppId_ConfiguredAppId_IsExposed()
+    {
+        var verifier = new DouyinPlatformEventVerifier(Secret, appId: "  app-dy  ");
+
+        Assert.Equal("app-dy", verifier.GetTrustedAppId(PlatformNames.Douyin));
+    }
+
+    [Fact]
+    public void TrustedAppId_UnconfiguredAppId_ClaimsNothing()
+    {
+        var verifier = new DouyinPlatformEventVerifier(Secret);
+
+        Assert.Null(verifier.GetTrustedAppId(PlatformNames.Douyin));
+    }
+
+    [Fact]
+    public void TrustedAppId_OtherPlatform_ClaimsNothing()
+    {
+        var verifier = new DouyinPlatformEventVerifier(Secret, appId: "app-dy");
+
+        Assert.Null(verifier.GetTrustedAppId(PlatformNames.Kuaishou));
     }
 }

@@ -60,10 +60,12 @@ if (builder.Configuration.GetValue("Ingress:AllowAll", false))
 builder.Services.AddSingleton(sp =>
     new DouyinPlatformEventVerifier(
         secret: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:AppSecret"],
+        appId: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:AppId"],
         signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:SignatureHeader"]));
 builder.Services.AddSingleton(sp =>
     new KuaishouPlatformEventVerifier(
         verifyToken: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:VerifyToken"],
+        appId: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:AppId"],
         signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:SignatureHeader"]));
 builder.Services.AddSingleton(sp =>
     new BilibiliPlatformEventVerifier(

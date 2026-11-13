@@ -72,7 +72,7 @@ public sealed class KuaishouPlatformVerifierTests
     [Fact]
     public void Verify_AcceptsCustomSignatureHeader()
     {
-        var verifier = new KuaishouPlatformEventVerifier(Token, "X-Custom-Kwai-Signature");
+        var verifier = new KuaishouPlatformEventVerifier(Token, signatureHeader: "X-Custom-Kwai-Signature");
         var signature = KuaishouPlatformEventVerifier.ComputeSignature(Body, Token);
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -89,5 +89,32 @@ public sealed class KuaishouPlatformVerifierTests
         var signature = KuaishouPlatformEventVerifier.ComputeSignature(Body, Token);
 
         Assert.False(verifier.Verify(PlatformNames.Douyin, Body, Headers(signature)));
+    }
+
+    // The verify token proves nothing nameable, so the trusted app identity (review C1)
+    // exists only when Ingress:Kuaishou:AppId is configured — then the ingress binds the
+    // X-Chorus-App-Id header to it.
+    [Fact]
+    public void TrustedAppId_ConfiguredAppId_IsExposed()
+    {
+        var verifier = new KuaishouPlatformEventVerifier(Token, appId: "app-ks");
+
+        Assert.Equal("app-ks", verifier.GetTrustedAppId(PlatformNames.Kuaishou));
+    }
+
+    [Fact]
+    public void TrustedAppId_UnconfiguredAppId_ClaimsNothing()
+    {
+        var verifier = new KuaishouPlatformEventVerifier(Token);
+
+        Assert.Null(verifier.GetTrustedAppId(PlatformNames.Kuaishou));
+    }
+
+    [Fact]
+    public void TrustedAppId_OtherPlatform_ClaimsNothing()
+    {
+        var verifier = new KuaishouPlatformEventVerifier(Token, appId: "app-ks");
+
+        Assert.Null(verifier.GetTrustedAppId(PlatformNames.Douyin));
     }
 }

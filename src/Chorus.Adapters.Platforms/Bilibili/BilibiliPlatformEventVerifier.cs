@@ -11,7 +11,7 @@ namespace Chorus.Adapters.Platforms;
 /// the upstream algorithm so an external B站-style signer interoperates too.
 /// Fails closed whenever credentials are missing or anything is unverifiable.
 /// </summary>
-public sealed class BilibiliPlatformEventVerifier : IPlatformNamedEventVerifier
+public sealed class BilibiliPlatformEventVerifier : IPlatformNamedEventVerifier, IPlatformTrustedAppIdSource
 {
     private readonly string? _accessKeyId;
     private readonly string? _accessKeySecret;
@@ -20,6 +20,14 @@ public sealed class BilibiliPlatformEventVerifier : IPlatformNamedEventVerifier
     private int _missingCredentialsLogged;
 
     public string PlatformName => PlatformNames.Bilibili;
+
+    // The AccessKeyId is exactly the credential the x-bili-* signature binds, so a
+    // verified callback has proved this app identity — the ingress uses it to refuse
+    // a disagreeing X-Chorus-App-Id header instead of trusting the header's claim.
+    public string? GetTrustedAppId(string platform)
+        => string.Equals(platform, PlatformNames.Bilibili, StringComparison.OrdinalIgnoreCase)
+            ? _accessKeyId
+            : null;
 
     public BilibiliPlatformEventVerifier(
         string? accessKeyId,
