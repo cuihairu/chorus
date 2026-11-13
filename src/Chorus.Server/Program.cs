@@ -97,14 +97,6 @@ builder.Services.AddSingleton<PlatformCapabilityRegistry>(_ =>
     registry.Register(PlatformNames.Kuaishou, PlatformCapabilities.Kuaishou);
     return registry;
 });
-builder.Services.AddSingleton<PlatformCapabilityRegistry>(_ =>
-{
-    var registry = new PlatformCapabilityRegistry();
-    registry.Register(PlatformNames.Bilibili, PlatformCapabilities.Bilibili);
-    registry.Register(PlatformNames.Douyin, PlatformCapabilities.Douyin);
-    registry.Register(PlatformNames.Kuaishou, PlatformCapabilities.Kuaishou);
-    return registry;
-});
 builder.Services.AddSingleton<IPlatformEventMapper, DouyinPlatformEventMapper>();
 builder.Services.AddSingleton<IPlatformEventMapper>(sp => new KuaishouPlatformEventMapper(
     messageEncryptKey: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:MsgEncryptKey"]));
