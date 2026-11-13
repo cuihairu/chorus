@@ -584,7 +584,7 @@
 - [x] 区分处理中与已提交的去重结果（PlatformIngressFace.cs:98）—— [M4] 避免尚未投递就成功确认重复（旧 PlatformIngressFace；新入口用持久回执不受影响）。✅ `bd6ed04` TryReserve 增 blockedBy 状态报告（并发回滚竞态下站桩条目消失时拒绝仍成立）；旧 face 分流：Delivered 才答 200 duplicated，Reserved（处理中）答 409 in_flight 可重试。回归：dedup 新 fact（Reserved→Commit→Delivered 状态链、回滚不动 Delivered）+ 门控 actor face fact（A 在途时 B 得 409 而非 200；A 落地后真重复得 200）+ 既有 dedup/face/端点 31 绿。
 - [x] 为抖音/快手补齐协议支持的持久防重放边界（KuaishouPlatformEventVerifier.cs:73）—— [M5] 有效签名不能被无限期当作新鲜事件使用。✅ 53ed47f（验签后强制签名覆盖的毫秒 timestamp，|now-ts|≤Ingress:{Douyin,Kuaishou}:TimestampToleranceSeconds 默认 300s 双向，缺失/非数字/越窗 fail-closed 401；kuaishou 复用 douyin 静态助手；模块与旧宿主均接线容差配置；docs e412058；回归：verifier/endpoint/signer 批 79 绿 + host/app-identity/face 批 31 绿 + 邻接 69 绿）
 - [x] 让 mapper 声明所属平台并校验模块注册完整性（IPlatformEventMapper.cs:5）—— [M6] 编译通过不能掩盖 mapper/verifier 漏接。✅ 695d9d3（IPlatformEventMapper 增 PlatformName，六个 mapper 全部声明；PlatformModuleAssembly 在 ingest 模块挂载后用一次性 provider 解析注册面，缺声明平台的 mapper 或具名 verifier 即启动拒绝（消息点名模块名与缺的半边）；launch-only 的 minigame 模块不受检；docs 84dba1d；回归：assembly/face/stats/router 批 52 绿 + 真宿主 gateway 启动批 12 绿（probe 在真实装配链内通过））
-- [ ] 对重复 named verifier 注册直接报错（PlatformEventVerifierRouter.cs:25）—— [M6] 禁止按注册顺序静默替换安全实现。
+- [x] 对重复 named verifier 注册直接报错（PlatformEventVerifierRouter.cs:25）—— [M6] 禁止按注册顺序静默替换安全实现。✅ 9e14a09（构造期字典 TryAdd 碰撞即抛 InvalidOperationException，消息点名平台名与两个实现类名；大小写不敏感碰撞同拒；docs 无需变更；回归：router/assembly/host 批 32 绿）
 - [ ] 抽取共享抖音认证客户端供 launch 使用（DouyinMiniGameLaunchAdapter.cs:82）—— [M7] 消除相同 OpenAPI 请求和响应处理的双份实现（审核明确不建议仅为目录整齐把 launch 类搬入 Adapters.Platforms）。
 - [ ] 统一共享平台标识及入口规范化规则（PlatformNames.cs:3）—— [m1] 避免跨宿主字符串与大小写语义漂移。
 - [ ] 删除旧宿主重复能力表注册（Chorus.Server/Program.cs:88）—— [m2] 保留单一有效装配位置。
