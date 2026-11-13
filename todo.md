@@ -540,7 +540,7 @@
 
 ### b) 超大文件候选
 
-- [ ] LAY-001 [P1] 拆分 src/Chorus.ControlServer/RedesignControlStore.cs（2477 行）——控制面把节点、进程、所有权、房间进度、恢复、结束、路由和投递事务压入单一仓储。（src/Chorus.ControlServer/RedesignControlStore.cs:180）
+- [x] LAY-001 [P1] 拆分 src/Chorus.ControlServer/RedesignControlStore.cs（2477 行→现 2791 行）——**已修 commit `aecca90`（2026-11-13）**：partial-class 域拆分，单文件 → **8 文件**（主文件 283 行：类声明+节点/进程注册+机器遥测；`RedesignControlStore.Ownership.cs` 435：所有权/租约/epoch 提升；`.Recovery.cs` 371：恢复操作/暂停就绪/停滞巡检/进度上报；`.Routing.cs` 401：路由快照/确认/路由源注册/匹配意图源；`.Deployment.cs` 192：部署计划/排水升级；`.EndOperations.cs` 554：结束操作相位梯+结算任务；`.DeliveryStop.cs` 450：停止投递命令/响应者/屏障；`.Rounds.cs` 154：round.started 出箱+参与目标）。命名空间级契约记录随域迁移，**零 API 变更**（主声明持 primary constructor，其余部分 bare partial——同 `EngineIpcService` 先例）。**验证**：build 0 错；夹具批 **326/326** 绿（fresh dll）；钉核全量门 **2524/2532**（51m，8 失败全为文档化负载族：M2 trio×3、M3TakeoverKill、ModuleCheckpoint、PlatformGatewayRouting、EndOperation barrier、FanoutReclaim——零新增签名，日志 /home/cui/lay001_gate.log）。诚实边界：本行为 partial 域拆分（可导航性），不改变"单一仓储类"的职责边界本身——完全类分解（独立 store + DI 重接）是独立更大的架构步骤。
 - [ ] LAY-002 [P1] 拆分 src/Chorus.GameServer/RoomRuntime.cs（1694 行）——准备、激活、事件投递、恢复重建、暂停恢复和释放策略集中在一个运行时。（src/Chorus.GameServer/RoomRuntime.cs:153）
 - [ ] LAY-003 [P1] 拆分 src/Chorus.Rpc/Protos/m2.proto（1290 行）——m2 同时声明轮次、帧、结算、排行、恢复和同步等不同领域契约。（src/Chorus.Rpc/Protos/m2.proto:467）
 - [ ] LAY-004 [P1] 拆分 src/Chorus.DataServer/RedesignRoomStore.cs（1269 行）——房间准入、所有权、恢复操作和 outbox 事务同文件堆叠。（src/Chorus.DataServer/RedesignRoomStore.cs:125）
