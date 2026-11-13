@@ -22,8 +22,13 @@ title: 平台适配器契约
 namespace Chorus.Adapters.Abstractions;
 
 // 原始 body -> 统一 AudienceEvent。返回 null 表示"不处理该平台/该类型"。
+// PlatformName 声明所属平台：模块装配按它做注册完整性校验（review M6）——
+// 已挂载的 ingest 模块必须同时有声明其平台的 mapper 与具名 verifier，
+// 缺一启动即拒，编译通过不能掩盖 mapper/verifier 漏接。
 public interface IPlatformEventMapper
 {
+    string PlatformName { get; }
+
     AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs);
 }
 
@@ -98,6 +103,8 @@ namespace MyAdapters;
 public sealed class MyPlatformMapper : IPlatformEventMapper
 {
     public const string Platform = "myplatform";
+
+    public string PlatformName => Platform;
 
     public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs)
     {
