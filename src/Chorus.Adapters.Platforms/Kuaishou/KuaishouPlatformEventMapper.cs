@@ -24,6 +24,8 @@ namespace Chorus.Adapters.Platforms;
 /// </summary>
 public sealed class KuaishouPlatformEventMapper : IPlatformEventMapper
 {
+    public string PlatformName => PlatformNames.Kuaishou;
+
     private readonly string? _messageEncryptKey;
 
     public KuaishouPlatformEventMapper(string? messageEncryptKey)

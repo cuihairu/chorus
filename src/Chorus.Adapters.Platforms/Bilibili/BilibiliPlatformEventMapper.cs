@@ -33,6 +33,8 @@ namespace Chorus.Adapters.Platforms;
 /// </summary>
 public sealed class BilibiliPlatformEventMapper : IPlatformEventMapper
 {
+    public string PlatformName => PlatformNames.Bilibili;
+
     private readonly string? _sessionId;
 
     public BilibiliPlatformEventMapper(string? sessionId) => _sessionId = Normalize(sessionId);

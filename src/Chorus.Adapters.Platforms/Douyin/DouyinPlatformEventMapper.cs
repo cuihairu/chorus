@@ -31,6 +31,8 @@ namespace Chorus.Adapters.Platforms;
 /// </summary>
 public sealed class DouyinPlatformEventMapper : IPlatformEventMapper
 {
+    public string PlatformName => PlatformNames.Douyin;
+
     public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs)
     {
         if (!string.Equals(platform, PlatformNames.Douyin, StringComparison.OrdinalIgnoreCase))

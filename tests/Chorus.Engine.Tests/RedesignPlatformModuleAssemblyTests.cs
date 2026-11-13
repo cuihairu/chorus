@@ -296,6 +296,106 @@ public sealed class RedesignPlatformModuleAssemblyTests
         Assert.Contains("Ingress:MiniGame:Douyin:AppSecret", error.Message);
     }
 
+    // Registration completeness (review M6): every mapper declares the platform it
+    // answers, and a mounted ingest module whose wiring forgot either half refuses
+    // to start instead of silently 400-ing (or fallback-sliding) on real callbacks.
+    [Fact]
+    public void EveryMapperDeclaresThePlatformItAnswers()
+    {
+        Assert.Equal(PlatformNames.Test, new TestPlatformEventMapper().PlatformName);
+        Assert.Equal(PlatformNames.Simulator, new SimulatorPlatformEventMapper().PlatformName);
+        Assert.Equal(PlatformNames.Douyin, new DouyinPlatformEventMapper().PlatformName);
+        Assert.Equal(PlatformNames.Kuaishou, new KuaishouPlatformEventMapper("key").PlatformName);
+        Assert.Equal(PlatformNames.Bilibili, new BilibiliPlatformEventMapper("session-1").PlatformName);
+        Assert.Equal(PlatformNames.Douyu, new DouyuPlatformEventMapper().PlatformName);
+    }
+
+    [Fact]
+    public void AnIngestModuleWithoutAMapperRefusesToStartNamingTheModule()
+    {
+        var services = new ServiceCollection();
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["Ingress:Platforms:0"] = "stubplat",
+            ["Ingress:AllowAll"] = "true", // the dev fallback covers verification, not the missing mapper
+        });
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => PlatformModuleAssembly.AddPlatformModules(services, configuration,
+                available: [new StubIngestModule("stubplat")]));
+
+        Assert.Contains("'stubplat'", error.Message);
+        Assert.Contains("mapper", error.Message);
+    }
+
+    [Fact]
+    public void AnIngestModuleWithoutAVerifierRefusesToStartNamingTheModule()
+    {
+        var services = new ServiceCollection();
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["Ingress:Platforms:0"] = "stubplat",
+        });
+
+        var error = Assert.Throws<InvalidOperationException>(
+            () => PlatformModuleAssembly.AddPlatformModules(services, configuration,
+                available: [new StubIngestModule("stubplat",
+                    registrations => registrations.AddSingleton<IPlatformEventMapper, StubMapper>())]));
+
+        Assert.Contains("'stubplat'", error.Message);
+        Assert.Contains("verifier", error.Message);
+    }
+
+    [Fact]
+    public void AnIngestModuleWithBothDeclarationsMounts()
+    {
+        var services = new ServiceCollection();
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["Ingress:Platforms:0"] = "stubplat",
+        });
+
+        var enabled = PlatformModuleAssembly.AddPlatformModules(services, configuration,
+            available: [new StubIngestModule("stubplat", registrations =>
+            {
+                registrations.AddSingleton<IPlatformEventMapper, StubMapper>();
+                registrations.AddSingleton<IPlatformNamedEventVerifier, StubVerifier>();
+            })]);
+
+        Assert.Equal(["stubplat"], enabled.Select(module => module.Name));
+        using var provider = services.BuildServiceProvider();
+        Assert.IsType<PlatformEventVerifierRouter>(provider.GetRequiredService<IPlatformEventVerifier>());
+    }
+
+    private sealed class StubIngestModule(string name, Action<IServiceCollection>? registrations = null) : IPlatformModule
+    {
+        public string Name => name;
+
+        public PlatformModuleCapabilities Capabilities { get; } =
+            new(PlatformModuleSurface.EventIngest, new HashSet<AudienceEventKind> { AudienceEventKind.Comment });
+
+        public void ValidateConfiguration(IConfiguration configuration)
+        {
+        }
+
+        public void ConfigureServices(IServiceCollection services, IConfiguration configuration)
+            => registrations?.Invoke(services);
+    }
+
+    private sealed class StubMapper : IPlatformEventMapper
+    {
+        public string PlatformName => "stubplat";
+
+        public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs) => null;
+    }
+
+    private sealed class StubVerifier : IPlatformNamedEventVerifier
+    {
+        public string PlatformName => "stubplat";
+
+        public bool Verify(string platform, string rawBody, IReadOnlyDictionary<string, string> headers) => false;
+    }
+
     private static Dictionary<string, string?> BridgeConfiguration(
         Dictionary<string, string?> bridgeKeys, bool withBridge)
     {

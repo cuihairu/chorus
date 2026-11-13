@@ -12,6 +12,8 @@ namespace Chorus.Adapters.Platforms;
 /// </summary>
 public sealed class DouyuPlatformEventMapper : IPlatformEventMapper
 {
+    public string PlatformName => PlatformNames.Douyu;
+
     public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs)
     {
         // 骨架纪律：没有官方 schema 就没有映射。返回 null 是「无法映射」，

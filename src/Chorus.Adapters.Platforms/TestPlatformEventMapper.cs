@@ -15,6 +15,8 @@ namespace Chorus.Adapters.Platforms;
 /// </summary>
 public sealed class TestPlatformEventMapper : IPlatformEventMapper
 {
+    public string PlatformName => PlatformNames.Test;
+
     public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs)
     {
         if (!string.Equals(platform, PlatformNames.Test, StringComparison.OrdinalIgnoreCase))

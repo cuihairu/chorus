@@ -384,6 +384,8 @@ public sealed class RedesignObs10IngressStatsTests
 
     private sealed class NeverMap : IPlatformEventMapper
     {
+        public string PlatformName => PlatformNames.Test;
+
         public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs) => null;
     }
 

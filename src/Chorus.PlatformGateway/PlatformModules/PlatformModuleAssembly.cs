@@ -16,7 +16,9 @@ namespace Chorus.PlatformGateway;
 /// before any registers, so a refused startup leaves no partial wiring behind. The
 /// same loop runs production admission (2026-11-13 review M2): a module whose protocol
 /// declares <c>ProductionReady: false</c> is refused from a production host — complete
-/// credential keys are configuration, not protocol verification.
+/// credential keys are configuration, not protocol verification. The loop also checks
+/// registration completeness (review 2026-11-13 M6): an ingest module that forgot its
+/// mapper or named verifier refuses to start — a compiling host must not hide a missing wire.
 /// </summary>
 public static class PlatformModuleAssembly
 {
@@ -77,11 +79,17 @@ public static class PlatformModuleAssembly
     /// host passes <c>Ingress:AllowNotProductionReady</c> through, so only a deployment
     /// that names the switch mounts an unverified protocol.
     /// </param>
+    /// <param name="available">
+    /// The module fleet to select from; defaults to the gateway's own. Test seam, mirroring
+    /// <see cref="SelectEnabledModules"/> — the completeness check must be assertable
+    /// against a module whose wiring is deliberately incomplete.
+    /// </param>
     public static IReadOnlyList<IPlatformModule> AddPlatformModules(
         IServiceCollection services, IConfiguration configuration,
-        bool allowNotProductionReadyModules = false)
+        bool allowNotProductionReadyModules = false,
+        IReadOnlyCollection<IPlatformModule>? available = null)
     {
-        var enabled = SelectEnabledModules(configuration);
+        var enabled = SelectEnabledModules(configuration, available);
 
         // Validate every enabled module before any registers: startup is atomic — the
         // first refusing module stops the whole start instead of leaving a half-mounted
@@ -127,6 +135,41 @@ public static class PlatformModuleAssembly
                 sp.GetServices<IPlatformNamedEventVerifier>(),
                 fallback: sp.GetService<AllowAllPlatformEventVerifier>()));
             services.AddSingleton<IPlatformEventVerifier>(sp => sp.GetRequiredService<PlatformEventVerifierRouter>());
+
+            // Registration completeness (review 2026-11-13 M6): compiling is not wiring.
+            // Every mounted ingest module must have contributed a mapper AND a named
+            // verifier declaring its platform — a module that forgot either would compile
+            // and start, then answer every real callback with 400 unmapped (or slide it
+            // to the development fallback). A throwaway provider resolves the
+            // registrations exactly as the host will see them; throwing here keeps the
+            // startup atomic (nothing mounts because the host never finishes starting).
+            using var probe = services.BuildServiceProvider();
+            var mapperPlatforms = probe.GetServices<IPlatformEventMapper>()
+                .Select(mapper => mapper.PlatformName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var verifierPlatforms = probe.GetServices<IPlatformNamedEventVerifier>()
+                .Select(verifier => verifier.PlatformName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var module in ingestModules)
+            {
+                if (!mapperPlatforms.Contains(module.Name))
+                {
+                    throw new InvalidOperationException(
+                        $"Platform '{module.Name}' is enabled in {PlatformsConfigurationKey} but no " +
+                        "registered event mapper declares it: the module's ingest wiring is incomplete. " +
+                        "Every ingest module must register an IPlatformEventMapper whose PlatformName " +
+                        "matches the module name.");
+                }
+
+                if (!verifierPlatforms.Contains(module.Name))
+                {
+                    throw new InvalidOperationException(
+                        $"Platform '{module.Name}' is enabled in {PlatformsConfigurationKey} but no " +
+                        "registered verifier declares it: the module's ingest wiring is incomplete. " +
+                        "Every ingest module must register an IPlatformNamedEventVerifier whose " +
+                        "PlatformName matches the module name.");
+                }
+            }
         }
 
         // The capability registry is generated from the enabled list, not from the compiled-in

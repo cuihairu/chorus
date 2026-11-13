@@ -28,6 +28,8 @@ public sealed class PlatformIngressFaceTests
 
     private sealed class StubMapper(string eventId = "e1", string sessionId = "s-face", string? matchId = "m1") : IPlatformEventMapper
     {
+        public string PlatformName => PlatformNames.Test;
+
         public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs)
             => new AudienceEvent(
                 EventId: eventId,
@@ -116,6 +118,8 @@ public sealed class PlatformIngressFaceTests
 
     private sealed class NullMapper : IPlatformEventMapper
     {
+        public string PlatformName => PlatformNames.Test;
+
         public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs) => null;
     }
 
