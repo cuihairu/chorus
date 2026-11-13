@@ -174,6 +174,14 @@ if (enabledPlatforms.Count > 0)
 }
 if (builder.Configuration.GetValue(PlatformModuleAssembly.AllowAllConfigurationKey, false))
 {
+    // Production refusal (review 2026-11-13 M3): the dev verifier answers only the
+    // test/simulator fixtures now, but the switch itself stays a development-only
+    // configuration — a production host naming it is a misconfiguration, refused.
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException(
+            $"{PlatformModuleAssembly.AllowAllConfigurationKey} is a development switch and is refused in the Production environment.");
+    }
     Console.Error.WriteLine(
         $"{PlatformModuleAssembly.AllowAllConfigurationKey} is enabled; platform signatures are not required. Development only.");
 }

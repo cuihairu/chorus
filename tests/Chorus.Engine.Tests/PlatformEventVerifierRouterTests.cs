@@ -67,6 +67,21 @@ public sealed class PlatformEventVerifierRouterTests
             fallback: new AllowAllPlatformEventVerifier());
 
         Assert.True(router.Verify(PlatformNames.Test, "{}", Headers));
+        Assert.True(router.Verify(PlatformNames.Simulator, "{}", Headers));
+    }
+
+    [Fact]
+    public void Verify_FallbackIsBoundToTheDevelopmentIdentities()
+    {
+        // 开发 fallback 只应答 test/simulator 身份（review 2026-11-13 M3）：新 mapper
+        // 漏配 verifier 的注册缺口不再被 fallback 静默放行——未知平台一律拒绝。
+        var router = new PlatformEventVerifierRouter(
+            new IPlatformNamedEventVerifier[] { new RejectAllVerifier(PlatformNames.Douyin, result: true) },
+            fallback: new AllowAllPlatformEventVerifier());
+
+        Assert.False(router.Verify("some-future-platform", "{}", Headers));
+        Assert.False(router.Verify(PlatformNames.Kuaishou, "{}", Headers));
+        Assert.False(router.Verify("", "{}", Headers));
     }
 
     [Fact]

@@ -6,7 +6,9 @@ namespace Chorus.Adapters.Platforms;
 /// <summary>
 /// Dispatches verification to the named verifier registered for the platform.
 /// Platforms without a registered verifier fall back to the development stub
-/// (if one is configured); with no fallback at all, requests fail closed.
+/// (if one is configured) — the stub answers only the test/simulator fixtures
+/// (review 2026-11-13 M3), so a mapper registered without a verifier fails closed
+/// instead of sliding through unsigned. With no fallback at all, requests fail closed.
 /// </summary>
 public sealed class PlatformEventVerifierRouter : IPlatformEventVerifier, IPlatformTrustedAppIdSource
 {

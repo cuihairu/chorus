@@ -108,6 +108,24 @@ public sealed class RedesignPlatformIngressHostTests
     }
 
     [Fact]
+    public async Task AProductionGatewayRefusesTheAllowAllSwitchAtStartup()
+    {
+        // AllowAll 是开发开关（review 2026-11-13 M3）：非开发环境开启即启动失败——
+        // 子进程未设 ASPNETCORE_ENVIRONMENT，默认即 Production，装配阶段拒绝。
+        await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
+        var ingressPort = RedesignM0HostTests.HostEnvironment.FreePort();
+        var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
+                GatewayEnvironment(environment.DataPort, ingressPort, allowAll: true, ""),
+                instanceId: "gateway-prod-allowall"));
+
+        Assert.Contains("development switch", error.Message);
+        Assert.Contains("Production environment", error.Message);
+    }
+
+    [Fact]
     public async Task TheSimulatorCallbackRunsTheWholeChainIntoARoomDelivery()
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
@@ -133,10 +151,13 @@ public sealed class RedesignPlatformIngressHostTests
         var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
         // One real platform keeps the verifier router mounted; AllowAll adds the development
         // verifier plus the simulator mapper — the leg a development fleet can drive home.
+        // AllowAll is a development switch: this gateway must declare its environment
+        // accordingly or the production refusal at startup is exactly what it gets.
         await environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
             GatewayEnvironment(environment.DataPort, ingressPort, allowAll: true,
                 "douyin",
-                ["Ingress:Douyin:AppSecret", DouyinSecret]),
+                ["Ingress:Douyin:AppSecret", DouyinSecret],
+                ["ASPNETCORE_ENVIRONMENT", "Development"]),
             instanceId: "gateway-parity-sim");
 
         var simulator = new DevelopmentPlatformSimulator(simulatorKey);

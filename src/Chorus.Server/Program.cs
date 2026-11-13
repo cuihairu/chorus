@@ -52,9 +52,17 @@ builder.Services.AddSingleton(sp => new StreamerWsFace(
     sp.GetRequiredService<FaceCounters>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger("Chorus.StreamerWs")));
 // Ingress:AllowAll (default false) keeps the unsigned dev verifier registered;
-// without it the router fails closed for platforms without a real verifier.
+// without it the router fails closed for platforms without a real verifier. The dev
+// verifier answers only the test/simulator fixtures, and the switch itself is refused
+// in the Production environment (review 2026-11-13 M3): naming it there is a
+// misconfiguration, fail fast.
 if (builder.Configuration.GetValue("Ingress:AllowAll", false))
 {
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException(
+            "Ingress:AllowAll is a development switch and is refused in the Production environment.");
+    }
     builder.Services.AddSingleton<AllowAllPlatformEventVerifier>();
 }
 builder.Services.AddSingleton(sp =>
