@@ -134,6 +134,7 @@ Acceptance criteria: correct signature → pass; tampered body → reject; diffe
 {
   "event": "comment | gift | like | <other>",
   "event_id": "Platform event unique ID (required; payloads without one are refused as unmapped - a random stand-in would let the same retry bypass dedup)",
+  "timestamp": 1700000000000,
   "session_id": "Chorus session ID (required; returns 400 when missing)",
   "user_id": "Viewer ID (default anonymous)",
   "content": "Danmaku content (comment)",
@@ -144,6 +145,9 @@ Acceptance criteria: correct signature → pass; tampered body → reject; diffe
   "faction_id": "Optional, the faction the event belongs to"
 }
 ```
+
+The envelope carries a signature-covered millisecond `timestamp` (since review 2026-11-13 M5): the verifier refuses payloads whose timestamp sits more than `Ingress:Douyin:TimestampToleranceSeconds` (default 300) away from now, in either direction - a valid signature alone must not let a captured callback replay forever. Missing or malformed timestamps fail closed.
+
 
 | Official event (placeholder name) | `AudienceEventKind` |
 |---|---|

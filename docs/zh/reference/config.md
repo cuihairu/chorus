@@ -239,10 +239,12 @@ maxResyncReplayTicks = 128
 | `Ingress:Douyin:AppSecret` | 无 | 抖音回调验签密钥；缺失时 `/ingress/douyin` 拒绝一切（fail-closed） |
 | `Ingress:Douyin:AppId` | 无 | 所挂密钥归属的抖音应用 id；配置后 `/ingress/douyin` 拒绝不一致的 `X-Chorus-App-Id` 头（403 `app_id_mismatch`） |
 | `Ingress:Douyin:SignatureHeader` | `X-Douyin-Signature` | 签名头名（待联调确认，见平台参考文档） |
+| `Ingress:Douyin:TimestampToleranceSeconds` | `300` | 受签名覆盖的 body `timestamp`（毫秒）新鲜度上界；超出窗口（过去/未来）一律拒绝（401）。timestamp 字段本身必填，缺失 fail-closed（review M5） |
 | `Ingress:Kuaishou:VerifyToken` | 无 | 快手"消息验证Token"；缺失时 `/ingress/kuaishou` 拒绝一切（fail-closed） |
 | `Ingress:Kuaishou:AppId` | 无 | 所挂 Token 归属的快手应用 id；配置后 `/ingress/kuaishou` 拒绝不一致的 `X-Chorus-App-Id` 头（403 `app_id_mismatch`） |
 | `Ingress:Kuaishou:MsgEncryptKey` | 无 | 快手"消息加密解密KEY"（base64，32 字节）；缺失时事件无法解密（400） |
 | `Ingress:Kuaishou:SignatureHeader` | `kwaisign` | 官方签名头名 |
+| `Ingress:Kuaishou:TimestampToleranceSeconds` | `300` | 信封外层 `timestamp`（毫秒，在 sha1 签名覆盖内）新鲜度上界；出窗即拒（401）。字段本身必填，缺失 fail-closed（review M5） |
 | `Ingress:Bilibili:AccessKeyId` / `AccessKeySecret` | 无 | B 站开放平台签名凭证（主播个人授权，永不进仓不进日志）；缺失时 `/ingress/bilibili` 拒绝一切（fail-closed） |
 | `Ingress:Bilibili:AppId` | 无 | 开放平台项目 app_id；桥启动前提 |
 | `Ingress:Bilibili:RoomOwnerAuthCode` | 无 | 主播身份鉴权码（app_start 使用）；桥启动前提 |

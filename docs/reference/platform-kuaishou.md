@@ -40,6 +40,7 @@ sha1Hex(rawBody + 消息验证Token) == 请求头 kwaisign
 - Ciphertext algorithm (official): AES-256-CBC / PKCS7; Key = base64-decoded "Message Encryption/Decryption KEY" (32 bytes),
   **IV = first 16 bytes of Key** (per official documentation).
 - `msgId` is the platform-unique message ID; this implementation uses it directly as the deduplication EventId.
+- Freshness (review 2026-11-13 M5): the outer millisecond `timestamp` - part of the sha1-signed body - must sit within `Ingress:Kuaishou:TimestampToleranceSeconds` (default 300) of now, in either direction. Missing or malformed timestamps fail closed: a valid signature alone must not let a captured callback replay forever.
 - The official documentation also states: failed pushes are retried (3 retries) → relies on deduplication idempotency; the TTL is recommended to cover the retry window (`Ingress:DedupTtlSeconds`, default 600s).
 
 ### Known Risks (Confirm First During Joint Debugging)

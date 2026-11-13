@@ -40,6 +40,7 @@ sha1Hex(rawBody + 消息验证Token) == 请求头 kwaisign
 - 密文算法（官方）：AES-256-CBC / PKCS7；Key = base64 解码的"消息加密解密 KEY"（32 字节），
   **IV = Key 的前 16 字节**（依官方文档）。
 - `msgId` 是平台侧唯一消息 ID；本实现直接用作去重 EventId。
+- 新鲜度（review 2026-11-13 M5）：外层毫秒级 `timestamp`（在 sha1 签名覆盖内）与当前时刻相差不得超过 `Ingress:Kuaishou:TimestampToleranceSeconds`（默认 300 秒，过去/未来同样拒绝）。缺失或格式错误的 timestamp fail-closed：仅有有效签名不能让被截获的回调无限期重放。
 - 官方文档另载：推送失败会重试（3 次）→ 依赖去重幂等；TTL 建议覆盖重试窗口（`Ingress:DedupTtlSeconds`，默认 600s）。
 
 ### 已知风险（联调时先确认）

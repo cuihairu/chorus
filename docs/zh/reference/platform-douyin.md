@@ -134,6 +134,7 @@ StreamerServer 的主播登录校验（contracts §5 `VerifyLaunch` / `RedesignP
 {
   "event": "comment | gift | like | <other>",
   "event_id": "平台事件唯一 ID（必填；缺失即拒绝为 unmapped——随机占位会让同一报文的重试绕过去重）",
+  "timestamp": 1700000000000,
   "session_id": "Chorus 会话 ID（必填；缺失返回 400）",
   "user_id": "观众 ID（默认 anonymous）",
   "content": "弹幕内容（comment）",
@@ -144,6 +145,9 @@ StreamerServer 的主播登录校验（contracts §5 `VerifyLaunch` / `RedesignP
   "faction_id": "可选，事件所属的阵营"
 }
 ```
+
+信封携带受签名覆盖的毫秒级 `timestamp`（review 2026-11-13 M5 起）：验签器拒绝 timestamp 与当前时刻相差超过 `Ingress:Douyin:TimestampToleranceSeconds`（默认 300 秒）的报文（过去与未来同样拒绝）——仅有有效签名不能让被截获的回调无限期重放。缺失或格式错误的 timestamp fail-closed。
+
 
 | 官方事件（占位名） | `AudienceEventKind` |
 |---|---|
