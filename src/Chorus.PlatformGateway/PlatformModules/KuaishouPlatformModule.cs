@@ -34,7 +34,8 @@ public sealed class KuaishouPlatformModule : IPlatformModule
         services.AddSingleton(_ => new KuaishouPlatformEventVerifier(
             verifyToken: configuration["Ingress:Kuaishou:VerifyToken"],
             appId: configuration["Ingress:Kuaishou:AppId"],
-            signatureHeader: configuration["Ingress:Kuaishou:SignatureHeader"]));
+            signatureHeader: configuration["Ingress:Kuaishou:SignatureHeader"],
+            timestampToleranceSeconds: configuration.GetValue<int?>("Ingress:Kuaishou:TimestampToleranceSeconds")));
         services.AddSingleton<IPlatformNamedEventVerifier>(sp => sp.GetRequiredService<KuaishouPlatformEventVerifier>());
         services.AddSingleton<IPlatformEventMapper>(_ => new KuaishouPlatformEventMapper(
             messageEncryptKey: configuration["Ingress:Kuaishou:MsgEncryptKey"]));

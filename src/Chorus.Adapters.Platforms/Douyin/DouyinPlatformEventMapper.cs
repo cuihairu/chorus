@@ -16,6 +16,8 @@ namespace Chorus.Adapters.Platforms;
 ///   event_id    (string)  required, stable id used for dedup; events without
 ///                         one are refused (unmapped) - a random substitute would
 ///                         let the same payload retry as different "new" events
+///   timestamp   (number)  required, milliseconds; the verifier's freshness bound
+///                         rides on it (signature-covered, M5)
 ///   session_id  (string)  required, selects the Chorus session
 ///   user_id     (string)  defaults to "anonymous"
 ///   content     (string)  comment text

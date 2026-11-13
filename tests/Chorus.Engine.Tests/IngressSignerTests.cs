@@ -28,7 +28,10 @@ public sealed class IngressSignerTests
     [Fact]
     public void Sign_Douyin_PassesTheGatewayVerifier()
     {
-        var signature = IngressSigner.Sign("douyin", Body, Secret)!;
+        // A live-signable body: the gateway verifier also bounds the signed
+        // timestamp, so the parity body must be fresh (review M5).
+        var body = $$"""{"event":"comment","event_id":"dy-1","timestamp":{{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}},"session_id":"s1","user_id":"u1"}""";
+        var signature = IngressSigner.Sign("douyin", body, Secret)!;
         var verifier = new DouyinPlatformEventVerifier(Secret);
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -36,13 +39,14 @@ public sealed class IngressSignerTests
         };
 
         // The contract that matters: what the tool signs, the gateway accepts.
-        Assert.True(verifier.Verify(PlatformNames.Douyin, Body, headers));
+        Assert.True(verifier.Verify(PlatformNames.Douyin, body, headers));
     }
 
     [Fact]
     public void Sign_Kuaishou_PassesTheGatewayVerifier()
     {
-        var signature = IngressSigner.Sign("kuaishou", Body, Secret)!;
+        var body = $$"""{"encryptedMsg":"abc","msgId":"m-1","componentAppId":"ks-app","timestamp":{{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}}}""";
+        var signature = IngressSigner.Sign("kuaishou", body, Secret)!;
 
         var verifier = new KuaishouPlatformEventVerifier(Secret);
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -51,7 +55,7 @@ public sealed class IngressSignerTests
         };
 
         Assert.Equal("kwaisign", signature.Value.Name);
-        Assert.True(verifier.Verify(PlatformNames.Kuaishou, Body, headers));
+        Assert.True(verifier.Verify(PlatformNames.Kuaishou, body, headers));
     }
 
     [Fact]

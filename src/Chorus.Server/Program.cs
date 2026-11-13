@@ -69,12 +69,14 @@ builder.Services.AddSingleton(sp =>
     new DouyinPlatformEventVerifier(
         secret: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:AppSecret"],
         appId: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:AppId"],
-        signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:SignatureHeader"]));
+        signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Douyin:SignatureHeader"],
+        timestampToleranceSeconds: sp.GetRequiredService<IConfiguration>().GetValue<int?>("Ingress:Douyin:TimestampToleranceSeconds")));
 builder.Services.AddSingleton(sp =>
     new KuaishouPlatformEventVerifier(
         verifyToken: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:VerifyToken"],
         appId: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:AppId"],
-        signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:SignatureHeader"]));
+        signatureHeader: sp.GetRequiredService<IConfiguration>()["Ingress:Kuaishou:SignatureHeader"],
+        timestampToleranceSeconds: sp.GetRequiredService<IConfiguration>().GetValue<int?>("Ingress:Kuaishou:TimestampToleranceSeconds")));
 builder.Services.AddSingleton(sp =>
     new BilibiliPlatformEventVerifier(
         accessKeyId: sp.GetRequiredService<IConfiguration>()["Ingress:Bilibili:AccessKeyId"],

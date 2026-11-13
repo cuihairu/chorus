@@ -58,7 +58,9 @@ public sealed class KuaishouIngressEndpointTests : IClassFixture<KuaishouIngress
             encryptedMsg = Convert.ToBase64String(cipher),
             msgId,
             componentAppId = "ks-app",
-            timestamp = 1700000000000L,
+            // The outer timestamp is sha1-covered and freshness-checked (review M5):
+            // a stale envelope is refused no matter how valid its signature is.
+            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         });
 
         using var sha1 = SHA1.Create();
@@ -157,8 +159,9 @@ public sealed class KuaishouIngressEndpointTests : IClassFixture<KuaishouIngress
     public void Ingress_UndecryptablePayload_Unmapped()
     {
         var client = _factory.CreateClient();
-        // Valid signature over a body whose encryptedMsg does not decrypt with the configured key.
-        var body = """{"encryptedMsg":"AAAA","msgId":"e2e-ks-7","componentAppId":"ks-app","timestamp":1700000000000}""";
+        // Valid signature over a fresh body whose encryptedMsg does not decrypt with
+        // the configured key: freshness passes, the mapper refuses (400 unmapped).
+        var body = $$"""{"encryptedMsg":"AAAA","msgId":"e2e-ks-7","componentAppId":"ks-app","timestamp":{{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}}}""";
         using var sha1 = SHA1.Create();
         var signature = Convert.ToHexString(sha1.ComputeHash(Encoding.UTF8.GetBytes(body + "e2e-ks-token"))).ToLowerInvariant();
 
@@ -168,14 +171,16 @@ public sealed class KuaishouIngressEndpointTests : IClassFixture<KuaishouIngress
     }
 
     [Fact]
-    public void Ingress_MalformedBodyWithValidSignature_Unmapped()
+    public void Ingress_SignedNonJsonBody_FailClosedUnauthorized()
     {
+        // Freshness runs after the sha1 signature and parses the body: a validly
+        // signed payload with no parseable timestamp is refused (401) before mapping.
         var client = _factory.CreateClient();
         using var sha1 = SHA1.Create();
         var signature = Convert.ToHexString(sha1.ComputeHash(Encoding.UTF8.GetBytes("not-json" + "e2e-ks-token"))).ToLowerInvariant();
 
         using var response = PostKuaishou(client, "not-json", signature);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 }

@@ -51,6 +51,10 @@ public sealed class IngressFaceEndpointTests
         return client.SendAsync(request).GetAwaiter().GetResult();
     }
 
+    // Accepted douyin payloads carry the signature-covered freshness timestamp (review M5).
+    private static string DouyinBody(string eventId)
+        => $$"""{"event":"like","event_id":"{{eventId}}","timestamp":{{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}},"session_id":"s-face","user_id":"u1"}""";
+
     private static HttpResponseMessage PostTest(HttpClient client, string body)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/ingress/test")
@@ -65,7 +69,7 @@ public sealed class IngressFaceEndpointTests
     {
         using var factory = CreateFactory();
         var client = factory.CreateClient();
-        var body = """{"event":"like","event_id":"face-rl-1","session_id":"s-face-1","user_id":"u1"}""";
+        var body = DouyinBody("face-rl-1");
 
         var codes = new[]
         {
@@ -102,10 +106,10 @@ public sealed class IngressFaceEndpointTests
         using var factory = CreateFactory();
         var client = factory.CreateClient();
 
-        PostDouyin(client, """{"event":"like","event_id":"face-ctr-1","session_id":"s-face-3","user_id":"u1"}""");
-        PostDouyin(client, """{"event":"like","event_id":"face-ctr-2","session_id":"s-face-3","user_id":"u1"}""");
-        PostDouyin(client, """{"event":"like","event_id":"face-ctr-3","session_id":"s-face-3","user_id":"u1"}""");
-        PostDouyin(client, """{"event":"like","event_id":"face-ctr-4","session_id":"s-face-3","user_id":"u1"}"""); // 429
+        PostDouyin(client, DouyinBody("face-ctr-1"));
+        PostDouyin(client, DouyinBody("face-ctr-2"));
+        PostDouyin(client, DouyinBody("face-ctr-3"));
+        PostDouyin(client, DouyinBody("face-ctr-4")); // 429
 
         using var response = await client.GetAsync("/faces");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

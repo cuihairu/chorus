@@ -17,15 +17,23 @@ namespace Chorus.Adapters.Platforms;
 /// STATUS (2026-10-12): signature and AES envelope are official; whether the
 /// live (danmaku/gift) event channel uses this exact envelope is confirmed only
 /// at joint debugging - see docs/reference/platform-kuaishou.md.
+///
+/// FRESHNESS (review 2026-11-13 M5): the envelope's outer millisecond
+/// <c>timestamp</c> — part of the sha1-signed body — must sit within the
+/// tolerance of now. The signature alone never expires; this bound is what makes
+/// a captured callback stop replaying. Absent or malformed timestamps fail closed.
+///
 /// Fails closed when the token is not configured.
 /// </summary>
 public sealed class KuaishouPlatformEventVerifier : IPlatformNamedEventVerifier, IPlatformTrustedAppIdSource
 {
     public const string DefaultSignatureHeader = "kwaisign";
+    public const int DefaultTimestampToleranceSeconds = 300;
 
     private readonly string? _token;
     private readonly string? _appId;
     private readonly string _signatureHeader;
+    private readonly int _timestampToleranceSeconds;
     private readonly ILogger<KuaishouPlatformEventVerifier>? _logger;
     private int _missingTokenLogged;
 
@@ -35,13 +43,17 @@ public sealed class KuaishouPlatformEventVerifier : IPlatformNamedEventVerifier,
         string? verifyToken,
         string? appId = null,
         string? signatureHeader = null,
-        ILogger<KuaishouPlatformEventVerifier>? logger = null)
+        ILogger<KuaishouPlatformEventVerifier>? logger = null,
+        int? timestampToleranceSeconds = null)
     {
         _token = NormalizeToken(verifyToken);
         _appId = NormalizeAppId(appId);
         _signatureHeader = string.IsNullOrWhiteSpace(signatureHeader)
             ? DefaultSignatureHeader
             : signatureHeader.Trim();
+        _timestampToleranceSeconds = timestampToleranceSeconds is > 0
+            ? timestampToleranceSeconds.Value
+            : DefaultTimestampToleranceSeconds;
         _logger = logger;
     }
 
@@ -82,7 +94,15 @@ public sealed class KuaishouPlatformEventVerifier : IPlatformNamedEventVerifier,
         }
 
         var expected = ComputeSignature(rawBody, _token);
-        return string.Equals(expected, provided.Trim(), StringComparison.Ordinal);
+        if (!string.Equals(expected, provided.Trim(), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        // Freshness rides after the signature: the outer timestamp is inside the
+        // sha1-covered body, so only a signature-valid envelope reaches this check.
+        return DouyinPlatformEventVerifier.IsFreshTimestamp(rawBody,
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), _timestampToleranceSeconds);
     }
 
     /// <summary>Official Kuaishou signature: sha1Hex(bodyStr + tokenStr).</summary>

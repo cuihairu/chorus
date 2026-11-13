@@ -51,7 +51,8 @@ public sealed class RedesignPlatformIngressHostTests
         using var http = await HttpClientAsync(environment);
 
         // Douyin: HMAC-SHA256(app secret, body) in the platform's signature header.
-        var douyinBody = """{"event":"gift","event_id":"parity-douyin-1","session_id":"live-parity-douyin","gift_id":"g1","gift_count":1,"gift_value":100}""";
+        // The body carries the signature-covered freshness timestamp (review M5).
+        var douyinBody = $$"""{"event":"gift","event_id":"parity-douyin-1","timestamp":{{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}},"session_id":"live-parity-douyin","gift_id":"g1","gift_count":1,"gift_value":100}""";
         var douyin = await PostAsync(http, ingressPort, "douyin", "app-1", douyinBody,
             (DouyinPlatformEventVerifier.DefaultSignatureHeader, HmacHex(DouyinSecret, douyinBody)));
         AssertReceiptWaitsForAttribution(douyin);

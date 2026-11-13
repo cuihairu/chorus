@@ -51,11 +51,14 @@ public sealed class DouyinIngressEndpointTests : IClassFixture<DouyinIngressEndp
         return client.SendAsync(request).GetAwaiter().GetResult();
     }
 
+    // Every accepted payload carries the signature-covered freshness timestamp (review M5).
+    private static long NowMs => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
     [Fact]
     public async Task Ingress_CorrectSignature_Accepts()
     {
         var client = _factory.CreateClient();
-        var body = """{"event":"comment","event_id":"e2e-ok-1","session_id":"s-e2e-1","user_id":"u1","content":"hi"}""";
+        var body = $$"""{"event":"comment","event_id":"e2e-ok-1","timestamp":{{NowMs}},"session_id":"s-e2e-1","user_id":"u1","content":"hi"}""";
 
         using var response = PostDouyin(client, body);
 
@@ -82,7 +85,7 @@ public sealed class DouyinIngressEndpointTests : IClassFixture<DouyinIngressEndp
     public async Task Ingress_DuplicateEventId_Deduplicated()
     {
         var client = _factory.CreateClient();
-        var body = """{"event":"like","event_id":"e2e-dup-1","session_id":"s-e2e-3","user_id":"u1"}""";
+        var body = $$"""{"event":"like","event_id":"e2e-dup-1","timestamp":{{NowMs}},"session_id":"s-e2e-3","user_id":"u1"}""";
 
         using var first = PostDouyin(client, body);
         using var second = PostDouyin(client, body);
@@ -97,7 +100,7 @@ public sealed class DouyinIngressEndpointTests : IClassFixture<DouyinIngressEndp
     public async Task Ingress_UnknownEventType_DoesNotCrash()
     {
         var client = _factory.CreateClient();
-        var body = """{"event":"share","event_id":"e2e-unknown-1","session_id":"s-e2e-4","user_id":"u1"}""";
+        var body = $$"""{"event":"share","event_id":"e2e-unknown-1","timestamp":{{NowMs}},"session_id":"s-e2e-4","user_id":"u1"}""";
 
         using var response = PostDouyin(client, body);
 
@@ -107,11 +110,26 @@ public sealed class DouyinIngressEndpointTests : IClassFixture<DouyinIngressEndp
     }
 
     [Fact]
-    public void Ingress_MalformedBodyWithValidSignature_Unmapped()
+    public void Ingress_SignedNonJsonBody_FailClosedUnauthorized()
     {
+        // Freshness runs after the signature and parses the body: a validly signed
+        // payload with no parseable timestamp is refused (401) before any mapping.
         var client = _factory.CreateClient();
 
         using var response = PostDouyin(client, "not-json");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public void Ingress_SignedPayloadMissingSession_Unmapped()
+    {
+        // The mapper's 400 unmapped path stays reachable past the freshness bound:
+        // a fresh, validly signed payload without session_id is still unmapped.
+        var client = _factory.CreateClient();
+        var body = $$"""{"event":"comment","event_id":"e2e-unmapped-1","timestamp":{{NowMs}},"user_id":"u1"}""";
+
+        using var response = PostDouyin(client, body);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }

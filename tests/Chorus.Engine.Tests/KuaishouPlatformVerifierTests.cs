@@ -9,19 +9,86 @@ public sealed class KuaishouPlatformVerifierTests
     private const string Token = "ks-verify-token";
     private const string Body = """{"encryptedMsg":"abc","msgId":"m-1","componentAppId":"ks-app","timestamp":1700000000000}""";
 
+    private static long NowMs => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    private static string FreshBody()
+        => $$"""{"encryptedMsg":"abc","msgId":"m-1","componentAppId":"ks-app","timestamp":{{NowMs}}}""";
+
+    // An envelope whose outer timestamp sits offsetMs away from now (negative = past).
+    private static string OffsetBody(long offsetMs)
+        => $$"""{"encryptedMsg":"abc","msgId":"m-1","componentAppId":"ks-app","timestamp":{{NowMs + offsetMs}}}""";
+
     private static IReadOnlyDictionary<string, string> Headers(string signature)
         => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             [KuaishouPlatformEventVerifier.DefaultSignatureHeader] = signature,
         };
 
+    private static string Sign(string body) => KuaishouPlatformEventVerifier.ComputeSignature(body, Token);
+
     [Fact]
     public void Verify_CorrectSignature_Passes()
     {
         var verifier = new KuaishouPlatformEventVerifier(Token);
-        var signature = KuaishouPlatformEventVerifier.ComputeSignature(Body, Token);
+        var body = FreshBody();
 
-        Assert.True(verifier.Verify(PlatformNames.Kuaishou, Body, Headers(signature)));
+        Assert.True(verifier.Verify(PlatformNames.Kuaishou, body, Headers(Sign(body))));
+    }
+
+    // Freshness (review M5): the outer envelope timestamp is inside the sha1-covered
+    // body; a valid signature over an out-of-window or absent timestamp is still refused.
+    [Fact]
+    public void Verify_StaleTimestamp_Rejected()
+    {
+        var verifier = new KuaishouPlatformEventVerifier(Token);
+        var body = OffsetBody(-400_000);
+
+        Assert.False(verifier.Verify(PlatformNames.Kuaishou, body, Headers(Sign(body))));
+    }
+
+    [Fact]
+    public void Verify_FutureTimestamp_Rejected()
+    {
+        var verifier = new KuaishouPlatformEventVerifier(Token);
+        var body = OffsetBody(400_000);
+
+        Assert.False(verifier.Verify(PlatformNames.Kuaishou, body, Headers(Sign(body))));
+    }
+
+    [Fact]
+    public void Verify_MissingTimestamp_Rejected()
+    {
+        var verifier = new KuaishouPlatformEventVerifier(Token);
+        var body = """{"encryptedMsg":"abc","msgId":"m-1","componentAppId":"ks-app"}""";
+
+        Assert.False(verifier.Verify(PlatformNames.Kuaishou, body, Headers(Sign(body))));
+    }
+
+    [Fact]
+    public void Verify_TamperedTimestamp_Rejected()
+    {
+        // Refreshing the captured envelope's timestamp keeps it inside the freshness
+        // window but breaks the captured sha1 signature - the bound is signature-protected.
+        var verifier = new KuaishouPlatformEventVerifier(Token);
+        var captured = OffsetBody(-400_000);
+        var capturedSignature = Sign(captured);
+        var refreshed = FreshBody();
+
+        Assert.NotEqual(captured, refreshed);
+        Assert.False(verifier.Verify(PlatformNames.Kuaishou, refreshed, Headers(capturedSignature)));
+    }
+
+    [Fact]
+    public void Verify_ToleranceOverride_WidensTheAcceptedWindow()
+    {
+        // The default verifier refuses a 400s-old envelope; a verifier configured
+        // with a 3600s tolerance accepts exactly that envelope.
+        var body = OffsetBody(-400_000);
+        var headers = Headers(Sign(body));
+
+        Assert.False(new KuaishouPlatformEventVerifier(Token).Verify(PlatformNames.Kuaishou, body, headers));
+        Assert.True(new KuaishouPlatformEventVerifier(Token, timestampToleranceSeconds: 3600)
+            .Verify(PlatformNames.Kuaishou, body, headers));
     }
 
     [Fact]
@@ -73,13 +140,14 @@ public sealed class KuaishouPlatformVerifierTests
     public void Verify_AcceptsCustomSignatureHeader()
     {
         var verifier = new KuaishouPlatformEventVerifier(Token, signatureHeader: "X-Custom-Kwai-Signature");
-        var signature = KuaishouPlatformEventVerifier.ComputeSignature(Body, Token);
+        var body = FreshBody();
+        var signature = KuaishouPlatformEventVerifier.ComputeSignature(body, Token);
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["X-Custom-Kwai-Signature"] = signature,
         };
 
-        Assert.True(verifier.Verify(PlatformNames.Kuaishou, Body, headers));
+        Assert.True(verifier.Verify(PlatformNames.Kuaishou, body, headers));
     }
 
     [Fact]
