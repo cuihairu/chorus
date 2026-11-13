@@ -92,6 +92,26 @@ CHORUS_PORT=7530 CHORUS_WSS_PORT=5169 dotnet run --project src/Chorus.StreamerGa
 - 两个宿主独立发布、部署和扩容，不需要 `Gateway:Roles`。旧单体 `Chorus.Gateway` 宿主已移除（`48623a5`）。详见[独立网关部署](docs/guide/independent-gateways.md)。
 - EngineHost：运行权威 tick + 快照，通过本机 IPC 与 Gateway 通信（优先 UDS，失败降级 NamedPipe）
 
+## 压测工具与火焰图
+
+`Chorus.LoadTool` 驱动观众事件入口和模拟主播 WS 客户端打向运行中的 Gateway。全部参数可用
+`dotnet run --project src/Chorus.LoadTool -- --help` 查看。
+
+CPU 火焰图是可选能力，走外部 `dotnet-trace` 工具路线（仓库不新增包引用）：
+
+```bash
+dotnet tool install -g dotnet-trace   # 未安装时装一次
+dotnet run --project src/Chorus.LoadTool -- --flamegraph --duration 60
+```
+
+- `--flamegraph` 开启采集（环境变量 `CHORUS_LOAD_FLAMEGRAPH=1`）；不带该 flag 时行为与从前完全一致。
+- `--flamegraph-seconds <sec>` 设置采样窗口（默认 30），自动收窄到不超过压测时长。
+- `--flamegraph-dir <dir>` 设置输出目录（默认 `flamegraphs`）：生成 `loadtool_<时间戳>_<pid>.nettrace`
+  与转换出的 `.speedscope.json`。
+- speedscope 文件可在 <https://speedscope.app> 打开。机器上没有 `dotnet-trace` 时，工具打印安装
+  指引后照常运行；采集或转换失败绝不中断压测、不改变退出码。`--driver-processes N` 时每个分片
+  采集自身进程（每个分片一份产物）。
+
 ## 架构概览
 
 ![Chorus 七类进程与 GameServer 房间管理架构](docs/public/images/architecture-zh.svg)

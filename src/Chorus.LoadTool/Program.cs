@@ -26,6 +26,10 @@ if (string.IsNullOrWhiteSpace(options.SignSecret))
     Console.Error.WriteLine(IngressDiagnostics.UnsignedRunWarning(options.Platform));
 }
 
+// Best-effort diagnostics: a flame-graph capture never aborts the run or
+// changes its exit code.
+var profiler = FlameGraphProfiler.TryStart(options);
+
 var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
 var ingress = new IngressDriver(httpClient, options.BaseUrl, options.Platform, options);
 
@@ -79,6 +83,11 @@ await AwaitQuietly(reportTask);
 PrintSummary(simulations, ingress, options);
 PrintPeaks(peaks);
 await PrintEngineMetricsAsync(httpClient, options);
+
+if (profiler is not null)
+{
+    await profiler.CompleteAsync(Console.Out);
+}
 
 // Fail loudly when a run sent events but the gateway accepted none: that is
 // the pure-401 signature-failure shape (2026-10-15 run: ok=0, other=6316).

@@ -28,7 +28,10 @@ public sealed record LoadToolOptions(
     int? DriverShardIndex = null,
     int? DriverShardCount = null,
     double? DriverEventsPerSecond = null,
-    string EventNamespace = ""
+    string EventNamespace = "",
+    bool FlameGraphEnabled = false,
+    int FlameGraphSeconds = 30,
+    string FlameGraphDir = "flamegraphs"
 )
 {
     /// <summary>
@@ -84,6 +87,8 @@ public sealed record LoadToolOptions(
     public static LoadToolOptions Parse(string[] args)
     {
         static string? Env(string name) => Environment.GetEnvironmentVariable(name);
+        static bool IsTruthy(string? value) =>
+            value is not null && (value == "1" || string.Equals(value, "true", StringComparison.OrdinalIgnoreCase));
         var o = new LoadToolOptions();
 
         for (var i = 0; i < args.Length; i++)
@@ -123,6 +128,9 @@ public sealed record LoadToolOptions(
                 case "--driver-shard-count": o = o with { DriverShardCount = int.Parse(Next()) }; break;
                 case "--driver-rate": o = o with { DriverEventsPerSecond = double.Parse(Next()) }; break;
                 case "--event-namespace": o = o with { EventNamespace = Next() }; break;
+                case "--flamegraph": o = o with { FlameGraphEnabled = true }; break;
+                case "--flamegraph-seconds": o = o with { FlameGraphSeconds = int.Parse(Next()) }; break;
+                case "--flamegraph-dir": o = o with { FlameGraphDir = Next() }; break;
                 case "--help":
                 case "-h":
                 case "-?":
@@ -142,6 +150,14 @@ public sealed record LoadToolOptions(
             Token = Env("CHORUS_WS_TOKEN") ?? o.Token,
             EngineMetricsUrl = Env("CHORUS_LOAD_ENGINE_METRICS") ?? o.EngineMetricsUrl,
             WsUrl = Env("CHORUS_LOAD_WS_URL") ?? o.WsUrl,
+            FlameGraphEnabled = IsTruthy(Env("CHORUS_LOAD_FLAMEGRAPH")) || o.FlameGraphEnabled,
+            FlameGraphSeconds = int.TryParse(Env("CHORUS_LOAD_FLAMEGRAPH_SECONDS"), out var flameGraphSeconds)
+                && flameGraphSeconds > 0
+                    ? flameGraphSeconds
+                    : o.FlameGraphSeconds,
+            FlameGraphDir = Env("CHORUS_LOAD_FLAMEGRAPH_DIR") is { Length: > 0 } flameGraphDir
+                ? flameGraphDir
+                : o.FlameGraphDir,
         };
 
         if (o.DriverProcesses < 1)
@@ -166,6 +182,14 @@ public sealed record LoadToolOptions(
         if (o.DriverEventsPerSecond is < 0)
         {
             throw new ArgumentException("--driver-rate must be at least zero");
+        }
+        if (o.FlameGraphSeconds < 1)
+        {
+            throw new ArgumentException("--flamegraph-seconds must be at least 1");
+        }
+        if (string.IsNullOrWhiteSpace(o.FlameGraphDir))
+        {
+            throw new ArgumentException("--flamegraph-dir must not be empty");
         }
 
         return o;
@@ -213,6 +237,16 @@ public sealed record LoadToolOptions(
                                            splits rate and namespaces event/client
                                            ids so shards do not collide (default 1)
                                            Child output is labeled with its shard.
+              --flamegraph                 Capture a CPU flame graph of this run
+                                           with dotnet-trace (cpu-sampling).
+                                           Needs `dotnet tool install -g
+                                           dotnet-trace`. Env:
+                                           CHORUS_LOAD_FLAMEGRAPH=1
+              --flamegraph-seconds <sec>   Trace window, capped at the run
+                                           duration (default 30)
+              --flamegraph-dir <dir>       Output directory for the .nettrace and
+                                           .speedscope.json files (default
+                                           flamegraphs)
             """);
     }
 }

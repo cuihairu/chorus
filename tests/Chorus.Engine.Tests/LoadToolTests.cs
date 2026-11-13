@@ -183,6 +183,72 @@ public sealed class LoadToolTests
     }
 
     [Fact]
+    public void Options_ParsesFlameGraphFlags()
+    {
+        var options = LoadToolOptions.Parse(
+        [
+            "--flamegraph", "--flamegraph-seconds", "45", "--flamegraph-dir", "/tmp/fg",
+        ]);
+
+        Assert.True(options.FlameGraphEnabled);
+        Assert.Equal(45, options.FlameGraphSeconds);
+        Assert.Equal("/tmp/fg", options.FlameGraphDir);
+        Assert.Equal(45, FlameGraphProfiler.TraceDurationSeconds(
+            options with { DurationSeconds = 120 }));
+    }
+
+    [Fact]
+    public void Options_HasFlameGraphDefaults()
+    {
+        var options = LoadToolOptions.Parse(Array.Empty<string>());
+
+        // Disabled by default: the profiling surface is opt-in.
+        Assert.False(options.FlameGraphEnabled);
+        Assert.Equal(30, options.FlameGraphSeconds);
+        Assert.Equal("flamegraphs", options.FlameGraphDir);
+    }
+
+    [Fact]
+    public void Options_EnvironmentEnablesFlameGraph()
+    {
+        string[] names =
+        [
+            "CHORUS_LOAD_FLAMEGRAPH", "CHORUS_LOAD_FLAMEGRAPH_SECONDS", "CHORUS_LOAD_FLAMEGRAPH_DIR",
+        ];
+        var previous = names.ToDictionary(n => n, n => Environment.GetEnvironmentVariable(n));
+        try
+        {
+            Environment.SetEnvironmentVariable("CHORUS_LOAD_FLAMEGRAPH", "1");
+            Environment.SetEnvironmentVariable("CHORUS_LOAD_FLAMEGRAPH_SECONDS", "15");
+            Environment.SetEnvironmentVariable("CHORUS_LOAD_FLAMEGRAPH_DIR", "/tmp/envfg");
+
+            var options = LoadToolOptions.Parse(Array.Empty<string>());
+
+            Assert.True(options.FlameGraphEnabled);
+            Assert.Equal(15, options.FlameGraphSeconds);
+            Assert.Equal("/tmp/envfg", options.FlameGraphDir);
+
+            // Environment wins over the flag, like the other load options.
+            var overridden = LoadToolOptions.Parse(["--flamegraph-seconds", "90"]);
+            Assert.Equal(15, overridden.FlameGraphSeconds);
+        }
+        finally
+        {
+            foreach (var (name, value) in previous)
+            {
+                Environment.SetEnvironmentVariable(name, value);
+            }
+        }
+    }
+
+    [Fact]
+    public void Options_RejectsInvalidFlameGraphValues()
+    {
+        Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(["--flamegraph-seconds", "0"]));
+        Assert.Throws<ArgumentException>(() => LoadToolOptions.Parse(["--flamegraph-dir", " "]));
+    }
+
+    [Fact]
     public void MultiProcessDriver_SplitsRateAndNamespace()
     {
         Assert.Equal(12, MultiProcessDriver.ShardRate(36, 0, 3));
@@ -496,5 +562,6 @@ public sealed class LoadToolTests
         Assert.Contains("--url", text);
         Assert.Contains("--sign", text);
         Assert.Contains("--engine-metrics", text);
+        Assert.Contains("--flamegraph", text);
     }
 }

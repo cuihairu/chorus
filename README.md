@@ -96,6 +96,29 @@ CHORUS_PORT=7530 CHORUS_WSS_PORT=5169 dotnet run --project src/Chorus.StreamerGa
 - EngineHost: runs the authoritative tick + snapshots, talking to the Gateway over local IPC
   (UDS first, NamedPipe fallback)
 
+## Load Tool and Flame Graphs
+
+`Chorus.LoadTool` drives audience-event ingress and simulated streamer WS clients against a running
+Gateway. Every flag is listed by `dotnet run --project src/Chorus.LoadTool -- --help`.
+
+CPU flame graphs are opt-in and captured with the external `dotnet-trace` tool (no extra package
+reference in the repo):
+
+```bash
+dotnet tool install -g dotnet-trace   # once, when not installed
+dotnet run --project src/Chorus.LoadTool -- --flamegraph --duration 60
+```
+
+- `--flamegraph` enables the capture (env: `CHORUS_LOAD_FLAMEGRAPH=1`); without the flag the run
+  behaves exactly as before.
+- `--flamegraph-seconds <sec>` sets the trace window (default 30); it is capped at the run duration.
+- `--flamegraph-dir <dir>` sets the output directory (default `flamegraphs`): one
+  `loadtool_<timestamp>_<pid>.nettrace` plus a converted `.speedscope.json` beside it.
+- Open the speedscope file at <https://speedscope.app>. If `dotnet-trace` is missing, the tool
+  prints the install hint and the run continues unchanged; capture or conversion failures never
+  abort the run or alter its exit code. With `--driver-processes N`, each shard traces its own
+  process (one trace per shard).
+
 ## Architecture Overview
 
 ![Chorus process architecture and GameServer room management](docs/public/images/architecture-en.svg)
