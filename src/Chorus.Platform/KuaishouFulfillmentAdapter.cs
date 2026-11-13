@@ -24,6 +24,8 @@ public sealed class KuaishouFulfillmentAdapter(
 
     public string Platform => "kuaishou";
 
+    public string? AppId => appId;
+
     public bool ProductionReady => false;
 
     /// <summary>The documented kuaishou APIs answer synchronously but carry no per-operation

@@ -18,6 +18,8 @@ public sealed class DouyinFulfillmentAdapter(Uri endpoint, string appId) : IPlat
 
     public string Platform => "douyin";
 
+    public string? AppId => appId;
+
     public bool ProductionReady => false;
 
     /// <summary>The ACK API's idempotency and query semantics are unverified (needs

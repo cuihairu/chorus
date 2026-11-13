@@ -24,6 +24,13 @@ public sealed record PlatformTaskOutcome(bool Executed, string? ObservedJson, bo
 public interface IPlatformTaskAdapter
 {
     string Platform { get; }
+
+    /// <summary>The platform application whose mounted credentials this adapter issues its
+    /// calls with (review C2), or null when the credentials name no application — then every
+    /// app of the platform is served. Executors use it to refuse tasks from a foreign
+    /// credential domain, so differently-scoped executors can never grab each other's work.</summary>
+    string? AppId => null;
+
     bool ProductionReady { get; }
     bool IdempotentReissue { get; }
     Task<PlatformTaskOutcome> CallAsync(PlatformTaskCall call, CancellationToken cancellationToken = default);

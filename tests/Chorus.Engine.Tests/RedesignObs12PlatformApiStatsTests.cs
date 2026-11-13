@@ -87,13 +87,15 @@ public sealed class RedesignObs12PlatformApiStatsTests
             new TaskStateReply
             {
                 TaskId = "task-exec", BindingId = "binding-1", OperationId = "op-exec",
-                Status = "Pending", DesiredJson = """{"kind":"screen-link"}"""
+                Status = "Pending", DesiredJson = """{"kind":"screen-link"}""",
+                Platform = "simulator", AppId = "app-1"
             },
             new TaskStateReply
             {
                 TaskId = "task-unknown", BindingId = "binding-1", OperationId = "op-unknown",
                 Status = "OutcomeUnknown", DesiredJson = """{"kind":"end-round"}""",
-                AttemptDeadlineUnixMs = DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeMilliseconds()
+                AttemptDeadlineUnixMs = DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeMilliseconds(),
+                Platform = "simulator", AppId = "app-1"
             });
         var adapter = new RecordingAdapter { QueryFaults = true, IdempotentReissue = true };
         var counters = new PlatformApiCounters();

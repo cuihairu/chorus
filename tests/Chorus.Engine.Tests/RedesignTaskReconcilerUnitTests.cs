@@ -23,12 +23,14 @@ public sealed class RedesignTaskReconcilerUnitTests
             {
                 TaskId = "task-end-1", BindingId = "binding-1", OperationId = "end-op-1",
                 Status = "Pending", DesiredJson = """{"kind":"end-round"}""",
-                BarrierEndOperationId = "end-op-1"
+                BarrierEndOperationId = "end-op-1",
+                Platform = "simulator", AppId = "app-1"
             },
             new TaskStateReply
             {
                 TaskId = "task-screen", BindingId = "binding-1", OperationId = "op-screen",
-                Status = "Pending", DesiredJson = """{"kind":"screen-link"}"""
+                Status = "Pending", DesiredJson = """{"kind":"screen-link"}""",
+                Platform = "simulator", AppId = "app-1"
             });
         var adapter = new RecordingAdapter();
         using var cancellation = new CancellationTokenSource();
@@ -81,7 +83,8 @@ public sealed class RedesignTaskReconcilerUnitTests
         {
             TaskId = "task-end-nr", BindingId = "binding-1", OperationId = "end-op-nr",
             Status = "Pending", DesiredJson = """{"kind":"end-round"}""",
-            BarrierEndOperationId = "end-op-nr"
+            BarrierEndOperationId = "end-op-nr",
+            Platform = "simulator", AppId = "app-1"
         });
         tasks.BarrierAuthorized = true;
         var adapter = new RecordingAdapter { NotRequiredNext = true };
@@ -111,7 +114,8 @@ public sealed class RedesignTaskReconcilerUnitTests
         {
             TaskId = "task-end-unknown", BindingId = "binding-1", OperationId = "end-op-unknown",
             Status = "OutcomeUnknown", DesiredJson = """{"kind":"end-round"}""",
-            AttemptDeadlineUnixMs = DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeMilliseconds()
+            AttemptDeadlineUnixMs = DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeMilliseconds(),
+            Platform = "simulator", AppId = "app-1"
         };
         var tasks = new ScriptedTasks(parked);
         var adapter = new RecordingAdapter { QueryFaults = true, IdempotentReissue = false };
@@ -134,7 +138,8 @@ public sealed class RedesignTaskReconcilerUnitTests
         {
             TaskId = "task-end-unknown-2", BindingId = "binding-1", OperationId = "end-op-unknown-2",
             Status = "OutcomeUnknown", DesiredJson = """{"kind":"end-round"}""",
-            AttemptDeadlineUnixMs = DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeMilliseconds()
+            AttemptDeadlineUnixMs = DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeMilliseconds(),
+            Platform = "simulator", AppId = "app-1"
         });
         var patientAdapter = new RecordingAdapter { QueryFaults = true, IdempotentReissue = true };
         using var secondCancellation = new CancellationTokenSource();
@@ -145,6 +150,88 @@ public sealed class RedesignTaskReconcilerUnitTests
         await Task.Delay(500);
         Assert.Empty(asking.NeedsAttention);
         Assert.NotEmpty(patientAdapter.Queries);
+        await secondCancellation.CancelAsync();
+        await second.StopAsync(CancellationToken.None);
+    }
+
+    /// <summary>Review C2's executor-side identity gate: a task from a foreign platform, a
+    /// foreign app, or an unstated credential domain is never claimed — no lease, no
+    /// attempt, no call — while the served domain's task beside it runs. An adapter that
+    /// names no application still serves every app of its platform, platform-strict.</summary>
+    [Fact]
+    public async Task ACrossDomainTaskIsNeverClaimed()
+    {
+        var tasks = new ScriptedTasks(
+            new TaskStateReply
+            {
+                TaskId = "task-served", BindingId = "binding-1", OperationId = "op-served",
+                Status = "Pending", DesiredJson = """{"kind":"screen-link"}""",
+                Platform = "simulator", AppId = "app-1"
+            },
+            new TaskStateReply
+            {
+                TaskId = "task-foreign-platform", BindingId = "binding-2", OperationId = "op-fp",
+                Status = "Pending", DesiredJson = """{"kind":"screen-link"}""",
+                Platform = "douyin", AppId = "app-1"
+            },
+            new TaskStateReply
+            {
+                TaskId = "task-foreign-app", BindingId = "binding-3", OperationId = "op-fa",
+                Status = "Pending", DesiredJson = """{"kind":"screen-link"}""",
+                Platform = "simulator", AppId = "app-2"
+            },
+            new TaskStateReply
+            {
+                TaskId = "task-unstated", BindingId = "binding-4", OperationId = "op-un",
+                Status = "Pending", DesiredJson = """{"kind":"screen-link"}"""
+            });
+        var adapter = new RecordingAdapter { AppId = "app-1" };
+        using var cancellation = new CancellationTokenSource();
+        using var reconciler = new Chorus.PlatformGateway.TaskReconciler(tasks, adapter,
+            "gateway-unit", intervalMs: 20, leaseSeconds: 30, deadlineSeconds: 30,
+            callTimeoutSeconds: 5);
+        await reconciler.StartAsync(cancellation.Token);
+
+        var served = await WaitAsync(() => adapter.Calls.Contains("op-served"), 5_000);
+        Assert.True(served, "The served-domain task never ran.");
+        await Task.Delay(300);
+        foreach (var foreign in new[] { "task-foreign-platform", "task-foreign-app", "task-unstated" })
+        {
+            Assert.DoesNotContain(foreign, tasks.Leased);
+            Assert.DoesNotContain(foreign, tasks.Attempted);
+        }
+        Assert.DoesNotContain("op-fp", adapter.Calls);
+        Assert.DoesNotContain("op-fa", adapter.Calls);
+        Assert.DoesNotContain("op-un", adapter.Calls);
+        await cancellation.CancelAsync();
+        await reconciler.StopAsync(CancellationToken.None);
+
+        // An adapter that names no application serves every app of its platform, still
+        // platform-strict.
+        var anyAppTasks = new ScriptedTasks(
+            new TaskStateReply
+            {
+                TaskId = "task-any-app", BindingId = "binding-5", OperationId = "op-any-app",
+                Status = "Pending", DesiredJson = """{"kind":"screen-link"}""",
+                Platform = "simulator", AppId = "app-9"
+            },
+            new TaskStateReply
+            {
+                TaskId = "task-still-foreign", BindingId = "binding-6", OperationId = "op-sf",
+                Status = "Pending", DesiredJson = """{"kind":"screen-link"}""",
+                Platform = "douyin", AppId = "app-9"
+            });
+        var unnamed = new RecordingAdapter();
+        using var secondCancellation = new CancellationTokenSource();
+        using var second = new Chorus.PlatformGateway.TaskReconciler(anyAppTasks, unnamed,
+            "gateway-unit", intervalMs: 20, leaseSeconds: 30, deadlineSeconds: 30,
+            callTimeoutSeconds: 5);
+        await second.StartAsync(secondCancellation.Token);
+        var anyRan = await WaitAsync(() => unnamed.Calls.Contains("op-any-app"), 5_000);
+        Assert.True(anyRan, "The platform-matched foreign-app task never ran for an app-less adapter.");
+        await Task.Delay(300);
+        Assert.DoesNotContain("op-sf", unnamed.Calls);
+        Assert.DoesNotContain("task-still-foreign", anyAppTasks.Leased);
         await secondCancellation.CancelAsync();
         await second.StopAsync(CancellationToken.None);
     }
@@ -162,6 +249,7 @@ public sealed class RedesignTaskReconcilerUnitTests
         public bool IdempotentReissue { get; set; } = true;
 
         public string Platform => "simulator";
+        public string? AppId { get; set; }
         public bool ProductionReady => false;
 
         public Task<PlatformTaskOutcome> CallAsync(PlatformTaskCall call,

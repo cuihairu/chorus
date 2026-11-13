@@ -256,11 +256,11 @@ public sealed class RedesignU3D14FulfillmentTests
     {
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
         using var platform = new PlatformStub { Answer = PlatformStub.Reply.ResultOne };
-        var simulatorKey = await StartHostsAsync(environment, platform.Url);
+        await StartHostsAsync(environment, platform.Url);
         using var face = new TaskFace(environment);
         var tasks = face.Client;
         const string openId = "u3d14-fulfill";
-        var binding = await MountAsync(environment, simulatorKey, openId);
+        var binding = await MountAsync(environment, openId);
 
         // The desired the coordinator records for a round end: the facts ride with it — the
         // launch room code the live session was opened with ("live-" + openId) and the frozen
@@ -365,24 +365,21 @@ public sealed class RedesignU3D14FulfillmentTests
     }
 
     private static async Task<string> MountAsync(
-        RedesignM0HostTests.HostEnvironment environment, byte[] simulatorKey, string openId)
+        RedesignM0HostTests.HostEnvironment environment, string openId)
     {
-        var simulator = new DevelopmentPlatformSimulator(simulatorKey);
-        var credential = simulator.IssueCredential("app-1", openId, "live-" + openId, TimeSpan.FromMinutes(10));
-        using var certificate = environment.Certificate("tenant-a", "streamer-server", "login-" + openId);
-        using var channel = environment.Channel(environment.StreamerPort, certificate, "streamer-server");
-        var session = new StreamerSession.StreamerSessionClient(channel);
-        var login = await session.LoginAsync(new LoginRequest
-        {
-            Platform = "simulator", AppId = "app-1", LaunchCredential = credential,
-            LoginAttemptId = "attempt-" + openId,
-            NextResumeSecret = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
-            GatewayInstanceId = "gateway-1", ConnectionId = "connection-" + openId
-        });
-        var mounted = await session.StartGameplayAsync(new StartGameplayRequest
-        {
-            AccessCredential = login.AccessCredential, GameId = "game-a", OperationId = "mount-" + openId
-        });
+        // The task's credential domain is its binding's (review C2): the gateway's kuaishou
+        // executor (app-9) only serves (kuaishou, app-9) bindings — the production shape for
+        // a kuaishou room. Mounted directly at the stores; the simulator launch session
+        // names a different domain and its executor would refuse the task.
+        var identityStore = new RedesignIdentityStore(environment.DatabaseConnectionString);
+        var bindingStore = new RedesignBindingStore(environment.DatabaseConnectionString);
+        var streamer = await identityStore.ResolveIdentityAsync("tenant-a", "kuaishou", "app-9", openId);
+        var live = await bindingStore.OpenLiveSessionAsync("tenant-a", streamer.StreamerId, "kuaishou",
+            "app-9", "ks-room-" + openId, "live-" + openId);
+        var session = await identityStore.LoginAsync(streamer.StreamerId, "gateway-a",
+            "connection-" + openId, RandomNumberGenerator.GetBytes(32));
+        var mounted = await bindingStore.StartGameplayAsync("tenant-a", live, session.SessionId,
+            "game-a", "mount-" + openId);
         return mounted.BindingId;
     }
 

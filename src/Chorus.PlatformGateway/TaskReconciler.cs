@@ -48,6 +48,9 @@ public sealed class TaskReconciler(
                     deadline: DateTime.UtcNow.Add(RpcTimeout), cancellationToken: stoppingToken);
                 foreach (var task in ready.Tasks)
                 {
+                    // Review C2: a foreign credential domain is not this executor's work —
+                    // skipped at discovery so it never even enters the in-flight gate.
+                    if (!ServesCredentialDomain(task)) continue;
                     lock (_inFlightGate)
                     {
                         if (!_inFlight.Add(task.TaskId)) continue;
@@ -90,9 +93,23 @@ public sealed class TaskReconciler(
         }
     }
 
+    /// <summary>The adapter identity against the task's credential domain (review C2):
+    /// platform strict, and app-strict when the adapter names an app. A task whose domain
+    /// is not stated cannot be attributed, so it is never claimed either.</summary>
+    private bool ServesCredentialDomain(TaskStateReply task)
+        => !string.IsNullOrWhiteSpace(task.Platform)
+            && string.Equals(task.Platform, adapter.Platform, StringComparison.OrdinalIgnoreCase)
+            && (adapter.AppId is not { Length: > 0 }
+                || (!string.IsNullOrWhiteSpace(task.AppId)
+                    && string.Equals(task.AppId, adapter.AppId, StringComparison.Ordinal)));
+
     private async Task ReconcileCoreAsync(PlatformTask.PlatformTaskClient tasks,
         TaskStateReply task, CancellationToken cancellationToken)
     {
+        // Before any protocol step the branch re-checks the credential domain itself —
+        // the listing filter decided to dispatch, this is the gate the branch owns
+        // (review C2): no lease, no attempt, no call outside the adapter's identity.
+        if (!ServesCredentialDomain(task)) return;
         // FIX-END-09: a task bound to a standing end operation waits for the operation's
         // ladder to authorize platform work — asked here, before any lease is taken, so an
         // unauthorized end task never even enters the lease protocol. The refusal is the
