@@ -579,7 +579,7 @@
 - [x] 移除抖音生产事件缺 ID 时的随机兜底（DouyinPlatformEventMapper.cs:60）—— [M1] 相同报文重试必须保持来源标识不变。✅ 1d5875b 缺 ID 即拒绝映射（端点 400 unmapped_event），回归：TryMap_MissingEventId_IsRefused + TryMap_SamePayloadRetry_KeepsSourceIdentity，mapper+ingress 链 29 测试绿。
 - [x] 移除 B 站生产事件缺 ID 时的随机兜底（BilibiliPlatformEventMapper.cs:66）—— [M1] 当前兜底会绕过所有下游来源去重。✅ 39aa983 缺 msg_id 即拒绝映射（端点 400 unmapped_event），回归：DanmuMsg_MissingMsgId_IsRefused + DanmuMsg_SamePayloadRetry_KeepsSourceIdentity，mapper+端点+e2e 38 测试绿。
 - [x] 在事件模块装配阶段执行生产准入检查（PlatformModuleAssembly.cs:77）—— [M2] 占位协议不能仅凭存在配置键就进入生产。✅ bdfbbac PlatformModuleCapabilities 增 ProductionReady 声明（douyin/kuaishou=false 占位，bilibili/minigame=true），装配环在凭据校验之前拒绝（错误指向 Ingress:AllowNotProductionReady=true 显式开发开关，网关 Program.cs 透传；环境不隐式放大——host rig 曾因 Development+测试 bin 的 appsettings 隐式开 AllowAll 被抓，故选具名开关）。回归：装配 13 fact 绿（4 新增：生产拒绝且零注册/开发开关放行/B 站无需开关/声明面恰为抖音+快手）+ ingress host 2 绿 + 邻接 33 绿。
-- [ ] 在任务适配器装配阶段检查 ProductionReady（Chorus.PlatformGateway/Program.cs:68）—— [M2] 当前 readiness 属性没有执行效果。
+- [x] 在任务适配器装配阶段检查 ProductionReady（Chorus.PlatformGateway/Program.cs:68）—— [M2] 当前 readiness 属性没有执行效果。✅ eccb0f4 装配抽为 GatewayTaskAdapterAssembly.Select：ProductionReady=false 的适配器在构造后被拒（错误指向 CHORUS_ALLOW_NOT_PRODUCTION_READY_ADAPTER=true 显式开发开关）；simulator 保持开发默认挂载（其开发端点必填已天然限定开发面）；U3D14 e2e rig 显式带开关。回归：装配 4 fact + U3D14 e2e 9 绿（kuaishou 履约挂载走真网关进程验开关生效）。
 - [ ] 将开发事件放行限定为明确的 test/simulator 身份并限制宿主环境（PlatformEventVerifierRouter.cs:40）—— [M3] 消除未知平台注册缺口被 fallback 掩盖的问题（已注册平台验签失败不会进入 fallback）。
 - [ ] 区分处理中与已提交的去重结果（PlatformIngressFace.cs:98）—— [M4] 避免尚未投递就成功确认重复（旧 PlatformIngressFace；新入口用持久回执不受影响）。
 - [ ] 为抖音/快手补齐协议支持的持久防重放边界（KuaishouPlatformEventVerifier.cs:73）—— [M5] 有效签名不能被无限期当作新鲜事件使用。
