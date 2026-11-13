@@ -99,7 +99,7 @@ Program.cs 不注册默认实例；接线等真实小游戏凭证与事件配置
 
 ### 2.5 新架构 Launch 适配器（真实 code2Session 调用，2026-10-31 实装）
 
-StreamerServer 的主播登录校验（contracts §5 `VerifyLaunch` / `RedesignPlatformGateway`）此前由 fail-closed 占位 stub（`DouyinLaunchAdapter`）承担；现已实装真实调用 `DouyinMiniGameLaunchAdapter`（`src/Chorus.Platform/DouyinMiniGameLaunchAdapter.cs`），映射到官方 code2Session：
+StreamerServer 的主播登录校验（contracts §5 `VerifyLaunch` / `RedesignPlatformGateway`）此前由 fail-closed 占位 stub（`DouyinLaunchAdapter`）承担；现已实装真实调用 `DouyinMiniGameLaunchAdapter`（`src/Chorus.Platform/DouyinMiniGameLaunchAdapter.cs`），映射到官方 code2Session。OpenAPI 调用本身与入口侧客户端共享（review 2026-11-13 M7）：适配器委托 `DouyinMiniGameAuthClient`——请求/响应处理只有一份实现——再把共享结果映射到 launch 错误类别；其构造缝（`HttpMessageInvoker` + 可选 baseUrl）不变。
 
 - **凭证编码**：`LaunchCredential` 即客户端登录凭证——裸值为 tt.login `code`；带 `anonymous:` 前缀为 `anonymous_code`（这是客户端侧的本地编码约定，非官方协议猜测）。
 - **身份与直播键**：成功后 OpenId = `openid`（匿名登录时为 `anonymous:anonymous_openid`，前缀区分两个命名空间）；`CanonicalLiveSessionKey` 确定性推导为 `douyin-live:{appId}:{identity}`（每个主播每 app 一个规范直播会话）。官方直播间绑定 API 未核实，故不虚构房间键。`session_key` 属敏感凭据，在适配器内直接丢弃，绝不离开适配器。
