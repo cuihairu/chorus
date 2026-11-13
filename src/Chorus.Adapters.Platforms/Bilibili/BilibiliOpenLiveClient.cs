@@ -21,6 +21,11 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
     public const string DefaultHeartbeatUrl = "https://live-open.biliapi.com/v2/app/heartbeat";
     public const string DefaultEndUrl = "https://live-open.biliapi.com/v2/app/end";
 
+    /// <summary>The chorus ingress app-id header (the gateway face's X-Chorus-App-Id): the
+    /// bridge states the application identity its own signature proves, so the shared face
+    /// can bind the two (review C3 — without it the ingress refuses the post outright).</summary>
+    public const string ChorusAppIdHeader = "X-Chorus-App-Id";
+
     private static readonly TimeSpan DefaultGameHeartbeatInterval = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan DefaultWsHeartbeatInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultReconnectMinDelay = TimeSpan.FromSeconds(1);
@@ -363,6 +368,10 @@ public sealed class BilibiliOpenLiveClient : IAsyncDisposable
         try
         {
             using var request = SignedRequest(HttpMethod.Post, _options.IngressUrl, json);
+            // The ingress binds the app header to what the x-bili-* signature proves (review
+            // C1), and for bilibili that identity is the AccessKeyId itself — the bridge
+            // states exactly what it signs, and B站's own endpoints never see this header.
+            request.Headers.TryAddWithoutValidation(ChorusAppIdHeader, _options.AccessKeyId);
             using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {

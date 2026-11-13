@@ -291,10 +291,14 @@ public sealed class BilibiliOpenLiveClientTests
         var ingress = http.Requests.Single(r => r.Path.EndsWith("ingress/bilibili"));
         Assert.True(BilibiliSigner.VerifyHeaders(
             DanmuJson, KeyId, Secret, ingress.Headers, DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+        // 受信任应用身份契约（review C3）：ingress 转发声明签名所证明的身份（AccessKeyId），
+        // 与 C1 的绑定恰好闭合；B 站自己的端点不带这个 chorus 头。
+        Assert.Equal(KeyId, ingress.Headers[BilibiliOpenLiveClient.ChorusAppIdHeader]);
         // app_start 请求本身也带签名头。
         var appStart = http.Requests.Single(r => r.Path.EndsWith("app_start"));
         Assert.Contains("x-bili-accesskeyid", ingress.Headers.Keys.Select(k => k.ToLowerInvariant()));
         Assert.True(appStart.Headers.ContainsKey(BilibiliSigner.AuthorizationHeader));
+        Assert.False(appStart.Headers.ContainsKey(BilibiliOpenLiveClient.ChorusAppIdHeader));
         Assert.Equal(0, Volatile.Read(ref client.PostFailures));
     }
 

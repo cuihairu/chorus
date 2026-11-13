@@ -64,6 +64,8 @@ B 站 open-live wss ──▶ BilibiliOpenLiveClient（app_start/认证/心跳/�
 - `BilibiliOpenLiveClient.cs`：连接状态机。断线按指数退避重连（默认 1s→2s→…→上限 30s；
   已通过鉴权的会话断开后从最小退避重连），**重连时重取 wss_link**（app_start 可重入）；
   传输缝（`HttpMessageInvoker` / ws 连接）可注入，仓内有离线金测覆盖。
+- 桥的 ingress 转发携带 `X-Chorus-App-Id` 头，声明 x-bili-* 签名所证明的身份（AccessKeyId）——
+  共享面据此把头与签名绑定（review C3）；B 站自己的端点不带该 chorus 头。
 - `BilibiliPlatformEventMapper.cs`：事件归一化（弹幕/礼物/进场/生命周期，P1+P2）；会话绑定走配置（单绑定；多房间属控制面 todo §14）。
 - `BilibiliIngressBridgeHostedService.cs`：凭据齐备时随宿主启动桥（Server/Gateway 都注册）。
 - 不硬编码绕过平台风控：不模拟网页登录、不伪造设备指纹、不做并发多连接压测。

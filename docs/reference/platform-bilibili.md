@@ -66,6 +66,8 @@ B 站 open-live wss ──▶ BilibiliOpenLiveClient（app_start/认证/心跳/�
 - `BilibiliOpenLiveClient.cs`: connection state machine. Reconnect with exponential backoff on disconnect (default 1s→2s→…→30s cap;
   a session that has passed authentication reconnects from the minimum backoff after disconnecting), **re-fetch the wss_link on reconnect** (app_start is re-entrant);
   the transport seams (`HttpMessageInvoker` / ws connect) are injectable, covered by offline golden tests in the repo.
+- The bridge's ingress posts carry the `X-Chorus-App-Id` header stating the AccessKeyId — the identity the x-bili-* signature
+  proves — so the shared face binds the header to the signature (review C3); B站's own endpoints never see this chorus-side header.
 - `BilibiliPlatformEventMapper.cs`: event normalization (danmaku/gift/enter/lifecycle, P1+P2); session binding goes through configuration (single binding; multiple rooms belong to control-plane todo §14).
 - `BilibiliIngressBridgeHostedService.cs`: starts the bridge with the host when the credentials are complete (registered in both Server/Gateway).
 - No hard-coded bypassing of platform risk control: no web login simulation, no device fingerprint forgery, no concurrent multi-connection load testing.
