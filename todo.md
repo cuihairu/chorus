@@ -137,7 +137,7 @@
 - [ ] **FIX-ENV-05 / P2：抖音生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。
 - [ ] **FIX-ENV-06 / P2：快手生产适配器准入。** 依赖：无；环境：获授权的应用、凭据、官方协议版本和脱敏样本。
 
-- [ ] **FIX-ENV-07 / P2：Linux 实机安装与升级验收。** 依赖：无；环境：Linux 目标节点。
+- [x] **FIX-ENV-07 / P2：Linux 实机安装与升级验收。** 依赖：无；环境：Linux 目标节点。——**已验收 commit `fafedd8`（2026-11-13，本机 Linux 节点实机执行）**：安装脚本 `deploy/linux/install-node-agent.sh` 以 root 真跑七项 [OK]（系统用户/组 nologin、状态目录 0700、NodeAgent 发布 /opt 0750/0640 root:chorus-agent、unit 安装+`systemd-analyze verify`、env 文件 0640、daemon-reload）；部署材料（ControlServer/DataServer/SchemaTool/BootstrapTool linux-x64 发布 + PG 专用角色 peer auth + SchemaTool 迁移 52 表/10 schema 全 chorus-agent 属主）；BootstrapTool 对最终 seed 路径铸签 trust 材料（offline root.pfx 不落节点）；`systemctl enable --now` → **active**，agent 以 chorus-agent 身份在 unit 加固集下运行，双 slot（control/data seed）启动、对双 seed 报 Ready、真实 TLS gRPC 流量 + 7500/7501 监听、遥测入 ops.machine_sample/process_sample/disk_sample。**升级验收**：重跑安装脚本幂等复过 + seeds 重发布 + `systemctl restart` → 新 incarnation 续报遥测、对既有库 VerifyAsync 幂等过。证据全文见 docs/architecture/redesign-m0-evidence.md「Linux 实机安装与升级（systemd）」行；journal 存档 /home/cui/env07_install_journal.log、/home/cui/env07_upgrade_journal.log。诚实边界：单台开发/KVM 节点非专属干净目标机；升级为同位重装+重启（无版本偏斜/数据迁移路径）；仅 Linux（ENV-04/08 Windows 侧不受影响）；验收后全 teardown（服务/用户组/库/artifacts 零残留）。
 - [ ] **FIX-ENV-08 / P2：Windows 实机安装与升级验收。** 依赖：FIX-ENV-04；环境：Windows 目标节点。
 
 ### 22.9 平台事件到房间的输入闭环（P0/P1）
