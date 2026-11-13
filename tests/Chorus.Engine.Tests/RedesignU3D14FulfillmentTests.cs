@@ -8,6 +8,7 @@ using Chorus.ControlServer;
 using Chorus.Data;
 using Chorus.DataServer;
 using Chorus.Platform;
+using Chorus.PlatformGateway;
 using Chorus.Rpc;
 using Google.Protobuf;
 using Npgsql;
@@ -329,7 +330,10 @@ public sealed class RedesignU3D14FulfillmentTests
                 ["CHORUS_DATA_PORT"] = environment.DataPort.ToString(CultureInfo.InvariantCulture),
                 // The fulfillment mount (FIX-U3D-14): the kuaishou adapter speaks the
                 // documented contract at the stub; the simulator stays off this gateway.
+                // The adapter declares ProductionReady=false (contract under joint
+                // debugging), so this development fleet names the admission opt-in.
                 ["CHORUS_PLATFORM_ADAPTER"] = "kuaishou",
+                [GatewayTaskAdapterAssembly.AllowNotProductionReadyVariable] = "true",
                 ["CHORUS_PLATFORM_ENDPOINT"] = platformUrl,
                 ["CHORUS_PLATFORM_APP_ID"] = "app-9",
                 ["CHORUS_PLATFORM_ACCESS_TOKEN"] = "tok-9",

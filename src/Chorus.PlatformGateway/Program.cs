@@ -63,23 +63,13 @@ Grpc.Net.Client.GrpcChannel DataChannel() => ProcessGrpcClientFactory.Create(
 // platform fulfillment adapters speak the documented contracts and stay NotProductionReady
 // until their real endpoints are verified (the admission matrix's needs-permission rows).
 // Their credentials are this server process's own environment — the secrets boundary keeps
-// app material out of every client surface.
+// app material out of every client surface. Production admission (review 2026-11-13 M2):
+// the ProductionReady declaration now refuses the mount at assembly unless the deployment
+// names the opt-in variable — filling credential variables is not readiness.
 var adapterName = Environment.GetEnvironmentVariable("CHORUS_PLATFORM_ADAPTER") ?? "simulator";
-IPlatformTaskAdapter taskAdapter = adapterName switch
-{
-    "simulator" => new DevelopmentPlatformTaskAdapter(
-        new Uri(Required("CHORUS_DEV_PLATFORM_ENDPOINT"))),
-    "kuaishou" => new KuaishouFulfillmentAdapter(
-        new Uri(Required("CHORUS_PLATFORM_ENDPOINT")),
-        Required("CHORUS_PLATFORM_APP_ID"),
-        Required("CHORUS_PLATFORM_ACCESS_TOKEN"),
-        Required("CHORUS_PLATFORM_APP_SECRET")),
-    "douyin" => new DouyinFulfillmentAdapter(
-        new Uri(Required("CHORUS_PLATFORM_ENDPOINT")),
-        Required("CHORUS_PLATFORM_APP_ID")),
-    _ => throw new InvalidOperationException(
-        $"CHORUS_PLATFORM_ADAPTER names no known platform adapter: {adapterName}"),
-};
+IPlatformTaskAdapter taskAdapter = GatewayTaskAdapterAssembly.Select(adapterName, Required,
+    allowNotProductionReady: Environment.GetEnvironmentVariable(
+        GatewayTaskAdapterAssembly.AllowNotProductionReadyVariable) == "true");
 
 builder.Services.AddSingleton(trustedCertificates);
 // The stop-delivery record (FIX-END-05/07): the gRPC service is created per request, so
