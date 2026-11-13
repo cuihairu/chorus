@@ -48,6 +48,35 @@ public sealed class PlatformEventVerifierRouterTests
         Assert.True(router.Verify(PlatformNames.Douyin, "{}", Headers));
     }
 
+    // Duplicate named registrations are refused at construction (review M6): last-wins
+    // dictionary writes would silently replace one implementation — possibly the real
+    // verifying one — with whichever registered later. Case differences collide too.
+    [Fact]
+    public void ADuplicateNamedVerifierRegistration_IsAConstructionError()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => new PlatformEventVerifierRouter(
+            new IPlatformNamedEventVerifier[]
+            {
+                new RejectAllVerifier(PlatformNames.Douyin, result: true),
+                new RejectAllVerifier(PlatformNames.Douyin, result: false),
+            }));
+
+        Assert.Contains("'douyin'", error.Message);
+        Assert.Contains("RejectAllVerifier", error.Message);
+        Assert.Contains("duplicate named verifier registrations", error.Message);
+    }
+
+    [Fact]
+    public void ADuplicateNamedVerifierRegistration_IsCaseInsensitive()
+    {
+        Assert.Throws<InvalidOperationException>(() => new PlatformEventVerifierRouter(
+            new IPlatformNamedEventVerifier[]
+            {
+                new RejectAllVerifier("douyin", result: true),
+                new RejectAllVerifier("Douyin", result: false),
+            }));
+    }
+
     [Fact]
     public void Verify_PlatformVerifierRejects_Fails()
     {

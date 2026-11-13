@@ -24,7 +24,16 @@ public sealed class PlatformEventVerifierRouter : IPlatformEventVerifier, IPlatf
         var named = new Dictionary<string, IPlatformEventVerifier>(StringComparer.OrdinalIgnoreCase);
         foreach (var verifier in namedVerifiers)
         {
-            named[verifier.PlatformName] = verifier;
+            // A duplicate named registration is a wiring error, not an ordering choice
+            // (review 2026-11-13 M6): last-wins would silently replace one implementation
+            // — possibly the verifying one — with whichever registered later.
+            if (!named.TryAdd(verifier.PlatformName, verifier))
+            {
+                throw new InvalidOperationException(
+                    $"Platform '{verifier.PlatformName}' has more than one registered verifier " +
+                    $"('{named[verifier.PlatformName].GetType().Name}' and '{verifier.GetType().Name}'): " +
+                    "duplicate named verifier registrations are refused; remove one of the two registrations.");
+            }
         }
 
         _named = named;
