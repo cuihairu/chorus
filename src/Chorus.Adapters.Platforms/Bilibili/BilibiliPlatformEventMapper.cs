@@ -72,11 +72,12 @@ public sealed class BilibiliPlatformEventMapper : IPlatformEventMapper
                 ? dataEl
                 : default;
 
+            // msg_id 是全部下游来源去重的应答键：缺失即拒绝映射（端点 400 unmapped_event），
+            // 不合成随机占位——随机 id 会让同一报文的每次重试都绕过去重。
             var eventId = TryGetString(root, "msg_id");
             if (string.IsNullOrWhiteSpace(eventId))
             {
-                // 缺 msg_id 时合成 guid，去重不会重复（与 DouyinPlatformEventMapper 同约定）。
-                eventId = $"{PlatformNames.Bilibili}:{Guid.NewGuid():N}";
+                return null;
             }
 
             var userId = UserId(data);

@@ -43,15 +43,29 @@ public sealed class BilibiliPlatformMapperTests
     }
 
     [Fact]
-    public void DanmuMsg_MissingMsgId_SynthesizesEventId()
+    public void DanmuMsg_MissingMsgId_IsRefused()
     {
         var mapper = new BilibiliPlatformEventMapper(sessionId: "s-bili");
-        const string json = """{"cmd":"DANMU_MSG","data":{"open_id":"u","msg":"hi"}}""";
 
-        var ev = mapper.TryMap(PlatformNames.Bilibili, json, 0);
+        // 无 msg_id 即拒绝映射（端点答 400 unmapped_event），不再随机兜底：
+        // 随机 id 会让同一报文的每次重试都绕过所有下游来源去重。
+        Assert.Null(mapper.TryMap(PlatformNames.Bilibili, """{"cmd":"DANMU_MSG","data":{"open_id":"u","msg":"hi"}}""", 0));
+        Assert.Null(mapper.TryMap(PlatformNames.Bilibili, """{"cmd":"DANMU_MSG","msg_id":"","data":{"open_id":"u","msg":"hi"}}""", 0));
+    }
 
-        Assert.NotNull(ev);
-        Assert.StartsWith("bilibili:", ev.EventId);
+    [Fact]
+    public void DanmuMsg_SamePayloadRetry_KeepsSourceIdentity()
+    {
+        var mapper = new BilibiliPlatformEventMapper(sessionId: "s-bili");
+        const string json = """{"cmd":"DANMU_MSG","msg_id":"m-retry","data":{"open_id":"u","msg":"hi"}}""";
+
+        // 相同报文重试必须保持来源标识不变，下游去重才能应答重放。
+        var first = mapper.TryMap(PlatformNames.Bilibili, json, 0);
+        var retry = mapper.TryMap(PlatformNames.Bilibili, json, 100);
+
+        Assert.NotNull(first);
+        Assert.NotNull(retry);
+        Assert.Equal(first!.EventId, retry!.EventId);
     }
 
     [Fact]
