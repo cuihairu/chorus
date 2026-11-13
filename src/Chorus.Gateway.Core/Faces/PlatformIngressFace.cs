@@ -95,10 +95,19 @@ public sealed class PlatformIngressFace
 
             ev = _factionRule.Apply(ev);
 
-            if (!_dedup.TryReserve(ev.Platform, ev.EventId, out var lease))
+            if (!_dedup.TryReserve(ev.Platform, ev.EventId, out var lease, out var blockedBy))
             {
                 _faces.IngressDuplicates();
-                return Results.Ok(new { ok = true, duplicated = true, sessionId = ev.SessionId, eventId = ev.EventId });
+                // The two refusals are not the same answer (review 2026-11-13 M4):
+                // Delivered is a committed duplicate and earns the success confirmation;
+                // Reserved is only another request still in flight — nothing has been
+                // delivered, so a success here would be unsupported and could stop the
+                // upstream retry while the event is lost. Conflict is the retryable
+                // answer; the in-flight attempt's own outcome decides the rest.
+                return blockedBy == DedupEntryState.Delivered
+                    ? Results.Ok(new { ok = true, duplicated = true, sessionId = ev.SessionId, eventId = ev.EventId })
+                    : Results.Json(new { error = "in_flight", platform = ev.Platform, eventId = ev.EventId },
+                        statusCode: StatusCodes.Status409Conflict);
             }
 
             _matches?.Track(ev);

@@ -72,6 +72,29 @@ public sealed class EventDeduplicatorTests
         Assert.False(dedup.TryReserve(PlatformNames.Douyin, "dy-1", out _));
     }
 
+    [Fact]
+    public void RefusedClaim_ReportsWhetherTheBlockerIsInFlightOrCommitted()
+    {
+        // review 2026-11-13 M4: Reserved（处理中）与 Delivered（已提交）不能给上游
+        // 同一个成功去重确认——拒绝时报告站桩条目的状态，入口据此分流答案。
+        var dedup = Create();
+
+        Assert.True(dedup.TryReserve(PlatformNames.Douyin, "dy-1", out var lease, out var freshState));
+        Assert.Equal(DedupEntryState.Reserved, freshState);
+
+        Assert.False(dedup.TryReserve(PlatformNames.Douyin, "dy-1", out _, out var inFlight));
+        Assert.Equal(DedupEntryState.Reserved, inFlight);
+
+        dedup.Commit(lease);
+        Assert.False(dedup.TryReserve(PlatformNames.Douyin, "dy-1", out _, out var committed));
+        Assert.Equal(DedupEntryState.Delivered, committed);
+
+        dedup.Rollback(lease);
+        // 回滚只清 Reserved：Delivered 的站桩条目不受影响，仍报告 Delivered。
+        Assert.False(dedup.TryReserve(PlatformNames.Douyin, "dy-1", out _, out var stillCommitted));
+        Assert.Equal(DedupEntryState.Delivered, stillCommitted);
+    }
+
     /// <summary>
     /// 四态投递 Failed acceptance: a failed publish (Rollback) must NOT keep
     /// the id remembered - the platform's retry arrives as a fresh delivery.

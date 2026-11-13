@@ -234,6 +234,49 @@ public sealed class PlatformIngressFaceTests
     }
 
     [Fact]
+    public async Task AnInFlightDuplicate_GetsARetryableConflictNotASuccessConfirmation()
+    {
+        // review 2026-11-13 M4: A 占位（tell 仍在途、lease 保持 Reserved），B 的重试
+        // 到达——B 拿到可重试的 409，绝不能拿到无投递事实支撑的 200 duplicated。
+        // A 落地（Commit）之后来的才是真重复，回 200 duplicated。
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var actor = new GatedActorRef("s-face", gate);
+        var face = CreateFace(actor);
+
+        var first = SendAsync(face);
+        var (second, secondBody) = await SendAsync(face);
+
+        Assert.Equal(409, second);
+        Assert.Contains("in_flight", secondBody);
+        Assert.Equal(1, actor.Tells);
+
+        gate.SetResult();
+        var (firstStatus, _) = await first;
+        Assert.Equal(200, firstStatus);
+
+        var (third, thirdBody) = await SendAsync(face);
+        Assert.Equal(200, third);
+        Assert.Contains("\"duplicated\":true", thirdBody);
+    }
+
+    /// <summary>Tell holds behind a gate: reproduces a request still in flight.</summary>
+    private sealed class GatedActorRef(string sessionId, TaskCompletionSource gate) : ISessionActorRef
+    {
+        public string SessionId { get; } = sessionId;
+
+        public long? TickId => null;
+
+        public int Tells { get; private set; }
+
+        public async ValueTask<SessionTellOutcome> TellAsync(AudienceEvent e, CancellationToken cancellationToken)
+        {
+            Tells++;
+            await gate.Task.WaitAsync(cancellationToken);
+            return SessionTellOutcome.Accepted;
+        }
+    }
+
+    [Fact]
     public async Task UnmappedEvent_Returns400_NeverTells()
     {
         var actor = new ScriptedActorRef("s-face", tickId: null, Array.Empty<SessionTellOutcome>());

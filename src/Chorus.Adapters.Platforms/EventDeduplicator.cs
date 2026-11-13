@@ -60,9 +60,20 @@ public sealed class EventDeduplicator
         _sweepIntervalMs = sweepIntervalMs;
     }
 
-    public bool TryReserve(string platform, string eventId, out DedupLease lease)
+    public bool TryReserve(string platform, string eventId, out DedupLease lease) =>
+        TryReserve(platform, eventId, out lease, out _);
+
+    /// <summary>
+    /// The same claim with the refusal's meaning reported (review 2026-11-13 M4):
+    /// <paramref name="blockedBy"/> carries the standing entry's state —
+    /// <see cref="DedupEntryState.Delivered"/> is a committed duplicate, while
+    /// <see cref="DedupEntryState.Reserved"/> is only a request still in flight.
+    /// The two must not answer the same upstream confirmation.
+    /// </summary>
+    public bool TryReserve(string platform, string eventId, out DedupLease lease, out DedupEntryState blockedBy)
     {
         lease = default;
+        blockedBy = DedupEntryState.Reserved;
         if (string.IsNullOrWhiteSpace(platform) || string.IsNullOrWhiteSpace(eventId))
         {
             // Same contract as the old TryMark: unverifiable ids pass through unmarked.
@@ -84,13 +95,20 @@ public sealed class EventDeduplicator
 
         // Key exists: accept only if the standing entry has already expired,
         // replaced atomically so a concurrent reserver still sees exactly one winner.
-        if (_entries.TryGetValue(key, out var existing) && existing.ExpiresAtMs <= now
-            && _entries.TryUpdate(key, fresh, existing))
+        if (_entries.TryGetValue(key, out var existing))
         {
-            lease = new DedupLease(key, token);
-            return true;
+            if (existing.ExpiresAtMs <= now && _entries.TryUpdate(key, fresh, existing))
+            {
+                lease = new DedupLease(key, token);
+                return true;
+            }
+            blockedBy = existing.State;
+            return false;
         }
 
+        // The standing entry vanished (a concurrent rollback) between the failed claim
+        // and this peek: the refusal stands — the platform retry re-posts and wins a
+        // clean claim next round — but nothing is known about a blocker.
         return false;
     }
 
