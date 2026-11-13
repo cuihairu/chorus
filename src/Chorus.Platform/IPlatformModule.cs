@@ -27,9 +27,17 @@ public enum PlatformModuleSurface
 /// </summary>
 /// <param name="Surfaces">Surfaces the module mounts on the gateway.</param>
 /// <param name="EventKinds">Event kinds the mapper produces; empty for non-ingest modules.</param>
+/// <param name="ProductionReady">
+/// Whether the module's wire protocol is verified against the real platform. A module
+/// still on a placeholder contract (unconfirmed signature scheme or schema) declares
+/// false: the production host refuses to mount it at assembly time, no matter how
+/// complete its credential configuration is. This is the admission declaration —
+/// configuration completeness never stands in for protocol verification.
+/// </param>
 public sealed record PlatformModuleCapabilities(
     PlatformModuleSurface Surfaces,
-    IReadOnlySet<AudienceEventKind> EventKinds)
+    IReadOnlySet<AudienceEventKind> EventKinds,
+    bool ProductionReady = true)
 {
     public static PlatformModuleCapabilities EventIngest(params AudienceEventKind[] kinds)
         => new(PlatformModuleSurface.EventIngest, kinds.ToHashSet());

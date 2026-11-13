@@ -19,7 +19,11 @@ public sealed class KuaishouPlatformModule : IPlatformModule
 
     public PlatformModuleCapabilities Capabilities { get; } = new(
         PlatformModuleSurface.EventIngest,
-        PlatformCapabilities.Kuaishou.SupportedEventKinds.ToHashSet());
+        PlatformCapabilities.Kuaishou.SupportedEventKinds.ToHashSet(),
+        // Token verification and message decryption follow the documented push scheme, but
+        // the live event schema has not survived joint debugging against real callbacks.
+        // Not production ready until that round lands.
+        ProductionReady: false);
 
     public void ValidateConfiguration(IConfiguration configuration) => PlatformModuleConfiguration.RequireKeys(configuration, Name,
         "Ingress:Kuaishou:VerifyToken",

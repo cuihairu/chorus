@@ -232,7 +232,8 @@ counters are exposed via `GET /faces`.
 | Key | Default | Description |
 |---|---|---|
 | `Ingress:AllowAll` | `false` | **Development switch**: when `true`, registers an unsigned signature verification fallback (platform callbacks without a real verifier are allowed through). When enabled, the startup log prints an ERROR warning; it is only recommended to explicitly enable it in appsettings.Development.json, and production configuration does not include it |
-| `Ingress:DedupTtlSeconds` | `600` | Event dedup TTL (platformEventId) |
+| `Ingress:AllowNotProductionReady` | `false` | Development switch: when `true`, platform modules declaring `ProductionReady: false` (wire protocols still under joint debugging) may mount. Without it the module assembly refuses them at startup no matter how complete their credential keys are. Explicit opt-in only - it is never implied by any environment |
+ `600` | Event dedup TTL (platformEventId) |
 | `Ingress:FactionRules:CommentKeywords` | empty | Danmaku keywords → faction mapping |
 | `Ingress:FactionRules:GiftIds` | empty | Gift ID → faction mapping |
 | `Ingress:Douyin:AppSecret` | none | Douyin callback signature verification secret; when missing, `/ingress/douyin` rejects everything (fail-closed) |

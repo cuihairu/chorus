@@ -19,7 +19,11 @@ public sealed class DouyinPlatformModule : IPlatformModule
 
     public PlatformModuleCapabilities Capabilities { get; } = new(
         PlatformModuleSurface.EventIngest,
-        PlatformCapabilities.Douyin.SupportedEventKinds.ToHashSet());
+        PlatformCapabilities.Douyin.SupportedEventKinds.ToHashSet(),
+        // The envelope below is the placeholder contract agreed for integration testing,
+        // not the official Douyin schema (see DouyinPlatformEventMapper's STATUS note):
+        // signature header and field names await joint debugging. Not production ready.
+        ProductionReady: false);
 
     public void ValidateConfiguration(IConfiguration configuration) => PlatformModuleConfiguration.RequireKeys(configuration, Name,
         "Ingress:Douyin:AppSecret");

@@ -232,7 +232,8 @@ maxResyncReplayTicks = 128
 | 键 | 默认值 | 描述 |
 |---|---|---|
 | `Ingress:AllowAll` | `false` | **开发开关**：`true` 时注册无签名的验签 fallback（没有真实验证器的平台回调也放行）。开启时启动日志打印 ERROR 警告；只建议在 appsettings.Development.json 里显式开启，生产配置不包含它 |
-| `Ingress:DedupTtlSeconds` | `600` | 事件去重 TTL（platformEventId） |
+| `Ingress:AllowNotProductionReady` | `false` | 开发开关：`true` 时允许挂载声明 `ProductionReady: false` 的平台模块（线上协议仍在联调）。缺省时模块装配在启动即拒绝，凭据再齐全也不放行。仅显式开启——任何环境都不会隐式放大它 |
+ `600` | 事件去重 TTL（platformEventId） |
 | `Ingress:FactionRules:CommentKeywords` | 空 | 弹幕关键词 → 阵营映射 |
 | `Ingress:FactionRules:GiftIds` | 空 | 礼物 ID → 阵营映射 |
 | `Ingress:Douyin:AppSecret` | 无 | 抖音回调验签密钥；缺失时 `/ingress/douyin` 拒绝一切（fail-closed） |

@@ -13,7 +13,10 @@ namespace Chorus.PlatformGateway;
 /// contributes zero service registrations and zero credential reads; an enabled module
 /// with missing credentials refuses to start naming the keys; an unknown name in the
 /// list is a configuration error, not a silent no-op. All enabled modules validate
-/// before any registers, so a refused startup leaves no partial wiring behind.
+/// before any registers, so a refused startup leaves no partial wiring behind. The
+/// same loop runs production admission (2026-11-13 review M2): a module whose protocol
+/// declares <c>ProductionReady: false</c> is refused from a production host — complete
+/// credential keys are configuration, not protocol verification.
 /// </summary>
 public static class PlatformModuleAssembly
 {
@@ -66,16 +69,36 @@ public static class PlatformModuleAssembly
     /// verifiers, and the capability registry seeded from the enabled list. Returns the
     /// enabled modules so the host can log what it mounted.
     /// </summary>
+    /// <param name="allowNotProductionReadyModules">
+    /// The development opt-in (production admission, review 2026-11-13 M2): when false —
+    /// every production host — a module declaring <c>ProductionReady: false</c> refuses to
+    /// mount even with its credential keys complete; a module whose protocol is still a
+    /// placeholder does not reach production merely by existing in configuration. The
+    /// host passes <c>Ingress:AllowNotProductionReady</c> through, so only a deployment
+    /// that names the switch mounts an unverified protocol.
+    /// </param>
     public static IReadOnlyList<IPlatformModule> AddPlatformModules(
-        IServiceCollection services, IConfiguration configuration)
+        IServiceCollection services, IConfiguration configuration,
+        bool allowNotProductionReadyModules = false)
     {
         var enabled = SelectEnabledModules(configuration);
 
         // Validate every enabled module before any registers: startup is atomic — the
-        // first incomplete credential set refuses the whole start instead of leaving a
-        // half-mounted fleet behind.
+        // first refusing module stops the whole start instead of leaving a half-mounted
+        // fleet behind.
         foreach (var module in enabled)
         {
+            // Production admission runs ahead of credential validation (review 2026-11-13
+            // M2): a placeholder protocol is refused no matter how complete its keys are —
+            // "fix the missing key" must not be the advice that walks a placeholder into
+            // production. Development rides past via the explicit opt-in.
+            if (!module.Capabilities.ProductionReady && !allowNotProductionReadyModules)
+            {
+                throw new InvalidOperationException(
+                    $"Platform '{module.Name}' is not production ready: its wire protocol is " +
+                    "still under joint debugging and must not serve production traffic. " +
+                    "Set 'Ingress:AllowNotProductionReady' to true to mount it for development.");
+            }
             module.ValidateConfiguration(configuration);
         }
 

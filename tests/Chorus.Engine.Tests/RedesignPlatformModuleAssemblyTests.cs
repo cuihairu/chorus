@@ -46,7 +46,8 @@ public sealed class RedesignPlatformModuleAssemblyTests
             ["Ingress:Douyin:AppSecret"] = "secret-a",
         }));
 
-        var enabled = PlatformModuleAssembly.AddPlatformModules(services, configuration);
+        var enabled = PlatformModuleAssembly.AddPlatformModules(services, configuration,
+            allowNotProductionReadyModules: true);
 
         Assert.Equal(["douyin"], enabled.Select(module => module.Name));
         using var provider = services.BuildServiceProvider();
@@ -75,20 +76,98 @@ public sealed class RedesignPlatformModuleAssemblyTests
         var services = new ServiceCollection();
         var configuration = Configuration(new Dictionary<string, string?>
         {
-            ["Ingress:Platforms:0"] = "kuaishou",
+            // Admission-ready platform (bilibili) so the credential check is what fires:
+            // placeholder platforms are refused before credential validation even runs.
+            ["Ingress:Platforms:0"] = "bilibili",
         });
 
         var error = Assert.Throws<InvalidOperationException>(
             () => PlatformModuleAssembly.AddPlatformModules(services, configuration));
 
-        Assert.Contains("Ingress:Kuaishou:VerifyToken", error.Message);
-        Assert.Contains("Ingress:Kuaishou:MsgEncryptKey", error.Message);
+        Assert.Contains("Ingress:Bilibili:AccessKeyId", error.Message);
+        Assert.Contains("Ingress:Bilibili:SessionId", error.Message);
         // Validation runs before any registration: the refused start leaves nothing mounted.
         Assert.DoesNotContain(services, descriptor =>
             descriptor.ServiceType == typeof(IPlatformEventMapper)
             || descriptor.ServiceType == typeof(IPlatformNamedEventVerifier)
             || descriptor.ServiceType == typeof(IPlatformEventVerifier)
             || descriptor.ServiceType == typeof(PlatformCapabilityRegistry));
+    }
+
+    [Fact]
+    public void APlaceholderProtocolPlatformIsRefusedFromTheProductionAssembly()
+    {
+        var services = new ServiceCollection();
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["Ingress:Platforms:0"] = "douyin",
+            ["Ingress:Douyin:AppSecret"] = "secret-a",
+        });
+
+        // 生产准入（review 2026-11-13 M2）：凭据齐全不等于协议可生产使用——抖音的信封仍是
+        // 联调占位契约，生产宿主在装配阶段拒绝挂载，且拒绝发生在任何注册之前。
+        var error = Assert.Throws<InvalidOperationException>(
+            () => PlatformModuleAssembly.AddPlatformModules(services, configuration));
+
+        Assert.Contains("douyin", error.Message);
+        Assert.Contains("not production ready", error.Message);
+        Assert.DoesNotContain(services, descriptor =>
+            descriptor.ServiceType == typeof(IPlatformEventMapper)
+            || descriptor.ServiceType == typeof(IPlatformNamedEventVerifier)
+            || descriptor.ServiceType == typeof(IPlatformEventVerifier)
+            || descriptor.ServiceType == typeof(PlatformCapabilityRegistry));
+    }
+
+    [Fact]
+    public void TheDevelopmentOptInMountsThePlaceholderPlatform()
+    {
+        var services = new ServiceCollection();
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["Ingress:Platforms:0"] = "douyin",
+            ["Ingress:Douyin:AppSecret"] = "secret-a",
+        });
+
+        var enabled = PlatformModuleAssembly.AddPlatformModules(services, configuration,
+            allowNotProductionReadyModules: true);
+
+        Assert.Equal(["douyin"], enabled.Select(module => module.Name));
+        using var provider = services.BuildServiceProvider();
+        Assert.NotNull(provider.GetRequiredService<DouyinPlatformEventVerifier>());
+    }
+
+    [Fact]
+    public void TheVerifiedBilibiliProtocolMountsWithoutTheDevelopmentOptIn()
+    {
+        var services = new ServiceCollection();
+        var configuration = Configuration(new Dictionary<string, string?>
+        {
+            ["Ingress:Platforms:0"] = "bilibili",
+            ["Ingress:Bilibili:AccessKeyId"] = "key-id",
+            ["Ingress:Bilibili:AccessKeySecret"] = "key-secret",
+            ["Ingress:Bilibili:SessionId"] = "session-1",
+        });
+
+        // 已按 blivedm 模型原文核实的 B 站协议不需要开发开关：生产装配照常挂载。
+        var enabled = PlatformModuleAssembly.AddPlatformModules(services, configuration);
+
+        Assert.Equal(["bilibili"], enabled.Select(module => module.Name));
+        using var provider = services.BuildServiceProvider();
+        Assert.NotNull(provider.GetRequiredService<BilibiliPlatformEventVerifier>());
+    }
+
+    [Fact]
+    public void ThePlaceholderDeclarationsNameDouyinAndKuaishouOnly()
+    {
+        // 准入声明按模块对照：占位协议 = 抖音（占位信封）与快手（直播 schema 未联调）；
+        // B 站（blivedm 原文核实）与小程序（真实 code2Session）不得声明 false。
+        var declarations = PlatformModuleAssembly.AvailableModules()
+            .ToDictionary(module => module.Name, module => module.Capabilities.ProductionReady);
+
+        Assert.False(declarations["douyin"]);
+        Assert.False(declarations["kuaishou"]);
+        Assert.True(declarations["bilibili"]);
+        Assert.True(declarations["minigame"]);
     }
 
     [Fact]
@@ -191,7 +270,8 @@ public sealed class RedesignPlatformModuleAssemblyTests
             ["Ingress:AllowAll"] = "true",
         });
 
-        PlatformModuleAssembly.AddPlatformModules(services, configuration);
+        PlatformModuleAssembly.AddPlatformModules(services, configuration,
+            allowNotProductionReadyModules: true);
 
         using var provider = services.BuildServiceProvider();
         Assert.NotNull(provider.GetRequiredService<AllowAllPlatformEventVerifier>());

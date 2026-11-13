@@ -155,8 +155,13 @@ builder.Services.AddGrpc();
 // Platform modules (2026-10-30 pluginization): deployments face different platforms, so the
 // gateway mounts only what Ingress:Platforms lists — an enabled module with missing
 // credentials refuses to start naming the key, and an unlisted platform contributes zero
-// registrations and zero credential reads.
-var enabledPlatforms = PlatformModuleAssembly.AddPlatformModules(builder.Services, builder.Configuration);
+// registrations and zero credential reads. Production admission (review 2026-11-13 M2):
+// modules that declare ProductionReady: false mount only when the deployment explicitly
+// opts in — the key, not the environment, is the switch (an ambient Development setting
+// must not silently widen what a production configuration can mount).
+var enabledPlatforms = PlatformModuleAssembly.AddPlatformModules(builder.Services, builder.Configuration,
+    allowNotProductionReadyModules: builder.Configuration.GetValue(
+        "Ingress:AllowNotProductionReady", false));
 if (ingressPort > 0)
 {
     Func<string, Grpc.Net.Client.GrpcChannel> gameChannelFactory = endpoint =>

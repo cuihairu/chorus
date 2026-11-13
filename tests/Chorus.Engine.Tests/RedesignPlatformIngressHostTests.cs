@@ -64,11 +64,13 @@ public sealed class RedesignPlatformIngressHostTests
 
         // Bilibili: x-bili-* headers over the DANMU_MSG payload; the session is the
         // configured open-live binding, so the canonical key is the configured session.
+        // The app header must name the signed credential (the AccessKeyId) — the ingress
+        // binds it to the verifier's trusted identity and refuses a mismatch (review C1).
         var bilibiliBody = """{"cmd":"DANMU_MSG","msg_id":"parity-bili-1","data":{"open_id":"ou-1","uname":"viewer","msg":"666"}}""";
         var bilibiliHeaders = BilibiliSigner.BuildHeaders(bilibiliBody, BilibiliKey,
             "parity-bili-secret", DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             Guid.NewGuid().ToString("N"));
-        var bilibili = await PostAsync(http, ingressPort, "bilibili", "app-1", bilibiliBody,
+        var bilibili = await PostAsync(http, ingressPort, "bilibili", BilibiliKey, bilibiliBody,
             bilibiliHeaders.Select(pair => (pair.Key, pair.Value)).ToArray());
         AssertReceiptWaitsForAttribution(bilibili);
 
@@ -263,6 +265,10 @@ public sealed class RedesignPlatformIngressHostTests
     {
         var environment = new Dictionary<string, string>
         {
+            // The rig is a development fleet: it mounts placeholder-protocol platforms
+            // (douyin/kuaishou) that a production host refuses at module assembly. The
+            // named switch is the admission opt-in; no ambient environment widening.
+            ["Ingress__AllowNotProductionReady"] = "true",
             ["CHORUS_DATA_PORT"] = dataPort.ToString(CultureInfo.InvariantCulture),
             ["CHORUS_DEV_PLATFORM_ENDPOINT"] = "http://127.0.0.1:9/",
             ["CHORUS_INGRESS_PORT"] = ingressPort.ToString(CultureInfo.InvariantCulture),
