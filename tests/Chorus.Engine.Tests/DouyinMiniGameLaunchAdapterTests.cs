@@ -159,6 +159,19 @@ public sealed class DouyinMiniGameLaunchAdapterTests
     }
 
     [Fact]
+    public async Task NonJsonResponse_IsResponseInvalid()
+    {
+        // The shared auth client owns the parse (review M7): a 2xx body that is not JSON
+        // surfaces as JsonException, which the launch policy maps to response-invalid.
+        var http = new DouyinLaunchHttp().Ok("not-json");
+        var adapter = new DouyinMiniGameLaunchAdapter(AppId, Secret, http, "http://test");
+
+        var ex = await Assert.ThrowsAsync<PlatformLaunchRejectedException>(
+            () => adapter.VerifyLaunchAsync(Request()));
+        Assert.Equal("platform-response-invalid", ex.ErrorCode);
+    }
+
+    [Fact]
     public async Task BlankCredential_IsMalformed()
     {
         var http = new DouyinLaunchHttp();

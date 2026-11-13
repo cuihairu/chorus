@@ -1,14 +1,18 @@
 using System.Text.Json;
+using Chorus.Adapters.Platforms;
 
 namespace Chorus.Platform;
 
 /// <summary>
 /// Douyin mini-game launch adapter calling the officially verified code2Session OpenAPI
-/// (docs/zh/reference/platform-douyin.md §2.2, verified 2026-10-14). The launch credential
-/// carries the client-side login code: a bare value is a tt.login <c>code</c>; a value
-/// prefixed with <c>anonymous:</c> is an <c>anonymous_code</c>. The canonical live session
-/// key is derived deterministically from the verified identity — one canonical live session
-/// per streamer per app — because no official live-room binding API is verified yet.
+/// (docs/zh/reference/platform-douyin.md §2.2, verified 2026-10-14) through the shared
+/// <see cref="DouyinMiniGameAuthClient"/> (review 2026-11-13 M7): one request/response
+/// implementation for the OpenAPI, with this adapter supplying only the launch policy on
+/// top — credential encoding, app binding, and the launch error categories. The launch
+/// credential carries the client-side login code: a bare value is a tt.login <c>code</c>;
+/// a value prefixed with <c>anonymous:</c> is an <c>anonymous_code</c>. The canonical live
+/// session key is derived deterministically from the verified identity — one canonical live
+/// session per streamer per app — because no official live-room binding API is verified yet.
 /// AppId/AppSecret are injected via configuration and never appear in errors or logs.
 /// </summary>
 public sealed class DouyinMiniGameLaunchAdapter : IPlatformLaunchAdapter
@@ -16,13 +20,8 @@ public sealed class DouyinMiniGameLaunchAdapter : IPlatformLaunchAdapter
     public const string PlatformName = "douyin";
     public const string AnonymousCredentialPrefix = "anonymous:";
 
-    public const string DefaultApiBaseUrl = "https://minigame.zijieapi.com";
-    private const string Code2SessionPath = "/mgplatform/api/apps/jscode2session";
-
     private readonly string _appId;
-    private readonly string _appSecret;
-    private readonly HttpMessageInvoker _http;
-    private readonly string _baseUrl;
+    private readonly DouyinMiniGameAuthClient _authClient;
     private readonly Func<DateTimeOffset> _clock;
 
     public DouyinMiniGameLaunchAdapter(string appId, string appSecret, HttpMessageInvoker http,
@@ -34,9 +33,7 @@ public sealed class DouyinMiniGameLaunchAdapter : IPlatformLaunchAdapter
             throw new InvalidOperationException(
                 "The douyin launch adapter requires an AppSecret; refusing to start an adapter that cannot verify.");
         _appId = appId;
-        _appSecret = appSecret;
-        _http = http;
-        _baseUrl = string.IsNullOrWhiteSpace(apiBaseUrl) ? DefaultApiBaseUrl : apiBaseUrl.TrimEnd('/');
+        _authClient = new DouyinMiniGameAuthClient(new DouyinMiniGameOptions(appId, appSecret, apiBaseUrl), http);
         _clock = clock ?? (static () => DateTimeOffset.UtcNow);
     }
 
@@ -79,20 +76,14 @@ public sealed class DouyinMiniGameLaunchAdapter : IPlatformLaunchAdapter
             code = request.LaunchCredential;
         }
 
-        var query = $"appid={Uri.EscapeDataString(_appId)}" +
-                    $"&secret={Uri.EscapeDataString(_appSecret)}";
-        if (code is not null) query += $"&code={Uri.EscapeDataString(code)}";
-        if (anonymousCode is not null) query += $"&anonymous_code={Uri.EscapeDataString(anonymousCode)}";
-
-        string json;
+        // The shared client owns the OpenAPI call: the request URI, the response parse,
+        // and the fail-closed error extraction happen once for every douyin code2Session
+        // consumer. Transport failures surface as HttpRequestException (non-2xx status or
+        // network fault) and a non-JSON body as JsonException — mapped below.
+        DouyinCode2SessionResult result;
         try
         {
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}{Code2SessionPath}?{query}");
-            using var response = await _http.SendAsync(httpRequest, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-                throw new PlatformLaunchRejectedException("platform-unreachable",
-                    $"code2session returned HTTP {(int)response.StatusCode}.");
-            json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            result = await _authClient.Code2SessionAsync(code, anonymousCode, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -103,45 +94,33 @@ public sealed class DouyinMiniGameLaunchAdapter : IPlatformLaunchAdapter
             throw new PlatformLaunchRejectedException("platform-unreachable",
                 "The douyin code2session endpoint could not be reached.");
         }
-
-        JsonElement root;
-        try
-        {
-            root = JsonDocument.Parse(json).RootElement;
-        }
         catch (JsonException)
         {
             throw new PlatformLaunchRejectedException("platform-response-invalid",
                 "The code2session response is not JSON.");
         }
 
-        // Missing error is treated as failure (fail-closed, never guess success).
-        var error = root.TryGetProperty("error", out var errorElement) && errorElement.ValueKind == JsonValueKind.Number
-            ? errorElement.GetInt64()
-            : -1L;
-        if (error != 0)
+        if (result.Success)
         {
-            var message = ReadString(root, "errmsg") ?? ReadString(root, "message") ?? "unknown douyin error";
-            throw new PlatformLaunchRejectedException("platform-rejected",
-                $"code2session rejected the credential (error {error}): {message}.");
+            var session = result.Session!;
+            // session_key is sensitive (official security requirement): it stays inside
+            // the session record and never leaves this adapter — the launch identity
+            // carries no secret material.
+            var identity = !string.IsNullOrEmpty(session.Openid)
+                ? session.Openid
+                : AnonymousCredentialPrefix + session.AnonymousOpenid;
+            var canonicalLiveSessionKey = $"douyin-live:{_appId}:{identity}";
+            return new VerifiedLaunch(PlatformName, request.AppId, identity, canonicalLiveSessionKey,
+                request.LoginAttemptId, _clock());
         }
 
-        var openid = ReadString(root, "openid");
-        var anonymousOpenid = ReadString(root, "anonymous_openid");
-        if (string.IsNullOrEmpty(openid) && string.IsNullOrEmpty(anonymousOpenid))
+        if (result.MalformedResponse)
+        {
             throw new PlatformLaunchRejectedException("platform-response-invalid",
                 "code2session returned neither openid nor anonymous_openid.");
+        }
 
-        // session_key is sensitive (official security requirement): it is dropped here and
-        // never leaves this adapter — the launch identity carries no secret material.
-        var identity = !string.IsNullOrEmpty(openid) ? openid : AnonymousCredentialPrefix + anonymousOpenid;
-        var canonicalLiveSessionKey = $"douyin-live:{_appId}:{identity}";
-        return new VerifiedLaunch(PlatformName, request.AppId, identity, canonicalLiveSessionKey,
-            request.LoginAttemptId, _clock());
+        throw new PlatformLaunchRejectedException("platform-rejected",
+            $"code2session rejected the credential (error {result.ErrorCode}): {result.ErrorMessage ?? "unknown douyin error"}.");
     }
-
-    private static string? ReadString(JsonElement root, string name)
-        => root.TryGetProperty(name, out var element) && element.ValueKind == JsonValueKind.String
-            ? element.GetString()
-            : null;
 }

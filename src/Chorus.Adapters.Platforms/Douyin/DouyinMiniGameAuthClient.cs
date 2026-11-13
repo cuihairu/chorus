@@ -69,8 +69,10 @@ public sealed class DouyinMiniGameAuthClient
         var anonymousOpenid = ReadString(root, "anonymous_openid");
         if (string.IsNullOrEmpty(openid) && string.IsNullOrEmpty(anonymousOpenid))
         {
-            // error==0 但两个身份都没有 = 畸形成功响应，按失败处理。
-            return DouyinCode2SessionResult.Fail(-1, "code2session returned neither openid nor anonymous_openid");
+            // error==0 但两个身份都没有 = 畸形成功响应，按失败处理；MalformedResponse
+            // 让调用方把它与真实平台错误（platform-rejected）区分开（review M7）。
+            return DouyinCode2SessionResult.Fail(-1, "code2session returned neither openid nor anonymous_openid",
+                malformedResponse: true);
         }
 
         return DouyinCode2SessionResult.Ok(new DouyinSession(
@@ -93,18 +95,24 @@ public sealed record DouyinSession(
     string? Unionid,
     string? AnonymousOpenid);
 
-/// <summary>code2Session 调用结果：Success=false 时 ErrorCode/ErrorMessage 携带平台错误码。</summary>
+/// <summary>
+/// code2Session 调用结果：Success=false 时 ErrorCode/ErrorMessage 携带平台错误码。
+/// MalformedResponse 标记「error==0 却没有身份字段」的畸形成功响应——与真实平台
+/// 错误码分开，调用方可映射到各自的失败类别（review M7）。
+/// </summary>
 public sealed record DouyinCode2SessionResult(
     bool Success,
     long ErrorCode,
     string? ErrorMessage,
-    DouyinSession? Session)
+    DouyinSession? Session,
+    bool MalformedResponse = false)
 {
     public static DouyinCode2SessionResult Ok(DouyinSession session) =>
         new(true, 0, null, session);
 
-    public static DouyinCode2SessionResult Fail(long errorCode, string? errorMessage) =>
-        new(false, errorCode, errorMessage, null);
+    public static DouyinCode2SessionResult Fail(long errorCode, string? errorMessage,
+        bool malformedResponse = false) =>
+        new(false, errorCode, errorMessage, null, malformedResponse);
 }
 
 /// <summary>
