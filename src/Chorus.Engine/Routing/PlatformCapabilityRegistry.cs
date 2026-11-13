@@ -25,12 +25,14 @@ public sealed record PlatformCapabilities(
 {
     /// <summary>
     /// B 站 open-live 已落地能力（BilibiliPlatformEventMapper）：弹幕/礼物/进场/房间生命周期；
-    /// 只读输入，反向写入无官方通道（P3 明确不做）。
+    /// 深化（2026-11-14）追加醒目留言（SUPER_CHAT_MESSAGE）与上舰（GUARD_BUY /
+    /// USER_TOAST_MSG_V2）。只读输入，反向写入无官方通道（P3 明确不做）。
     /// </summary>
     public static PlatformCapabilities Bilibili { get; } = new(
         new HashSet<AudienceEventKind>
         {
-            AudienceEventKind.Comment, AudienceEventKind.Gift, AudienceEventKind.Enter, AudienceEventKind.RoomLifecycle,
+            AudienceEventKind.Comment, AudienceEventKind.Gift, AudienceEventKind.Enter,
+            AudienceEventKind.RoomLifecycle, AudienceEventKind.SuperChat, AudienceEventKind.GuardBuy,
         });
 
     /// <summary>

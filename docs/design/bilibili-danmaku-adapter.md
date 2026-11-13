@@ -118,7 +118,10 @@ SessionActor（tick 调度 → 快照 → 客户端）            ← 已有
 | `SEND_GIFT_V2` (protobuf gray release) | Same as `SEND_GIFT`, tolerant of the new format | P2 |
 | `INTERACT_WORD_V2` / `LIVE_ROOM_ENTER` | `kind=enter`、`userId` | P2 |
 | `LIVE_START` / `LIVE_END` | informational `RoomLifecycle` audience event; no automatic ControlHost room state transition | P2 |
-| `SUPER_CHAT_MESSAGE` / `GUARD_BUY` / `USER_TOAST_MSG_V2` | TBD (golden-test driven) | P2 |
+| `SUPER_CHAT_MESSAGE` | `kind=superChat`、`userId`、`text`、`giftValue`（paid message） | P2 |
+| `GUARD_BUY` / `USER_TOAST_MSG_V2` | `kind=guardBuy`、`userId`、`giftId`（guard level）、`count`、`giftValue` | P2 |
+| `LIVE_OPEN_PLATFORM_INTERACTION_END` | informational `RoomLifecycle` audience event (`interaction_end`) | P2 |
+| `SUPER_CHAT_MESSAGE_DELETE` | withdrawal semantics have no audience-event surface → stays `Unknown` | P2 |
 | Unknown event types | **no crash**, dropped + counted (the platform protocol is still evolving) | P1 |
 
 - `userId` uses the Bilibili mid (non-logged-in mid=0 → anonymous, no identity inference).
@@ -136,7 +139,7 @@ SessionActor（tick 调度 → 快照 → 客户端）            ← 已有
 | Phase | Content | Acceptance Criteria |
 | --- | --- | --- |
 | **P1** | open-live integration + danmaku normalization + reconnect + `/ingress/bilibili` | **Completed (2026-10-14)**: golden tests (authentication passes / tampering rejected / duplicate `msg_id` deduplication / unknown events don't crash, 7 cases in `BilibiliIngressEndpointTests`) + e2e (danmaku → `AudienceEvent` → frame → client snapshot, `BilibiliEndToEndTests`); implementation see [Platform Reference](../reference/platform-bilibili.md); signature/frame protocol verified against the blivedm original text (six headers joined with `\n` HMAC, 16-byte large packet header op 5/7/8, ver 2 deflate recursive sub-packaging) |
-| **P2** | gift / entry / room-lifecycle normalization (including the `SEND_GIFT_V2` gray release) | **Completed (2026-10-14)**: `AudienceEventKind` extended with `Enter`/`RoomLifecycle` (code values appended without changing existing numbering); golden tests cover `SEND_GIFT` (gift_id/gift_num/price), `SEND_GIFT_V2` gray-release tolerance (missing fields neither dropped nor crashed), `INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter, `LIVE_START`/`LIVE_END`→roomLifecycle, P2 TBD items like SUPER_CHAT remain Unknown; e2e gift → frame (`totals.gifts`). SUPER_CHAT/GUARD_BUY/USER_TOAST_MSG_V2 normalization is still TBD (golden-test driven; P2 TBD items postponed) |
+| **P2** | gift / entry / room-lifecycle normalization (including the `SEND_GIFT_V2` gray release) | **Completed (2026-10-14)**: `AudienceEventKind` extended with `Enter`/`RoomLifecycle` (code values appended without changing existing numbering); golden tests cover `SEND_GIFT` (gift_id/gift_num/price), `SEND_GIFT_V2` gray-release tolerance (missing fields neither dropped nor crashed), `INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter, `LIVE_START`/`LIVE_END`→roomLifecycle, P2 TBD items like SUPER_CHAT remain Unknown; e2e gift → frame (`totals.gifts`). **Deepened (2026-11-14)**: the last TBD items closed — `SUPER_CHAT_MESSAGE`→superChat, `GUARD_BUY`/`USER_TOAST_MSG_V2`→guardBuy, `LIVE_OPEN_PLATFORM_INTERACTION_END`→roomLifecycle; `AudienceEventKind` gained `SuperChat`/`GuardBuy` (appended, existing numbering unchanged) and `PlatformCapabilities.Bilibili` now declares all six produced kinds with a reverse set-equality test guarding the declaration. `SUPER_CHAT_MESSAGE_DELETE` withdrawal semantics have no audience-event surface and stay `Unknown`. The SC/guard field names are not confirmed by official material (see §1.2 above and the mapper header) |
 | **P3** | reverse write / interaction commands | **Only with the platform's permission** — there is currently no official channel, explicitly not doing it; evaluate once the platform opens up. |
 
 ---

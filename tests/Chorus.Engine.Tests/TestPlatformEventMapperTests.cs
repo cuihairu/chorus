@@ -99,4 +99,20 @@ public sealed class TestPlatformEventMapperTests
         Assert.NotNull(ev);
         Assert.Equal(AudienceEventKind.Comment, ev!.Kind);
     }
+
+    [Fact]
+    public void Mapper_AppendedEnumMemberName_IsResolvable()
+    {
+        // The fixture resolves kinds by enum-name reflection, so appending an AudienceEventKind
+        // member (SuperChat/GuardBuy, 2026-11-14) widens the accepted word surface by
+        // construction. Pin it explicitly: the name is the real enum member name, never invented
+        // by the fixture, and downstream consumers must tolerate the extra kinds.
+        var mapper = new TestPlatformEventMapper();
+        const string raw = """{"sessionId":"s1","eventId":"e2","userId":"u1","kind":"SuperChat"}""";
+
+        var ev = mapper.TryMap(PlatformNames.Test, raw, ingestTimeMs: 1);
+
+        Assert.NotNull(ev);
+        Assert.Equal(AudienceEventKind.SuperChat, ev!.Kind);
+    }
 }

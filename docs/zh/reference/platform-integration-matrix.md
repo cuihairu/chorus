@@ -6,7 +6,20 @@ title: 多直播平台接入资料与架构兼容性
 
 **资料核查日期：2026-10-30（Asia/Shanghai）。** 本页记录公开资料调查，不代表已取得开发者权限、SDK 商用许可或通过真实平台联调。平台来源的发布／修改日期与本次访问日期分开保存在下列证据附件中；未显示来源日期的标为未知，不推断为最新版本。
 
-本期实施范围仍为 **抖音、快手**。下一阶段重点调查斗鱼；虎牙、B站及其他平台只做资料与兼容性研究。第三方覆盖清单、用户规模、分账比例、关键词或礼物限制，没有适用产品和官方证据时均不作为确定事实。
+本期实施范围仍为 **抖音、快手**，另有完整的 B站 open-live 适配器（ingress 桥 + verifier + mapper）与**骨架级**斗鱼占位（fail closed、不注册进宿主）；虎牙及其他平台只做资料与兼容性研究。第三方覆盖清单、用户规模、分账比例、关键词或礼物限制，没有适用产品和官方证据时均不作为确定事实。
+
+## 实施状态级别（2026-11-14）
+
+按研究纪律如实登记有代码平台的真实级别（有实现 ≠ 已接通；联调与平台准入是独立验收）：
+
+| 平台 | 级别 | 已有实现 | 距 supported 还缺 |
+| --- | --- | --- | --- |
+| 抖音 | implemented（ingest） | mapper/verifier/task adapter 已接线；launch adapter 维持 NotProductionReady（拒绝一切） | 真实联调证据；占位签名协议需官方确认 |
+| 快手 | implemented（ingest） | 官方 sha1 签名 verifier + mapper 已接线 | 直播事件通道是否复用此信封，仅联调可确认 |
+| B站 | implemented（adapter，准入待批） | 完整 open-live 适配器：client/protocol/signer/mapper/verifier/ingress 桥 + hosted service；2026-11-14 深化事件归一化（SC/上舰/连线收束） | 平台准入与真实主播联调；桥→入口契约缺口已在架构审查落账（应用身份头、持久待投递） |
+| 斗鱼 | skeleton | `PlatformNames.Douyu` + fail-closed verifier／拒映射 mapper／桥骨架（按设计 fail closed、不注册进任何宿主） | 官方技术 contract：协议版本、签名语义、脱敏样本、签名测试向量 |
+| 虎牙 | research-only | 仅 `PlatformNames.Huya` 常量；无 mapper、无协议实现 | 2026-10-31 停服后的替代开放路线（2026-11-14 复核：停服通知仍在线，替代未见） |
+| test／simulator | dev fixtures | 测试/模拟 mapper + 开发 AllowAll verifier | 非生产面；不得进入生产宿主 |
 
 ## 资料附件
 

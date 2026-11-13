@@ -4,6 +4,15 @@ using Chorus.Protocol.Models;
 
 namespace Chorus.Adapters.Platforms;
 
+/// <summary>
+/// Development/simulator fixture mapper. Unlike a real platform mapper it resolves the event
+/// kind by <b>name reflection over <see cref="AudienceEventKind"/></b> (string or numeric), so it can
+/// synthesise any event shape a test needs. That dynamic word surface widens whenever a new
+/// member is appended to the enum — by construction, not by a per-member decision — and an
+/// unresolvable name still falls back to <see cref="AudienceEventKind.Comment"/>. It is never a
+/// production surface (see the platform integration matrix: dev fixtures must stay out of
+/// production hosts).
+/// </summary>
 public sealed class TestPlatformEventMapper : IPlatformEventMapper
 {
     public AudienceEvent? TryMap(string platform, string rawBody, long ingestTimeMs)

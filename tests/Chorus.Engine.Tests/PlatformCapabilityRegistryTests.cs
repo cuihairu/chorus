@@ -6,7 +6,7 @@ namespace Chorus.Engine.Tests;
 
 /// <summary>
 /// 平台能力注册金测（todo §14 平台能力注册项，契约 = 总体架构审计 §17.3）：
-/// 注册表与已落地映射器能力对齐（B 站四类型、抖音/快手占位三类型），
+/// 注册表与已落地映射器能力对齐（B 站六类型、抖音/快手占位三类型），
 /// 未注册平台 fail-closed，B 站反向写入恒 false（P3 明确不做）。
 /// </summary>
 public sealed class PlatformCapabilityRegistryTests
@@ -167,6 +167,9 @@ public sealed class PlatformCapabilityRegistryTests
             ("""{"cmd":"SEND_GIFT_V2","msg_id":"g2","data":{"open_id":"ou"}}""", AudienceEventKind.Gift),
             ("""{"cmd":"INTERACT_WORD_V2","msg_id":"e1","data":{"open_id":"ou"}}""", AudienceEventKind.Enter),
             ("""{"cmd":"LIVE_START","msg_id":"l1","data":{}}""", AudienceEventKind.RoomLifecycle),
+            ("""{"cmd":"SUPER_CHAT_MESSAGE","msg_id":"sc1","data":{"open_id":"ou","message":"上车","price":50}}""", AudienceEventKind.SuperChat),
+            ("""{"cmd":"GUARD_BUY","msg_id":"g3","data":{"open_id":"ou","guard_level":3,"num":1,"price":1}}""", AudienceEventKind.GuardBuy),
+            ("""{"cmd":"LIVE_OPEN_PLATFORM_INTERACTION_END","msg_id":"i1","data":{}}""", AudienceEventKind.RoomLifecycle),
         };
 
         foreach (var (json, expected) in samples)
@@ -179,11 +182,38 @@ public sealed class PlatformCapabilityRegistryTests
                 $"mapper produces {ev.Kind} but registry does not list it");
         }
 
+        // SC 撤销语义 AudienceEvent 无对应面 → Unknown，且注册表不声明 Unknown。
         var unmapped = mapper.TryMap(PlatformNames.Bilibili,
-            """{"cmd":"SUPER_CHAT_MESSAGE","msg_id":"sc1","data":{"open_id":"ou"}}""", 0);
+            """{"cmd":"SUPER_CHAT_MESSAGE_DELETE","msg_id":"scd1","data":{"ids":[1]}}""", 0);
         Assert.NotNull(unmapped);
         Assert.Equal(AudienceEventKind.Unknown, unmapped!.Kind);
         Assert.False(registry.SupportsEventKind(PlatformNames.Bilibili, unmapped.Kind));
+    }
+
+    [Fact]
+    public void BilibiliDeclaredKinds_EqualTheKindsTheMapperCanProduce()
+    {
+        // Reverse direction of the sample sweep above: the registry must not declare a kind the
+        // mapper cannot produce. Set equality guards both drift directions — a new mapper branch
+        // that the registry forgot, and a registry row that names a kind no command maps to.
+        var mapper = new BilibiliPlatformEventMapper(sessionId: "s-bili");
+
+        // Every branch the mapper can leave (each cmd family once) plus the escape hatch.
+        var cmds = new[]
+        {
+            "DANMU_MSG", "SEND_GIFT", "SEND_GIFT_V2", "INTERACT_WORD_V2", "LIVE_ROOM_ENTER",
+            "LIVE_START", "LIVE_END", "SUPER_CHAT_MESSAGE", "GUARD_BUY", "USER_TOAST_MSG_V2",
+            "LIVE_OPEN_PLATFORM_INTERACTION_END", "SUPER_CHAT_MESSAGE_DELETE", "NO_SUCH_CMD",
+        };
+
+        var produced = cmds
+            .Select(cmd => mapper.TryMap(PlatformNames.Bilibili, $"{{\"cmd\":\"{cmd}\",\"msg_id\":\"x\"}}", 0)!.Kind)
+            .Where(kind => kind != AudienceEventKind.Unknown)
+            .ToHashSet();
+
+        Assert.Equal(
+            new HashSet<AudienceEventKind>(PlatformCapabilities.Bilibili.SupportedEventKinds),
+            produced);
     }
 
     [Fact]

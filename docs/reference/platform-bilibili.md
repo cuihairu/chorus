@@ -38,11 +38,16 @@ during the design document research period, field-by-field verification was done
   `8`=AUTH_REPLY (body JSON `{"code":0}` passes; non-0 rejected).
 - A business frame may contain multiple packets; packet body ver: `0`=plaintext JSON, `2`=zlib deflate (used by the open platform), `3`=brotli;
   after decompressing a compressed packet body, **recursively re-split the packets**.
-- Event envelope `{"cmd":...,"data":{...},"msg_id":...}`; normalization (P1+P2): `DANMU_MSG`→comment,
-  `SEND_GIFT`/`SEND_GIFT_V2` (gray-release tolerance)→gift, `INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter,
-  `LIVE_START`/`LIVE_END`→roomLifecycle (all with flattened `data.open_id`/`msg_id` keys). These are informational game events; they do not automatically activate, idle, close, or destroy a ControlHost room.
-- The protocol is still evolving: unknown cmds do not crash and are dropped as Unknown (SUPER_CHAT_MESSAGE / GUARD_BUY / USER_TOAST_MSG_V2
-  normalization is pending, driven by golden tests).
+- Event envelope `{"cmd":...,"data":{...},"msg_id":...}`; normalization (P1+P2, deepened 2026-11-14):
+  `DANMU_MSG`→comment, `SEND_GIFT`/`SEND_GIFT_V2` (gray-release tolerance)→gift,
+  `INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter, `LIVE_START`/`LIVE_END`→roomLifecycle,
+  `SUPER_CHAT_MESSAGE`→superChat, `GUARD_BUY`/`USER_TOAST_MSG_V2`→guardBuy,
+  `LIVE_OPEN_PLATFORM_INTERACTION_END`→roomLifecycle (all with flattened `data.open_id`/`msg_id` keys).
+  These are informational game events; they do not automatically activate, idle, close, or destroy a ControlHost room.
+- The protocol is still evolving: unknown cmds do not crash and are dropped as Unknown.
+  `SUPER_CHAT_MESSAGE_DELETE` withdrawal semantics have no audience-event surface and stay Unknown.
+  The SC/guard field names are not confirmed by official material — the mapper reads them defensively
+  (`data.message` with a `data.msg` fallback) as an assumed compatibility shim.
 
 ## 2. chorus Implementation (todo §12 P1, landed)
 

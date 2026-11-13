@@ -6,7 +6,20 @@ title: "Multi-platform live integration: materials and architecture compatibilit
 
 **Research date: 2026-10-30 (Asia/Shanghai).** This page records public-material research; it does not mean developer permissions, SDK commercial licenses, or real platform joint debugging have been obtained. Source publish/modify dates and this visit date are kept separately in the evidence attachments below; an unknown source date is recorded as unknown, not inferred to be the latest version.
 
-The current implementation scope remains **Douyin and Kuaishou**. The next phase focuses research on Douyu; Huya, Bilibili and other platforms are research/compatibility only. Third-party coverage lists, user scale, revenue-share percentages, keyword or gift restrictions are not treated as facts without an applicable product and official evidence.
+The current implementation scope remains **Douyin and Kuaishou**, with a complete Bilibili open-live adapter (ingest bridge + verifier + mapper) and **skeleton-level** Douyu placeholders (fail closed, unregistered). Huya and the rest stay research/compatibility only. Third-party coverage lists, user scale, revenue-share percentages, keyword or gift restrictions are not treated as facts without an applicable product and official evidence.
+
+## Implementation status levels (2026-11-14)
+
+Support levels for the code-bearing platforms, kept honest per the research doctrine (an implementation is not an integration; joint debugging and platform admission are separate acceptances):
+
+| Platform | Level | What exists | What is missing before "supported" |
+| --- | --- | --- | --- |
+| Douyin | implemented (ingest) | Mapper/verifier/task adapter wired in hosts; launch adapter stays NotProductionReady (rejects all) | Real-joint-debugging evidence; the placeholder signature protocol needs official confirmation |
+| Kuaishou | implemented (ingest) | Official sha1 signature verifier + mapper wired in hosts | Whether the live event channel reuses this envelope is confirmed only at joint debugging |
+| Bilibili | implemented (adapter, admission pending) | Full open-live adapter: client/protocol/signer/mapper/verifier/ingress bridge + hosted service; event normalization deepened 2026-11-14 (SC/guard/interaction-end) | Platform admission and real-streamer joint debugging; bridge-to-ingress contract gap recorded in the architecture review (app identity header, durable redelivery) |
+| Douyu | skeleton | `PlatformNames.Douyu` + fail-closed verifier / refuse-mapper / bridge skeleton (fail closed by design, unregistered in any host) | Official technical contract: protocol version, signature semantics, sanitized samples, signature test vectors |
+| Huya | research-only | `PlatformNames.Huya` constant only; no mapper, no protocol work | A post-2026-10-31 replacement open route (2026-11-14 re-check: shutdown notice still up, no replacement found) |
+| test / simulator | dev fixtures | Test/simulator mappers + dev AllowAll verifier | Not production surfaces; must stay out of production hosts |
 
 ## Evidence attachments
 

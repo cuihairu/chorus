@@ -81,6 +81,15 @@ B站的兼容性判断是**研究推断**：server 模式若获授权，适合�
 
 共同收尾门槛：最终结果已提交 → PG 停止投递并完成在途排空确认 → CS 授权平台结束/查询补偿 → 确认平台结果及结算完成 → 释放绑定/路由并授权销毁房间。平台硬超时/强制结束和调用结果未知应进入补偿状态，不得把 HTTP 超时等同于“平台结束成功”。
 
+## 复核与实施进展（2026-11-14）
+
+本次联网复查与代码落地（本节为增量记录，不改写上表 10-30 结论）：
+
+- **虎牙**：[旧开放 API 协议页](https://dev.huya.com/docs/miniapp/dev/open/proto/) 的停服通知 **2026-11-14 仍在线**（「该开放平台接口已停止支持，有相关问题请联系管理员」）；[小游戏介绍页](https://dev.huya.com/docs/miniapp/game/)（修改 2026-10-23）仍以「通过虎牙开放API监听直播间事件」描述弹幕云游戏，但该 API 即已停服接口——介绍可读 ≠ 入口可用，与 10-30 判断一致；主站 dev.huya.com 现为小程序平台门户，**公开页面未见替代开放路线**。结论：维持观望，`PlatformNames.Huya` 仅占位，不写 mapper、不围绕旧协议实现。
+- **B站**：仓库实现按 blivedm（**第三方库，非官方 SDK**）open_live 模型原文核实清单推进——2026-11-14 深化把 `SUPER_CHAT_MESSAGE`→superChat、`GUARD_BUY`/`USER_TOAST_MSG_V2`→guardBuy、`LIVE_OPEN_PLATFORM_INTERACTION_END`→roomLifecycle(interaction_end) 补入 mapper（金测覆盖；`SUPER_CHAT_MESSAGE_DELETE` 撤销语义不可表达，保持 Unknown）。verifier/signer 复核：`x-bili-*` 六头 HMAC-SHA256 与 blivedm `clients/open_live.py` 的 `_request_open_live`（同为第三方对照来源，**不是官方物料**）逐字段一致（含 content-md5、Authorization 不参与签名串、fail-closed、±300s 容差），无语义漂移。**SC 留言文本字段名（`message` vs 网页弹幕形态的 `msg`）本次未取得官方物料锁定**，mapper 按 `message ?? msg` 双字段回退，属假设性兼容处理、非已核实字段名；`GUARD_BUY` 的 `guard_level`/`num`/`price` 同样按 blivedm 模型原文实现，未经官方 schema 确认。
+- **B站官方物料获取边界（本次实测）**：open-live.bilibili.com 文档页仍为 SPA，正文抓取只返回页标题（10 字符，MCP fetch 实测）；官方 demo 仓库本机 SSH 连接被关闭（140.82.112.4 port 22）、raw.githubusercontent 域名解析 fake-ip——对照基准仍是仓内 blivedm 原文核实清单（设计文档 §1.2），字段如联调有出入按 mapper 头注「替换字段抽取即可」处理。
+- **斗鱼**：无新公开物料。代码面落**骨架**：`PlatformNames.Douyu` + `DouyuPlatformEventVerifier`（fail closed）/`DouyuPlatformEventMapper`（一律不映射）/`DouyuIngressBridgeSkeleton`（不连接不转发）。三者按生产准入纪律 fail closed 且**不注册进任何宿主**（该纪律在代码库里体现为抽象基类 `NotProductionReadyLaunchAdapter` 与启动闸，不是 C# 特性）——README/平台矩阵按 skeleton 级登记。
+
 ## 来源登记与日期
 
 以下每项均于 **2026-10-30** 核查。无公开时间表示本次没有取得日期，不表示资料新鲜；搜索索引可能滞后。

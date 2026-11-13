@@ -69,7 +69,8 @@ public sealed record AudienceEvent(
     string Platform,
     string SessionId,
     string UserId,
-    AudienceEventKind Kind,   // Unknown=0, Comment=1, Like=2, Gift=3
+    AudienceEventKind Kind,   // Unknown=0, Comment=1, Like=2, Gift=3, Enter=4,
+                           // RoomLifecycle=5, SuperChat=6, GuardBuy=7 (appended; existing values never renumbered)
     long IngestTimeMs,
     string? Text = null,
     string? GiftId = null,

@@ -38,11 +38,14 @@ title: "平台接入参考：B 站"
   `8`=AUTH_REPLY（body JSON `{"code":0}` 通过；非 0 拒绝）。
 - 一个业务帧可能含多个包；包体 ver：`0`=明文 JSON、`2`=zlib deflate（开放平台在用）、`3`=brotli；
   压缩包体解压后**递归重新拆包**。
-- 事件信封 `{"cmd":...,"data":{...},"msg_id":...}`；归一化（P1+P2）：`DANMU_MSG`→comment、
+- 事件信封 `{"cmd":...,"data":{...},"msg_id":...}`；归一化（P1+P2，2026-11-14 深化）：`DANMU_MSG`→comment、
   `SEND_GIFT`/`SEND_GIFT_V2`（灰度容忍）→gift、`INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter、
-  `LIVE_START`/`LIVE_END`→roomLifecycle（都拍平 `data.open_id`/`msg_id` 键）。这些是信息性游戏事件；不自动激活、闲置、关闭或销毁 ControlHost 房间。
-- 协议仍在演进：未知 cmd 不崩溃、按 Unknown 丢弃（SUPER_CHAT_MESSAGE / GUARD_BUY / USER_TOAST_MSG_V2
-  归一化待定，金测驱动）。
+  `LIVE_START`/`LIVE_END`→roomLifecycle、`SUPER_CHAT_MESSAGE`→superChat、
+  `GUARD_BUY`/`USER_TOAST_MSG_V2`→guardBuy、`LIVE_OPEN_PLATFORM_INTERACTION_END`→roomLifecycle
+  （都拍平 `data.open_id`/`msg_id` 键）。这些是信息性游戏事件；不自动激活、闲置、关闭或销毁 ControlHost 房间。
+- 协议仍在演进：未知 cmd 不崩溃、按 Unknown 丢弃。`SUPER_CHAT_MESSAGE_DELETE` 撤销语义无观众事件
+  对应面，保持 Unknown。SC／上舰字段名未获官方物料确认——mapper 按 `data.message` 带 `data.msg`
+  回退防御读取，属假设性兼容处理。
 
 ## 2. chorus 实现（todo §12 P1，已落地）
 

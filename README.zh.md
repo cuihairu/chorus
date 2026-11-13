@@ -135,6 +135,18 @@ dotnet run --project src/Chorus.LoadTool -- --flamegraph --duration 60
 转换成**有顺序、有边界、可观测、可恢复的游戏输入**。保持轻量框架定位，不扩展成账号、运营、
 支付、游戏编辑器与直播管理的综合平台。
 
+## 平台支持级别
+
+平台适配器的真实状态（有实现 ≠ 已接通；详见[平台接入矩阵](docs/zh/reference/platform-integration-matrix.md)）：
+
+| 平台 | 级别 |
+|--------|--------|
+| 抖音 | implemented（ingest）；launch adapter 维持 NotProductionReady |
+| 快手 | implemented（ingest）；直播通道信封形态仅联调可确认 |
+| B站 | implemented（open-live 适配器）；平台准入与真实主播联调待办 |
+| 斗鱼 | 仅骨架——官方协议物料未取得，fail closed，不注册进宿主 |
+| 虎牙 | 仅研究——旧开放 API 2026-10-31 停服，替代路线未见 |
+
 ## 技术栈与支持
 
 - 语言：C#（随 .NET 10 默认 C# 版本）

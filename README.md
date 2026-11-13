@@ -142,6 +142,19 @@ The core value is not WebSocket, and not an ordinary game loop; it is turning bu
 delayed, out-of-order live-stream events into **ordered, bounded, observable, recoverable game input**.
 Chorus stays a lightweight framework and does not grow into an account/ops/payment/editor/livestream-management platform.
 
+## Platform Support Levels
+
+Honest status of the platform adapters (an implementation is not an integration; details in
+[platform-integration-matrix](docs/reference/platform-integration-matrix.md)):
+
+| Platform | Level |
+|--------|--------|
+| Douyin | implemented (ingest); launch adapter stays NotProductionReady |
+| Kuaishou | implemented (ingest); live-channel envelope confirmed only at joint debugging |
+| Bilibili | implemented (open-live adapter); platform admission and joint debugging pending |
+| Douyu | skeleton only — official protocol contract unavailable, fail closed, unregistered |
+| Huya | research-only — legacy open API stopped 2026-10-31, no replacement route yet |
+
 ## Tech Stack
 
 - Language: C# (the default C# version for .NET 10)

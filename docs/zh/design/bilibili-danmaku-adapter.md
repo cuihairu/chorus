@@ -118,7 +118,10 @@ SessionActor（tick 调度 → 快照 → 客户端）            ← 已有
 | `SEND_GIFT_V2`（protobuf 灰度） | 同 `SEND_GIFT`，容忍新格式 | P2 |
 | `INTERACT_WORD_V2` / `LIVE_ROOM_ENTER` | `kind=enter`、`userId` | P2 |
 | `LIVE_START` / `LIVE_END` | 信息性 `RoomLifecycle` 观众事件；不自动迁移 ControlHost 房间状态 | P2 |
-| `SUPER_CHAT_MESSAGE` / `GUARD_BUY` / `USER_TOAST_MSG_V2` | 待定（金测驱动） | P2 |
+| `SUPER_CHAT_MESSAGE` | `kind=superChat`、`userId`、`text`、`giftValue`（付费留言） | P2 |
+| `GUARD_BUY` / `USER_TOAST_MSG_V2` | `kind=guardBuy`、`userId`、`giftId`（舰长等级）、`count`、`giftValue` | P2 |
+| `LIVE_OPEN_PLATFORM_INTERACTION_END` | 信息性 `RoomLifecycle` 观众事件（`interaction_end`） | P2 |
+| `SUPER_CHAT_MESSAGE_DELETE` | 撤销语义无观众事件对应面 → 保持 `Unknown` | P2 |
 | 未知事件类型 | **不崩溃**，丢弃 + 计数（平台协议仍在演进） | P1 |
 
 - `userId` 用 B 站 mid（未登录 mid=0 → anonymous，不推断身份）。
@@ -136,7 +139,7 @@ SessionActor（tick 调度 → 快照 → 客户端）            ← 已有
 | 阶段 | 内容 | 验收标准 |
 | --- | --- | --- |
 | **P1** | open-live 接入 + 弹幕归一化 + 重连 + `/ingress/bilibili` | **已完成（2026-10-14）**：金测（鉴权通过 / 篡改拒绝 / 重复 `msg_id` 去重 / 未知事件不崩溃，`BilibiliIngressEndpointTests` 7 例）+ e2e（弹幕 → `AudienceEvent` → 帧 → 客户端快照，`BilibiliEndToEndTests`）；实现见[平台参考](../reference/platform-bilibili.md)；签名/帧协议对照 blivedm 原文核实（六个头以 `\n` 拼接 HMAC、16 字节大端包头 op 5/7/8、ver 2 deflate 递归子包） |
-| **P2** | 礼物 / 进场 / 房间生命周期归一化（含 `SEND_GIFT_V2` 灰度） | **已完成（2026-10-14）**：`AudienceEventKind` 扩展 `Enter`/`RoomLifecycle`（编码值追加、不改既有编号）；金测覆盖 `SEND_GIFT`（gift_id/gift_num/price）、`SEND_GIFT_V2` 灰度容忍（缺字段不丢也不崩）、`INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter、`LIVE_START`/`LIVE_END`→roomLifecycle、SUPER_CHAT 等 P2 待定项保持 Unknown；e2e 礼物 → 帧（`totals.gifts`）。SUPER_CHAT/GUARD_BUY/USER_TOAST_MSG_V2 归一化仍待定（金测驱动；P2 待定项顺延） |
+| **P2** | 礼物 / 进场 / 房间生命周期归一化（含 `SEND_GIFT_V2` 灰度） | **已完成（2026-10-14）**：`AudienceEventKind` 扩展 `Enter`/`RoomLifecycle`（编码值追加、不改既有编号）；金测覆盖 `SEND_GIFT`（gift_id/gift_num/price）、`SEND_GIFT_V2` 灰度容忍（缺字段不丢也不崩）、`INTERACT_WORD_V2`/`LIVE_ROOM_ENTER`→enter、`LIVE_START`/`LIVE_END`→roomLifecycle、SUPER_CHAT 等 P2 待定项保持 Unknown；e2e 礼物 → 帧（`totals.gifts`）。**深化（2026-11-14）**：剩余待定项收口——`SUPER_CHAT_MESSAGE`→superChat、`GUARD_BUY`/`USER_TOAST_MSG_V2`→guardBuy、`LIVE_OPEN_PLATFORM_INTERACTION_END`→roomLifecycle；`AudienceEventKind` 追加 `SuperChat`/`GuardBuy`（不改既有编号），`PlatformCapabilities.Bilibili` 声明全部六类型并有集合相等测试反向钉住。`SUPER_CHAT_MESSAGE_DELETE` 撤销语义无对应面，保持 `Unknown`。SC／上舰字段名未获官方物料确认（见 §1.2 与 mapper 头注） |
 | **P3** | 反向写入 / 互动指令 | **仅当平台允许**——当前无官方通道，显式不做；平台开放后再评估。 |
 
 ---
