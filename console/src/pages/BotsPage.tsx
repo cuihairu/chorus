@@ -17,20 +17,24 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import { DeleteOutlined, EditOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, StopOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { AdminError, deleteAdminJson, getAdminJson, postAdminJson } from '../api/client';
 import { useAuth } from '../auth';
 import { useI18n } from '../i18n';
 
-// The bots page (BOTS-2): the fleet's own faces — scenarios the operator keeps, runs
-// the fleet service is playing — plus the same ingress and delivery statistics faces
-// the overview reads (the panel never builds a second statistics plane). Every face
-// answers independently, so one face's failure is that card's error, never a blank
-// screen. The commands (save/delete a scenario, start/stop a run) are the admin
-// group's bots routes; a start only speaks to the fleet service, which parses the
-// script up front — a bad script answers at the request, not mid-run.
+// The bots page (BOTS-2/BOTS-3): the fleet's own faces — scenarios the operator
+// keeps, runs the fleet service is playing — the pressure runs the load-tool driver
+// plays against the ingress face (with the one-click dotnet-trace window and its
+// hottest frames read straight off the speedscope), plus the same ingress and
+// delivery statistics faces the overview reads (the panel never builds a second
+// statistics plane). Every face answers independently, so one face's failure is
+// that card's error, never a blank screen. The commands (save/delete a scenario,
+// start/stop a run, start/stop a pressure run) are the admin group's bots and
+// pressure routes; a start only speaks to the fleet service, which parses the
+// script and validates the request up front — a bad one answers at the request,
+// not mid-run.
 
 interface ScenarioRow {
   id: string;
@@ -53,6 +57,29 @@ interface RunRow {
     posted: number;
     poster: { accepted: number; duplicated: number; unauthorized: number; rateLimited: number; other: number };
   } | null;
+}
+
+interface PressureRow {
+  id: string;
+  state: string;
+  sample: {
+    sent: number;
+    accepted: number;
+    duplicated: number;
+    rateLimited: number;
+    laneFull: number;
+    unauthorized: number;
+    other: number;
+    targetPerSecond: number;
+    elapsedSeconds: number;
+    achievedPerSecond: number;
+  } | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+  tracePath: string | null;
+  speedscopePath: string | null;
+  hotFrames: { frame: string; selfSharePercent: number }[];
 }
 
 interface IngressStats {
@@ -84,20 +111,22 @@ interface OpsAlertItem {
 }
 
 const terminalStates = ['Completed', 'Reconciled', 'Deviated', 'Failed', 'Stopped'];
+const pressureTerminalStates = ['Completed', 'Stopped', 'Failed'];
 
 type Face<T> = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'data'; value: T };
 
 interface Faces {
   scenarios: Face<ScenarioRow[]>;
   runs: Face<RunRow[]>;
+  pressure: Face<PressureRow[]>;
   ingress: Face<IngressStats>;
   delivery: Face<DeliveryStats>;
   alerts: Face<OpsAlertItem[]>;
 }
 
 const loadingFaces: Faces = {
-  scenarios: { kind: 'loading' }, runs: { kind: 'loading' }, ingress: { kind: 'loading' },
-  delivery: { kind: 'loading' }, alerts: { kind: 'loading' },
+  scenarios: { kind: 'loading' }, runs: { kind: 'loading' }, pressure: { kind: 'loading' },
+  ingress: { kind: 'loading' }, delivery: { kind: 'loading' }, alerts: { kind: 'loading' },
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -108,10 +137,24 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const faceGuards: Record<keyof Faces, (value: unknown) => boolean> = {
   scenarios: (value) => Array.isArray(value) && value.every((row) => isRecord(row) && typeof (row as { id?: unknown }).id === 'string' && typeof (row as { toml?: unknown }).toml === 'string'),
   runs: (value) => Array.isArray(value) && value.every((row) => isRecord(row) && typeof (row as { id?: unknown }).id === 'string' && typeof (row as { state?: unknown }).state === 'string'),
+  pressure: (value) => Array.isArray(value) && value.every((row) => isRecord(row) && typeof (row as { id?: unknown }).id === 'string' && typeof (row as { state?: unknown }).state === 'string'),
   ingress: (value) => isRecord(value) && typeof value.accepted === 'number',
   delivery: (value) => isRecord(value) && typeof value.ingested === 'number',
   alerts: (value) => Array.isArray(value),
 };
+
+interface PressureForm {
+  baseUrl: string;
+  platform: string;
+  eventsPerSecond: number;
+  sessions: number;
+  producerConnections: number;
+  durationSeconds: number;
+  signSecret?: string;
+  profileSeconds?: number;
+  profileProcessId?: number;
+  rootCaPemPath?: string;
+}
 
 interface StartForm {
   streamerEndpoint: string;
@@ -137,6 +180,7 @@ export default function BotsPage() {
   const [faces, setFaces] = useState<Faces>(loadingFaces);
   const [editor, setEditor] = useState<{ open: boolean; scenario: ScenarioRow | null }>({ open: false, scenario: null });
   const [startTarget, setStartTarget] = useState<ScenarioRow | null>(null);
+  const [pressureOpen, setPressureOpen] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -160,6 +204,7 @@ export default function BotsPage() {
     await Promise.allSettled([
       settle('/api/bots/scenarios', 'scenarios', faceGuards.scenarios),
       settle('/api/bots/runs', 'runs', faceGuards.runs),
+      settle('/api/pressure/runs', 'pressure', faceGuards.pressure),
       settle('/api/ingress/stats', 'ingress', faceGuards.ingress),
       settle('/api/delivery/stats', 'delivery', faceGuards.delivery),
       settle('/api/ops/alerts', 'alerts', faceGuards.alerts),
@@ -174,6 +219,7 @@ export default function BotsPage() {
       await command();
       setEditor({ open: false, scenario: null });
       setStartTarget(null);
+      setPressureOpen(false);
       await load();
       return true;
     } catch (error) {
@@ -309,12 +355,76 @@ export default function BotsPage() {
     </Modal>
   );
 
+  const pressureDialog = (
+    <Modal
+      title={t('New pressure run', '新压力运行')}
+      open={pressureOpen}
+      onCancel={() => setPressureOpen(false)}
+      footer={null}
+      destroyOnHidden
+    >
+      <Form
+        layout="vertical"
+        initialValues={{ platform: 'douyin', eventsPerSecond: 50, sessions: 4, producerConnections: 4, durationSeconds: 30, profileSeconds: 30 } as Partial<PressureForm>}
+        onFinish={(values: PressureForm) =>
+          void run(async () => postAdminJson(token ?? '', '/api/pressure/runs', {
+            baseUrl: values.baseUrl,
+            platform: values.platform,
+            eventsPerSecond: values.eventsPerSecond,
+            sessions: values.sessions,
+            producerConnections: values.producerConnections,
+            durationSeconds: values.durationSeconds,
+            signSecret: values.signSecret || null,
+            profileSeconds: values.profileSeconds || 0,
+            profileProcessId: values.profileProcessId || 0,
+            rootCaPemPath: values.rootCaPemPath || '',
+          }))}
+      >
+        <Form.Item name="baseUrl" label={t('Ingress base URL', '入口基址')} rules={[{ required: true }]}>
+          <Input placeholder="https://platform-gateway:443" />
+        </Form.Item>
+        <Form.Item name="platform" label={t('Platform', '平台')} rules={[{ required: true }]}>
+          <Input />
+        </Form.Item>
+        <Form.Item name="eventsPerSecond" label={t('Events / second', '事件/秒')} rules={[{ required: true }]}>
+          <InputNumber min={1} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="sessions" label={t('Sessions', '会话数')} rules={[{ required: true }]}>
+          <InputNumber min={1} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="producerConnections" label={t('Producers', '生产者数')} rules={[{ required: true }]}>
+          <InputNumber min={1} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="durationSeconds" label={t('Duration (s)', '时长（秒）')} rules={[{ required: true }]}>
+          <InputNumber min={1} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="signSecret" label={t('Signing secret', '签名密钥')}>
+          <Input.Password />
+        </Form.Item>
+        <Form.Item name="profileSeconds" label={t('Profile window (s, 0 = off)', '采样窗口（秒，0=关）')}>
+          <InputNumber min={0} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="profileProcessId" label={t('Profile process id (0 = this host)', '采样进程号（0=本机）')}>
+          <InputNumber min={0} style={{ width: '100%' }} />
+        </Form.Item>
+        <Form.Item name="rootCaPemPath" label={t('Root CA (PEM path, optional)', '根证书（PEM 路径，可选）')}>
+          <Input />
+        </Form.Item>
+        {commandError !== null && <Alert type="error" showIcon message={commandError} />}
+        <Button type="primary" htmlType="submit">{t('Start', '启动')}</Button>
+      </Form>
+    </Modal>
+  );
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size={16}>
       <Space>
         <Button icon={<ReloadOutlined />} onClick={() => void load()}>{t('Refresh', '刷新')}</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCommandError(null); setEditor({ open: true, scenario: null }); }}>
           {t('New scenario', '新场景')}
+        </Button>
+        <Button type="primary" icon={<ThunderboltOutlined />} onClick={() => { setCommandError(null); setPressureOpen(true); }}>
+          {t('New pressure run', '新压力运行')}
         </Button>
         <Typography.Text type="secondary">
           {t('Runs ride the real chain — mount, ingress, ticks — and reconcile against the data plane.', '运行走真实链路——挂载、入口、tick——并与数据面对账。')}
@@ -412,6 +522,81 @@ export default function BotsPage() {
             );
           })}
         </Col>
+        <Col xs={24}>
+          {faceCard(t('Pressure runs', '压力运行'), faces.pressure as Face<never>, (value) => {
+            const pressure = value as PressureRow[];
+            return (
+              <Table
+                size="small"
+                rowKey="id"
+                pagination={false}
+                dataSource={pressure}
+                expandable={{
+                  expandedRowRender: (entry) => (
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      {entry.error !== null && <Typography.Text type="danger">{entry.error}</Typography.Text>}
+                      {entry.speedscopePath !== null ? (
+                        <Typography.Text code copyable={{ text: entry.speedscopePath }}>
+                          {entry.speedscopePath}
+                        </Typography.Text>
+                      ) : entry.tracePath !== null ? (
+                        <Typography.Text type="secondary">
+                          {t('No speedscope landed — the trace window or its conversion was missed.', '未生成 speedscope——采样窗口或其转换未落地。')}
+                        </Typography.Text>
+                      ) : null}
+                      {entry.hotFrames.length > 0 ? (
+                        <List
+                          size="small"
+                          dataSource={entry.hotFrames}
+                          renderItem={(frame) => (
+                            <List.Item>
+                              <Space>
+                                <Tag color="red">{frame.selfSharePercent}%</Tag>
+                                <Typography.Text code>{frame.frame}</Typography.Text>
+                              </Space>
+                            </List.Item>
+                          )}
+                        />
+                      ) : null}
+                    </Space>
+                  ),
+                }}
+                columns={[
+                  { title: t('Run', '运行'), dataIndex: 'id' },
+                  {
+                    title: t('State', '状态'),
+                    dataIndex: 'state',
+                    render: (state: string) => (
+                      <Tag color={state === 'Completed' ? 'green'
+                        : state === 'Failed' ? 'red' : state === 'Running' ? 'processing' : 'blue'}>{state}</Tag>
+                    ),
+                  },
+                  { title: t('Sent', '已发送'), render: (_, entry) => entry.sample?.sent ?? '—' },
+                  {
+                    title: t('Face', '入口'),
+                    render: (_, entry) => entry.sample === null ? '—'
+                      : `${entry.sample.accepted}/${entry.sample.duplicated}/${entry.sample.unauthorized}/${entry.sample.rateLimited}/${entry.sample.other}`,
+                  },
+                  {
+                    title: t('Rate', '速率'),
+                    render: (_, entry) => entry.sample === null ? '—'
+                      : `${entry.sample.achievedPerSecond} / ${entry.sample.targetPerSecond}`,
+                  },
+                  { title: t('Hot frames', '热点栈'), render: (_, entry) => entry.hotFrames.length === 0 ? '—' : entry.hotFrames[0].frame },
+                  { title: t('Started', '开始于'), render: (_, entry) => entry.startedAt === null ? '—' : new Date(entry.startedAt).toLocaleTimeString() },
+                  {
+                    title: t('Actions', '操作'),
+                    render: (_, entry) => pressureTerminalStates.includes(entry.state) ? '—' : (
+                      <Popconfirm title={t('Stop run', '停止运行')} onConfirm={() => void run(async () => postAdminJson(token ?? '', `/api/pressure/runs/${entry.id}/stop`))}>
+                        <Button size="small" danger icon={<StopOutlined />}>{t('Stop', '停止')}</Button>
+                      </Popconfirm>
+                    ),
+                  },
+                ]}
+              />
+            );
+          })}
+        </Col>
         <Col xs={24} xl={8}>
           {faceCard(t('Ingress face', '入口面'), faces.ingress as Face<never>, (value) => {
             const ingress = value as IngressStats;
@@ -473,6 +658,7 @@ export default function BotsPage() {
       </Row>
       {scenarioEditor}
       {startDialog}
+      {pressureDialog}
     </Space>
   );
 }

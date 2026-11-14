@@ -4,11 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { ConsoleRoot } from '../App';
 
-// The BOTS-2 bots page against its five faces, mocked at the fetch boundary:
-// scenarios and runs render as the fleet service stated them, the ingress and
-// delivery statistics faces answer as the overview's own, one face's failure is
-// that card's error, and the commands (create a scenario, start a run) speak to
-// the admin group's bots routes with the bodies the fleet service parses.
+// The BOTS-2/BOTS-3 bots page against its faces, mocked at the fetch boundary:
+// scenarios and runs render as the fleet service stated them, the pressure runs
+// carry their one-click capture (speedscope path and hottest frames), the ingress
+// and delivery statistics faces answer as the overview's own, one face's failure is
+// that card's error, and the commands (create a scenario, start a run, start a
+// pressure run) speak to the admin group's bots and pressure routes with the bodies
+// the fleet services parse.
 
 const gmIdentity = {
   operatorId: 'gm-alice',
@@ -45,6 +47,24 @@ function botsFaces() {
           scheduled: 312, posted: 312,
           poster: { accepted: 310, duplicated: 2, unauthorized: 0, rateLimited: 0, other: 0 },
         },
+      }],
+    },
+    '/api/pressure/runs': {
+      status: 200,
+      body: [{
+        id: 'pressure-run-1', state: 'Completed',
+        sample: {
+          sent: 58, accepted: 58, duplicated: 0, rateLimited: 0, laneFull: 0,
+          unauthorized: 0, other: 0, targetPerSecond: 60, elapsedSeconds: 30,
+          achievedPerSecond: 1.9,
+        },
+        startedAt: '2026-11-14T10:00:00Z', finishedAt: '2026-11-14T10:00:30Z', error: null,
+        tracePath: 'flamegraphs/pressure_pressure-run-1_20261114.nettrace',
+        speedscopePath: 'flamegraphs/pressure_pressure-run-1_20261114.speedscope.json',
+        hotFrames: [
+          { frame: 'HandleIngress', selfSharePercent: 85.7 },
+          { frame: 'Run', selfSharePercent: 14.3 },
+        ],
       }],
     },
     '/api/ingress/stats': {
@@ -119,7 +139,7 @@ describe('the bots page', () => {
         <ConsoleRoot />
       </MemoryRouter>,
     );
-    await openBots();
+    const user = await openBots();
 
     const scenariosCard = screen.getByText('Scenarios').closest('.ant-card') as HTMLElement;
     expect(within(scenariosCard).getAllByText('sc-1').length).toBeGreaterThan(0);
@@ -131,6 +151,24 @@ describe('the bots page', () => {
     expect(within(runsCard).getAllByText('sc-1').length).toBeGreaterThan(0);
     expect(within(runsCard).getAllByText('Running').length).toBeGreaterThan(0);
     expect(within(runsCard).getAllByText('312').length).toBeGreaterThan(0);
+
+    // The pressure face: the run, its counts, the achieved rate against the target,
+    // and — one expansion — the speedscope path the one-click capture landed. antd's
+    // expand icon carries no accessible name, so the chevron is queried by its class.
+    const pressureCard = screen.getByText('Pressure runs').closest('.ant-card') as HTMLElement;
+    expect(within(pressureCard).getAllByText('pressure-run-1').length).toBeGreaterThan(0);
+    expect(within(pressureCard).getAllByText('Completed').length).toBeGreaterThan(0);
+    expect(within(pressureCard).getByText('58')).toBeInTheDocument();
+    expect(within(pressureCard).getByText('1.9 / 60')).toBeInTheDocument();
+    expect(within(pressureCard).getAllByText('HandleIngress').length).toBeGreaterThan(0);
+    const expand = pressureCard.querySelector('.ant-table-row-expand-icon') as HTMLElement;
+    expect(expand).not.toBeNull();
+    await user.click(expand);
+    await waitFor(() => {
+      expect(within(pressureCard).getByText(
+        'flamegraphs/pressure_pressure-run-1_20261114.speedscope.json',
+      )).toBeInTheDocument();
+    });
 
     const ingressCard = screen.getByText('Ingress face').closest('.ant-card') as HTMLElement;
     expect(within(ingressCard).getByText('310')).toBeInTheDocument();
@@ -146,10 +184,10 @@ describe('the bots page', () => {
     // pinned against prefix drift. The bots-unique faces answer exactly once; the two
     // statistics faces are shared with the home overview, which also fetched them while
     // the session landed on /home before the menu click.
-    for (const path of ['/api/bots/scenarios', '/api/bots/runs', '/api/ingress/stats', '/api/delivery/stats', '/api/ops/alerts']) {
+    for (const path of ['/api/bots/scenarios', '/api/bots/runs', '/api/pressure/runs', '/api/ingress/stats', '/api/delivery/stats', '/api/ops/alerts']) {
       const hits = gets.filter((call) => call === path);
       expect(hits.length).toBeGreaterThanOrEqual(1);
-      if (path === '/api/bots/scenarios' || path === '/api/bots/runs') {
+      if (path === '/api/bots/scenarios' || path === '/api/bots/runs' || path === '/api/pressure/runs') {
         expect(hits).toHaveLength(1);
       }
       const init = fetchMock.mock.calls.filter(([u]) => String(u).split('?')[0] === path).at(-1);
@@ -297,5 +335,48 @@ describe('the bots page', () => {
     expect(started?.body.nodeAuthorityPemPath).toBe('/etc/chorus/node.pem');
     expect(started?.body.serverRole).toBe('streamer-gateway');
     expect(started?.body.viewerCount).toBe(8);
+  });
+
+  it('starts a pressure run through the dialog and speaks to the pressure route with the driver config', { timeout: 20000 }, async () => {
+    const { fetchMock, posts } = botsFetch();
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <ConsoleRoot />
+      </MemoryRouter>,
+    );
+    const user = await openBots();
+
+    await user.click(screen.getByRole('button', { name: /New pressure run/ }));
+    // The header button shares the dialog's text, so the modal is pinned by its title.
+    const modal = await waitFor(() => {
+      const title = screen.getByText('New pressure run', { selector: '.ant-modal-title' });
+      return title.closest('.ant-modal') as HTMLElement;
+    });
+    await user.type(within(modal).getByLabelText('Ingress base URL'), 'https://platform-gateway:443');
+    await user.clear(within(modal).getByLabelText('Events / second'));
+    await user.type(within(modal).getByLabelText('Events / second'), '120');
+    // The profile window is the one-click capture: 30s of dotnet-trace over the
+    // driver's own process unless the operator names another pid.
+    await user.clear(within(modal).getByLabelText('Profile window (s, 0 = off)'));
+    await user.type(within(modal).getByLabelText('Profile window (s, 0 = off)'), '30');
+    await user.type(within(modal).getByLabelText('Root CA (PEM path, optional)'), '/etc/chorus/root.pem');
+    await user.click(within(modal).getByRole('button', { name: 'Start', exact: true }));
+
+    await waitFor(() => {
+      expect(posts.some((post) => post.path === '/api/pressure/runs')).toBe(true);
+    });
+    const pressure = posts.find((post) => post.path === '/api/pressure/runs');
+    expect(pressure?.body.baseUrl).toBe('https://platform-gateway:443');
+    expect(pressure?.body.platform).toBe('douyin');
+    expect(pressure?.body.eventsPerSecond).toBe(120);
+    expect(pressure?.body.sessions).toBe(4);
+    expect(pressure?.body.producerConnections).toBe(4);
+    expect(pressure?.body.durationSeconds).toBe(30);
+    expect(pressure?.body.signSecret).toBeNull();
+    expect(pressure?.body.profileSeconds).toBe(30);
+    expect(pressure?.body.profileProcessId).toBe(0);
+    expect(pressure?.body.rootCaPemPath).toBe('/etc/chorus/root.pem');
   });
 });

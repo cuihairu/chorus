@@ -7,6 +7,7 @@ const guideLinks = [
   "/guide/split-mode",
   "/guide/independent-gateways",
   "/guide/load-testing",
+  "/guide/bots",
   "/guide/battle",
   "/guide/matchmaking",
   "/guide/leaderboard",

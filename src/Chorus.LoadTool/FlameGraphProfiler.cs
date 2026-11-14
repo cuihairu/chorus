@@ -54,6 +54,28 @@ public sealed class FlameGraphProfiler
             return null;
         }
 
+        // A missing tool stays side-effect-free: guidance, no directory, no trace.
+        if (string.IsNullOrWhiteSpace(toolPath) || !File.Exists(toolPath))
+        {
+            Console.Error.WriteLine(MissingToolMessage);
+            return null;
+        }
+
+        Directory.CreateDirectory(options.FlameGraphDir);
+        var tracePath = Path.Combine(options.FlameGraphDir,
+            $"loadtool_{DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss", CultureInfo.InvariantCulture)}_{Environment.ProcessId}.nettrace");
+        return TryStart(TraceDurationSeconds(options), tracePath, Environment.ProcessId, toolPath);
+    }
+
+    /// <summary>
+    /// The panel-facing seam (BOTS-3): capture one bounded cpu-sampling window of an
+    /// explicit process into an explicit trace path — the control panel's pressure runs
+    /// pass the driver process's own pid (or an operator-named gateway pid). Same
+    /// contract as the options overload: missing tool or failed spawn is guidance and a
+    /// null return, never an abort.
+    /// </summary>
+    public static FlameGraphProfiler? TryStart(int durationSeconds, string tracePath, int processId, string? toolPath)
+    {
         if (string.IsNullOrWhiteSpace(toolPath) || !File.Exists(toolPath))
         {
             Console.Error.WriteLine(MissingToolMessage);
@@ -62,11 +84,7 @@ public sealed class FlameGraphProfiler
 
         try
         {
-            var duration = TraceDurationSeconds(options);
-            Directory.CreateDirectory(options.FlameGraphDir);
-            var tracePath = Path.Combine(options.FlameGraphDir,
-                $"loadtool_{DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss", CultureInfo.InvariantCulture)}_{Environment.ProcessId}.nettrace");
-
+            var duration = Math.Max(1, durationSeconds);
             var startInfo = new ProcessStartInfo
             {
                 FileName = toolPath,
@@ -78,7 +96,7 @@ public sealed class FlameGraphProfiler
             startInfo.ArgumentList.Add("--profile");
             startInfo.ArgumentList.Add("cpu-sampling");
             startInfo.ArgumentList.Add("--process-id");
-            startInfo.ArgumentList.Add(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+            startInfo.ArgumentList.Add(processId.ToString(CultureInfo.InvariantCulture));
             startInfo.ArgumentList.Add("--duration");
             startInfo.ArgumentList.Add(duration.ToString(CultureInfo.InvariantCulture));
             startInfo.ArgumentList.Add("-o");
@@ -92,7 +110,7 @@ public sealed class FlameGraphProfiler
                 return null;
             }
 
-            Console.WriteLine($"[loadtool] flamegraph: tracing pid={Environment.ProcessId} for {duration}s -> {tracePath}");
+            Console.WriteLine($"[loadtool] flamegraph: tracing pid={processId} for {duration}s -> {tracePath}");
             return new FlameGraphProfiler(toolPath, process, tracePath) { DurationSeconds = duration };
         }
         catch (Exception ex)

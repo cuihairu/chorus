@@ -53,6 +53,7 @@ builder.Services.AddSingleton(new OpsAlertsStore(
 builder.Services.AddSingleton<RoomControlStore>();
 builder.Services.AddSingleton(new BotScenarioStore(controlDatabase));
 builder.Services.AddSingleton(new BotFleetService());
+builder.Services.AddSingleton(new PressureFleetService());
 builder.Services.AddHostedService<ControlMaintenance>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
 {
@@ -193,6 +194,10 @@ admin.MapPost("/bots/scenarios/{id}/start", (string id, BotRunConfig r, BotScena
 admin.MapGet("/bots/runs", (BotFleetService f) => f.Runs());
 admin.MapGet("/bots/runs/{id}", (string id, BotFleetService f) => f.Run(id));
 admin.MapPost("/bots/runs/{id}/stop", (string id, HttpContext c, BotFleetService f) => new { stopped = f.Stop(id) }).RequireAuthorization("operate");
+admin.MapPost("/pressure/runs", (PressureStart r, PressureFleetService f) => f.Start(r)).RequireAuthorization("operate");
+admin.MapGet("/pressure/runs", (PressureFleetService f) => f.Runs());
+admin.MapGet("/pressure/runs/{id}", (string id, PressureFleetService f) => f.Run(id));
+admin.MapPost("/pressure/runs/{id}/stop", (string id, PressureFleetService f) => new { stopped = f.Stop(id) }).RequireAuthorization("operate");
 app.Run();
 
 namespace Chorus.ControlHost
