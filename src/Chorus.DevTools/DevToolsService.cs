@@ -328,7 +328,15 @@ public sealed class DevToolsService(DevToolsOptions options, Channel<DevLogEntry
 
         public void Dispose()
         {
-            _writeLock.Dispose();
+            // The write lock is deliberately NOT disposed: Remove() races the
+            // other push loop (metrics and logs drain concurrently), and a
+            // writer holding or awaiting the semaphore when it dies turns
+            // Release()/WaitAsync() into ObjectDisposedException — poisoning
+            // that loop and taking every client down with it. A caught write
+            // on the closed stream is contained instead (each BroadcastAsync
+            // try/catches, Remove is idempotent, Dispose of the semaphore
+            // buys nothing: this lock never touches AvailableWaitHandle, so
+            // it owns no OS handle for the GC to collect).
             Stream.Dispose();
         }
     }

@@ -72,6 +72,8 @@ export interface QueueDepth {
 
 export interface TransportStats extends QueueDepth {
   skippedEmptyFrames: number;
+  /** Frame-level decode misses plus typed bodies that missed their shape —
+   * everything the link carried that no consumer could read. */
   malformedFrames: number;
 }
 
@@ -101,7 +103,10 @@ export class DevToolsTransport extends EventEmitter {
   private readonly capacity: number;
   private readonly batchSize: number;
   private readonly backoff: ReconnectBackoff;
-  private readonly frames = new FrameAccumulator();
+  /** Frame bytes of the CURRENT stream. Rebuilt at every connect: a partial
+   * frame from a dead link must never meet the next link's bytes — the two
+   * streams share nothing. */
+  private frames = new FrameAccumulator();
 
   private socket: net.Socket | null = null;
   private stateValue: LinkState = "idle";
@@ -199,6 +204,9 @@ export class DevToolsTransport extends EventEmitter {
 
     socket.once("connect", () => {
       clearTimeout(connectTimer);
+      // A fresh stream carries fresh bytes: drop any partial frame the
+      // previous link left in the accumulator.
+      this.frames = new FrameAccumulator();
       this.backoff.reset();
       this.setState("ready");
       if (this.connectWait) {
@@ -272,12 +280,20 @@ export class DevToolsTransport extends EventEmitter {
     while (this.queue.length > 0 && handed < this.batchSize) {
       const envelope = this.queue.shift()!;
       this.emit("envelope", envelope);
-      if (envelope.type === DevMetricsType && this.listenerCount("metrics") > 0) {
-        const snapshot = asMetricsSnapshot(envelope);
-        if (snapshot) this.emit("metrics", snapshot, envelope);
-      } else if (envelope.type === DevLogType && this.listenerCount("log") > 0) {
-        const entry = asLogEntry(envelope);
-        if (entry) this.emit("log", entry, envelope);
+      // The typed narrowers throw on a body that misses its shape — a valid
+      // envelope with a foreign body is one bad payload, not a drain-crashing
+      // error: count it, report it, keep delivering the rest.
+      try {
+        if (envelope.type === DevMetricsType && this.listenerCount("metrics") > 0) {
+          const snapshot = asMetricsSnapshot(envelope);
+          if (snapshot) this.emit("metrics", snapshot, envelope);
+        } else if (envelope.type === DevLogType && this.listenerCount("log") > 0) {
+          const entry = asLogEntry(envelope);
+          if (entry) this.emit("log", entry, envelope);
+        }
+      } catch (error) {
+        this.malformedFrames += 1;
+        if (this.listenerCount("error") > 0) this.emit("error", error as EnvelopeDecodeError);
       }
       handed += 1;
     }

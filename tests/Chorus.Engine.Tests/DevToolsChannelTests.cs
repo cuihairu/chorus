@@ -218,6 +218,10 @@ public sealed class DevToolsChannelTests : IDisposable
             }
         }
 
-        public void Dispose() => _reader.Dispose();
+        public void Dispose()
+        {
+            _reader.Dispose(); // returns the pooled buffer, does not close the stream
+            stream.Dispose(); // actually hangs up: the server's read loop sees EOF
+        }
     }
 }

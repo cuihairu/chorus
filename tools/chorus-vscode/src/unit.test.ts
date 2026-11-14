@@ -39,6 +39,28 @@ describe("panel page", () => {
     expect(html).toContain(`<script nonce="abc123">`);
     expect(html).toContain("acquireVsCodeApi");
     expect((html.match(/<script/g) ?? []).length).toBe(1);
+    // The nonce attribute alone enforces nothing — the policy meta does.
+    expect(html).toContain(
+      `<meta http-equiv="Content-Security-Policy"`,
+    );
+    expect(html).toContain(`script-src 'nonce-abc123'`);
+    expect(html).toContain(`default-src 'none'`);
+  });
+
+  it("wires the filter and level controls to the state they must drive", () => {
+    expect(PANEL_SCRIPT).toContain(`getElementById("filter").addEventListener("input"`);
+    expect(PANEL_SCRIPT).toContain(`getElementById("level").addEventListener("change"`);
+    expect(PANEL_SCRIPT).toContain("state.filter = event.target.value");
+    expect(PANEL_SCRIPT).toContain("state.level = event.target.value");
+  });
+
+  it("names the transport counters by their real keys", () => {
+    // TransportStats exposes dropped/malformedFrames/skippedEmptyFrames —
+    // an off-by-name key renders "undefined" on the panel.
+    expect(PANEL_SCRIPT).toContain("ds.dropped");
+    expect(PANEL_SCRIPT).toContain("ds.malformedFrames");
+    expect(PANEL_SCRIPT).toContain("ds.skippedEmptyFrames");
+    expect(PANEL_SCRIPT).not.toContain("ds.malformed,");
   });
 
   it("renders the charts, the log toolbar, and the sessions table", () => {

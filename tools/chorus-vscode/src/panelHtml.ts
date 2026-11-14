@@ -53,7 +53,7 @@ export const PANEL_SCRIPT = `
     document.getElementById("pid").textContent = state.pid === null ? "—" : String(state.pid);
     const ds = state.dropStats;
     document.getElementById("drops").textContent =
-      ds === null ? "—" : \`dropped \${ds.dropped}, malformed \${ds.malformed}, skipped-empty \${ds.skippedEmptyFrames}\`;
+      ds === null ? "—" : \`dropped \${ds.dropped}, malformed \${ds.malformedFrames}, skipped-empty \${ds.skippedEmptyFrames}\`;
   }
 
   function renderLogs() {
@@ -135,6 +135,17 @@ export const PANEL_SCRIPT = `
     } else if (m.t === "sessions") { state.sessions = m.rows || []; state.sessionsError = m.error || ""; renderSessions(); }
   });
   renderHeader(); renderCharts(); renderSessions();
+
+  // The toolbar drives the state the renderers read; without these the
+  // controls are decoration.
+  document.getElementById("filter").addEventListener("input", (event) => {
+    state.filter = event.target.value;
+    renderLogs();
+  });
+  document.getElementById("level").addEventListener("change", (event) => {
+    state.level = event.target.value;
+    renderLogs();
+  });
 `;
 
 export function panelHtml(args: PanelPageArgs): string {
@@ -142,6 +153,11 @@ export function panelHtml(args: PanelPageArgs): string {
 <html>
 <head>
 <meta charset="UTF-8">
+<!-- The nonce attribute alone enforces nothing; the policy does. No
+     external resources exist on this page, so everything but inline style
+     and the one nonce'd script is denied. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${args.nonce}';">
 <style>
   body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); margin: 8px; }
   h3 { margin: 12px 0 4px 0; font-size: 1.05em; }

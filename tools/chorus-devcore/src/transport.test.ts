@@ -265,6 +265,67 @@ describe("transport", () => {
     await engine.close();
   });
 
+  it("starts every connection with a fresh frame stream", async () => {
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      backoff: { initialMs: 20, maxMs: 100 },
+    });
+    const metrics: DevMetricsSnapshot[] = [];
+    transport.on("metrics", (snapshot) => metrics.push(snapshot));
+    await transport.connect();
+
+    // Half a header from the old link: two bytes that would poison the next
+    // stream if the accumulator carried over. Let them land before the cut.
+    const fresh = encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody())));
+    engine.sendRaw(fresh.subarray(0, 2));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The engine restarts mid-frame; the next link's first full frame must
+    // decode untouched by the stale two bytes.
+    await engine.close();
+    await waitForState(transport, "backoff");
+    const returned = new FakeEngine(dir);
+    await returned.listen();
+    await waitForState(transport, "ready");
+
+    returned.send(envelopeOf("dev.metrics", metricsBody()));
+    await vi.waitFor(() => expect(metrics.length).toBe(1), { timeout: 10000, interval: 5 });
+    expect(metrics[0]!.processId).toBe(process.pid); // a clean snapshot, not merged bytes
+    expect(transport.stats.malformedFrames).toBe(0);
+
+    transport.close();
+    await returned.close();
+  });
+
+  it("counts a typed body that misses its shape without crashing the drain", async () => {
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      autoReconnect: false,
+    });
+    const errors: Error[] = [];
+    transport.on("error", (error) => errors.push(error));
+    const logs: DevLogEntry[] = [];
+    transport.on("log", (entry) => logs.push(entry));
+    await transport.connect();
+
+    // Valid JSON, valid envelope, body that no DevLogEntry could be.
+    engine.send(envelopeOf("dev.log", { level: 42 }));
+    engine.send(envelopeOf("dev.log", logBody()));
+    await vi.waitFor(() => expect(logs.length).toBe(1), { timeout: 10000, interval: 5 });
+    expect(errors.some((e) => e instanceof EnvelopeDecodeError)).toBe(true);
+    expect(transport.stats.malformedFrames).toBe(1);
+    expect(transport.state).toBe("ready"); // the drain survived its own callback
+
+    transport.close();
+    await engine.close();
+  });
+
   it("derives the endpoint the engine binds per platform", () => {
     expect(devtoolsEndpoint("linux", "/tmp/chorus", "chorus")).toEqual({
       kind: "uds",
