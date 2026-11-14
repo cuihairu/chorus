@@ -326,6 +326,38 @@ describe("transport", () => {
     await engine.close();
   });
 
+  it("never delivers queued frames after the link has died", async () => {
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      autoReconnect: false,
+      drainBatchSize: 1,
+    });
+    const delivered: IpcEnvelope[] = [];
+    transport.on("envelope", (envelope) => delivered.push(envelope));
+    await transport.connect();
+
+    // A burst far wider than one frame per drain turn, then the link dies
+    // mid-drain. Whatever is still queued dies with the link — frames that
+    // surface after "closed" would have handlers mark a dead source "up".
+    const burst = Buffer.concat(
+      Array.from({ length: 400 }, () => encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody())))),
+    );
+    engine.sendRaw(burst);
+    engine.dropClients();
+    await engine.close();
+    await waitForState(transport, "closed");
+
+    const atClose = delivered.length;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(delivered.length).toBe(atClose); // nothing surfaced after the death
+    expect(transport.stats.size).toBe(0); // the queue went with the link
+
+    transport.close();
+  });
+
   it("derives the endpoint the engine binds per platform", () => {
     expect(devtoolsEndpoint("linux", "/tmp/chorus", "chorus")).toEqual({
       kind: "uds",

@@ -92,6 +92,16 @@ public sealed class DevToolsService(DevToolsOptions options, Channel<DevLogEntry
             Directory.CreateDirectory(Path.GetDirectoryName(_socketPath)!);
             _listenSocket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             _listenSocket.Bind(new RawUnixEndPoint(_socketPath));
+            // Connecting to a UDS socket takes write permission ON the socket
+            // file — pin it to the owner regardless of umask (a shared
+            // 0002 umask would otherwise let any group member read the
+            // engine's logs). The directory is left as-is: siblings in it
+            // are not ours to restrict. Windows has no file-mode equivalent
+            // (the named-pipe path answers with CurrentUserOnly).
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(_socketPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
             _listenSocket.Listen(8);
             // Identity guard (st_ctime, the bus's own): only ever delete the
             // file this bind created — a rolling restart's new bind must

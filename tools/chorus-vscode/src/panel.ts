@@ -53,6 +53,10 @@ export class ChorusPanel {
 
   private readonly panel: vscode.WebviewPanel;
   private readonly pendingLogs: DevLogEntry[] = [];
+  /** Engine-side push-queue drops, coalesced into one line per flush. */
+  private pendingDropCount = 0;
+  /** Entries the batch cap itself discarded, reported at the next flush. */
+  private batchDropped = 0;
   private logTimer: NodeJS.Timeout | null = null;
   private sessionsTimer: NodeJS.Timeout | null = null;
   private lastStats: TransportStats | null = null;
@@ -95,34 +99,55 @@ export class ChorusPanel {
   }
 
   /** Batches log entries: one message per 500 ms flush, bounded so a burst
-   * drops the batch's tail rather than stacking messages. */
+   * drops the batch's tail — and says so, via the dropped counter the page
+   * folds into its own loss line. */
   postLog(entry: DevLogEntry): void {
     if (this.pendingLogs.length < MAX_BATCHED_LOGS) this.pendingLogs.push(entry);
-    if (this.logTimer) return;
-    this.logTimer = setTimeout(() => {
-      this.logTimer = null;
-      if (this.pendingLogs.length === 0) return;
-      void this.panel.webview.postMessage({ t: "logs", entries: this.pendingLogs.splice(0) });
-    }, LOG_FLUSH_MS);
+    else this.batchDropped += 1;
+    this.scheduleLogFlush();
   }
 
   postBackpressure(depth: QueueDepth): void {
-    void this.panel.webview.postMessage({
-      t: "logs",
-      entries: [
-        {
-          level: "Warning",
-          category: "chorus.devcore",
-          timestampMs: Date.now(),
-          body: `backpressure: ${depth.dropped} frames dropped (queue ${depth.size}/${depth.capacity})`,
-        },
-      ],
-    });
+    // Overflows arrive per frame during a stalled stretch — one message per
+    // drop would itself be the flood. Accumulate; the flush says it once.
+    this.pendingDropCount += depth.dropped;
+    this.scheduleLogFlush();
   }
 
-  /** Starts (or restarts) the /sessions poll against the engine HTTP face. */
+  private scheduleLogFlush(): void {
+    if (this.logTimer) return;
+    this.logTimer = setTimeout(() => {
+      this.logTimer = null;
+      this.flushLogs();
+    }, LOG_FLUSH_MS);
+  }
+
+  private flushLogs(): void {
+    const entries = this.pendingLogs.splice(0);
+    const dropped = this.batchDropped;
+    this.batchDropped = 0;
+    if (this.pendingDropCount > 0) {
+      entries.push({
+        level: "Warning",
+        category: "chorus.devcore",
+        timestampMs: Date.now(),
+        body: `backpressure: ${this.pendingDropCount} frames dropped (engine push queue)`,
+      });
+      this.pendingDropCount = 0;
+    }
+    if (entries.length === 0) return;
+    void this.panel.webview.postMessage({ t: "logs", entries, dropped });
+  }
+
+  /** Starts (or restarts) the /sessions poll against the engine HTTP face.
+   * Only the sessions timer turns over here — the log flush's 500 ms window
+   * is mid-flight state; cancelling it would strand pending entries until
+   * the next log arrives. */
   pollSessions(engineUrl: string, fetchLike: typeof fetch = fetch): void {
-    this.stopTimers();
+    if (this.sessionsTimer) {
+      clearInterval(this.sessionsTimer);
+      this.sessionsTimer = null;
+    }
     const poll = async (): Promise<void> => {
       try {
         const response = await fetchLike(`${engineUrl.replace(/\/$/, "")}/sessions`, {

@@ -70,6 +70,14 @@ describe("panel page", () => {
     expect(PANEL_SCRIPT).not.toContain("ds.malformed,");
   });
 
+  it("folds the extension's batch-cap losses into the page loss line", () => {
+    // The extension's log flush carries its own dropped count (entries the
+    // batch cap discarded); the page must add it to the visible loss line,
+    // not silently ignore it.
+    expect(PANEL_SCRIPT).toContain("state.logDropped += m.dropped || 0");
+    expect(PANEL_SCRIPT).toContain("dropped by the panel");
+  });
+
   it("renders the charts, the log toolbar, and the sessions table", () => {
     const html = panelHtml({ nonce: "n" });
     for (const id of ["cpuChart", "memChart", "filter", "level", "logs", "sessions", "drops"]) {

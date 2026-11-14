@@ -43,12 +43,16 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
 
-  const panelFor = (): ChorusPanel | null => {
+  const panelFor = (): ChorusPanel | null => ChorusPanel.instance;
+
+  /** The panel's link/source line — pushed only when a state changes
+   * (link-state/source-state fire per transition; per-log posting would
+   * itself be an unbatched stream). */
+  const pushStatus = (): void => {
     const panel = ChorusPanel.instance;
-    if (!panel || state.session === null) return null;
+    if (panel === null || state.session === null) return;
     const { link, metrics, log } = state.session.status;
     panel.postStatus({ link, metrics, log });
-    return panel;
   };
 
   const attach = async (): Promise<AttachSession> => {
@@ -60,8 +64,11 @@ export function activate(context: vscode.ExtensionContext): void {
       renderStatus();
       // The telemetry callbacks go quiet across a broken link — the panel
       // would keep its last "ready/up" forever. Push the transition itself.
-      panelFor();
+      pushStatus();
     });
+    // setSource guards equality, so this fires per transition only: the
+    // waiting→up first frames and the off fallbacks.
+    session.on("source-state", () => pushStatus());
     session.on("metrics", (snapshot) => {
       state.lastMetrics = snapshot;
       renderStatus();
@@ -95,10 +102,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const openPanel = async (): Promise<void> => {
     await attach();
     const panel = ChorusPanel.show(context);
-    if (state.session !== null) {
-      const { link, metrics, log } = state.session.status;
-      panel.postStatus({ link, metrics, log });
-    }
+    pushStatus();
     panel.pollSessions(resolveEngineUrl());
   };
 

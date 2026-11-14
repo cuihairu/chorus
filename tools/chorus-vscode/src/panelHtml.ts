@@ -79,7 +79,7 @@ export const PANEL_SCRIPT = `
       list.appendChild(row);
     }
     const dropped = document.getElementById("logDropped");
-    dropped.textContent = state.logDropped > 0 ? \`(\${state.logDropped} older entries dropped from the panel buffer)\` : "";
+    dropped.textContent = state.logDropped > 0 ? \`(\${state.logDropped} entries dropped by the panel: batch cap + page buffer)\` : "";
   }
 
   function renderSessions() {
@@ -127,6 +127,9 @@ export const PANEL_SCRIPT = `
       if (state.mem.length > state.maxPoints) state.mem.shift();
       queueCharts();
     } else if (m.t === "logs") {
+      // Loss the page never saw: entries the extension's batch cap discarded
+      // before this message existed.
+      state.logDropped += m.dropped || 0;
       for (const entry of m.entries) {
         state.logs.push(entry);
         if (state.logs.length > state.maxLogs) { state.logs.shift(); state.logDropped++; }

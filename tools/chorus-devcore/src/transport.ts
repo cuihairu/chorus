@@ -303,6 +303,11 @@ export class DevToolsTransport extends EventEmitter {
   private onLinkFailure(error: Error): void {
     if (this.closing) return;
     this.teardownSocket();
+    // The dead link's undelivered frames die with it: a queued frame that
+    // lands after the state transition would have handlers mark sources
+    // "up" over a "closed"/"waiting" status — telemetry resurrecting a
+    // source that has nothing behind it.
+    this.queue.length = 0;
     if (this.connectWait) {
       const waiter = this.connectWait;
       this.connectWait = null;

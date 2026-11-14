@@ -103,6 +103,33 @@ public sealed class DevToolsChannelTests : IDisposable
     }
 
     [Fact]
+    public async Task TheUnixSocketFileIsOwnerOnly()
+    {
+        var options = new DevToolsOptions
+        {
+            UnixSocketDir = _dir,
+            MetricsIntervalMs = 50,
+            MetricsSampler = () => DevMetricsSnapshot.SelfProcess(1.5),
+        };
+        var queue = Channel.CreateBounded<DevLogEntry>(new BoundedChannelOptions(64));
+        using var service = new DevToolsService(options, queue);
+        await service.StartAsync(_stop.Token);
+
+        var path = Path.Combine(_dir, "chorus_devtools.sock");
+        // Connecting to a UDS socket takes write permission on the socket
+        // file itself, so 0600 pins the devtools plane to the owner no
+        // matter what umask the process inherited. (Windows has no file
+        // mode; the pipe path answers with CurrentUserOnly.)
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        }
+
+        _stop.Cancel();
+        await service.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public void FullQueueDropsTheOldestLogEntriesInsteadOfBlocking()
     {
         var queue = Channel.CreateBounded<DevLogEntry>(new BoundedChannelOptions(2)
