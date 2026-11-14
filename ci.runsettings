@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CI runs the engine suite on 2-core hosted runners under the coverage
+     collector. The host facts each spawn real process clusters (control,
+     data, streamer, gateway, agent); two collections running at once
+     oversubscribe the machine 5-10x and the load-family timeouts (U3D12
+     park chains, M3 agent supervision, M4 parked-room frames) land past
+     their internal budgets — one rotating flake per run (runs 43333626487,
+     43569909790, 43586670501). Serializing the collections costs wall time
+     but lets each cluster converge at roughly local pace. Local gates never
+     pass this file — full-parallel stays the default there. -->
+<RunSettings>
+  <xUnit>
+    <MaxParallelThreads>1</MaxParallelThreads>
+  </xUnit>
+</RunSettings>

@@ -61,7 +61,7 @@ jobs:
         run: dotnet build Chorus.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test Chorus.sln -c Release --no-build
+        run: dotnet test Chorus.sln -c Release --no-build --settings ci.runsettings
 
       # Portable tarball: self-contained, runs on any glibc x64 Linux.
       - name: Publish server (self-contained linux-x64)
