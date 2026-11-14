@@ -654,4 +654,12 @@
   - typecheck（tsc strict）0 错；build 出 dist（NodeNext ESM+声明，Node 供探针/vscode esbuild 双消费）。
   - 真机手测 VERDICT: pass——dist 直连真实 EngineHost `--devtools`：link connecting→ready；6 个 dev.metrics 采样 cpuPercent 连续移动（ProcessCpuGauge 口径、1s 节奏、processId=真引擎）；/health poke 后 5 条 dev.log 流出（Request starting/Executing endpoint 等 category+body 完整）；status {metrics:up, log:up}；优雅停机 socket 清零。
   - 诚实边界：NamedPipe 有端点推导单测，但传输层真连接只在 Linux/UDS 验证过（Windows 实连待 win 机器）；dev.log 无历史回放——attach 之前的日志已被引擎侧广播给零连接丢弃（引擎无重放缓冲，面板从 attach 时刻起算）。
-- [ ] IDE-EXT-003 [P1] vscode 薄壳（IDE 插件地基 3/3）：tools/chorus-vscode——status bar 引擎在线/连接状态+WebView 面板（CPU/内存曲线、日志流过滤搜索、会话/房间快照）+attach/detach 命令+火焰图 speedscope 入口；tools/chorus-vs/ 留 README 路线。验收：vscode-test 冒烟+vsce package 出 .vsix（版本号 0.0.0 不动、不打 marketplace）。
+- [x] IDE-EXT-003 · P1 · vscode 薄壳（IDE 插件地基 3/3）：tools/chorus-vscode（publisher cuihairu）——status bar 在线/追连状态+单例 WebView 面板（CPU%/WorkingSet 双曲线、日志流过滤+级别、/sessions 会话表）+attach/detach/openPanel/sampleFlameGraph 四命令；tools/chorus-vs/ 留 VS 路线 README（本单不做 VS，只标注核心复用法）。（2026-11-14，commit `c6a3599`）
+  - 薄壳成立方式：`@chorus/devcore` 经 tsconfig paths 从源码直入 esbuild bundle（external 仅 vscode）——扩展零运行时依赖，将来 VS 宿主同法复用核心（devcore 是地基，两壳等权）；devcore 补 `AttachSession.stats` 转发（commit `c6e4306`，21/21 回归绿）——面板要诚实的丢失计数，状态在传输不在信封里。
+  - status bar：detached=$(circle-slash) / 追连=$(sync~spin)（tooltip 提示 --devtools）/ ready=$(pulse)+cpu%（pid 进 tooltip）；只镜像 `session.status`，不私养状态机；错误静默（离线引擎是正常态，重连环自追，激活即静默 attach——插上即活）。设置三键 chorus.unixSocketDir/pipePrefix/engineUrl 默认对齐引擎自带值（/tmp/chorus、chorus、dev profile 5067）。
+  - 面板：单例 WebView；nonce CSP 单内联脚本零外部资源；CPU%/WorkingSet canvas 曲线（300 点环）；日志 500ms 批量 postMessage（批上限 500）+页面 2000 条上限（丢弃数如实展示）+子串/级别过滤页内自算零回程；/sessions 表 5s 轮询引擎 HTTP 面（camelCase——最小 API Web defaults，单测钉死防 PascalCase 回归）；backpressure/dropped/malformed 计数进面板。
+  - 火焰图：pid 取自 dev.metrics 快照（未 attach 友好报错不炸）；`dotnet-trace collect --format speedscope` 一步采换 30s；产物落 OS 临时目录（绝不进 workspace）+revealInExplorer+开 speedscope.app（BOTS-3 控制面同款流程）；工具缺失给 `dotnet tool install -g dotnet-trace` 指引。
+  - 测试：vitest 8/8（火焰图 argv/时长钳制/产物在 workspace 外；面板页 nonce 单脚本契约/推送协议四型/camelCase 会话列防回归/页面缓冲上限）；smoke **pass**——xvfb-run 真 headless VS Code（1.146，test-electron 下载 390MB）extension host 拉起+4 命令注册断言+无引擎 detach 干净+未 attach 采样返回不炸。
+  - vsce package：`chorus-vscode-0.0.0.vsix`（103.13 KB，21 文件，dist/extension.js+LICENSE 在包内）——**版本号 0.0.0 不动、不打 marketplace**（版本发布红线同向）。
+  - 引擎侧 dotnet test 全绿由 IDE-EXT-001 承载（6/6+107/107+23/23；本单引擎侧零改动，真机 --devtools 三态手测同前）。
+  - 诚实边界：面板曲线是朴素折线（无缩放/无历史导出——观察面不是分析面）；smoke 依赖 xvfb（本机已有；无显示器 CI runner 需同法注入）；Windows NamedPipe 真连接未验（承袭 devcore 边界）；/sessions 轮询读 HTTP 面（engineUrl 不可达时面板显式标 unreachable，不装死）。
