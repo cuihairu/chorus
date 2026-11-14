@@ -239,7 +239,7 @@ describe('the bots page', () => {
   });
 
   it('creates a scenario through the editor and speaks to the scenarios route', { timeout: 20000 }, async () => {
-    const { fetchMock, gets, posts } = botsFetch({
+    const { fetchMock, posts } = botsFetch({
       '/api/bots/scenarios': {
         status: 200,
         body: [
@@ -362,7 +362,8 @@ describe('the bots page', () => {
     await user.clear(within(modal).getByLabelText('Profile window (s, 0 = off)'));
     await user.type(within(modal).getByLabelText('Profile window (s, 0 = off)'), '30');
     await user.type(within(modal).getByLabelText('Root CA (PEM path, optional)'), '/etc/chorus/root.pem');
-    await user.click(within(modal).getByRole('button', { name: 'Start', exact: true }));
+    // ByRole matches string names exactly; the row button's icon label stays outside.
+    await user.click(within(modal).getByRole('button', { name: 'Start' }));
 
     await waitFor(() => {
       expect(posts.some((post) => post.path === '/api/pressure/runs')).toBe(true);
