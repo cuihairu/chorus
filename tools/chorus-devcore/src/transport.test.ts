@@ -1,3 +1,4 @@
+import * as diagnosticsChannel from "node:diagnostics_channel";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -417,6 +418,7 @@ describe("transport", () => {
     await Promise.all([first, second]);
     expect(secondStateAtResolve).toBe("ready"); // resolved when it truly was
     expect(transport.state).toBe("ready");
+    await vi.waitFor(() => expect(engine.connections).toBe(1)); // the two callers rode one dial
 
     transport.close();
     await engine.close();
@@ -574,14 +576,15 @@ describe("transport", () => {
     });
 
     let reentered = false;
+    let inner: Promise<void> | null = null;
     transport.on("state", (state) => {
       if (state !== "connecting" || reentered) return;
       reentered = true;
-      void transport.connect();
+      inner = transport.connect();
     });
 
     const outer = transport.connect();
-    await outer;
+    await Promise.all([outer, inner!]); // both callers settle on the one attempt
     expect(transport.state).toBe("ready");
 
     // One dial, both callers resolved by it, and close() hangs up everything
@@ -623,6 +626,218 @@ describe("transport", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(transport.state).toBe("closed");
     expect(engine.closedClients).toBe(engine.connections);
+
+    await engine.close();
+  });
+
+  it("joins the one dial when a net diagnostics subscriber reconnects mid-attempt", async () => {
+    // socket.connect() publishes the net.client.socket diagnostics channel
+    // before it returns: a subscriber there reenters the dial's synchronous
+    // segment — the state-event registration fix does not cover this
+    // window. The subscriber's connect() must join the registered attempt;
+    // a late registration let it open a second socket and orphaned the
+    // outer waiter forever.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+    });
+
+    const channel = diagnosticsChannel.channel("net.client.socket");
+    let reentered = false;
+    let inner: Promise<void> | null = null;
+    const subscriber = () => {
+      if (reentered) return;
+      reentered = true;
+      inner = transport.connect();
+    };
+    channel.subscribe(subscriber);
+    try {
+      const outer = transport.connect();
+      await outer;
+      expect(inner).not.toBeNull();
+      await inner!;
+      expect(transport.state).toBe("ready");
+    } finally {
+      channel.unsubscribe(subscriber);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(engine.connections).toBe(1); // the mid-dial caller joined, not dialed
+    transport.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(engine.closedClients).toBe(engine.connections);
+
+    await engine.close();
+  });
+
+  it("stays closed when a net diagnostics subscriber closes the transport mid-attempt", async () => {
+    // The same synchronous window with close(): registration used to land
+    // after the subscriber ran, so the close could not reach the dial — the
+    // socket was registered afterwards and lived past the closed state,
+    // with its deadline timer pinned behind it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const dir = await newDir();
+      const engine = new FakeEngine(dir);
+      await engine.listen();
+      const transport = new DevToolsTransport({
+        endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      });
+
+      const channel = diagnosticsChannel.channel("net.client.socket");
+      let closed = false;
+      const subscriber = () => {
+        if (closed) return;
+        closed = true;
+        transport.close();
+      };
+      channel.subscribe(subscriber);
+      let rejection: Error | null = null;
+      try {
+        await transport.connect().catch((error: Error) => {
+          rejection = error;
+        });
+      } finally {
+        channel.unsubscribe(subscriber);
+      }
+      expect(rejection).not.toBeNull(); // the caller is told, not left pending
+      expect(transport.state).toBe("closed");
+      // Fake-timer advances do not run the real loop; setImmediate pumps let
+      // the socket events the dial started finish arriving.
+      for (let turn = 0; turn < 20; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      // Node's dial may still reach the engine before the repeated teardown
+      // lands — what must hold is that nothing stays connected and no new
+      // dial ever happens.
+      const dialed = engine.connections;
+      expect(dialed).toBeLessThanOrEqual(1);
+      expect(vi.getTimerCount()).toBe(0); // the deadline died with the dial
+
+      // The closed transport never dials again.
+      await vi.advanceTimersByTimeAsync(8000);
+      for (let turn = 0; turn < 20; turn += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(engine.connections).toBe(dialed);
+      expect(engine.closedClients).toBe(engine.connections); // no live line past the close
+
+      await engine.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the receiving stack when an error listener closes the transport", async () => {
+    // One chunk carrying a malformed frame and a valid metrics frame: the
+    // error report used to return and onData kept reading the rest of the
+    // chunk — a closed transport's queue re-seeded with fresh frames.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      autoReconnect: false,
+    });
+
+    const metrics: DevMetricsSnapshot[] = [];
+    transport.on("metrics", (snapshot) => metrics.push(snapshot));
+    let closed = false;
+    transport.on("error", () => {
+      if (closed) return;
+      closed = true;
+      transport.close();
+    });
+
+    await transport.connect();
+    const chunk = Buffer.concat([
+      encodeFrame(Buffer.from("}}} not json {{{")),
+      encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody()))),
+    ]);
+    engine.sendRaw(chunk);
+
+    await vi.waitFor(() => expect(closed).toBe(true));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(metrics).toHaveLength(0); // the frame behind the close never delivered
+    expect(transport.stats.size).toBe(0);
+    expect(transport.state).toBe("closed");
+
+    await engine.close();
+  });
+
+  it("drops the in-flight frame when a backpressure listener closes the transport", async () => {
+    // The overflow report used to return and enqueue pushed the current
+    // frame anyway — a queue refilled behind a closed transport.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      autoReconnect: false,
+      queueCapacity: 1,
+    });
+
+    let closed = false;
+    transport.on("backpressure", () => {
+      closed = true;
+      transport.close();
+    });
+    let deliveriesAfterClose = 0;
+    transport.on("envelope", () => {
+      if (closed) deliveriesAfterClose += 1;
+    });
+
+    await transport.connect();
+    const chunk = Buffer.concat([
+      encodeFrame(JSON.stringify(envelopeOf("dev.log", logBody()))),
+      encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody()))),
+    ]);
+    engine.sendRaw(chunk);
+
+    await vi.waitFor(() => expect(closed).toBe(true));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(transport.stats.dropped).toBe(1);
+    expect(transport.stats.size).toBe(0); // the frame behind the close is not re-seeded
+    expect(deliveriesAfterClose).toBe(0); // and nothing from it ever delivers
+    expect(transport.state).toBe("closed");
+
+    await engine.close();
+  });
+
+  it("stops the drain when an envelope listener closes the transport", async () => {
+    // Delivering the first frame used to return and the typed emits for
+    // that same frame fired behind the close — a closed transport pushing
+    // metrics.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      autoReconnect: false,
+    });
+
+    const metrics: DevMetricsSnapshot[] = [];
+    const envelopes: IpcEnvelope[] = [];
+    transport.on("envelope", (envelope) => {
+      envelopes.push(envelope);
+      if (envelopes.length === 1) transport.close();
+    });
+    transport.on("metrics", (snapshot) => metrics.push(snapshot));
+
+    await transport.connect();
+    const chunk = Buffer.concat([
+      encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody()))),
+      encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody()))),
+    ]);
+    engine.sendRaw(chunk);
+
+    await vi.waitFor(() => expect(transport.state).toBe("closed"));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(metrics).toHaveLength(0); // no typed delivery after closed
+    expect(envelopes).toHaveLength(1); // the close lands on the first frame
+    expect(transport.stats.size).toBe(0);
 
     await engine.close();
   });

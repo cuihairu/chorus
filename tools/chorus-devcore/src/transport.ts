@@ -177,29 +177,46 @@ export class DevToolsTransport extends EventEmitter {
   private beginConnect(): Promise<void> {
     if (this.pendingConnect) return this.pendingConnect;
     if (this.socket && this.stateValue === "ready") return Promise.resolve();
-    // The in-flight attempt registers before anything observes the state: a
-    // "connecting" listener that synchronously calls connect() joins this
-    // attempt, and one that closes lands on a fully built dial. Emitting
-    // first let the listener see an attempt that did not exist yet — its dial
-    // and this one both opened, and the later close left one alive. The
-    // promise is captured locally for the same reason: a listener's close()
-    // rejects and clears the field before this call's return reads it.
+    // The attempt registers in full — waiter and in-flight promise — before
+    // the dial starts, because the dial's synchronous segment can reenter:
+    // Node publishes the net.client.socket diagnostics channel before
+    // net.connect/socket.connect return, so a subscriber there observes the
+    // transport mid-registration. A connect() in that window must find a
+    // joinable attempt (one socket), and a close() there must land on a
+    // fully built one (no socket left alive behind a closed transport).
+    let settleAttempt!: { resolve: () => void; reject: (error: Error) => void };
     const attempt = new Promise<void>((resolve, reject) => {
-      this.connectWait = {
-        resolve: () => {
-          this.connectWait = null;
-          this.pendingConnect = null;
-          resolve();
-        },
-        reject: (error) => {
-          this.connectWait = null;
-          this.pendingConnect = null;
-          reject(error);
-        },
-      };
-      this.openSocket();
+      settleAttempt = { resolve, reject };
     });
+    this.connectWait = {
+      resolve: () => {
+        this.connectWait = null;
+        this.pendingConnect = null;
+        settleAttempt.resolve();
+      },
+      reject: (error) => {
+        this.connectWait = null;
+        this.pendingConnect = null;
+        settleAttempt.reject(error);
+      },
+    };
     this.pendingConnect = attempt;
+    const socket = this.openSocket();
+    if (this.pendingConnect !== attempt) {
+      // A dial-time subscriber closed the transport: Node swallows a
+      // destroy that lands inside the dial's synchronous diagnostics
+      // publish (the connect sequence resets the flag on its way out), so
+      // the close's teardown did not stick. Repeated after the dial's own
+      // stack has unwound, it does — no socket outlives the closed state
+      // and no deadline timer is pinned behind it. The caller still gets
+      // the rejection; the waiter fired during the window, and announcing
+      // "connecting" over "closed" would resurrect a dead attempt.
+      if (socket) {
+        socket.removeAllListeners();
+        socket.destroy();
+      }
+      return attempt;
+    }
     this.setState("connecting");
     return attempt;
   }
@@ -227,12 +244,16 @@ export class DevToolsTransport extends EventEmitter {
     this.emit("state", state);
   }
 
-  private openSocket(): void {
-    const socket = net.connect(
-      this.endpoint.kind === "uds"
-        ? { path: this.endpoint.path }
-        : { path: `\\\\.\\pipe\\${this.endpoint.name}` },
-    );
+  private openSocket(): net.Socket | null {
+    // The socket is built and registered before it dials: socket.connect()
+    // is where synchronous reentrancy lives (the net diagnostics channel
+    // publishes before it returns), so ownership, deadline and listeners are
+    // all in place by then — a subscriber that closes during the call finds
+    // a teardown-able socket, and one that reconnects joins the registered
+    // attempt instead of dialing beside it. The socket is returned so the
+    // caller can finish a teardown that a mid-dial close started: Node
+    // swallows a destroy issued inside the dial's synchronous segment.
+    const socket = new net.Socket();
     socket.setNoDelay(true);
     this.socket = socket;
     this.connectTimer = setTimeout(() => {
@@ -255,6 +276,16 @@ export class DevToolsTransport extends EventEmitter {
     socket.on("data", (chunk: Buffer) => this.onData(chunk));
     socket.once("error", (error: Error) => this.onLinkFailure(error));
     socket.once("close", () => this.onLinkFailure(new TransportError("connection closed")));
+    // A dial-time close() already nulls the field and tears the socket
+    // down; skipping the dial on a superseded object avoids dialing a
+    // destroyed socket outright.
+    if (this.socket !== socket) return socket;
+    socket.connect(
+      this.endpoint.kind === "uds"
+        ? { path: this.endpoint.path }
+        : { path: `\\\\.\\pipe\\${this.endpoint.name}` },
+    );
+    return socket;
   }
 
   private onData(chunk: Buffer): void {
@@ -283,9 +314,16 @@ export class DevToolsTransport extends EventEmitter {
         // reading.
         this.malformedFrames += 1;
         if (this.listenerCount("error") > 0) this.emit("error", error as EnvelopeDecodeError);
+        // A handler that closed the transport during the report ends this
+        // chunk: close() emptied the queue, and the frames behind it in this
+        // call stack would re-seed a closed transport's queue.
+        if (this.closing) return;
         continue;
       }
       this.enqueue(envelope);
+      // The enqueue itself can close (a backpressure handler): the rest of
+      // this chunk belongs to the dead stack.
+      if (this.closing) return;
     }
   }
 
@@ -294,6 +332,9 @@ export class DevToolsTransport extends EventEmitter {
       this.queue.shift();
       this.droppedFrames += 1;
       if (this.listenerCount("backpressure") > 0) this.emit("backpressure", this.depth);
+      // A backpressure handler that closed the transport emptied the queue;
+      // this frame dies with the old stack instead of re-seeding it.
+      if (this.closing) return;
     }
     this.queue.push(envelope);
     this.scheduleDrain();
@@ -315,8 +356,15 @@ export class DevToolsTransport extends EventEmitter {
   private drain(): void {
     let handed = 0;
     while (this.queue.length > 0 && handed < this.batchSize) {
+      // A handler that closed the transport mid-batch ends the old stack:
+      // close() emptied the queue and nothing this call still holds may be
+      // delivered behind the closed state.
+      if (this.closing) return;
       const envelope = this.queue.shift()!;
       this.emit("envelope", envelope);
+      // A close during the envelope delivery still owns the typed emits for
+      // this frame — a closed transport delivers nothing further.
+      if (this.closing) return;
       // The typed narrowers throw on a body that misses its shape — a valid
       // envelope with a foreign body is one bad payload, not a drain-crashing
       // error: count it, report it, keep delivering the rest.
@@ -332,6 +380,8 @@ export class DevToolsTransport extends EventEmitter {
         this.malformedFrames += 1;
         if (this.listenerCount("error") > 0) this.emit("error", error as EnvelopeDecodeError);
       }
+      // The same for a close during the typed emit or its error report.
+      if (this.closing) return;
       handed += 1;
     }
     if (this.queue.length > 0) this.scheduleDrain();
