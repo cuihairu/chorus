@@ -23,8 +23,11 @@
 
 - 站点（GitHub Pages）：`https://cuihairu.github.io/chorus/`
 - 源码：`docs/`
-- 本地预览：`npm install && npm run docs:dev`
-- 构建静态站：`npm run docs:build`（输出：`docs/.vitepress/dist`）
+- 本地预览：`pnpm install && pnpm docs:dev`
+- 构建静态站：`pnpm docs:build`（输出：`docs/.vitepress/dist`）
+
+站点依赖存储为 `pnpm-lock.yaml`（无 `package-lock.json`），[文档工作流](.github/workflows/docs.yml)
+以 `pnpm install --frozen-lockfile` 安装——本地也用 pnpm，构建才可复现。
 
 重点页面：架构说明（分层与取舍） ·
 当前架构总览 ·

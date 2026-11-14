@@ -14,7 +14,7 @@ title: 多直播平台接入资料与架构兼容性
 
 | 平台 | 级别 | 已有实现 | 距 supported 还缺 |
 | --- | --- | --- | --- |
-| 抖音 | implemented（ingest） | mapper/verifier/task adapter 已接线；launch adapter 维持 NotProductionReady（拒绝一切） | 真实联调证据；占位签名协议需官方确认 |
+| 抖音 | implemented（ingest） | mapper/verifier/task adapter 已接线。拉起分两种形态（`Chorus.StreamerServer/Program.cs`）：配置 `CHORUS_DOUYIN_APP_ID`／`APP_SECRET` 时挂载真实 `DouyinMiniGameLaunchAdapter`，声明 `ProductionReady: true`（code2Session OpenAPI 已于 2026-10-14 核验）；未配置时保留 fail-closed 桩 `DouyinLaunchAdapter`，维持 NotProductionReady 并拒绝一切拉起 | 直播事件协议的真实联调证据；ingress verifier／mapper 仍是占位契约，待官方确认 |
 | 快手 | implemented（ingest） | 官方 sha1 签名 verifier + mapper 已接线 | 直播事件通道是否复用此信封，仅联调可确认 |
 | B站 | implemented（adapter，准入待批） | 完整 open-live 适配器：client/protocol/signer/mapper/verifier/ingress 桥 + hosted service；2026-11-14 深化事件归一化（SC/上舰/连线收束） | 平台准入与真实主播联调；桥→入口契约缺口已在架构审查落账（应用身份头、持久待投递） |
 | 斗鱼 | skeleton | `PlatformNames.Douyu` + fail-closed verifier／拒映射 mapper／桥骨架（按设计 fail closed、不注册进任何宿主） | 官方技术 contract：协议版本、签名语义、脱敏样本、签名测试向量 |

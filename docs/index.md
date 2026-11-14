@@ -50,4 +50,4 @@ Independent flows: [client launch](/design/lifecycle-flows#streamer-client-launc
 
 [Frame synchronization, reconnect and all-offline policy](/design/authoritative-sync) · [Built-in capabilities and leaderboards](/design/developer-capabilities)
 
-> Note: the `architecture/redesign-*` milestone records and the `research/` pages are available in English only and have no Chinese mirror yet.
+> Note: the `architecture/redesign-*` milestone records, the `research/` pages, the `analysis/` review records and [platform Unity SDKs](/reference/platform-unity-sdks) are available in English only and have no Chinese mirror yet.

@@ -23,8 +23,12 @@
 
 - Site (GitHub Pages): `https://cuihairu.github.io/chorus/`
 - Source: `docs/`
-- Local preview: `npm install && npm run docs:dev`
-- Static build: `npm run docs:build` (output: `docs/.vitepress/dist`)
+- Local preview: `pnpm install && pnpm docs:dev`
+- Static build: `pnpm docs:build` (output: `docs/.vitepress/dist`)
+
+The site's dependency store is `pnpm-lock.yaml` (no `package-lock.json`), and the
+[docs workflow](.github/workflows/docs.yml) installs with
+`pnpm install --frozen-lockfile` — use pnpm locally so a build reproduces.
 
 Key pages: [architecture & trade-offs](docs/architecture.md) ·
 [current architecture overview](docs/design/architecture-overview.md) ·

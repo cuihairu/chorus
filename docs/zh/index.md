@@ -50,4 +50,4 @@ StreamerServer 通过 DataServer 读写主播资料和执行资产事务：Strea
 
 [帧同步、断线追赶与全员离线策略](/zh/design/authoritative-sync) · [开箱即用能力与排行榜](/zh/design/developer-capabilities)
 
-> 说明：`architecture/redesign-*` 里程碑实录与 `research/` 页面目前仅有英文版，尚无中文对照；`zh/review/luna-review-2026-10-18.md` 仅有中文版。
+> 说明：`architecture/redesign-*` 里程碑实录、`research/` 页面、`analysis/` 评审记录与 `reference/platform-unity-sdks.md` 目前仅有英文版，尚无中文对照；`zh/review/luna-review-2026-10-18.md` 仅有中文版。
