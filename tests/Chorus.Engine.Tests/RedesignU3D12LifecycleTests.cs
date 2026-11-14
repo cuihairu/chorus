@@ -105,8 +105,9 @@ public sealed class RedesignU3D12LifecycleTests
         // 存活性等待（事件不变量），不是性能断言：被停机的房间要先过 15s 所有权门与 5s
         // 恢复扫掠的默认节拍，再经路由传播到边缘（M4 停机同款窗口）。复入的回答与停机
         // 通告赛跑——无论哪个词先到，房间在这个线上的故事都以停机通告收尾，带着恢复将
-        // 落到的纪元。
-        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+        // 落到的纪元。600s 是 CI 满载 runner 的收敛上限（run 43569909790：本地 9-19s 的
+        // 链路在 2 核 + coverage 下 300s 撞线），安静环境在 20s 内返回。
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(600));
         var resumed = await ResumeAsync(wssPort, certs, session.Login.SessionId,
             session.ResumeCredential, room, 0, budget.Token);
         ISyncStream? stream = null;
@@ -157,7 +158,9 @@ public sealed class RedesignU3D12LifecycleTests
             session.BindingId!, session.Login.StreamerId);
         await session.DisconnectAsync();
 
-        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+        // Same CI loaded-runner ceiling as the redeclare fact above (run 43569909790:
+        // 5m4s budget death on a chain that returns in ~14s locally).
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(600));
         var resumed = await ResumeAsync(wssPort, certs, session.Login.SessionId,
             session.ResumeCredential, room, 0, budget.Token);
         // The re-entry races the park like the suspended fact pins; either word says the
