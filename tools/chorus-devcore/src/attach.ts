@@ -19,6 +19,7 @@ import {
   LinkState,
   QueueDepth,
   TransportOptions,
+  TransportStats,
 } from "./transport.js";
 
 export type SourceState = "up" | "waiting" | "off";
@@ -121,6 +122,12 @@ export class AttachSession extends EventEmitter {
   /** The freshest dev.log entry, or null before the first one. */
   get lastLog(): DevLogEntry | null {
     return this.lastLogValue;
+  }
+
+  /** The transport's honest counters (drops, malformed, skipped-empty) —
+   * shells surface them so a lossy stretch never looks clean. */
+  get stats(): TransportStats {
+    return this.transport.stats;
   }
 
   /** Connects (and keeps reconnecting) until detach. The sources read
