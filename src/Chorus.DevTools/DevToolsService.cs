@@ -113,7 +113,12 @@ public sealed class DevToolsService(DevToolsOptions options, Channel<DevLogEntry
 
     private static bool UseUds(IpcTransport transport) => transport switch
     {
-        IpcTransport.Auto => Socket.OSSupportsUnixDomainSockets,
+        // Auto mirrors what the IDE-side core dials by default: on Windows
+        // that is the named pipe (chorus.devtools), everywhere else the UDS
+        // path. Modern Windows does support AF_UNIX, but a default Auto that
+        // binds a socket no default client dials is a dead channel — an
+        // operator who wants UDS on Windows names it explicitly.
+        IpcTransport.Auto => !OperatingSystem.IsWindows() && Socket.OSSupportsUnixDomainSockets,
         IpcTransport.UnixDomainSocket => true,
         IpcTransport.NamedPipe => false,
         // A network transport answers at the start: the devtools plane is a

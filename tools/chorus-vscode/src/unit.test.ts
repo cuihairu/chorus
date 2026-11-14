@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildSampleCommand } from "./flame.js";
+import { buildSampleCommand, samplablePid } from "./flame.js";
 import { panelHtml, PANEL_SCRIPT } from "./panelHtml.js";
 
 describe("flame sample command", () => {
@@ -37,6 +37,16 @@ describe("flame sample command", () => {
     const command = buildSampleCommand(7, 30, path.join(path.sep, "home", "someone", ".tmp"));
     expect(command.output.startsWith(path.join(path.sep, "home", "someone", ".tmp"))).toBe(true);
     expect(command.output.endsWith(".speedscope.json")).toBe(true);
+  });
+
+  it("samples only a ready link whose metrics are up", () => {
+    // lastMetrics survives a link drop; "up" does not — a stale snapshot
+    // must never name a dead (or pid-reused) process.
+    expect(samplablePid({ link: "ready", metrics: "up" }, 4242)).toBe(4242);
+    expect(samplablePid({ link: "backoff", metrics: "up" }, 4242)).toBeNull();
+    expect(samplablePid({ link: "ready", metrics: "waiting" }, 4242)).toBeNull();
+    expect(samplablePid({ link: "ready", metrics: "up" }, undefined)).toBeNull();
+    expect(samplablePid(null, 4242)).toBeNull();
   });
 });
 

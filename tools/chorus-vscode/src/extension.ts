@@ -7,7 +7,7 @@ import * as vscode from "vscode";
 import { AttachSession, DevMetricsSnapshot } from "@chorus/devcore";
 import { resolveEndpoint, resolveEngineUrl } from "./engineConfig.js";
 import { ChorusPanel } from "./panel.js";
-import { buildSampleCommand, requireTool, runSample, sampleDirectory } from "./flame.js";
+import { buildSampleCommand, requireTool, runSample, samplablePid, sampleDirectory } from "./flame.js";
 
 interface AttachState {
   session: AttachSession | null;
@@ -107,15 +107,25 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const sampleFlameGraph = async (): Promise<void> => {
-    if (state.lastMetrics === null) {
-      void vscode.window.showErrorMessage("The engine pid is unknown — attach first (Chorus: Attach to Engine).");
+    // Readiness is checked twice: before the tool probe and again after —
+    // the probe awaits, and a link that dies in between must not leave the
+    // sample aimed at the previous engine process.
+    let pid = samplablePid(state.session?.status ?? null, state.lastMetrics?.processId);
+    if (pid === null) {
+      void vscode.window.showErrorMessage(
+        "No live engine metrics — attach first and wait for the link (Chorus: Attach to Engine).",
+      );
       return;
     }
-    const pid = state.lastMetrics.processId;
     try {
       await requireTool("dotnet-trace");
     } catch (error) {
       void vscode.window.showErrorMessage((error as Error).message);
+      return;
+    }
+    pid = samplablePid(state.session?.status ?? null, state.lastMetrics?.processId);
+    if (pid === null) {
+      void vscode.window.showErrorMessage("The engine link dropped — reattach before sampling.");
       return;
     }
     const command = buildSampleCommand(pid, 30, sampleDirectory());

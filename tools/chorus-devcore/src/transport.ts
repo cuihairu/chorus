@@ -111,6 +111,7 @@ export class DevToolsTransport extends EventEmitter {
   private socket: net.Socket | null = null;
   private stateValue: LinkState = "idle";
   private connectWait: { resolve: () => void; reject: (error: Error) => void } | null = null;
+  private pendingConnect: Promise<void> | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private drainScheduled = false;
   private closing = false;
@@ -147,29 +148,35 @@ export class DevToolsTransport extends EventEmitter {
   /** Opens the socket. Resolves when the engine's endpoint answers; rejects
    * if the first attempt fails (reconnection continues in the background
    * when autoReconnect is on). A manual connect during backoff takes over:
-   * the scheduled retry is cancelled, so exactly one socket ever exists. */
+   * the scheduled retry is cancelled, so exactly one socket ever exists.
+   * Concurrent callers share the one in-flight attempt — nobody is told
+   * the link is up while the first dial is still pending. */
   connect(): Promise<void> {
-    if (this.socket) return Promise.resolve();
+    if (this.socket && this.stateValue === "ready") return Promise.resolve();
     if (this.closing) return Promise.reject(new TransportError("transport is closed"));
+    if (this.pendingConnect) return this.pendingConnect;
     this.closing = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.setState("connecting");
-    return new Promise<void>((resolve, reject) => {
+    this.pendingConnect = new Promise<void>((resolve, reject) => {
       this.connectWait = {
         resolve: () => {
           this.connectWait = null;
+          this.pendingConnect = null;
           resolve();
         },
         reject: (error) => {
           this.connectWait = null;
+          this.pendingConnect = null;
           reject(error);
         },
       };
       this.openSocket();
     });
+    return this.pendingConnect;
   }
 
   /** Closes the transport and cancels any scheduled reconnect. */

@@ -16,6 +16,19 @@ export interface SampleCommand {
   output: string;
 }
 
+/** The pid a sample may target: only a ready link whose metrics source is
+ * up. lastMetrics survives a link drop, but "up" does not — after a drop
+ * the source reads waiting until the current link delivers a fresh frame,
+ * so a stale snapshot can never name a dead (or reused) pid. */
+export function samplablePid(
+  status: { link: string; metrics: string } | null,
+  lastProcessId: number | undefined,
+): number | null {
+  return status !== null && status.link === "ready" && status.metrics === "up" && lastProcessId !== undefined
+    ? lastProcessId
+    : null;
+}
+
 /** Builds the dotnet-trace invocation: collect + convert in one step
  * (--format speedscope). dotnet-trace writes the raw trace to --output
  * verbatim and the converter rewrites it beside itself via ChangeExtension —

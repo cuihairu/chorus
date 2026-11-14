@@ -392,6 +392,31 @@ describe("transport", () => {
     await returned.close();
   });
 
+  it("lets concurrent connect callers share the one in-flight attempt", async () => {
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      autoReconnect: false,
+    });
+
+    // Two callers enter before the dial answers: the second must ride the
+    // same attempt, not be told the link is up while the first is pending.
+    let secondStateAtResolve: LinkState | null = null;
+    const first = transport.connect();
+    const second = transport.connect().then(() => {
+      secondStateAtResolve = transport.state;
+    });
+    expect(transport.state).toBe("connecting"); // the shared attempt is pending
+    await Promise.all([first, second]);
+    expect(secondStateAtResolve).toBe("ready"); // resolved when it truly was
+    expect(transport.state).toBe("ready");
+
+    transport.close();
+    await engine.close();
+  });
+
   it("derives the endpoint the engine binds per platform", () => {
     expect(devtoolsEndpoint("linux", "/tmp/chorus", "chorus")).toEqual({
       kind: "uds",
