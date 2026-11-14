@@ -69,6 +69,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.UnitySdk", "src\Chor
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.SdkWizard", "src\Chorus.SdkWizard\Chorus.SdkWizard.csproj", "{4FF1A8C0-5F69-4EE1-A248-F173E7219F3A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.SimulatorPlatform", "src\Chorus.SimulatorPlatform\Chorus.SimulatorPlatform.csproj", "{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -451,6 +453,18 @@ Global
 		{4FF1A8C0-5F69-4EE1-A248-F173E7219F3A}.Release|x64.Build.0 = Release|Any CPU
 		{4FF1A8C0-5F69-4EE1-A248-F173E7219F3A}.Release|x86.ActiveCfg = Release|Any CPU
 		{4FF1A8C0-5F69-4EE1-A248-F173E7219F3A}.Release|x86.Build.0 = Release|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Debug|x64.Build.0 = Debug|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Debug|x86.Build.0 = Debug|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Release|x64.ActiveCfg = Release|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Release|x64.Build.0 = Release|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Release|x86.ActiveCfg = Release|Any CPU
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -487,5 +501,6 @@ Global
 		{6492A3B4-15A4-402B-BA1E-8D194425AFE0} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
 		{110029A5-10A3-4639-98F2-5B80886B161D} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
 		{4FF1A8C0-5F69-4EE1-A248-F173E7219F3A} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
+		{1B265EA0-900B-4CEF-A3E9-4508408D7A4A} = {F0FD6219-0592-4F1D-BB3D-01B9DA570EE7}
 	EndGlobalSection
 EndGlobal
