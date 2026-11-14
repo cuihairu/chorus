@@ -98,17 +98,24 @@ if (controlEndpoint is { Length: > 0 })
     var runtime = builder.Services.Single(service =>
         service.ServiceType == typeof(RoomRuntime)).ImplementationInstance as RoomRuntime
         ?? throw new InvalidOperationException("The room runtime was not registered.");
-    builder.Services.AddHostedService(_ => new ProcessSelfReporter(
-        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId,
-        reportIntervalMs, roomProgress: () => runtime.RoomStatuses().Select(entry => new RoomProgressReport(
-            entry.RoomId, entry.Status.Epoch, entry.Status.State.ToString(), entry.Status.LastCommittedTick,
-            entry.Status.LastCommittedAt?.ToUnixTimeMilliseconds(), entry.Status.StopReason)).ToList(),
-        // The budget speaks in the report (FIX-SCHED-02): a host at cap announces Full and
-        // the scheduler stops offering it rooms.
-        admission: () => runtime.AdmissionState,
-        // FIX-LINK-01: the host reports Ready only while the data plane it commits frames
-        // through actually answers — an unreachable data channel must never take new rooms.
-        readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(dataChannel, cancellationToken)));
+    // A supervised host skips the self-report — the agent owns its process row, and the
+    // control-plane upsert only updates rows written by the same agent, so a racing
+    // self-report locks the row to the host's own identity and the agent can never
+    // correct it.
+    if (Environment.GetEnvironmentVariable("CHORUS_AGENT_SUPERVISED") != "true")
+    {
+        builder.Services.AddHostedService(_ => new ProcessSelfReporter(
+            serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId,
+            reportIntervalMs, roomProgress: () => runtime.RoomStatuses().Select(entry => new RoomProgressReport(
+                entry.RoomId, entry.Status.Epoch, entry.Status.State.ToString(), entry.Status.LastCommittedTick,
+                entry.Status.LastCommittedAt?.ToUnixTimeMilliseconds(), entry.Status.StopReason)).ToList(),
+            // The budget speaks in the report (FIX-SCHED-02): a host at cap announces Full and
+            // the scheduler stops offering it rooms.
+            admission: () => runtime.AdmissionState,
+            // FIX-LINK-01: the host reports Ready only while the data plane it commits frames
+            // through actually answers — an unreachable data channel must never take new rooms.
+            readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(dataChannel, cancellationToken)));
+    }
     // FIX-OBS-11: the room face's event-chain counters ride the same self-report the
     // readiness rides — one snapshot per interval, named by the dictionary metrics.
     builder.Services.AddHostedService(_ => new AppCounterReporter(

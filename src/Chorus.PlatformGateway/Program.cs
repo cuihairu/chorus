@@ -104,10 +104,17 @@ if (controlEndpoint is { Length: > 0 })
     var reportIntervalMs = int.Parse(Environment.GetEnvironmentVariable("CHORUS_REPORT_INTERVAL_MS") ?? "2000");
     // FIX-LINK-01: the gateway reports Ready only while the data plane its task leases commit
     // through answers — an unreachable lease channel must not present itself as servable.
-    var readinessDataChannel = DataChannel();
-    builder.Services.AddHostedService(_ => new ProcessSelfReporter(
-        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
-        readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(readinessDataChannel, cancellationToken)));
+    // A supervised host skips the self-report — the agent owns its process row, and the
+    // control-plane upsert only updates rows written by the same agent, so a racing
+    // self-report locks the row to the host's own identity and the agent can never
+    // correct it.
+    if (Environment.GetEnvironmentVariable("CHORUS_AGENT_SUPERVISED") != "true")
+    {
+        var readinessDataChannel = DataChannel();
+        builder.Services.AddHostedService(_ => new ProcessSelfReporter(
+            serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
+            readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(readinessDataChannel, cancellationToken)));
+    }
     // The faces' counters ride the same self-report trust (FIX-OBS-10, FIX-OBS-12): the
     // reporter posts the cumulative snapshot every interval and the control plane keeps
     // the series its statistics faces read. The task executor always answers for the

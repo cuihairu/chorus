@@ -329,6 +329,12 @@ public sealed class BootstrapAgent(ILogger<BootstrapAgent> logger) : BackgroundS
         start.Environment["CHORUS_TLS_CERT_PEM"] = certificatePath;
         start.Environment["CHORUS_TLS_KEY_PEM"] = keyPath;
         start.Environment["CHORUS_PORT"] = spec.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // The supervisor owns this process's control-plane row: it reports the slot on the
+        // node's behalf. A supervised host that also self-reported would race the agent for
+        // the same process row — the upsert only updates rows written by the same agent, so
+        // whichever writer lands first locks the row's agent identity and the loser can never
+        // correct it. Self-reporting stays for hosts nobody supervises.
+        start.Environment["CHORUS_AGENT_SUPERVISED"] = "true";
         // The browser face (FIX-WEB-03) gives every control server a second, operator-facing
         // listener; the manifest pins only the cluster ports, so each seed takes a free
         // ephemeral port here — two supervised control servers would otherwise fight over

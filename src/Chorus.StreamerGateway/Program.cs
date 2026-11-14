@@ -159,8 +159,12 @@ var edgeWs = new EdgeWs(edgeOptions, registry, tenantApplications, sessionClient
 
 // Instance self-registration (architecture 4.4): the gateway reports its internal gRPC
 // endpoint — routing consumers are cluster processes, never public clients. The same control
-// endpoint feeds the routing watch that pushes match notices.
-if (controlEndpoint is { Length: > 0 })
+// endpoint feeds the routing watch that pushes match notices. A supervised host skips the
+// self-report: the agent owns its process row, and the control-plane upsert only updates
+// rows written by the same agent — whichever writer lands first locks the row's agent
+// identity and the loser can never correct it.
+var agentSupervised = Environment.GetEnvironmentVariable("CHORUS_AGENT_SUPERVISED") == "true";
+if (controlEndpoint is { Length: > 0 } && !agentSupervised)
 {
     var reportEndpoint = Environment.GetEnvironmentVariable("CHORUS_REPORT_ENDPOINT")
         ?? $"https://localhost:{port}";
@@ -173,8 +177,9 @@ if (controlEndpoint is { Length: > 0 })
     builder.Services.AddHostedService(_ => new ProcessSelfReporter(
         serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
         readinessProbe: cancellationToken => DependencyProbe.ProbeControlAsync(readinessControlChannel, cancellationToken)));
-    builder.Services.AddHostedService(_ => new RoutingMonitorHost(routingMonitor!));
 }
+if (controlEndpoint is { Length: > 0 })
+    builder.Services.AddHostedService(_ => new RoutingMonitorHost(routingMonitor!));
 
 builder.Services.AddSingleton(trustedCertificates);
 builder.Services.AddSingleton(registry);

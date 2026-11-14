@@ -109,11 +109,17 @@ if (controlEndpoint is { Length: > 0 })
             clusterId, "control-server"),
         serverCertificate, root, nodeAuthority, clusterId);
     // FIX-LINK-01: the host reports Ready only while the data plane its sessions commit
-    // through answers; one probe channel lives for the host, never per tick.
-    var readinessDataChannel = DataChannel();
-    builder.Services.AddHostedService(_ => new ProcessSelfReporter(
-        serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
-        readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(readinessDataChannel, cancellationToken)));
+    // through answers; one probe channel lives for the host, never per tick. A supervised
+    // host skips the self-report — the agent owns its process row, and the control-plane
+    // upsert only updates rows written by the same agent, so a racing self-report locks the
+    // row to the host's own identity and the agent can never correct it.
+    if (Environment.GetEnvironmentVariable("CHORUS_AGENT_SUPERVISED") != "true")
+    {
+        var readinessDataChannel = DataChannel();
+        builder.Services.AddHostedService(_ => new ProcessSelfReporter(
+            serverCertificate, root, nodeAuthority, identity, controlEndpoint, reportEndpoint, slotId, reportIntervalMs,
+            readinessProbe: cancellationToken => DependencyProbe.ProbeDataAsync(readinessDataChannel, cancellationToken)));
+    }
     // The mount's match intent (FIX-LINK-03): the business path submits through the control
     // plane, which gates on the registered route source. The wiring is the switch — the
     // coordinator submits only when a submitter is wired — and the default keeps the mount flow
