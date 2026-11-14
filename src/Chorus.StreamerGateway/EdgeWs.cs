@@ -831,11 +831,48 @@ public sealed class EdgeWs(
             status.Generation, status.CurrentRoomId, status.RoundGeneration);
         if (status.CurrentRoomId is not { Length: > 0 }) return;
         // The recovery contract (contracts 3.1) rides this one window: a resumed connection
-        // that exhausts it has no later signal — the room's own progress is a data-plane fact
-        // that fires no routing notice, and nothing else re-triggers the push — so the rejoin
-        // gets a wider bound than the fresh-join beat, whose client still has the match notice.
-        await JoinRoomFanoutAsync(connection, status.CurrentRoomId, status.RoundGeneration,
-            60_000);
+        // has no later signal — the room's own progress is a data-plane fact that fires no
+        // routing notice, and nothing else re-triggers the push — so the rejoin gets a wider
+        // bound than the fresh-join beat, whose client still has the match notice.
+        var seated = await JoinRoomFanoutAsync(connection, status.CurrentRoomId,
+            status.RoundGeneration, 60_000);
+        if (seated || roundClient is null) return;
+        // An exhausted rejoin is the silent dead end of this path, and the cause is not
+        // load alone: a room that parked itself leaves the routing snapshot's rooms leg (only
+        // Preparing, Running and Finishing publish), so a gateway whose first confirmed picture
+        // already postdates the park can never fence the room again — refreshing a world that
+        // will not carry the fact no matter how long the window is. The round store answers by
+        // ids alone, so an unseated rejoin asks it directly and sends the same frames the fan-out
+        // sends when a room's stream ends. (run 43608417170: the resumed connection burned its
+        // whole 600s frame window frameless on the 2-core CI runner for exactly this reason.)
+        try
+        {
+            using var probe = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var round = await roundClient.GetRoundAsync(tenant, status.CurrentRoomId,
+                status.GameId, probe.Token);
+            if (round is { Found: true, Status: "Suspended" })
+            {
+                await connection.SendJsonAsync(new EdgeRoomSuspended
+                {
+                    Reason = "The room is parked for recovery.",
+                    RecoveryAttempt = round.Epoch
+                }, CancellationToken.None);
+            }
+            else if (round is { Found: true })
+            {
+                await connection.SendJsonAsync(new EdgeResyncRequired
+                {
+                    RoomId = status.CurrentRoomId,
+                    RoomEpoch = round.Epoch,
+                    Reason = "The room cannot be reached through routing."
+                }, CancellationToken.None);
+            }
+        }
+        catch (Exception error) when (error is RpcException or OperationCanceledException)
+        {
+            // The probe is best-effort: the round store unreachable leaves the rejoin as it
+            // was before this probe existed, not as a refusal of the resumed connection.
+        }
     }
 
     /// <summary>Fences a room candidate to the connection's own mount: the routing row must be
@@ -881,14 +918,15 @@ public sealed class EdgeWs(
     /// the commit by a routing beat; past the window the queue path's client still learns the
     /// room from its matchStatus and recovers by reconnecting. A resume has no such later
     /// signal (the room's own progress is a data-plane fact and fires no routing notice), so
-    /// an exhausted window there is a silent dead end — the rejoin passes a wider bound. Each
-    /// plane call inside the window carries its own deadline: a call without one can hang past
-    /// the window under load and silently spend every retry it had (run 43595093917: the
-    /// resumed connection sat frameless past its whole budget on the 2-core CI runner).</summary>
-    private async Task JoinRoomFanoutAsync(EdgeConnection connection, string roomId,
+    /// an exhausted window there is the answered dead end the caller probes for — the rejoin
+    /// passes a wider bound and reports seating. Each plane call inside the window carries
+    /// its own deadline: a call without one can hang past the window under load and silently
+    /// spend every retry it had (run 43595093917: the resumed connection sat frameless past
+    /// its whole budget on the 2-core CI runner).</summary>
+    private async Task<bool> JoinRoomFanoutAsync(EdgeConnection connection, string roomId,
         long roundGeneration = 0, int windowMs = 15_000)
     {
-        if (fanout is null || roundClient is null) return;
+        if (fanout is null || roundClient is null) return true;
         for (var deadline = Environment.TickCount64 + windowMs;
              Environment.TickCount64 < deadline;)
         {
@@ -933,7 +971,7 @@ public sealed class EdgeWs(
             }
             var participation = round.Participants.FirstOrDefault(
                 participant => participant.BindingId == connection.BindingId);
-            if (participation is null) return;
+            if (participation is null) return true;
             try
             {
                 fanout.Join(roomId, route.GameId, route.Endpoint, round.Epoch,
@@ -945,8 +983,9 @@ public sealed class EdgeWs(
                 // to hear. The client's requestSnapshot after a reconnect re-seats it.
             }
             connection.MarkParticipation(roomId, fenced.RoundGeneration);
-            return;
+            return true;
         }
+        return false;
     }
 
     private static async Task RefuseAsync(EdgeConnection connection, RpcException error,
