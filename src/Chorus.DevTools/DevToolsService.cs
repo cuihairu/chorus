@@ -187,9 +187,13 @@ public sealed class DevToolsService(DevToolsOptions options, Channel<DevLogEntry
         var pipeName = PipeName();
         while (!stoppingToken.IsCancellationRequested)
         {
+            // CurrentUserOnly: Windows' default pipe ACL lets anyone read, and
+            // the devtools plane carries the engine's logs — the pipe only
+            // answers clients running as the same user (peer-uid check on
+            // Unix), which is the whole threat model for a local dev channel.
             var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut,
                 NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous);
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             try
             {
                 await server.WaitForConnectionAsync(stoppingToken);

@@ -5,13 +5,7 @@
 // attach, render events.
 
 import { EventEmitter } from "node:events";
-import {
-  asLogEntry,
-  asMetricsSnapshot,
-  DevLogEntry,
-  DevMetricsSnapshot,
-  IpcEnvelope,
-} from "./envelope.js";
+import { DevLogEntry, DevMetricsSnapshot, IpcEnvelope } from "./envelope.js";
 import {
   AttachEndpoint,
   DevToolsTransport,
@@ -73,28 +67,20 @@ export class AttachSession extends EventEmitter {
       this.emit("link-state", state);
       this.emit("source-state", this.status);
     });
-    this.transport.on("envelope", (envelope) => {
-      // A body that misses its shape is one bad frame, not a broken shell:
-      // narrow defensively, report, keep the session alive.
-      try {
-        if (envelope.type === "dev.metrics") {
-          const snapshot = asMetricsSnapshot(envelope);
-          if (snapshot) {
-            this.lastMetricsValue = snapshot;
-            this.setSource("metrics", "up");
-            this.emit("metrics", snapshot, envelope);
-          }
-        } else if (envelope.type === "dev.log") {
-          const entry = asLogEntry(envelope);
-          if (entry) {
-            this.lastLogValue = entry;
-            this.setSource("log", "up");
-            this.emit("log", entry, envelope);
-          }
-        }
-      } catch (error) {
-        this.emit("error", error as Error);
-      }
+    // Typed events, not raw envelopes: the transport's drain is where a body
+    // that misses its shape gets narrowed exactly once — counted in
+    // malformedFrames, reported through a listener-guarded error, session
+    // alive. Narrowing here too would double-count and re-break the crash
+    // the transport already guards against.
+    this.transport.on("metrics", (snapshot, envelope) => {
+      this.lastMetricsValue = snapshot;
+      this.setSource("metrics", "up");
+      this.emit("metrics", snapshot, envelope);
+    });
+    this.transport.on("log", (entry, envelope) => {
+      this.lastLogValue = entry;
+      this.setSource("log", "up");
+      this.emit("log", entry, envelope);
     });
     this.transport.on("backpressure", (depth) => this.emit("backpressure", depth));
     this.transport.on("error", (error) => {

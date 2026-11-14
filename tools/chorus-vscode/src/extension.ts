@@ -14,10 +14,13 @@ interface AttachState {
   lastMetrics: DevMetricsSnapshot | null;
 }
 
+// The live session, module-scoped: deactivate must hang up the socket even
+// though the session is not a vscode.Disposable in context.subscriptions.
+const state: AttachState = { session: null, lastMetrics: null };
+
 export function activate(context: vscode.ExtensionContext): void {
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = "chorus.openPanel";
-  const state: AttachState = { session: null, lastMetrics: null };
 
   const renderStatus = (): void => {
     if (state.session === null) {
@@ -53,7 +56,12 @@ export function activate(context: vscode.ExtensionContext): void {
     const session = new AttachSession({ transport: { endpoint: resolveEndpoint() } });
     // The session owns the source state machine (off/waiting/up); the shell
     // only mirrors it.
-    session.on("link-state", () => renderStatus());
+    session.on("link-state", () => {
+      renderStatus();
+      // The telemetry callbacks go quiet across a broken link — the panel
+      // would keep its last "ready/up" forever. Push the transition itself.
+      panelFor();
+    });
     session.on("metrics", (snapshot) => {
       state.lastMetrics = snapshot;
       renderStatus();
@@ -79,6 +87,9 @@ export function activate(context: vscode.ExtensionContext): void {
     state.session = null;
     state.lastMetrics = null;
     renderStatus();
+    // The session is gone, so no callback will ever post again — tell the
+    // panel directly, or it shows the last live state indefinitely.
+    ChorusPanel.instance?.postStatus({ link: "closed", metrics: "off", log: "off" });
   };
 
   const openPanel = async (): Promise<void> => {
@@ -138,5 +149,11 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  // The socket is the OS-level resource: hang up, then dispose the panel —
+  // its onDidDispose stops the /sessions poll with it. (context.subscriptions
+  // — status bar, commands — VS Code disposes on its own.)
+  state.session?.detach();
+  state.session = null;
+  state.lastMetrics = null;
   ChorusPanel.forget();
 }

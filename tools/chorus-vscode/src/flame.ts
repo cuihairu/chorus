@@ -17,11 +17,16 @@ export interface SampleCommand {
 }
 
 /** Builds the dotnet-trace invocation: collect + convert in one step
- * (--format speedscope). The trace file lives under the OS temp dir so a
- * crashed run never leaves junk inside a workspace. */
+ * (--format speedscope). dotnet-trace writes the raw trace to --output
+ * verbatim and the converter rewrites it beside itself via ChangeExtension —
+ * so naming the collect output "*.speedscope.json" would yield
+ * "*.speedscope.speedscope.json". Collect to .nettrace; the file the
+ * operator opens is the extension-swapped sibling. Everything lives under
+ * the OS temp dir so a crashed run never leaves junk inside a workspace. */
 export function buildSampleCommand(pid: number, seconds: number, outDir: string): SampleCommand {
   const duration = `${Math.max(1, Math.floor(seconds))}`;
-  const output = path.join(outDir, `chorus-engine-${pid}-${Date.now()}.speedscope.json`);
+  const trace = path.join(outDir, `chorus-engine-${pid}-${Date.now()}.nettrace`);
+  const output = trace.replace(/\.nettrace$/, ".speedscope.json");
   return {
     file: "dotnet-trace",
     args: [
@@ -33,7 +38,7 @@ export function buildSampleCommand(pid: number, seconds: number, outDir: string)
       "--format",
       "speedscope",
       "--output",
-      output,
+      trace,
     ],
     output,
   };

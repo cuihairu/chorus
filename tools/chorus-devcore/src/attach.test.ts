@@ -159,6 +159,32 @@ describe("attach session", () => {
     await returned.close();
   });
 
+  it("survives a body that misses its shape, with or without an error listener", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "devcore-"));
+    dirs.push(dir);
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    // No 'error' listener on this session on purpose: the narrowing happens
+    // once, in the transport's guarded drain — a shell that does not care
+    // about errors must not have the process crash out from under it.
+    const session = new AttachSession({
+      transport: { endpoint: AttachSession.endpoint("linux", dir, "chorus"), autoReconnect: false },
+    });
+    const logs: DevLogEntry[] = [];
+    session.on("log", (entry) => logs.push(entry));
+    await session.attach();
+
+    engine.send(envelopeOf("dev.log", { level: 42 })); // no DevLogEntry could look like this
+    engine.send(envelopeOf("dev.log", { level: "Information", category: "c", timestampMs: 1, body: "fine" }));
+    await vi.waitFor(() => expect(logs.length).toBe(1), { timeout: 10000, interval: 5 });
+    expect(logs[0]!.body).toBe("fine");
+    expect(session.stats.malformedFrames).toBe(1); // counted where it was narrowed
+    expect(session.status).toEqual({ link: "ready", metrics: "waiting", log: "up" });
+
+    session.detach();
+    await engine.close();
+  });
+
   it("forwards backpressure and errors from the transport", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "devcore-"));
     dirs.push(dir);

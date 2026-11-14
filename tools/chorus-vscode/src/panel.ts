@@ -38,9 +38,17 @@ export class ChorusPanel {
     return this.current;
   }
 
-  /** Forgets a disposed panel so the next show() builds a fresh one. */
+  /** Closes the panel (its onDidDispose stops the polls) and forgets it so
+   * the next show() builds a fresh one. Idempotent. */
   static forget(): void {
+    const panel = this.current;
     this.current = null;
+    panel?.dispose();
+  }
+
+  /** Disposes the webview; the onDidDispose hook stops the timers. */
+  dispose(): void {
+    this.panel.dispose();
   }
 
   private readonly panel: vscode.WebviewPanel;
@@ -56,7 +64,7 @@ export class ChorusPanel {
     this.panel.webview.html = panelHtml({ nonce: ChorusPanel.nonce() });
     this.panel.onDidDispose(
       () => {
-        this.stopSessionsPoll();
+        this.stopTimers();
         ChorusPanel.forget();
       },
       null,
@@ -114,7 +122,7 @@ export class ChorusPanel {
 
   /** Starts (or restarts) the /sessions poll against the engine HTTP face. */
   pollSessions(engineUrl: string, fetchLike: typeof fetch = fetch): void {
-    this.stopSessionsPoll();
+    this.stopTimers();
     const poll = async (): Promise<void> => {
       try {
         const response = await fetchLike(`${engineUrl.replace(/\/$/, "")}/sessions`, {
@@ -135,10 +143,14 @@ export class ChorusPanel {
     this.sessionsTimer = setInterval(() => void poll(), SESSIONS_POLL_MS);
   }
 
-  private stopSessionsPoll(): void {
+  private stopTimers(): void {
     if (this.sessionsTimer) {
       clearInterval(this.sessionsTimer);
       this.sessionsTimer = null;
+    }
+    if (this.logTimer) {
+      clearTimeout(this.logTimer);
+      this.logTimer = null;
     }
   }
 }

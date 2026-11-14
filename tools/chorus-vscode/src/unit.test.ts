@@ -16,9 +16,16 @@ describe("flame sample command", () => {
       "--format",
       "speedscope",
       "--output",
-      expect.stringMatching(/^\/tmp\/chorus-flame\/chorus-engine-4242-\d+\.speedscope\.json$/),
+      expect.stringMatching(/^\/tmp\/chorus-flame\/chorus-engine-4242-\d+\.nettrace$/),
     ]);
-    expect(command.output).toBe(command.args[command.args.length - 1]);
+    // dotnet-trace writes the raw trace to --output verbatim, then the
+    // converter rewrites beside it via ChangeExtension — collecting straight
+    // to "*.speedscope.json" would yield "*.speedscope.speedscope.json".
+    // The file we hand the operator is the extension-swapped sibling.
+    expect(command.output).toBe(
+      (command.args[command.args.length - 1] as string).replace(/\.nettrace$/, ".speedscope.json"),
+    );
+    expect(command.output).toMatch(/^\/tmp\/chorus-flame\/chorus-engine-4242-\d+\.speedscope\.json$/);
   });
 
   it("clamps a nonsense duration to a whole second", () => {
