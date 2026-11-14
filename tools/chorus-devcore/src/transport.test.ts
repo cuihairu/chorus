@@ -731,6 +731,103 @@ describe("transport", () => {
     }
   });
 
+  it("joins the one attempt when a close window's hook reconnects", async () => {
+    // A hook inside the attempt's own Promise construction calls connect():
+    // with no promise registered yet, the reentrant call used to build a
+    // second attempt that the outer one overwrote — two dials, and the
+    // inner waiter stranded when the outer settled.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+    });
+
+    let hooked = false;
+    let inner: Promise<void> | null = null;
+    const hook = asyncHooks
+      .createHook({
+        init(_id, type) {
+          if (type !== "PROMISE" || hooked) return;
+          hooked = true;
+          hook.disable();
+          inner = transport.connect();
+        },
+      })
+      .enable();
+
+    const outer = transport.connect();
+    try {
+      await Promise.all([outer, inner!]); // both callers settle on the one dial
+    } finally {
+      hook.disable();
+    }
+    expect(hooked).toBe(true); // the reentrancy really did land in the window
+    expect(inner).not.toBe(outer); // different promises
+    expect(transport.state).toBe("ready");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(engine.connections).toBe(1); // one dial, not two
+    transport.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(engine.closedClients).toBe(engine.connections);
+
+    await engine.close();
+  });
+
+  it("leaves no retry behind when a close lands in the retry timer's own creation", async () => {
+    // The reconnect timer's async_hooks.init fires before
+    // `this.reconnectTimer = ...` writes its value: a close there cleared
+    // nothing, and the assignment left a referenced retry behind — with the
+    // backoff state published over the closed one. Real timers, so the
+    // retry never fires during the test and the init hook can fire at all.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      backoff: { initialMs: 8000, maxMs: 8000 },
+    });
+    await transport.connect();
+
+    const states: LinkState[] = [];
+    transport.on("state", (state) => states.push(state));
+    const transportState = transport as unknown as { reconnectTimer: unknown; socket: unknown };
+    let hooked = false;
+    let sawNoTimer = false;
+    const hook = asyncHooks
+      .createHook({
+        init(_id, type) {
+          if (type !== "Timeout" || hooked) return;
+          // The retry timer is the one made while the link is already torn
+          // down: pre-failure timers (the drain scheduler's, waitFor's
+          // own) would close the transport before any failure existed.
+          if (transportState.socket !== null) return;
+          hooked = true;
+          hook.disable();
+          sawNoTimer = transportState.reconnectTimer === null;
+          transport.close();
+        },
+      })
+      .enable();
+
+    try {
+      engine.dropClients();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } finally {
+      hook.disable();
+    }
+    expect(hooked).toBe(true); // the close really did land in the timer's creation
+    expect(sawNoTimer).toBe(true); // ... before the retry was written in
+    expect(transport.state).toBe("closed");
+    expect(states).not.toContain("backoff"); // closed is not overwritten
+    expect(transportState.reconnectTimer).toBeNull();
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(engine.connections).toBe(1); // the closed transport never re-dials
+
+    await engine.close();
+  });
+
   it("keeps the transport closed when a close lands in the attempt's own construction", async () => {
     // The promise's async_hooks.init fires before its executor body runs: a
     // subscriber closing there met no waiter, no pending promise and no
@@ -904,6 +1001,46 @@ describe("transport", () => {
     expect(transport.stats.size).toBe(0); // the frame behind the close is not re-seeded
     expect(deliveriesAfterClose).toBe(0); // and nothing from it ever delivers
     expect(transport.state).toBe("closed");
+
+    await engine.close();
+  });
+
+  it("reports but does not re-publish when a metrics listener closes and throws", async () => {
+    // A typed delivery that closes and then throws used to land in the decode
+    // handler: a good frame counted as malformed and an error republished
+    // behind the closed transport.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      autoReconnect: false,
+    });
+
+    const metrics: DevMetricsSnapshot[] = [];
+    const errors: Error[] = [];
+    let closed = false;
+    transport.on("metrics", () => {
+      metrics.push(metricsBody() as unknown as DevMetricsSnapshot);
+      if (closed) return;
+      closed = true;
+      transport.close();
+      throw new Error("consumer threw after closing");
+    });
+    transport.on("error", (error) => errors.push(error));
+
+    await transport.connect();
+    const chunk = Buffer.concat([
+      encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody()))),
+      encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody()))),
+    ]);
+    engine.sendRaw(chunk);
+
+    await vi.waitFor(() => expect(transport.state).toBe("closed"));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(metrics).toHaveLength(1); // the close lands on the first snapshot
+    expect(transport.stats.malformedFrames).toBe(0); // a good frame is not bad
+    expect(errors).toHaveLength(0); // nothing republished behind the close
 
     await engine.close();
   });

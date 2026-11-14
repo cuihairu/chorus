@@ -112,6 +112,11 @@ export class DevToolsTransport extends EventEmitter {
   private stateValue: LinkState = "idle";
   private connectWait: { resolve: () => void; reject: (error: Error) => void } | null = null;
   private pendingConnect: Promise<void> | null = null;
+  /** A dial registration in progress: reentrant connects inside it —
+   * including a hook firing inside the attempt's own Promise construction,
+   * before pendingConnect exists — join the claim and settle with the
+   * attempt instead of dialing beside it. */
+  private connectClaim: { joins: { resolve: (value: void) => void; reject: (error: Error) => void }[] } | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   /** The in-flight dial's deadline (FIX-IDE-8): a dial that fails or is
    * cancelled must not leave it running — a referenced 5s timer pins the
@@ -158,6 +163,7 @@ export class DevToolsTransport extends EventEmitter {
   connect(): Promise<void> {
     if (this.socket && this.stateValue === "ready") return Promise.resolve();
     if (this.closing) return Promise.reject(new TransportError("transport is closed"));
+    if (this.connectClaim) return this.joinClaim();
     if (this.pendingConnect) return this.pendingConnect;
     this.closing = false;
     if (this.reconnectTimer) {
@@ -165,6 +171,15 @@ export class DevToolsTransport extends EventEmitter {
       this.reconnectTimer = null;
     }
     return this.beginConnect();
+  }
+
+  /** Settles with the attempt the claim's owner builds, however it ends —
+   * the joiner never dials and never settles before the attempt does. */
+  private joinClaim(): Promise<void> {
+    const claim = this.connectClaim!;
+    return new Promise<void>((resolve, reject) => {
+      claim.joins.push({ resolve, reject });
+    });
   }
 
   /** The one dial-at-a-time mechanism: state to connecting, one waiter, one
@@ -184,12 +199,24 @@ export class DevToolsTransport extends EventEmitter {
     // transport mid-registration. A connect() in that window must find a
     // joinable attempt (one socket), and a close() there must land on a
     // fully built one (no socket left alive behind a closed transport).
+    // The claim lands first of all: even the attempt's own Promise
+    // construction publishes an async_hooks.init before the promise exists,
+    // and a connect() in that window has no promise to join yet.
+    const claim: { joins: { resolve: (value: void) => void; reject: (error: Error) => void }[] } = {
+      joins: [],
+    };
+    this.connectClaim = claim;
     let settleResolve!: () => void;
     let rejectAttempt!: (error: Error) => void;
     const attempt = new Promise<void>((resolve, reject) => {
       settleResolve = resolve;
       rejectAttempt = reject;
     });
+    this.connectClaim = null;
+    // Joiners created during the construction window settle with the
+    // attempt: one dial, one settlement, nobody left with an orphaned
+    // promise.
+    for (const join of claim.joins) attempt.then(join.resolve, join.reject);
     this.connectWait = {
       resolve: () => {
         this.connectWait = null;
@@ -387,18 +414,42 @@ export class DevToolsTransport extends EventEmitter {
       if (this.closing) return;
       // The typed narrowers throw on a body that misses its shape — a valid
       // envelope with a foreign body is one bad payload, not a drain-crashing
-      // error: count it, report it, keep delivering the rest.
+      // error: count it, report it, keep delivering the rest. The emits sit
+      // outside this handler on purpose: a consumer that throws is a consumer
+      // problem, never a malformed frame, and a throw there must not reach
+      // this catch — that would count a good frame bad and re-publish an
+      // error behind a closed transport.
+      let event: "metrics" | "log" | null = null;
+      let typed: unknown;
       try {
         if (envelope.type === DevMetricsType && this.listenerCount("metrics") > 0) {
           const snapshot = asMetricsSnapshot(envelope);
-          if (snapshot) this.emit("metrics", snapshot, envelope);
+          if (snapshot) {
+            event = "metrics";
+            typed = snapshot;
+          }
         } else if (envelope.type === DevLogType && this.listenerCount("log") > 0) {
           const entry = asLogEntry(envelope);
-          if (entry) this.emit("log", entry, envelope);
+          if (entry) {
+            event = "log";
+            typed = entry;
+          }
         }
       } catch (error) {
         this.malformedFrames += 1;
         if (this.listenerCount("error") > 0) this.emit("error", error as EnvelopeDecodeError);
+        // An error listener that closed ends this batch here.
+        if (this.closing) return;
+        continue;
+      }
+      try {
+        if (event === "metrics") this.emit("metrics", typed as NonNullable<ReturnType<typeof asMetricsSnapshot>>, envelope);
+        else if (event === "log") this.emit("log", typed as NonNullable<ReturnType<typeof asLogEntry>>, envelope);
+      } catch (error) {
+        // A consumer throwing over a well-formed frame is a consumer
+        // problem, never a malformed frame: report it, keep the batch
+        // moving — and never re-publish after an explicit close.
+        if (!this.closing && this.listenerCount("error") > 0) this.emit("error", error as Error);
       }
       // The same for a close during the typed emit or its error report.
       if (this.closing) return;
@@ -451,8 +502,24 @@ export class DevToolsTransport extends EventEmitter {
       // is absorbed here.
       this.beginConnect().catch(() => {});
     }, delay);
+    // A close inside the timer's own async_hooks.init cleared nothing: the
+    // assignment landed behind it, and a referenced retry timer pins the
+    // transport past shutdown — the backoff state over the closed one
+    // would resurrect a dead failure. Drop the timer and hold the closed
+    // state; the failure was already reported when it happened.
+    if (this.closing) {
+      this.clearReconnectTimer();
+      return;
+    }
     this.setState("backoff");
     if (this.listenerCount("error") > 0) this.emit("error", error);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   private clearConnectTimer(): void {
