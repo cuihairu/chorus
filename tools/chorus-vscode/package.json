@@ -1,0 +1,78 @@
+{
+  "name": "chorus-vscode",
+  "displayName": "Chorus",
+  "description": "Attach to a local Chorus engine: live CPU/memory, the engine log stream, session snapshots",
+  "publisher": "cuihairu",
+  "license": "Apache-2.0",
+  "version": "0.0.0",
+  "private": true,
+  "preview": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "chorus.attach",
+        "title": "Chorus: Attach to Engine"
+      },
+      {
+        "command": "chorus.detach",
+        "title": "Chorus: Detach"
+      },
+      {
+        "command": "chorus.openPanel",
+        "title": "Chorus: Open Panel"
+      },
+      {
+        "command": "chorus.sampleFlameGraph",
+        "title": "Chorus: Sample Flame Graph (30s)"
+      }
+    ],
+    "configuration": {
+      "title": "Chorus",
+      "properties": {
+        "chorus.unixSocketDir": {
+          "type": "string",
+          "default": "/tmp/chorus",
+          "description": "Directory the engine's devtools unix socket lives in (Ipc:UnixSocketDir on the host)."
+        },
+        "chorus.pipePrefix": {
+          "type": "string",
+          "default": "chorus",
+          "description": "Endpoint name prefix (Ipc:NamedPipePrefix on the host): {prefix}_devtools.sock / \\\\pipe\\{prefix}.devtools."
+        },
+        "chorus.engineUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:5067",
+          "description": "The engine host's HTTP face (for the /sessions snapshot)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "smoke": "npm run build && xvfb-run -a node smoke/run.mjs",
+    "package": "npm run typecheck && npm run test && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.9.2",
+    "vitest": "^5.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cuihairu/chorus"
+  }
+}
