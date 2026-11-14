@@ -774,6 +774,58 @@ describe("transport", () => {
     await engine.close();
   });
 
+  it("joins the one attempt through both reentrancy windows", async () => {
+    // A hook reconnects from inside the attempt's own Promise construction
+    // and again from inside the joiner bindings that construction ends
+    // with: the second call lands where the claim is already released but
+    // the waiter and the shared promise are registered — it must join that
+    // attempt instead of dialing a second one. Joiner promises are created
+    // inside the hook body, so only out-of-hook promise inits count as
+    // phases.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+    });
+
+    let inHook = false;
+    let phase = 0;
+    let inner: Promise<void> | null = null;
+    let inner2: Promise<void> | null = null;
+    const hook = asyncHooks
+      .createHook({
+        init(_id, type) {
+          if (type !== "PROMISE" || inHook || phase >= 2) return;
+          phase += 1;
+          inHook = true;
+          try {
+            if (phase === 1) inner = transport.connect();
+            else inner2 = transport.connect();
+          } finally {
+            inHook = false;
+          }
+        },
+      })
+      .enable();
+
+    const outer = transport.connect();
+    try {
+      await Promise.all([outer, inner!, inner2!]); // every caller settles on the one dial
+    } finally {
+      hook.disable();
+    }
+    expect(phase).toBe(2); // both reentrancy windows really did land
+    expect(transport.state).toBe("ready");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(engine.connections).toBe(1); // one dial, not two
+    transport.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(engine.closedClients).toBe(engine.connections);
+
+    await engine.close();
+  });
+
   it("leaves no retry behind when a close lands in the retry timer's own creation", async () => {
     // The reconnect timer's async_hooks.init fires before
     // `this.reconnectTimer = ...` writes its value: a close there cleared

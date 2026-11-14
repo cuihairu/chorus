@@ -212,11 +212,6 @@ export class DevToolsTransport extends EventEmitter {
       settleResolve = resolve;
       rejectAttempt = reject;
     });
-    this.connectClaim = null;
-    // Joiners created during the construction window settle with the
-    // attempt: one dial, one settlement, nobody left with an orphaned
-    // promise.
-    for (const join of claim.joins) attempt.then(join.resolve, join.reject);
     this.connectWait = {
       resolve: () => {
         this.connectWait = null;
@@ -230,6 +225,16 @@ export class DevToolsTransport extends EventEmitter {
       },
     };
     this.pendingConnect = attempt;
+    // Register the waiter and the promise BEFORE releasing the claim: the
+    // joiner bindings below create promises of their own, and a connect()
+    // in one of those windows must still find something to join. The
+    // claim-to-registered transition is what every window above relied on
+    // being continuous — keep it that way.
+    this.connectClaim = null;
+    // Joiners created during the construction window settle with the
+    // attempt: one dial, one settlement, nobody left with an orphaned
+    // promise.
+    for (const join of claim.joins) attempt.then(join.resolve, join.reject);
     // close() is what marks a cancel, and connect() cleared the flag before
     // calling here: any synchronous close anywhere in this registration —
     // promise construction, the deadline's timer creation, the dial's
