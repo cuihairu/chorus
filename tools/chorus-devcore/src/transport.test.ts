@@ -789,8 +789,17 @@ describe("transport", () => {
       endpoint: devtoolsEndpoint("linux", dir, "chorus"),
     });
 
+    const transportState = transport as unknown as {
+      connectClaim: unknown;
+      pendingConnect: unknown;
+    };
     let inHook = false;
     let phase = 0;
+    // What each window looked like when it fired: phase one must still see
+    // the claim (the attempt is not registered yet), phase two must see the
+    // claim gone and the promise registered. Record both so a future change
+    // that moves the windows cannot keep the test green by accident.
+    const windows: { claim: unknown; pending: unknown }[] = [];
     let inner: Promise<void> | null = null;
     let inner2: Promise<void> | null = null;
     const hook = asyncHooks
@@ -800,6 +809,10 @@ describe("transport", () => {
           phase += 1;
           inHook = true;
           try {
+            windows.push({
+              claim: transportState.connectClaim,
+              pending: transportState.pendingConnect,
+            });
             if (phase === 1) inner = transport.connect();
             else inner2 = transport.connect();
           } finally {
@@ -816,6 +829,14 @@ describe("transport", () => {
       hook.disable();
     }
     expect(phase).toBe(2); // both reentrancy windows really did land
+    // Phase one: inside the attempt's own construction, so the claim is up
+    // and nothing is registered yet. Phase two: the joiner bindings, so the
+    // claim is released and the attempt is what a connect() would find.
+    expect(windows[0].claim).not.toBeNull();
+    expect(windows[0].pending).toBeNull();
+    expect(windows[1].claim).toBeNull();
+    expect(windows[1].pending).not.toBeNull();
+    expect(inner2).toBe(outer); // phase two joined the attempt instead of dialing
     expect(transport.state).toBe("ready");
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(engine.connections).toBe(1); // one dial, not two
