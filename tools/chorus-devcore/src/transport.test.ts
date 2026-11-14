@@ -13,11 +13,16 @@ class FakeEngine {
   private server = net.createServer((client) => {
     this.clients.push(client);
     this.connections += 1;
+    client.on("close", () => {
+      this.closedClients += 1;
+    });
     client.on("error", () => {});
   });
   private clients: net.Socket[] = [];
   /** Every client the endpoint ever accepted, including closed ones. */
   connections = 0;
+  /** Accepted clients whose socket has fully closed — the hang-up ledger. */
+  closedClients = 0;
   readonly socketPath: string;
 
   constructor(readonly dir: string) {
@@ -481,6 +486,118 @@ describe("transport", () => {
     expect(errors.length).toBe(7);
 
     transport.close();
+  });
+
+  it("runs one socket when an error listener reconnects synchronously", async () => {
+    // The failure handler used to emit 'error' before finalizing its retry:
+    // a listener that reconnects from the error opened its socket, and the
+    // half-finished handler then scheduled a retry of its own — which dials
+    // again when it fires, leaving two live sockets feeding one accumulator.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      backoff: { initialMs: 50, maxMs: 100 },
+    });
+    await transport.connect();
+    await waitForState(transport, "ready");
+    const dialAtBaseline = engine.connections;
+
+    let errorEmitted = false;
+    transport.on("error", () => {
+      errorEmitted = true;
+      // Synchronous takeover: the listener recovers by hand.
+      void transport.connect();
+    });
+
+    engine.dropClients();
+    // The link is still ready when the drop lands — ride the failure down to
+    // backoff before waiting for the takeover.
+    await waitForState(transport, "backoff");
+    await waitForState(transport, "ready");
+    expect(errorEmitted).toBe(true);
+
+    // Well past the retry the old handler would have scheduled: the takeover
+    // is the link, so nothing may have dialed beside it.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(engine.connections).toBe(dialAtBaseline + 1);
+
+    // close() must hang up the one socket it owns — and only that one.
+    const closedBefore = engine.closedClients;
+    transport.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(engine.closedClients).toBe(closedBefore + 1);
+    expect(engine.connections).toBe(dialAtBaseline + 1);
+
+    await engine.close();
+  });
+
+  it("keeps the transport closed when an error listener closes it", async () => {
+    // The old ordering emitted the error first and only then moved the state
+    // machine: a listener that closed from the error met the later backoff
+    // transition and its retry timer, which overwrote the close.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      backoff: { initialMs: 50, maxMs: 100 },
+    });
+    await transport.connect();
+    await waitForState(transport, "ready");
+
+    let sawClosedFromListener = false;
+    transport.on("error", () => {
+      sawClosedFromListener = true;
+      transport.close();
+    });
+
+    engine.dropClients();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(sawClosedFromListener).toBe(true);
+    expect(transport.state).toBe("closed");
+    expect(engine.connections).toBe(1); // the takeover dial never happened
+
+    await engine.close();
+  });
+
+  it("clears the dial's deadline when the dial fails or is cancelled", async () => {
+    // A connect timer cleared only on success pinned a dead socket — and the
+    // whole transport with it — past shutdown in a standalone consumer.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const deadPath = path.join("unused-dir", "chorus_devtools.sock");
+      const options = {
+        endpoint: { kind: "uds" as const, path: deadPath },
+        autoReconnect: false,
+        connectTimeoutMs: 5000,
+      };
+
+      // One dial that is closed before the endpoint can answer it.
+      const cancelled = new DevToolsTransport(options);
+      cancelled.connect().catch(() => {});
+      cancelled.close();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(cancelled.state).toBe("closed");
+
+      // One dial that fails outright (autoReconnect off keeps the count clear
+      // of a retry timer). The dial must leave no deadline behind.
+      const failed = new DevToolsTransport(options);
+      failed.connect().catch(() => {});
+      // The dial's error comes off the real socket loop (only the timers are
+      // faked here), so poll the real event loop until it lands.
+      for (let turn = 0; turn < 20 && failed.state !== "closed"; turn++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(failed.state).toBe("closed");
+      expect(vi.getTimerCount()).toBe(0);
+
+      failed.close();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("derives the endpoint the engine binds per platform", () => {

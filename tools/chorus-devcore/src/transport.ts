@@ -113,6 +113,10 @@ export class DevToolsTransport extends EventEmitter {
   private connectWait: { resolve: () => void; reject: (error: Error) => void } | null = null;
   private pendingConnect: Promise<void> | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  /** The in-flight dial's deadline (FIX-IDE-8): a dial that fails or is
+   * cancelled must not leave it running — a referenced 5s timer pins the
+   * socket and the whole transport past shutdown in standalone consumers. */
+  private connectTimer: NodeJS.Timeout | null = null;
   private drainScheduled = false;
   private closing = false;
 
@@ -165,8 +169,14 @@ export class DevToolsTransport extends EventEmitter {
 
   /** The one dial-at-a-time mechanism: state to connecting, one waiter, one
    * socket. Manual connects and automatic retries both go through here, so
-   * a shell that attaches mid-retry rides the same promise the loop made. */
+   * a shell that attaches mid-retry rides the same promise the loop made.
+   * The single-attempt invariant lives here, not only in connect()'s guards:
+   * a retry timer that fires beside a live dial (or any caller reaching past
+   * connect()) rides the in-flight attempt or an established link — it never
+   * opens a socket beside one. */
   private beginConnect(): Promise<void> {
+    if (this.pendingConnect) return this.pendingConnect;
+    if (this.socket && this.stateValue === "ready") return Promise.resolve();
     this.setState("connecting");
     this.pendingConnect = new Promise<void>((resolve, reject) => {
       this.connectWait = {
@@ -217,12 +227,12 @@ export class DevToolsTransport extends EventEmitter {
     );
     socket.setNoDelay(true);
     this.socket = socket;
-    const connectTimer = setTimeout(() => {
+    this.connectTimer = setTimeout(() => {
       socket.destroy(new TransportError(`connect timed out after ${this.connectTimeoutMs}ms`));
     }, this.connectTimeoutMs);
 
     socket.once("connect", () => {
-      clearTimeout(connectTimer);
+      this.clearConnectTimer();
       // A fresh stream carries fresh bytes: drop any partial frame the
       // previous link left in the accumulator.
       this.frames = new FrameAccumulator();
@@ -337,11 +347,17 @@ export class DevToolsTransport extends EventEmitter {
       this.connectWait = null;
       waiter.reject(error);
     }
-    if (this.listenerCount("error") > 0) this.emit("error", error);
     if (!this.autoReconnect) {
       this.setState("closed");
+      if (this.listenerCount("error") > 0) this.emit("error", error);
       return;
     }
+    // The failure's bookkeeping lands before any callback runs: the backoff
+    // transition and the retry schedule are finalized first, so an error
+    // listener that synchronously connect()s cancels the freshly scheduled
+    // retry and dials exactly once, and one that close()s tears the retry
+    // down with everything else — neither meets a half-finished failure
+    // path that would overwrite its decision afterwards.
     const delay = this.backoff.next();
     this.setState("backoff");
     this.reconnectTimer = setTimeout(() => {
@@ -349,15 +365,29 @@ export class DevToolsTransport extends EventEmitter {
       if (this.closing) return;
       // The retry dials through the shared-attempt mechanism too: a manual
       // connect arriving mid-dial joins this attempt instead of opening a
-      // second socket that close() would never hang up. The background
+      // second socket that close() would never hang up, and the mechanism's
+      // own invariant refuses a second dial beside a live attempt (a timer
+      // that fires after a listener's takeover adds nothing). The background
       // retry has no awaiter of its own — the failure is already reported
       // through the error event and the state machine — so the rejection
       // is absorbed here.
       this.beginConnect().catch(() => {});
     }, delay);
+    if (this.listenerCount("error") > 0) this.emit("error", error);
+  }
+
+  private clearConnectTimer(): void {
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
   }
 
   private teardownSocket(): void {
+    // The dial's deadline dies with the dial: teardown runs on failure and
+    // on close, so a failed or cancelled attempt never keeps the timer —
+    // and the socket it retains — alive past the transport's shutdown.
+    this.clearConnectTimer();
     if (this.socket) {
       const socket = this.socket;
       this.socket = null;
