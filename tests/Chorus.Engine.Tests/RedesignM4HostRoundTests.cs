@@ -314,7 +314,9 @@ public sealed class RedesignM4HostRoundTests
         // 存活性等待（事件不变量），不是性能断言：被停机的房间要先过 15s 所有权门
         // 与 5s 恢复扫掠的默认节拍，再经路由传播到边缘；CI 满载 runner 上各段都会
         // 拖长（本地典型 ~20s，CI 150s 窗口出现过超时），窗口按外部负载余量放宽。
-        var suspended = await resumed.ExpectAsync(EdgeTypes.RoomSuspended, TimeSpan.FromSeconds(300));
+        // 300s 仍在串行化后的 CI 上出现过超时（run 43595093917，恢复扫掠在
+        // 2 核 + coverage 下错过整个窗口），继续按负载余量放宽到 600s。
+        var suspended = await resumed.ExpectAsync(EdgeTypes.RoomSuspended, TimeSpan.FromSeconds(600));
         Assert.Equal(epoch, suspended.GetProperty("recoveryAttempt").GetInt64());
     }
 
