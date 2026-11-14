@@ -184,34 +184,49 @@ export class DevToolsTransport extends EventEmitter {
     // transport mid-registration. A connect() in that window must find a
     // joinable attempt (one socket), and a close() there must land on a
     // fully built one (no socket left alive behind a closed transport).
-    let settleAttempt!: { resolve: () => void; reject: (error: Error) => void };
+    let settleResolve!: () => void;
+    let rejectAttempt!: (error: Error) => void;
     const attempt = new Promise<void>((resolve, reject) => {
-      settleAttempt = { resolve, reject };
+      settleResolve = resolve;
+      rejectAttempt = reject;
     });
     this.connectWait = {
       resolve: () => {
         this.connectWait = null;
         this.pendingConnect = null;
-        settleAttempt.resolve();
+        settleResolve();
       },
       reject: (error) => {
         this.connectWait = null;
         this.pendingConnect = null;
-        settleAttempt.reject(error);
+        rejectAttempt(error);
       },
     };
     this.pendingConnect = attempt;
+    // close() is what marks a cancel, and connect() cleared the flag before
+    // calling here: any synchronous close anywhere in this registration —
+    // promise construction, the deadline's timer creation, the dial's
+    // diagnostics publish — is visible on the flag whether or not it found
+    // fields already written.
+    if (this.closing) {
+      // A close inside the promise's own async_hooks.init found no waiter
+      // to reject, and the registration it skipped must not keep a dead
+      // attempt standing in for later connects.
+      if (this.connectWait) this.connectWait.reject(new TransportError("transport closed"));
+      else rejectAttempt(new TransportError("transport closed"));
+      return attempt;
+    }
     const socket = this.openSocket();
-    if (this.pendingConnect !== attempt) {
-      // A dial-time subscriber closed the transport: Node swallows a
-      // destroy that lands inside the dial's synchronous diagnostics
-      // publish (the connect sequence resets the flag on its way out), so
-      // the close's teardown did not stick. Repeated after the dial's own
-      // stack has unwound, it does — no socket outlives the closed state
-      // and no deadline timer is pinned behind it. The caller still gets
-      // the rejection; the waiter fired during the window, and announcing
-      // "connecting" over "closed" would resurrect a dead attempt.
-      if (socket) {
+    if (this.closing) {
+      // A dial-time close tears the dial down and rejects the waiter, but
+      // Node swallows a destroy issued inside the dial's synchronous
+      // segment and a deadline timer made across the close lands in the
+      // field afterwards. Finish the teardown here — after the window — so
+      // no socket outlives the closed state and no deadline is pinned
+      // behind it. Announcing "connecting" over "closed" would resurrect a
+      // dead attempt; the caller already got the rejection.
+      this.teardownSocket();
+      if (socket && this.socket !== socket) {
         socket.removeAllListeners();
         socket.destroy();
       }
@@ -259,6 +274,11 @@ export class DevToolsTransport extends EventEmitter {
     this.connectTimer = setTimeout(() => {
       socket.destroy(new TransportError(`connect timed out after ${this.connectTimeoutMs}ms`));
     }, this.connectTimeoutMs);
+    // A close landing inside the timer's own creation saw a null field and
+    // cleared nothing, then this assignment landed behind it: a deadline
+    // pinning the transport past shutdown. Created across a close, it never
+    // was needed — drop it instead of keeping it.
+    if (this.closing) this.clearConnectTimer();
 
     socket.once("connect", () => {
       this.clearConnectTimer();

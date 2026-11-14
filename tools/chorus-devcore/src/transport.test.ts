@@ -1,3 +1,4 @@
+import * as asyncHooks from "node:async_hooks";
 import * as diagnosticsChannel from "node:diagnostics_channel";
 import * as fs from "node:fs/promises";
 import * as net from "node:net";
@@ -730,6 +731,104 @@ describe("transport", () => {
     }
   });
 
+  it("keeps the transport closed when a close lands in the attempt's own construction", async () => {
+    // The promise's async_hooks.init fires before its executor body runs: a
+    // subscriber closing there met no waiter, no pending promise and no
+    // socket, so it cleared nothing — and the outer call went on to register
+    // them all and announce connecting over closed.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+    });
+
+    const states: LinkState[] = [];
+    transport.on("state", (state) => states.push(state));
+    const transportState = transport as unknown as { pendingConnect: unknown };
+    let hooked = false;
+    let sawUnregistered = false;
+    const hook = asyncHooks
+      .createHook({
+        init(_id, type) {
+          if (type !== "PROMISE" || hooked) return;
+          hooked = true;
+          hook.disable();
+          sawUnregistered = transportState.pendingConnect === null;
+          transport.close();
+        },
+      })
+      .enable();
+
+    let rejection: Error | null = null;
+    try {
+      await transport.connect().catch((error: Error) => {
+        rejection = error;
+      });
+    } finally {
+      hook.disable();
+    }
+    expect(hooked).toBe(true); // the close did land in the registration window
+    expect(sawUnregistered).toBe(true); // ... before the attempt was registered
+    expect(rejection).not.toBeNull(); // the caller is told, not left pending
+    expect(transport.state).toBe("closed");
+    expect(states).not.toContain("connecting"); // no transition past the close
+    for (let turn = 0; turn < 20; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(engine.connections).toBe(0); // the cancelled dial never happened
+
+    await engine.close();
+  });
+
+  it("leaves no deadline behind when a close lands in the dial timer's own creation", async () => {
+    // setTimeout's async_hooks.init fires before `this.connectTimer = ...`
+    // writes its value: a close there cleared nothing, and the assignment put
+    // the timer back into the field — pinning the transport past shutdown.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      connectTimeoutMs: 5000,
+    });
+
+    const transportState = transport as unknown as { connectTimer: unknown };
+    let hooked = false;
+    let sawNoTimer = false;
+    const hook = asyncHooks
+      .createHook({
+        init(_id, type) {
+          if (type !== "Timeout" || hooked) return;
+          hooked = true;
+          hook.disable();
+          sawNoTimer = transportState.connectTimer === null;
+          transport.close();
+        },
+      })
+      .enable();
+
+    let rejection: Error | null = null;
+    try {
+      await transport.connect().catch((error: Error) => {
+        rejection = error;
+      });
+    } finally {
+      hook.disable();
+    }
+    expect(hooked).toBe(true); // the close did land in the timer's creation
+    expect(sawNoTimer).toBe(true); // ... before the deadline was written in
+    expect(rejection).not.toBeNull();
+    expect(transport.state).toBe("closed");
+    expect(transportState.connectTimer).toBeNull();
+    for (let turn = 0; turn < 20; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(engine.connections).toBe(0); // the closed transport never dialed
+
+    await engine.close();
+  });
+
   it("stops the receiving stack when an error listener closes the transport", async () => {
     // One chunk carrying a malformed frame and a valid metrics frame: the
     // error report used to return and onData kept reading the rest of the
@@ -790,8 +889,11 @@ describe("transport", () => {
     });
 
     await transport.connect();
+    // A third frame behind the close: the old receiving loop read on through
+    // it after the overflow report returned.
     const chunk = Buffer.concat([
       encodeFrame(JSON.stringify(envelopeOf("dev.log", logBody()))),
+      encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody()))),
       encodeFrame(JSON.stringify(envelopeOf("dev.metrics", metricsBody()))),
     ]);
     engine.sendRaw(chunk);
