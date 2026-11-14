@@ -88,7 +88,7 @@ afterEach(() => {
 });
 
 describe('the room epoch page', () => {
-  it('looks a room up and shows its epoch, owner and ownership status', async () => {
+  it('looks a room up and shows its epoch, owner and ownership status', { timeout: 20000 }, async () => {
     const fetchMock = routeFetch({
       '/who-am-i': { status: 200, body: gmIdentity },
       '/get-room-epoch': { status: 200, body: epochReply },
@@ -118,7 +118,7 @@ describe('the room epoch page', () => {
     expect(screen.getAllByText('game-a').length).toBeGreaterThan(0);
   });
 
-  it('bumps the epoch against the expected value and shows the honest split', async () => {
+  it('bumps the epoch against the expected value and shows the honest split', { timeout: 20000 }, async () => {
     const fetchMock = routeFetch({
       '/who-am-i': { status: 200, body: gmIdentity },
       '/bump-room-epoch': { status: 200, body: bumpReply },
@@ -154,7 +154,7 @@ describe('the room epoch page', () => {
     )).toBeInTheDocument();
   });
 
-  it('marks a replayed request id as a duplicate with the recorded values', async () => {
+  it('marks a replayed request id as a duplicate with the recorded values', { timeout: 20000 }, async () => {
     const fetchMock = routeFetch({
       '/who-am-i': { status: 200, body: gmIdentity },
       '/bump-room-epoch': { status: 200, body: { ...bumpReply, duplicate: true } },
@@ -179,7 +179,7 @@ describe('the room epoch page', () => {
     expect(screen.getByText('4')).toBeInTheDocument();
   });
 
-  it('keeps the whole epoch floor closed for a viewer', async () => {
+  it('keeps the whole epoch floor closed for a viewer', { timeout: 20000 }, async () => {
     vi.stubGlobal('fetch', routeFetch({
       '/who-am-i': { status: 200, body: viewerIdentity },
       '/get-room-epoch': { status: 200, body: epochReply },

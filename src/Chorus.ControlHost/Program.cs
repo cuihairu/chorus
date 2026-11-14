@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Chorus.Control;
 using Chorus.ControlHost;
+using Chorus.SimulatorPlatform;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Identity;
@@ -50,6 +51,8 @@ builder.Services.AddSingleton(new OpsAlertsStore(
         Math.Max(builder.Configuration.GetValue("Control:Alerts:EffectsPending", 1000L), 0L),
         Math.Max(builder.Configuration.GetValue("Control:Alerts:PlatformApiFailures", 1L), 0L))));
 builder.Services.AddSingleton<RoomControlStore>();
+builder.Services.AddSingleton(new BotScenarioStore(controlDatabase));
+builder.Services.AddSingleton(new BotFleetService());
 builder.Services.AddHostedService<ControlMaintenance>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(options =>
 {
@@ -167,6 +170,29 @@ admin.MapPost("/matches/{id}/cancel", (string id, HttpContext c, RoomControlStor
 admin.MapPost("/matches/{id}/finish", (string id, MatchFinish r, HttpContext c, RoomControlStore s) => s.Finish(id,r,c.User.Identity!.Name!)).RequireAuthorization("operate");
 admin.MapPost("/boards/{id}/score", (string id, BoardScoreRequest r, HttpContext c, RoomControlStore s) => s.ChangeScore(id,r.Scope,r.Season,r.Change,c.User.Identity!.Name!)).RequireAuthorization("configure");
 admin.MapPost("/boards/{id}/freeze", (string id, HttpContext c, RoomControlStore s) => s.Freeze(id,c.User.Identity!.Name!)).RequireAuthorization("configure");
+admin.MapGet("/bots/scenarios", (BotScenarioStore s) => s.List());
+admin.MapGet("/bots/scenarios/{id}", (string id, BotScenarioStore s) =>
+    s.Get(id) is { } scenario ? Results.Ok(scenario) : Results.NotFound());
+admin.MapPost("/bots/scenarios", (BotScenario r, HttpContext c, BotScenarioStore s) =>
+{
+    if (string.IsNullOrWhiteSpace(r.Id) || string.IsNullOrWhiteSpace(r.Toml))
+        throw new ArgumentException("A scenario needs an id and its script text.");
+    return s.Save(r with
+    {
+        Name = string.IsNullOrWhiteSpace(r.Name) ? r.Id : r.Name,
+        UpdatedBy = c.User.Identity!.Name!,
+        UpdatedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+    });
+}).RequireAuthorization("configure");
+admin.MapDelete("/bots/scenarios/{id}", (string id, BotScenarioStore s) => new { deleted = s.Delete(id) }).RequireAuthorization("configure");
+admin.MapPost("/bots/scenarios/{id}/start", (string id, BotRunConfig r, BotScenarioStore s, BotFleetService f) =>
+{
+    var scenario = s.Get(id) ?? throw new KeyNotFoundException("No bots scenario " + id);
+    return f.Start(id, scenario.Toml, r);
+}).RequireAuthorization("operate");
+admin.MapGet("/bots/runs", (BotFleetService f) => f.Runs());
+admin.MapGet("/bots/runs/{id}", (string id, BotFleetService f) => f.Run(id));
+admin.MapPost("/bots/runs/{id}/stop", (string id, HttpContext c, BotFleetService f) => new { stopped = f.Stop(id) }).RequireAuthorization("operate");
 app.Run();
 
 namespace Chorus.ControlHost

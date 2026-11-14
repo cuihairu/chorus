@@ -81,7 +81,7 @@ public sealed record BotScript(
             defects.Add("toml: the document did not parse to a table");
         if (defects.Count > 0)
             throw new ArgumentException($"Invalid bot script:{Environment.NewLine}  {string.Join(Environment.NewLine + "  ", defects)}");
-        var root = model;
+        var root = (IDictionary<string, object?>)model!;
 
         var script = Table(root, "script", defects, required: true);
         var streamer = Table(root, "streamer", defects, required: true);

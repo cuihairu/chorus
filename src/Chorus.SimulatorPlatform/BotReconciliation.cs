@@ -59,9 +59,11 @@ public static class BotReconciliation
         return new RunExpectation(byKind, scores, deltas);
     }
 
-    /// <summary>Holds the ledger and the posters' own word to the expectations. Every
-    /// mismatch names itself; an empty list is the pass.</summary>
-    public static ReconciliationReport Deviations(RunExpectation expected, RoomLedger ledger,
+    /// <summary>The delivery-level core both reconciliations share: every post accepted
+    /// at the face, sent N delivered N per kind, consumed equal to delivered (nothing
+    /// stuck pending in the durable inbox), and no deliveries carrying an unknown kind.</summary>
+    public static IReadOnlyList<string> DeliveryDeviations(
+        IReadOnlyDictionary<ScriptEventKind, long> expectedSent, RoomLedger ledger,
         IReadOnlyList<PosterSnapshot> posters)
     {
         var deviations = new List<string>();
@@ -74,9 +76,9 @@ public static class BotReconciliation
                 $" unauthorized {posters.Sum(p => p.Unauthorized)}," +
                 $" rate-limited {posters.Sum(p => p.RateLimited)}, other {posters.Sum(p => p.Other)})");
 
-        foreach (var kind in expected.SentByKind.Keys.Union(ledger.DeliveredByKind.Keys))
+        foreach (var kind in expectedSent.Keys.Union(ledger.DeliveredByKind.Keys))
         {
-            var sent = expected.SentByKind.GetValueOrDefault(kind);
+            var sent = expectedSent.GetValueOrDefault(kind);
             var delivered = ledger.DeliveredByKind.GetValueOrDefault(kind);
             if (sent != delivered)
                 deviations.Add($"{kind}: sent {sent} delivered {delivered}");
@@ -86,6 +88,15 @@ public static class BotReconciliation
         if (ledger.Consumed != ledger.Delivered)
             deviations.Add($"delivery: {ledger.Delivered - ledger.Consumed} of {ledger.Delivered}" +
                 " never reached a committed frame");
+        return deviations;
+    }
+
+    /// <summary>Holds the ledger and the posters' own word to the expectations. Every
+    /// mismatch names itself; an empty list is the pass.</summary>
+    public static ReconciliationReport Deviations(RunExpectation expected, RoomLedger ledger,
+        IReadOnlyList<PosterSnapshot> posters)
+    {
+        var deviations = DeliveryDeviations(expected.SentByKind, ledger, posters).ToList();
 
         foreach (var (faction, score) in expected.ScoresByFaction)
             if (!ledger.ResultScores.TryGetValue(faction, out var actual) || actual != score)

@@ -4,6 +4,7 @@ import {
   LogoutOutlined,
   PartitionOutlined,
   PlayCircleOutlined,
+  RobotOutlined,
   ThunderboltOutlined,
   TrophyOutlined,
   UserOutlined,
@@ -14,6 +15,7 @@ import type { ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth';
 import { LanguageProvider, LanguageToggle, useI18n } from './i18n';
+import BotsPage from './pages/BotsPage';
 import EpochPage from './pages/EpochPage';
 import LeaderboardPage from './pages/LeaderboardPage';
 import LoginPage from './pages/LoginPage';
@@ -31,7 +33,7 @@ import StreamersPage from './pages/StreamersPage';
 // (FIX-OBS-14), nodes and processes is the telemetry page (FIX-WEB-06), rooms is the
 // room detail page (FIX-WEB-07), streamers and matching is the match plane's read
 // faces (FIX-WEB-08).
-type RouteKey = 'home' | 'nodes' | 'rooms' | 'streamers' | 'operations' | 'epoch' | 'leaderboard';
+type RouteKey = 'home' | 'nodes' | 'rooms' | 'streamers' | 'bots' | 'operations' | 'epoch' | 'leaderboard';
 
 const menuRoutes: Array<{
   path: string;
@@ -44,6 +46,7 @@ const menuRoutes: Array<{
   { path: '/nodes', nameEn: 'Nodes and processes', nameZh: '节点与进程', icon: <ClusterOutlined />, routeKey: 'nodes' },
   { path: '/rooms', nameEn: 'Rooms', nameZh: '房间', icon: <PlayCircleOutlined />, routeKey: 'rooms' },
   { path: '/streamers', nameEn: 'Streamers and matching', nameZh: '主播与匹配', icon: <PartitionOutlined />, routeKey: 'streamers' },
+  { path: '/bots', nameEn: 'Bots', nameZh: '机器人', icon: <RobotOutlined />, routeKey: 'bots' },
   { path: '/operations', nameEn: 'Operations', nameZh: '操作', icon: <ClusterOutlined />, routeKey: 'operations' },
   { path: '/epoch', nameEn: 'Room epoch', nameZh: '房间纪元', icon: <ThunderboltOutlined />, routeKey: 'epoch' },
   { path: '/leaderboard', nameEn: 'Leaderboards', nameZh: '排行榜', icon: <TrophyOutlined />, routeKey: 'leaderboard' },
@@ -115,6 +118,7 @@ function ConsolePages() {
       {routeKey === 'nodes' && <NodesPage />}
       {routeKey === 'rooms' && <RoomsPage />}
       {routeKey === 'streamers' && <StreamersPage />}
+      {routeKey === 'bots' && <BotsPage />}
       {routeKey === 'operations' && <OperationsPage />}
       {routeKey === 'epoch' && <EpochPage />}
       {routeKey === 'leaderboard' && <LeaderboardPage />}

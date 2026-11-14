@@ -35,3 +35,25 @@ export async function getAdminJson<T>(token: string, path: string): Promise<T> {
   }
   return (await response.json()) as T;
 }
+
+// The bots panel's commands (BOTS-2) ride plain POST/DELETE under the same /api group:
+// the same bearer header and error mapping, a JSON body when the command carries one.
+export async function postAdminJson<T>(token: string, path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new AdminError(response.status, await response.text());
+  }
+  return (await response.json()) as T;
+}
+
+export async function deleteAdminJson<T>(token: string, path: string): Promise<T> {
+  const response = await fetch(path, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+  if (!response.ok) {
+    throw new AdminError(response.status, await response.text());
+  }
+  return (await response.json()) as T;
+}
