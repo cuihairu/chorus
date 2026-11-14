@@ -112,9 +112,10 @@ public sealed class RedesignPlatformIngressHostTests
     public async Task AProductionGatewayRefusesTheAllowAllSwitchAtStartup()
     {
         // AllowAll 是开发开关（review 2026-11-13 M3）：非开发环境开启即启动失败。
-        // The harness names Development for every host it spawns (they are development
-        // hosts by definition), so the Production refusal is observed by naming
-        // Production here — exactly the misconfiguration the review pins.
+        // The harness names Test for every host it spawns (they are development hosts
+        // by definition, and the name loads no ambient settings file), so the Production
+        // refusal is observed by naming Production here — exactly the misconfiguration
+        // the review pins.
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
         var ingressPort = RedesignM0HostTests.HostEnvironment.FreePort();
         var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();

@@ -324,12 +324,19 @@ public sealed class RedesignM0HostTests
             // definition, so the opt-in rides along; a test that wants to observe the
             // refusal passes its own value here and overrides this one.
             start.Environment["Ingress__AllowNotProductionReady"] = "true";
-            // The AllowAll ingress switch is a development-only configuration (review
-            // 2026-11-13 M3): a host running the default Production environment refuses it
-            // at startup, and every process this harness starts is a development host by
-            // definition. Naming the environment here keeps those gateways startable; a
-            // test that wants the refusal passes its own value here and overrides this one.
-            start.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+            // The admission and ingress switches are development-only configurations (review
+            // 2026-11-13 M2/M3): a host running the default Production environment refuses
+            // them at startup, and every process this harness starts is a development host
+            // by definition. The name here must also match no appsettings.{Env}.json anywhere:
+            // a spawned host reads configuration from its working directory — the test
+            // project's bin, which carries Chorus.Server's Development settings (unsigned
+            // ingress acceptance, tokenless streamer sockets) for the in-process factory
+            // tests. Naming Development therefore silently flipped those switches on for
+            // every redesign host (CI run 43456698483: an unsigned simulator callback was
+            // accepted because the AllowAll verifier mounted from that ambient file). "Test"
+            // says not-production without loading any ambient settings file; a test that
+            // wants a specific environment passes its own value here and overrides this one.
+            start.Environment["ASPNETCORE_ENVIRONMENT"] = "Test";
             foreach (var (name, value) in extraEnvironment ?? new Dictionary<string, string>())
                 start.Environment[name] = value;
             if (clientTenant is { Length: > 0 })
