@@ -111,15 +111,18 @@ public sealed class RedesignPlatformIngressHostTests
     [Fact]
     public async Task AProductionGatewayRefusesTheAllowAllSwitchAtStartup()
     {
-        // AllowAll 是开发开关（review 2026-11-13 M3）：非开发环境开启即启动失败——
-        // 子进程未设 ASPNETCORE_ENVIRONMENT，默认即 Production，装配阶段拒绝。
+        // AllowAll 是开发开关（review 2026-11-13 M3）：非开发环境开启即启动失败。
+        // The harness names Development for every host it spawns (they are development
+        // hosts by definition), so the Production refusal is observed by naming
+        // Production here — exactly the misconfiguration the review pins.
         await using var environment = await RedesignM0HostTests.HostEnvironment.CreateAsync();
         var ingressPort = RedesignM0HostTests.HostEnvironment.FreePort();
         var gatewayPort = RedesignM0HostTests.HostEnvironment.FreePort();
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             environment.StartAsync("Chorus.PlatformGateway", gatewayPort, "platform-gateway",
-                GatewayEnvironment(environment.DataPort, ingressPort, allowAll: true, ""),
+                GatewayEnvironment(environment.DataPort, ingressPort, allowAll: true, "",
+                    ["ASPNETCORE_ENVIRONMENT", "Production"]),
                 instanceId: "gateway-prod-allowall"));
 
         Assert.Contains("development switch", error.Message);

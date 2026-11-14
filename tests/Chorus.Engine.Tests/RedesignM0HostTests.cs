@@ -318,6 +318,18 @@ public sealed class RedesignM0HostTests
             // take a FileSystemWatcher instance for its configuration. Polling costs nothing
             // here — the hosts' files never change mid-test — and keeps the budget for others.
             start.Environment["DOTNET_USE_POLLING_FILE_WATCHER"] = "true";
+            // The platform modules' production admission (review 2026-11-13 M2) refuses a
+            // host that mounts a not-production-ready protocol unless the deployment names
+            // the switch. Every process this harness starts is a development host by
+            // definition, so the opt-in rides along; a test that wants to observe the
+            // refusal passes its own value here and overrides this one.
+            start.Environment["Ingress__AllowNotProductionReady"] = "true";
+            // The AllowAll ingress switch is a development-only configuration (review
+            // 2026-11-13 M3): a host running the default Production environment refuses it
+            // at startup, and every process this harness starts is a development host by
+            // definition. Naming the environment here keeps those gateways startable; a
+            // test that wants the refusal passes its own value here and overrides this one.
+            start.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
             foreach (var (name, value) in extraEnvironment ?? new Dictionary<string, string>())
                 start.Environment[name] = value;
             if (clientTenant is { Length: > 0 })
