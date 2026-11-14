@@ -417,6 +417,72 @@ describe("transport", () => {
     await engine.close();
   });
 
+  it("joins a retry already dialing instead of opening a second socket", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const dir = await newDir();
+      const engine = new FakeEngine(dir);
+      await engine.listen();
+      const transport = new DevToolsTransport({
+        endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+        backoff: { initialMs: 50, maxMs: 100 },
+      });
+      await transport.connect();
+      const connectionsAtBaseline = engine.connections; // the first link
+
+      // The client socket dies but the endpoint stays up: the link falls to
+      // backoff and the loop schedules one retry.
+      engine.dropClients();
+      await waitForState(transport, "backoff");
+
+      // Fire the retry synchronously: its dial is now in flight, unanswered.
+      vi.advanceTimersByTime(60);
+
+      // A shell attaches right here, mid-dial. It must join the attempt the
+      // loop made — a second dial here would leave a socket that close()
+      // never hangs up.
+      let joinStateAtResolve: LinkState | null = null;
+      const join = transport.connect().then(() => {
+        joinStateAtResolve = transport.state;
+      });
+      expect(transport.state).toBe("connecting");
+
+      // The dial answers on the real socket loop.
+      vi.useRealTimers();
+      await join;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(transport.state).toBe("ready");
+      expect(joinStateAtResolve).toBe("ready");
+      expect(engine.connections).toBe(connectionsAtBaseline + 1); // only the retry's dial — the join added none
+
+      transport.close();
+      await engine.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("runs one retry chain when error and close both report the dead link", async () => {
+    // A failed dial fires 'error' AND 'close'. Each callback scheduling its
+    // own retry would leak a parallel chain dialing beside the loop's timer
+    // — twice the attempts, both feeding the same accumulator.
+    const dir = await newDir(); // nothing listens here
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      backoff: { initialMs: 50, multiplier: 2, maxMs: 100 },
+    });
+    const errors: Error[] = [];
+    transport.on("error", (error) => errors.push(error));
+    await transport.connect().catch(() => {}); // initial dial fails at t≈0
+
+    // Dead-endpoint window: retries land at 50, then +100 forever (the
+    // schedule 50→100 caps at maxMs) — 7 failures by 600ms exactly.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(errors.length).toBe(7);
+
+    transport.close();
+  });
+
   it("derives the endpoint the engine binds per platform", () => {
     expect(devtoolsEndpoint("linux", "/tmp/chorus", "chorus")).toEqual({
       kind: "uds",

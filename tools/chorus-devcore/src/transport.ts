@@ -147,10 +147,10 @@ export class DevToolsTransport extends EventEmitter {
 
   /** Opens the socket. Resolves when the engine's endpoint answers; rejects
    * if the first attempt fails (reconnection continues in the background
-   * when autoReconnect is on). A manual connect during backoff takes over:
-   * the scheduled retry is cancelled, so exactly one socket ever exists.
-   * Concurrent callers share the one in-flight attempt — nobody is told
-   * the link is up while the first dial is still pending. */
+   * when autoReconnect is on). A manual connect during backoff joins the
+   * retry's in-flight attempt rather than dialing beside it. Concurrent
+   * callers share the one attempt — nobody is told the link is up while
+   * the dial is still pending, and exactly one socket ever exists. */
   connect(): Promise<void> {
     if (this.socket && this.stateValue === "ready") return Promise.resolve();
     if (this.closing) return Promise.reject(new TransportError("transport is closed"));
@@ -160,6 +160,13 @@ export class DevToolsTransport extends EventEmitter {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    return this.beginConnect();
+  }
+
+  /** The one dial-at-a-time mechanism: state to connecting, one waiter, one
+   * socket. Manual connects and automatic retries both go through here, so
+   * a shell that attaches mid-retry rides the same promise the loop made. */
+  private beginConnect(): Promise<void> {
     this.setState("connecting");
     this.pendingConnect = new Promise<void>((resolve, reject) => {
       this.connectWait = {
@@ -314,6 +321,11 @@ export class DevToolsTransport extends EventEmitter {
 
   private onLinkFailure(error: Error): void {
     if (this.closing) return;
+    // 'error' and 'close' both fire for one dead socket: one failure gets
+    // one retry. The second callback finds the socket already torn down —
+    // scheduling past it would leak a parallel retry chain that dials
+    // beside the loop's own timer.
+    if (this.socket === null) return;
     this.teardownSocket();
     // The dead link's undelivered frames die with it: a queued frame that
     // lands after the state transition would have handlers mark sources
@@ -335,8 +347,13 @@ export class DevToolsTransport extends EventEmitter {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.closing) return;
-      this.setState("connecting");
-      this.openSocket();
+      // The retry dials through the shared-attempt mechanism too: a manual
+      // connect arriving mid-dial joins this attempt instead of opening a
+      // second socket that close() would never hang up. The background
+      // retry has no awaiter of its own — the failure is already reported
+      // through the error event and the state machine — so the rejection
+      // is absorbed here.
+      this.beginConnect().catch(() => {});
     }, delay);
   }
 
