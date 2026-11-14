@@ -1,9 +1,11 @@
 using Chorus.Data;
+using Chorus.DevTools;
 using Chorus.Engine.Abstractions;
 using Chorus.Engine.Session;
 using Chorus.EngineHost;
 using Chorus.Gateway.Core.Leaderboard;
 using Chorus.Gateway.Core.Metrics;
+using Chorus.Messaging.Ipc;
 using Chorus.SampleGame;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -41,9 +43,37 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<EngineIpcService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<EngineIpcService>());
 
-var app = builder.Build();
-
 var processCpu = new ProcessCpuGauge();
+
+// DevTools (IDE-EXT): an IDE-facing push channel (dev.log / dev.metrics over
+// the IPC socket framing) for IDE attach. Default off, and refused in the
+// Production environment — the same discipline as Ingress:AllowAll; naming it
+// there is a misconfiguration, fail fast. The bare --devtools flag answers
+// from the raw args (the command-line provider silently drops a valueless
+// switch — nothing lands in configuration); the valued forms
+// (--devtools=true, DevTools:Enabled=true) ride the config keys.
+if (args.Contains("--devtools", StringComparer.Ordinal)
+    || builder.Configuration.GetValue("DevTools:Enabled", false)
+    || builder.Configuration.GetValue("devtools", false))
+{
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException(
+            "DevTools is a development surface and is refused in the Production environment.");
+    }
+    builder.Services.AddChorusDevTools(options =>
+    {
+        // The IPC section's own keys drive the channel endpoints, so one
+        // configuration carries both planes; the sampler composes the same
+        // gauge the /metrics face samples — one caliber for both faces.
+        options.Transport = builder.Configuration.GetValue("Ipc:Transport", IpcTransport.Auto);
+        options.UnixSocketDir = builder.Configuration.GetValue("Ipc:UnixSocketDir", "/tmp/chorus");
+        options.PipePrefix = builder.Configuration.GetValue("Ipc:NamedPipePrefix", "chorus");
+        options.MetricsSampler = () => DevMetricsSnapshot.SelfProcess(processCpu.Sample());
+    });
+}
+
+var app = builder.Build();
 
 app.MapGet("/", () => new { name = "Chorus.EngineHost", ok = true });
 app.MapGet("/health", () => Results.Ok());

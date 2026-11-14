@@ -16,6 +16,7 @@
     <ProjectReference Include="..\..\src\Chorus.Client\Chorus.Client.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Adapters.Platforms\Chorus.Adapters.Platforms.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Data\Chorus.Data.csproj" />
+    <ProjectReference Include="..\..\src\Chorus.DevTools\Chorus.DevTools.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Engine\Chorus.Engine.csproj" />
     <ProjectReference Include="..\..\src\Chorus.EngineHost\Chorus.EngineHost.csproj" />
     <ProjectReference Include="..\..\src\Chorus.Gateway.Core\Chorus.Gateway.Core.csproj" />
