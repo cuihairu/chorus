@@ -645,5 +645,13 @@
   - 验证：sln Release build 0 错 0 新警告；DevToolsChannelTests 6/6（499ms）；messaging 家族宽滤 107/107；EngineIpcService E2E 链 23/23（RawUnixEndPoint 抽取回归）。
   - 真机手测三态：默认启动无 chorus_devtools.sock（/health 200 正常）；`--devtools` 启动 socket 出现，探针连读 6 帧 dev.metrics（1s 节奏、cpuPercent=ProcessCpuGauge 口径、processId=真引擎、__devtools 哨兵 session），优雅停机 socket 清零；DOTNET_ENVIRONMENT=Production+`--devtools` 启动即 InvalidOperationException 拒绝、零绑定。
   - 旗形实证：命令行 provider 把无值尾随开关静默丢弃（`--devtools` 单独出现时配置里无任何键——探针实证），裸旗从 raw args 读；带值形（`--devtools=true`/DevTools:Enabled=true）走 config 键。
-- [ ] IDE-EXT-002 [P1] devcore TS 核心（IDE 插件地基 2/3）：tools/chorus-devcore——TS 传输客户端（UDS+NamedPipe 双平台，对齐 IpcEnvelope 帧格式）+协议解码（envelope/dev.log/dev.metrics）+数据源（metrics 轮询+日志流）。验收：vitest 单测（帧解码/重连/背压）+真实引擎 attach 手测（attach→曲线动→日志流出）。
+- [x] IDE-EXT-002 · P1 · devcore TS 核心（IDE 插件地基 2/3）：tools/chorus-devcore（`@chorus/devcore`，pnpm 单项目，node>=22，零运行时依赖）——帧/协议/传输/attach 四面 + README 使用面。（2026-11-14，commit `fe7a208`）
+  - 帧（frame.ts）：u32 **LE** + 32 MiB 界 + 零长帧合法（对齐 FrameReader——mistlane 参考是 BE+1MiB，不照抄）；FrameAccumulator 增量重组（任意分块/跨界/头拆半都归位），超界长度=流失效（调用方弃整个 accumulator，引擎同款处置）。
+  - 协议（envelope.ts）：wire 形状钉死真机抓包 JSON——camelCase `{type,messageId,sessionId,createdTimeMs,body,sourceEventId?,authorityEpoch?}`，WhenWritingNull 缺席即无键；dev.log/dev.metrics typed 窄化（缺字段抛 EnvelopeDecodeError，异型 type 答 null）。
+  - 传输（transport.ts）：push-only（无握手无请求）；断线退避重连（500ms 起 ×2 至 8s 封顶，接通即重置；autoReconnect 可关）；背压=有界 DropOldest 队列（默认 4096）+ setImmediate 分批排水（每事件循环回合一批 64）——**故意不用 socket.pause()**：引擎对 2s 写不动的读者整连丢弃（DevToolsService.WriteTimeout），扣住内核缓冲等于押上整个 attach；丢最老保最新，镜像引擎自家日志队列纪律。stats 暴露 dropped/malformed/skippedEmptyFrames 供面板诚实展示丢失。
+  - attach（attach.ts）：门面源态机 off→waiting→up（attach 即 waiting、首帧即 up、断线回 waiting、closed 归 off）+ link-state/backpressure/error 转发（error 转发带 listenerCount 守卫——Node 对无监听的 'error' 事件直接抛进程，transport 同款纪律）。
+  - 测试 21/21（帧 6/协议 6/传输 6/attach 3，398ms）：传输测试骑**真 UDS 假引擎**（node:net accept-and-push，非帧层 mock）——同链路交付/引擎重启重连（backoff→ready 恢复后帧续流）/背压突发 50 帧 capacity 8（交付+丢弃=50 全收账、FIFO 保序、backpressure 事件带 dropped）/坏帧跳过不断链（malformed 计数+后续帧照达）/超界帧断流判 closed/平台端点推导（win32→`\\.\pipe\{prefix}.devtools`）。
+  - typecheck（tsc strict）0 错；build 出 dist（NodeNext ESM+声明，Node 供探针/vscode esbuild 双消费）。
+  - 真机手测 VERDICT: pass——dist 直连真实 EngineHost `--devtools`：link connecting→ready；6 个 dev.metrics 采样 cpuPercent 连续移动（ProcessCpuGauge 口径、1s 节奏、processId=真引擎）；/health poke 后 5 条 dev.log 流出（Request starting/Executing endpoint 等 category+body 完整）；status {metrics:up, log:up}；优雅停机 socket 清零。
+  - 诚实边界：NamedPipe 有端点推导单测，但传输层真连接只在 Linux/UDS 验证过（Windows 实连待 win 机器）；dev.log 无历史回放——attach 之前的日志已被引擎侧广播给零连接丢弃（引擎无重放缓冲，面板从 attach 时刻起算）。
 - [ ] IDE-EXT-003 [P1] vscode 薄壳（IDE 插件地基 3/3）：tools/chorus-vscode——status bar 引擎在线/连接状态+WebView 面板（CPU/内存曲线、日志流过滤搜索、会话/房间快照）+attach/detach 命令+火焰图 speedscope 入口；tools/chorus-vs/ 留 README 路线。验收：vscode-test 冒烟+vsce package 出 .vsix（版本号 0.0.0 不动、不打 marketplace）。
