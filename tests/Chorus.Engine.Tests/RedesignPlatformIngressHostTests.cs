@@ -292,7 +292,9 @@ public sealed class RedesignPlatformIngressHostTests
         {
             // The rig is a development fleet: it mounts placeholder-protocol platforms
             // (douyin/kuaishou) that a production host refuses at module assembly. The
-            // named switch is the admission opt-in; no ambient environment widening.
+            // harness names the admission switch for every host it spawns; this file
+            // names it too, so the gateway's admission reads identically however the
+            // harness evolves.
             ["Ingress__AllowNotProductionReady"] = "true",
             ["CHORUS_DATA_PORT"] = dataPort.ToString(CultureInfo.InvariantCulture),
             ["CHORUS_DEV_PLATFORM_ENDPOINT"] = "http://127.0.0.1:9/",
