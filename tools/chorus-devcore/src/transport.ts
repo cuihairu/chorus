@@ -146,11 +146,16 @@ export class DevToolsTransport extends EventEmitter {
 
   /** Opens the socket. Resolves when the engine's endpoint answers; rejects
    * if the first attempt fails (reconnection continues in the background
-   * when autoReconnect is on). */
+   * when autoReconnect is on). A manual connect during backoff takes over:
+   * the scheduled retry is cancelled, so exactly one socket ever exists. */
   connect(): Promise<void> {
     if (this.socket) return Promise.resolve();
     if (this.closing) return Promise.reject(new TransportError("transport is closed"));
     this.closing = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.setState("connecting");
     return new Promise<void>((resolve, reject) => {
       this.connectWait = {

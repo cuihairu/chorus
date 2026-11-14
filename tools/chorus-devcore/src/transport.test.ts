@@ -12,9 +12,12 @@ import { devtoolsEndpoint, DevToolsTransport, LinkState } from "./transport.js";
 class FakeEngine {
   private server = net.createServer((client) => {
     this.clients.push(client);
+    this.connections += 1;
     client.on("error", () => {});
   });
   private clients: net.Socket[] = [];
+  /** Every client the endpoint ever accepted, including closed ones. */
+  connections = 0;
   readonly socketPath: string;
 
   constructor(readonly dir: string) {
@@ -356,6 +359,37 @@ describe("transport", () => {
     expect(transport.stats.size).toBe(0); // the queue went with the link
 
     transport.close();
+  });
+
+  it("keeps exactly one socket when a manual connect takes over mid-backoff", async () => {
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+      backoff: { initialMs: 30, maxMs: 120 },
+    });
+    await transport.connect();
+
+    // The engine drops; the retry loop schedules its next attempt.
+    await engine.close();
+    await waitForState(transport, "backoff");
+
+    // The endpoint returns and the shell connects by hand: the scheduled
+    // retry must be cancelled, not stacked on top of this socket — two live
+    // sockets would both feed the same accumulator, and close() would only
+    // ever hang up the newest one.
+    const returned = new FakeEngine(dir);
+    await returned.listen();
+    await transport.connect();
+    await waitForState(transport, "ready");
+
+    // Well past the old retry window: exactly one link ever existed here.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(returned.connections).toBe(1);
+
+    transport.close();
+    await returned.close();
   });
 
   it("derives the endpoint the engine binds per platform", () => {

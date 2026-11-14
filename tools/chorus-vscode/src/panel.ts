@@ -53,8 +53,11 @@ export class ChorusPanel {
 
   private readonly panel: vscode.WebviewPanel;
   private readonly pendingLogs: DevLogEntry[] = [];
-  /** Engine-side push-queue drops, coalesced into one line per flush. */
+  /** Delivery-queue drops, coalesced into one line per flush. */
   private pendingDropCount = 0;
+  /** The transport's drop counter as of the last backpressure event —
+   * depth.dropped is cumulative, so the flush counts deltas, not sums. */
+  private lastDropCount = 0;
   /** Entries the batch cap itself discarded, reported at the next flush. */
   private batchDropped = 0;
   private logTimer: NodeJS.Timeout | null = null;
@@ -64,6 +67,11 @@ export class ChorusPanel {
   private constructor(context: vscode.ExtensionContext) {
     this.panel = vscode.window.createWebviewPanel("chorus.panel", "Chorus engine", vscode.ViewColumn.Beside, {
       enableScripts: true,
+      // Without this, hiding the tab tears the page down and a healthy
+      // steady link reopens as off/off/off forever — status is pushed on
+      // transitions only, and a steady state produces none. The page's
+      // buffers are bounded, so retention is cheap and honest.
+      retainContextWhenHidden: true,
     });
     this.panel.webview.html = panelHtml({ nonce: ChorusPanel.nonce() });
     this.panel.onDidDispose(
@@ -109,8 +117,14 @@ export class ChorusPanel {
 
   postBackpressure(depth: QueueDepth): void {
     // Overflows arrive per frame during a stalled stretch — one message per
-    // drop would itself be the flood. Accumulate; the flush says it once.
-    this.pendingDropCount += depth.dropped;
+    // drop would itself be the flood. depth.dropped is the transport's
+    // cumulative lifetime counter: count the delta since the last event (a
+    // smaller reading means a fresh transport reset, so take it whole).
+    const delta = depth.dropped > this.lastDropCount
+      ? depth.dropped - this.lastDropCount
+      : depth.dropped;
+    this.lastDropCount = depth.dropped;
+    this.pendingDropCount += delta;
     this.scheduleLogFlush();
   }
 
@@ -131,7 +145,7 @@ export class ChorusPanel {
         level: "Warning",
         category: "chorus.devcore",
         timestampMs: Date.now(),
-        body: `backpressure: ${this.pendingDropCount} frames dropped (engine push queue)`,
+        body: `backpressure: ${this.pendingDropCount} frames dropped (devcore delivery queue)`,
       });
       this.pendingDropCount = 0;
     }
