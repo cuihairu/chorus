@@ -562,6 +562,104 @@ describe("transport", () => {
     await engine.close();
   });
 
+  it("joins the one attempt when a connecting listener reconnects", async () => {
+    // "connecting" used to fire before the attempt was registered: a state
+    // listener reconnecting from the event saw no in-flight dial and opened
+    // one, then the outer call overwrote the waiter and opened another.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+    });
+
+    let reentered = false;
+    transport.on("state", (state) => {
+      if (state !== "connecting" || reentered) return;
+      reentered = true;
+      void transport.connect();
+    });
+
+    const outer = transport.connect();
+    await outer;
+    expect(transport.state).toBe("ready");
+
+    // One dial, both callers resolved by it, and close() hangs up everything
+    // that ever connected.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(engine.connections).toBe(1);
+    transport.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(engine.closedClients).toBe(engine.connections);
+
+    await engine.close();
+  });
+
+  it("stays closed when a connecting listener closes the transport", async () => {
+    // The same window with close(): the old order let the listener tear down
+    // an attempt that did not exist yet, and the outer call then dialed past
+    // the close — the state machine ran connecting → closed → ready.
+    const dir = await newDir();
+    const engine = new FakeEngine(dir);
+    await engine.listen();
+    const transport = new DevToolsTransport({
+      endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+    });
+
+    let sawClosed = false;
+    transport.on("state", (state) => {
+      if (state !== "connecting") return;
+      transport.close();
+    });
+    transport.on("state", (state) => {
+      if (state === "closed") sawClosed = true;
+    });
+
+    await expect(transport.connect()).rejects.toThrow();
+    expect(sawClosed).toBe(true);
+    expect(transport.state).toBe("closed");
+
+    // Nothing resurrects the link, and nothing that connected stays alive.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(transport.state).toBe("closed");
+    expect(engine.closedClients).toBe(engine.connections);
+
+    await engine.close();
+  });
+
+  it("leaves no retry timer when a backoff listener closes the transport", async () => {
+    // "backoff" used to fire before the retry timer was stored: a state
+    // listener closing from the event could not clear a timer that did not
+    // exist yet, and the failure path created it afterwards — a referenced
+    // timer that pinned the transport past shutdown.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const dir = await newDir();
+      const engine = new FakeEngine(dir);
+      await engine.listen();
+      const transport = new DevToolsTransport({
+        endpoint: devtoolsEndpoint("linux", dir, "chorus"),
+        backoff: { initialMs: 8000, maxMs: 8000 },
+      });
+      await transport.connect();
+
+      transport.on("state", (state) => {
+        if (state === "backoff") transport.close();
+      });
+      engine.dropClients();
+      await vi.waitFor(() => expect(transport.state).toBe("closed"));
+      expect(vi.getTimerCount()).toBe(0);
+
+      // The closed transport never dials again.
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(engine.connections).toBe(1);
+
+      await engine.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clears the dial's deadline when the dial fails or is cancelled", async () => {
     // A connect timer cleared only on success pinned a dead socket — and the
     // whole transport with it — past shutdown in a standalone consumer.

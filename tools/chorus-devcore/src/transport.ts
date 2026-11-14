@@ -177,8 +177,14 @@ export class DevToolsTransport extends EventEmitter {
   private beginConnect(): Promise<void> {
     if (this.pendingConnect) return this.pendingConnect;
     if (this.socket && this.stateValue === "ready") return Promise.resolve();
-    this.setState("connecting");
-    this.pendingConnect = new Promise<void>((resolve, reject) => {
+    // The in-flight attempt registers before anything observes the state: a
+    // "connecting" listener that synchronously calls connect() joins this
+    // attempt, and one that closes lands on a fully built dial. Emitting
+    // first let the listener see an attempt that did not exist yet — its dial
+    // and this one both opened, and the later close left one alive. The
+    // promise is captured locally for the same reason: a listener's close()
+    // rejects and clears the field before this call's return reads it.
+    const attempt = new Promise<void>((resolve, reject) => {
       this.connectWait = {
         resolve: () => {
           this.connectWait = null;
@@ -193,7 +199,9 @@ export class DevToolsTransport extends EventEmitter {
       };
       this.openSocket();
     });
-    return this.pendingConnect;
+    this.pendingConnect = attempt;
+    this.setState("connecting");
+    return attempt;
   }
 
   /** Closes the transport and cancels any scheduled reconnect. */
@@ -352,14 +360,14 @@ export class DevToolsTransport extends EventEmitter {
       if (this.listenerCount("error") > 0) this.emit("error", error);
       return;
     }
-    // The failure's bookkeeping lands before any callback runs: the backoff
-    // transition and the retry schedule are finalized first, so an error
-    // listener that synchronously connect()s cancels the freshly scheduled
-    // retry and dials exactly once, and one that close()s tears the retry
-    // down with everything else — neither meets a half-finished failure
-    // path that would overwrite its decision afterwards.
+    // The failure's bookkeeping lands before any callback runs — the retry
+    // schedule is stored, then the backoff transition, then the error: a
+    // state listener that synchronously close()s during "backoff" finds and
+    // clears the freshly scheduled retry (no timer survives the close), an
+    // error listener that connect()s cancels it and dials exactly once, and
+    // neither meets a half-finished failure path that would overwrite its
+    // decision afterwards.
     const delay = this.backoff.next();
-    this.setState("backoff");
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.closing) return;
@@ -373,6 +381,7 @@ export class DevToolsTransport extends EventEmitter {
       // is absorbed here.
       this.beginConnect().catch(() => {});
     }, delay);
+    this.setState("backoff");
     if (this.listenerCount("error") > 0) this.emit("error", error);
   }
 
