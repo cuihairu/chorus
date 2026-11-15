@@ -847,7 +847,10 @@ public sealed class EdgeWs(
         // whole 600s frame window frameless on the 2-core CI runner for exactly this reason.)
         try
         {
-            using var probe = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            // The probe's budget matches the fan-out window's scale rather than a bare
+            // round-trip: under runner load a 5s budget could fire before the round store
+            // answered, leaving the resumed connection with no answer at all.
+            using var probe = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var round = await roundClient.GetRoundAsync(tenant, status.CurrentRoomId,
                 status.GameId, probe.Token);
             if (round is { Found: true, Status: "Suspended" })
@@ -968,6 +971,18 @@ public sealed class EdgeWs(
             {
                 await Task.Delay(200, CancellationToken.None);
                 continue;
+            }
+            if (round.Status == "Suspended")
+            {
+                // A parked room must not seat a connection. Its cached route can still name
+                // it — the rooms leg publishes only Preparing/Running/Finishing, and a stale
+                // confirmed picture outlives the park when refreshes fail under load — so the
+                // fence succeeds into a retired room, the fan-out join below fails silently,
+                // and the caller is told the seat landed. Returning not-seated sends a resume
+                // to the probe, which answers the park notice the connection would otherwise
+                // wait out frameless. (run 43628437221: three CI tests burned their whole
+                // frame window this way on the 2-core runner.)
+                return false;
             }
             var participation = round.Participants.FirstOrDefault(
                 participant => participant.BindingId == connection.BindingId);
