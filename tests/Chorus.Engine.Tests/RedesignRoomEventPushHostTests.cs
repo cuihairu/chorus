@@ -231,7 +231,15 @@ public sealed class RedesignRoomEventPushHostTests
                 ["CHORUS_TENANT_APPLICATIONS"] = """{"tenant-a":{"app-1":"game-a"}}"""
             });
         // FIX-INPUT-03: one seat per room on this host — the second fresh event must find
-        // the list full and be refused before any durable write.
+        // the list full and be refused before any durable write. The room never ticks
+        // while this test asserts: a tick takes every seated event for consumption and
+        // frees its seat (the seat is an in-flight admission bound, the durable row is the
+        // truth), so a 25ms tick landing between the two pushes — which it always does
+        // once a push's fresh-channel handshake outlasts a tick under load — would leave
+        // the list empty and the second push legitimately accepted. The verdict under test
+        // is the capacity refusal; the seated push being consumed has its own test. The
+        // prepare contract bounds a tick at 1..1000ms (RoomRuntime), which still stands a
+        // second apart from these pushes.
         var seats = GameEnvironment(environment.DataPort, controlEndpoint, gamePort,
             "node-a/game-server");
         seats["CHORUS_ROOM_INBOUND_PER_ROOM"] = "1";
@@ -250,11 +258,19 @@ public sealed class RedesignRoomEventPushHostTests
         var simulator = new DevelopmentPlatformSimulator(simulatorKey);
 
         using var pushCertificate = environment.Certificate("tenant-a", "platform-gateway", "push-ib");
+        // One push channel for the whole test, opened before the room starts: a fresh
+        // channel pays a TLS handshake per push, and under load that handshake is what
+        // stretches the gap between the two seat pushes past a tick. Riding one pooled
+        // connection keeps the two seat pushes milliseconds apart, inside the room's
+        // 1000ms first-tick budget.
+        using var pushChannel = environment.Channel(gamePort, pushCertificate, "game-server");
+        var pushClient = new RoomEvents.RoomEventsClient(pushChannel);
         var host = await MountAsync(environment, simulator, "seat-host-a");
         var guest = await MountAsync(environment, simulator, "seat-guest-a");
         const string roomIb = "room-seat-ib";
         var (epoch, _) = await StartRoomAsync(environment, control, rounds, roomIb,
-            "game-a", gamePort, controlCertificate, host, guest, "seat-start-a", durationTicks: 400);
+            "game-a", gamePort, controlCertificate, host, guest, "seat-start-a",
+            durationTicks: 400, tickMs: 1000);
 
         DeliverRoomEventRequest Request(string eventId, long requestEpoch, string bindingId) => new()
         {
@@ -262,12 +278,8 @@ public sealed class RedesignRoomEventPushHostTests
             Epoch = requestEpoch, EventId = eventId, Platform = "simulator", AppId = "app-1",
             BindingId = bindingId, RoundGeneration = 1, PayloadJson = """{"action":"boost","level":3}"""
         };
-        async Task<DeliverRoomEventReply> DeliverAsync(DeliverRoomEventRequest request)
-        {
-            using var channel = environment.Channel(gamePort, pushCertificate, "game-server");
-            return await new RoomEvents.RoomEventsClient(channel).DeliverEventAsync(request,
-                deadline: DateTime.UtcNow.AddSeconds(30));
-        }
+        async Task<DeliverRoomEventReply> DeliverAsync(DeliverRoomEventRequest request) =>
+            await pushClient.DeliverEventAsync(request, deadline: DateTime.UtcNow.AddSeconds(30));
 
         // The first event commits and takes the room's single seat.
         var accepted = await DeliverAsync(Request("seat-gift-1", epoch, host.BindingId));
@@ -433,7 +445,7 @@ public sealed class RedesignRoomEventPushHostTests
         X509Certificate2 controlCertificate,
         (string StreamerId, string SessionId, string BindingId) host,
         (string StreamerId, string SessionId, string BindingId) guest, string operationId,
-        int durationTicks = 120)
+        int durationTicks = 120, int tickMs = 25)
     {
         var claimed = await control.ClaimOwnershipAsync(new OwnershipRequest
         {
@@ -464,7 +476,7 @@ public sealed class RedesignRoomEventPushHostTests
             {
                 RoomId = roomId, GameId = "game-a", OwnerInstanceId = ownerInstance,
                 Epoch = claimed.Epoch, OperationId = operationId + "-prepare",
-                DurationTicks = durationTicks, RandomSeed = 777, TickMs = 25, PackageHash = "pkg-1-v2",
+                DurationTicks = durationTicks, RandomSeed = 777, TickMs = tickMs, PackageHash = "pkg-1-v2",
                 Participants =
                 {
                     new GameParticipantProto
