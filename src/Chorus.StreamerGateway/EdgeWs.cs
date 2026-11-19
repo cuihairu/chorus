@@ -815,12 +815,22 @@ public sealed class EdgeWs(
         GameplayStatusReply status;
         try
         {
+            // The status read bounds its wait: every step of this chain rides the resumed
+            // login's pump, and a stalled control-plane call must not hold the whole
+            // connection frameless (run 43682468087's hangs make each step carry a budget).
+            using var statusBudget = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             status = await sessionClient.GameplayStatusAsync(tenant,
-                connection.AccessCredential!, CancellationToken.None);
+                connection.AccessCredential!, statusBudget.Token);
         }
         catch (RpcException)
         {
             // No mount on record for this session: there is nothing to re-enter.
+            return;
+        }
+        catch (OperationCanceledException)
+        {
+            // The read outlived its budget: no mount facts were restored, so there is
+            // nothing to re-enter on this connection either.
             return;
         }
         if (status.BindingId is not { Length: > 0 }) return;
@@ -845,14 +855,29 @@ public sealed class EdgeWs(
         // ids alone, so an unseated rejoin asks it directly and sends the same frames the fan-out
         // sends when a room's stream ends. (run 43608417170: the resumed connection burned its
         // whole 600s frame window frameless on the 2-core CI runner for exactly this reason.)
-        try
+        using var probe = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // The ask is a bounded poll, not one shot. Each call rides a fresh channel whose
+        // handshake can outlast any single budget on a loaded runner, and the park's own
+        // store write can still be in flight (a resume races the park; the room reads
+        // Running until the suspension lands, and the read can fail outright mid-write).
+        // A failed ask retries within the budget; a budget that expires with no verdict
+        // at all still answers the wire with the fan-out's own resync — silence is what
+        // froze three CI tests frameless for their whole 600s window (run 43682468087).
+        while (!probe.IsCancellationRequested)
         {
-            // The probe's budget matches the fan-out window's scale rather than a bare
-            // round-trip: under runner load a 5s budget could fire before the round store
-            // answered, leaving the resumed connection with no answer at all.
-            using var probe = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            var round = await roundClient.GetRoundAsync(tenant, status.CurrentRoomId,
-                status.GameId, probe.Token);
+            RoundStatusReply? round;
+            try
+            {
+                using var attempt = CancellationTokenSource.CreateLinkedTokenSource(probe.Token);
+                attempt.CancelAfter(TimeSpan.FromSeconds(5));
+                round = await roundClient.GetRoundAsync(tenant, status.CurrentRoomId,
+                    status.GameId, attempt.Token);
+            }
+            catch (Exception error) when (error is RpcException or OperationCanceledException)
+            {
+                if (probe.IsCancellationRequested) break;
+                round = null;
+            }
             if (round is { Found: true, Status: "Suspended" })
             {
                 await connection.SendJsonAsync(new EdgeRoomSuspended
@@ -860,8 +885,9 @@ public sealed class EdgeWs(
                     Reason = "The room is parked for recovery.",
                     RecoveryAttempt = round.Epoch
                 }, CancellationToken.None);
+                return;
             }
-            else if (round is { Found: true })
+            if (round is { Found: true })
             {
                 await connection.SendJsonAsync(new EdgeResyncRequired
                 {
@@ -869,13 +895,21 @@ public sealed class EdgeWs(
                     RoomEpoch = round.Epoch,
                     Reason = "The room cannot be reached through routing."
                 }, CancellationToken.None);
+                return;
             }
+            try { await Task.Delay(TimeSpan.FromSeconds(1), probe.Token); }
+            catch (OperationCanceledException) { break; }
         }
-        catch (Exception error) when (error is RpcException or OperationCanceledException)
+        // The budget expired without a verdict: the resync is the honest answer — the same
+        // word the fan-out sends when it cannot place a room either, carrying the mount's
+        // own last-known generation as the fan-out carries the room's. The resumed client's
+        // recovery contract carries it; never silence.
+        await connection.SendJsonAsync(new EdgeResyncRequired
         {
-            // The probe is best-effort: the round store unreachable leaves the rejoin as it
-            // was before this probe existed, not as a refusal of the resumed connection.
-        }
+            RoomId = status.CurrentRoomId,
+            RoomEpoch = status.RoundGeneration,
+            Reason = "The room's state could not be confirmed for the re-entry."
+        }, CancellationToken.None);
     }
 
     /// <summary>Fences a room candidate to the connection's own mount: the routing row must be
@@ -994,8 +1028,12 @@ public sealed class EdgeWs(
             }
             catch
             {
-                // The subscription could not open; the room's stream is not the connection's
-                // to hear. The client's requestSnapshot after a reconnect re-seats it.
+                // The subscription could not open — the join rolled the seat back, so the
+                // room's stream is not the connection's to hear and no later fan-out event
+                // will answer it. Claiming the seat here is what left a resumed connection
+                // frameless for its whole window: report not-seated so the rejoin's probe
+                // answers the wire (a resume has no requestSnapshot to re-seat it).
+                return false;
             }
             connection.MarkParticipation(roomId, fenced.RoundGeneration);
             return true;
