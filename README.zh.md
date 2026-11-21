@@ -138,6 +138,20 @@ dotnet run --project src/Chorus.LoadTool -- --flamegraph --duration 60
 转换成**有顺序、有边界、可观测、可恢复的游戏输入**。保持轻量框架定位，不扩展成账号、运营、
 支付、游戏编辑器与直播管理的综合平台。
 
+## 引擎插件矩阵
+
+客户端引擎面的诚实状态。每个引擎接入的是**同一套**协议与会话语义，不是平行变体；跨引擎
+golden 测试（EK-2）把 wire 钉死，任一侧改动不同步另一侧即红。完整细节见 [engine-sdks](docs/reference/engine-sdks.md)。
+
+| 引擎 | 状态 | 产物 | 覆盖 |
+|--------|--------|----------|----------|
+| Unity | 已实现（参考 SDK，21 项 FIX-U3D） | `com.chorus.sdk` — `src/Chorus.UnitySdk` | 传输、会话 Connect/Resume、SyncApplier、排行榜、意图 |
+| Godot | 已实现（Godot 4.4+，.NET 轨） | `Chorus.GodotSdk` — `src/Chorus.GodotSdk` | 传输、Envelope 编解码（字节对等）、会话 Connect/Resume、SyncApplier、事件面、排行榜读取 |
+| UE5 | 未实现 — 缓做 | `src/Chorus.UnrealSdk/REVIEW.md` | 无（C++ Runtime 模块待 UE 工具链齐备后缓做） |
+
+Godot 叶子是纯 `net8.0` 类库（无 `GodotSharp`、无 Chorus 引用）；Unity 叶子同构引擎无关。UE
+无受规的 .NET 宿主，其路径是契约的 C++ 重实现而非共享二进制——见[评审](src/Chorus.UnrealSdk/REVIEW.md)。
+
 ## 平台支持级别
 
 平台适配器的真实状态（有实现 ≠ 已接通；详见[平台接入矩阵](docs/zh/reference/platform-integration-matrix.md)）：

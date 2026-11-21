@@ -146,6 +146,22 @@ The core value is not WebSocket, and not an ordinary game loop; it is turning bu
 delayed, out-of-order live-stream events into **ordered, bounded, observable, recoverable game input**.
 Chorus stays a lightweight framework and does not grow into an account/ops/payment/editor/livestream-management platform.
 
+## Engine Plugin Matrix
+
+Honest status of the client engine surfaces. Each engine integrates the **same** protocol and session
+semantics, not a parallel variant; the cross-engine golden tests (EK-2) pin the wire so a change on one
+side is mirrored on the others or the suite turns red. Full detail: [engine-sdks](docs/reference/engine-sdks.md).
+
+| Engine | Status | Artifact | Coverage |
+|--------|--------|----------|----------|
+| Unity | implemented (reference SDK, 21 FIX-U3D items) | `com.chorus.sdk` — `src/Chorus.UnitySdk` | transport, session Connect/Resume, SyncApplier, leaderboards, intents |
+| Godot | implemented (Godot 4.4+, .NET track) | `Chorus.GodotSdk` — `src/Chorus.GodotSdk` | transport, Envelope codec (byte-parity), session Connect/Resume, SyncApplier, events, leaderboard reads |
+| UE5 | not implemented — deferred | `src/Chorus.UnrealSdk/REVIEW.md` | none (C++ Runtime module deferred pending a UE toolchain) |
+
+The Godot leaf is a pure `net8.0` class library (no `GodotSharp`, no Chorus references); the Unity leaf
+is the same engine-agnostic shape. UE has no sanctioned .NET host, so its path is a C++ re-implementation
+of the contract, not a shared binary — see the [review](src/Chorus.UnrealSdk/REVIEW.md).
+
 ## Platform Support Levels
 
 Honest status of the platform adapters (an implementation is not an integration; details in

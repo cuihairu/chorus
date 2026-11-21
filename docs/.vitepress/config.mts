@@ -51,6 +51,7 @@ const referenceLinks = [
   "/reference/platform-bilibili",
   "/reference/platform-integration-matrix",
   "/reference/platform-unity-sdks",
+  "/reference/engine-sdks",
   "/reference/tuning",
   "/reference/troubleshooting",
   "/reference/adapter-contract",
