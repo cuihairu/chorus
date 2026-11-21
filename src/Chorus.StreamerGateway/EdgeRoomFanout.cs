@@ -261,16 +261,38 @@ public sealed class EdgeRoomFanout(Func<RoomStreamRequest, CancellationToken, IA
         var endpoint = room.Endpoint;
         try
         {
-            await foreach (var message in stream.WithCancellation(cancellationToken))
+            var enumerator = stream.GetAsyncEnumerator(cancellationToken);
+            try
             {
-                lock (_gate)
+                // The room's stream always opens with a verdict or a first frame; a
+                // subscription whose first answer never comes is a stalled channel, not a
+                // quiet room. Bound the wait and let the resolve below answer the seats
+                // honestly instead of freezing them frameless on a handshake that will not
+                // finish under load — the resolve retries a live room on a fresh channel and
+                // answers a parked room with the park notice. (run 44731842733: a resumed
+                // seat burned its whole 600s window this way.)
+                using var first = CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken);
+                first.CancelAfter(TimeSpan.FromSeconds(30));
+                while (await enumerator.MoveNextAsync().AsTask().WaitAsync(first.Token))
                 {
-                    if (generation != room.Generation) return;
+                    // The subscription opened; the stream may then go as quiet as the room
+                    // does — only a never-opened subscription is a stall, not silence.
+                    first.CancelAfter(Timeout.InfiniteTimeSpan);
+                    lock (_gate)
+                    {
+                        if (generation != room.Generation) return;
+                    }
+                    // The actor's resync is a verdict, not a frame: the resolve below decides
+                    // whether the room moved, parked, or ended.
+                    if (enumerator.Current.KindCase == SyncMessage.KindOneofCase.ResyncRequired)
+                        break;
+                    await DispatchAsync(room, enumerator.Current);
                 }
-                // The actor's resync is a verdict, not a frame: the resolve below decides
-                // whether the room moved, parked, or ended.
-                if (message.KindCase == SyncMessage.KindOneofCase.ResyncRequired) break;
-                await DispatchAsync(room, message);
+            }
+            finally
+            {
+                await enumerator.DisposeAsync();
             }
             if (room.ResultDelivered)
             {

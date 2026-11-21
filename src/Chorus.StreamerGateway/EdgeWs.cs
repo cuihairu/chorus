@@ -1020,7 +1020,17 @@ public sealed class EdgeWs(
             }
             var participation = round.Participants.FirstOrDefault(
                 participant => participant.BindingId == connection.BindingId);
-            if (participation is null) return true;
+            if (participation is null)
+            {
+                // The store's participant list disagrees with the session's own commitment
+                // — the room's teardown dropped the row while the round still reads Running.
+                // Claiming the seat here is the last branch that reports "converged" while
+                // sending nothing, and nothing will ever answer the connection it took: the
+                // resume goes to the probe, which asks the store's own truth (parked by then
+                // is the park notice the resumed client waits for). (run 44731842733: the
+                // resumed connection burned its whole 600s window frameless this way.)
+                return false;
+            }
             try
             {
                 fanout.Join(roomId, route.GameId, route.Endpoint, round.Epoch,
