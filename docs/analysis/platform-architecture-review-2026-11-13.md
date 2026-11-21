@@ -152,7 +152,7 @@
 | MiniGame 登录交换 / 新平台认证客户端、模块 | **按小游戏产品协议**实现并装配 | `MiniGamePlatformModule` 当前只处理抖音，不会自动支持 |
 | `src/Chorus.LoadTool/IngressSigner.cs:24` | **若需要签名压测**，增加算法及选择分支 | 未知平台返回 null，不签名 |
 | `src/Chorus.LoadTool/LoadToolOptions.cs:9` | 按需调整平台配置和事件生成 | 默认仍为抖音 |
-| `src/Chorus.UnitySdk/Platforms/Douyu/*` | **若要求 Unity 客户端支持**，新增适配器/桥/程序集声明 | 服务端接入不会带来客户端支持 |
+| `sdk/unity/Chorus.UnitySdk/Platforms/Douyu/*` | **若要求 Unity 客户端支持**，新增适配器/桥/程序集声明 | 服务端接入不会带来客户端支持 |
 | `tests/Chorus.Engine.Tests/*`、平台参考文档 | 增加独立签名向量、模块装配、实际宿主端到端及重试证据 | 现有平台测试不能覆盖新平台注册完整性 |
 
 ## 原子 TODO 拆分

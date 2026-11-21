@@ -85,7 +85,7 @@ public sealed class RedesignU3D03UnityPackageIsolationTests
     public void TheSourceTreeKeepsThePlatformsOutOfTheNeutralRuntime()
     {
         var root = FindRoot();
-        var runtime = Path.Combine(root, "src", "Chorus.UnitySdk", "Runtime");
+        var runtime = Path.Combine(root, "sdk", "unity", "Chorus.UnitySdk", "Runtime");
         foreach (var source in Directory.EnumerateFiles(runtime, "*.cs", SearchOption.AllDirectories))
         {
             var text = File.ReadAllText(source);
@@ -95,7 +95,7 @@ public sealed class RedesignU3D03UnityPackageIsolationTests
         }
         // Every platform assembly definition sits in its own folder and nowhere else:
         // the folder is the isolation, the asmdef is the gate.
-        var sdk = Path.Combine(root, "src", "Chorus.UnitySdk");
+        var sdk = Path.Combine(root, "sdk", "unity", "Chorus.UnitySdk");
         Assert.Equal(
             ["Platforms/Douyin/Chorus.UnitySdk.Platforms.Douyin.asmdef",
                 "Platforms/Kuaishou/Chorus.UnitySdk.Platforms.Kuaishou.asmdef",
@@ -115,7 +115,7 @@ public sealed class RedesignU3D03UnityPackageIsolationTests
     private static string ReadPackageFile(string relativePath)
     {
         var root = FindRoot();
-        return File.ReadAllText(Path.Combine(root, "src", "Chorus.UnitySdk", relativePath));
+        return File.ReadAllText(Path.Combine(root, "sdk", "unity", "Chorus.UnitySdk", relativePath));
     }
 
     private static string FindRoot()
