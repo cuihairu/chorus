@@ -54,5 +54,5 @@ this is the anti-drift guard, and it runs in the main CI must-run set.
 
 ## Ten-line Godot integration
 
-See [`src/Chorus.GodotSdk/README.md`](../../src/Chorus.GodotSdk/README.md) for the
-shortest complete Godot loop (adapter + connect + subscribe + applier).
+See [the Godot SDK README](https://github.com/cuihairu/chorus/blob/main/src/Chorus.GodotSdk/README.md)
+for the shortest complete Godot loop (adapter + connect + subscribe + applier).
