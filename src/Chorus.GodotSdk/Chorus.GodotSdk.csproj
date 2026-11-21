@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The Godot 4 .NET floor (EK-1): Godot 4.4 ships net8.0. The leaf stays a pure
+         class library — no GodotSharp dependency — so its test lane is plain
+         `dotnet test` (EK-1 acceptance) and a Godot 4.4 project references it as a
+         normal assembly. The only external surface is System.Text.Json, which the
+         Envelope codec needs to reproduce JsonEnvelopeCodec byte-for-byte (EK-2). -->
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- The leaf contract (EK-1): no Chorus references. Every wire shape is restated
+       platform-neutrally and the parity tests pin it against the server's contract
+       and the Unity SDK's, so the Godot package never drags the server stack into
+       a game. -->
+
+  <!-- Samples~ ships as source a game imports (mirroring Unity's import-on-demand
+       Samples~ folder); it never compiles into the SDK assembly. The Godot bridge (a
+       Node subclass) needs GodotSharp, which the leaf deliberately lacks — the
+       sample lives beside the assembly, not in it. -->
+  <ItemGroup>
+    <Compile Remove="Samples~/**/*.cs" />
+  </ItemGroup>
+
+</Project>
