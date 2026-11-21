@@ -104,6 +104,16 @@ jobs:
       - name: Test (with coverage)
         run: dotnet test Chorus.sln -c Release --no-build --collect:"XPlat Code Coverage" --results-directory ./TestResults --settings ci.runsettings
 
+      # Engine SDK legs (EK-4): the Godot leaf suite and the cross-engine golden
+      # set run as an explicit leg so an engine-side wire/semantics drift fails
+      # fast and is not buried in the full run. The same projects also ride the
+      # `dotnet test Chorus.sln` must-run set above — this leg is the fast,
+      # targeted isolation of engine-SDK regressions.
+      - name: Test engine SDK legs (Godot + cross-engine golden)
+        run: |
+          dotnet test tests/Chorus.GodotSdk.Tests/Chorus.GodotSdk.Tests.csproj -c Release --no-build
+          dotnet test tests/Chorus.Engine.Tests/Chorus.Engine.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~CrossEngine"
+
       - name: Admin browser end-to-end and query SLO gate
         run: pnpm test:admin:e2e
 
