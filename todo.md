@@ -681,8 +681,8 @@
 
 - [x] [P2] 文档站语言自动切换为增强项：docs 站为 VitePress locale 路由（root=en-US `/`、`/zh/`=zh-CN），README 双语成对；全站（config.mts/theme）无 `rootLocale`/`navigator.language` 探测——现状为手动切换+显式链接，为受规基线；是否上浏览器语言自动识别待用户拍板（证据见 docs/审计-文档一致性.md §10.3）。**2026-11-14 用户拍板：不做，保持手动**——手动切换+显式链接维持受规基线，不实现自动识别
 
-- [ ] EK-1 · P0 · Godot 插件：`src/Chorus.GodotSdk/`——先 DESIGN.md（GDScript vs C#(Godot4 .NET) vs GDExtension 单轨评估+推荐）再实现：传输绑定（IChorusTransport 同构接口）、Envelope 编解码对齐 JsonEnvelopeCodec wire、会话生命周期（Connect/Resume）、SyncApplier 对等物、事件面；验收=Godot4 C# 轨 dotnet test 绿+与 Unity SDK 同 payload 编解码互认+README 十行接入。
-- [ ] EK-2 · P0 · 跨引擎协议一致性测试：`tests/Chorus.Engine.Tests/CrossEngine/` golden Envelope 集（登录/同步/排行榜/断线帧），断言 Unity 与 Godot 侧逐字段一致进主 CI 必跑集；任一侧改 wire 不同步另一侧必红。
-- [ ] EK-3 · P1 · UE5 插件分两步：先 `src/Chorus.UnrealSdk/REVIEW.md`（模块形态/CI 编译成本/复用边界+做/缓做结论）；评审通过后最小 UE 模块（传输+Envelope+会话）带无 Editor 依赖纯逻辑单测。
-- [ ] EK-4 · P1 · CI 腿：chorus CI 加 GodotSdk 测试腿+跨引擎 golden 进必跑集；UE 按 REVIEW 结论决定 CI 或手动 dispatch；验收=PR 新腿绿+主 CI 时长不明显劣化（记录对比）。
-- [ ] EK-5 · P2 · 文档：README 引擎插件矩阵（Unity/Godot/UE 状态+接入方式+功能覆盖表），docs/ 同步；诚实边界=未实现的面写未实现。
+- [x] EK-1 · P0 · Godot 插件：`src/Chorus.GodotSdk/`——先 DESIGN.md（GDScript vs C#(Godot4 .NET) vs GDExtension 单轨评估+推荐）再实现：传输绑定（IChorusTransport 同构接口）、Envelope 编解码对齐 JsonEnvelopeCodec wire、会话生命周期（Connect/Resume）、SyncApplier 对等物、事件面；验收=Godot4 C# 轨 dotnet test 绿+与 Unity SDK 同 payload 编解码互认+README 十行接入。**2026-11-22 交付：commit 5795a20；Chorus.GodotSdk.Tests 40/40 绿（dotnet test，无 Godot 二进制）；DESIGN.md 单轨定 C#(Godot4 .NET)；README 十行接入**
+- [x] EK-2 · P0 · 跨引擎协议一致性测试：`tests/Chorus.Engine.Tests/CrossEngine/` golden Envelope 集（登录/同步/排行榜/断线帧），断言 Unity 与 Godot 侧逐字段一致进主 CI 必跑集；任一侧改 wire 不同步另一侧必红。**2026-11-22 交付：commit 5795a20；CrossEngine golden 34/34 绿（字节级对等 JsonEnvelopeCodec + 双向互认 + SyncApplier 决策/基线对等）；随 Chorus.Engine.Tests 进主 CI 必跑集**
+- [x] EK-3 · P1 · UE5 插件分两步：先 `src/Chorus.UnrealSdk/REVIEW.md`（模块形态/CI 编译成本/复用边界+做/缓做结论）；评审通过后最小 UE 模块（传输+Envelope+会话）带无 Editor 依赖纯逻辑单测。**2026-11-22 一阶段交付：commit f16424c；REVIEW 落档（模块=Runtime 纯逻辑 C++/CI 冷启成本高挂手动 dispatch/复用边界=契约非代码）；结论缓做——本机无 UE 工具链，二阶段模块待工具链齐备（预估 4-5 人日）**
+- [ ] EK-4 · P1 · CI 腿：chorus CI 加 GodotSdk 测试腿+跨引擎 golden 进必跑集；UE 按 REVIEW 结论决定 CI 或手动 dispatch；验收=PR 新腿绿+主 CI 时长不明显劣化（记录对比）。**2026-11-22 腿已落：commit 7ccfa8f（build-test 加显式 Godot+CrossEngine 腿；两工程亦随 Chorus.sln 进必跑集）。验收待首次 CI 运行：PR 新腿绿+时长记录（本地口径：Godot 40 用例 ~1s、CrossEngine 34 用例 ~0.4s，相对主套件可忽略）**
+- [x] EK-5 · P2 · 文档：README 引擎插件矩阵（Unity/Godot/UE 状态+接入方式+功能覆盖表），docs/ 同步；诚实边界=未实现的面写未实现。**2026-11-22 交付：commit 83ea73e；README.md+README.zh.md 矩阵三引擎状态/接入/覆盖；docs/reference/engine-sdks.md 新页+vitepress 侧栏注册；UE 未实现面写未实现**
