@@ -67,7 +67,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.StreamerGateway", "s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.UnitySdk", "sdk\unity\Chorus.UnitySdk\Chorus.UnitySdk.csproj", "{110029A5-10A3-4639-98F2-5B80886B161D}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.SdkWizard", "src\Chorus.SdkWizard\Chorus.SdkWizard.csproj", "{4FF1A8C0-5F69-4EE1-A248-F173E7219F3A}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.SdkWizard", "tools\Chorus.SdkWizard\Chorus.SdkWizard.csproj", "{4FF1A8C0-5F69-4EE1-A248-F173E7219F3A}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.SimulatorPlatform", "src\Chorus.SimulatorPlatform\Chorus.SimulatorPlatform.csproj", "{1B265EA0-900B-4CEF-A3E9-4508408D7A4A}"
 EndProject
