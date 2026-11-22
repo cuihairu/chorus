@@ -73,9 +73,9 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.SimulatorPlatform", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.DevTools", "src\Chorus.DevTools\Chorus.DevTools.csproj", "{F221106E-EF3D-4151-8918-28B83DAB4336}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.GodotSdk", "src\Chorus.GodotSdk\Chorus.GodotSdk.csproj", "{967DC7D5-82EF-4146-9F31-01F72799F7FC}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.GodotSdk", "sdk\godot\Chorus.GodotSdk\Chorus.GodotSdk.csproj", "{967DC7D5-82EF-4146-9F31-01F72799F7FC}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.GodotSdk.Tests", "tests\Chorus.GodotSdk.Tests\Chorus.GodotSdk.Tests.csproj", "{390682FA-3466-4426-913F-7C384822FA25}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Chorus.GodotSdk.Tests", "sdk\godot\Chorus.GodotSdk.Tests\Chorus.GodotSdk.Tests.csproj", "{390682FA-3466-4426-913F-7C384822FA25}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

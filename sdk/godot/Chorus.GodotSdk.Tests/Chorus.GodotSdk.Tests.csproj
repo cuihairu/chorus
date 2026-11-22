@@ -11,8 +11,8 @@
     <!-- The leaf under test and the reference codec it must match byte-for-byte
          (EK-1/EK-2). The reference is a test dependency only — the leaf itself never
          references Chorus. -->
-    <ProjectReference Include="..\..\src\Chorus.GodotSdk\Chorus.GodotSdk.csproj" />
-    <ProjectReference Include="..\..\src\Chorus.Messaging\Chorus.Messaging.csproj" />
+    <ProjectReference Include="..\Chorus.GodotSdk\Chorus.GodotSdk.csproj" />
+    <ProjectReference Include="..\..\..\src\Chorus.Messaging\Chorus.Messaging.csproj" />
   </ItemGroup>
 
   <ItemGroup>
