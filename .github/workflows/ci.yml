@@ -111,7 +111,7 @@ jobs:
       # targeted isolation of engine-SDK regressions.
       - name: Test engine SDK legs (Godot + cross-engine golden)
         run: |
-          dotnet test tests/Chorus.GodotSdk.Tests/Chorus.GodotSdk.Tests.csproj -c Release --no-build
+          dotnet test sdk/godot/Chorus.GodotSdk.Tests/Chorus.GodotSdk.Tests.csproj -c Release --no-build
           dotnet test tests/Chorus.Engine.Tests/Chorus.Engine.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~CrossEngine"
 
       - name: Admin browser end-to-end and query SLO gate
