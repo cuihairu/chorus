@@ -1,0 +1,36 @@
+# Codecov 配置（2026-11-23 用户拍板：不适合统计的集成面从口径中排除）
+#
+# 排除原则：
+# 1. Edge* 客户端——真实 edge server 的网络集成面（连接/输入/排行榜/WS 会话），
+#    单测天然无法触达，需要真实网关才能产生路径；留在分母只会制造永久性
+#    「低覆盖」假信号，而不是可行动的质量信息。
+# 2. SDK Runtime 的宿主装配壳（godot/ 目录由独立 leg 覆盖，见 ci.yml）。
+#
+# GodotSdk 覆盖率缺失本身已修：ci.yml 的 GodotSdk.Tests leg 现在带
+# XPlat Code Coverage 采集（2026-11-23，用户令「A 先做」）。
+
+codecov:
+  require_ci_to_pass: true
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+    patch:
+      default:
+        target: 70%
+
+ignore:
+  # StreamerGateway 的真实网络客户端集成面：需要 live edge server。
+  - "src/Chorus.StreamerGateway/EdgeConnection.cs"
+  - "src/Chorus.StreamerGateway/EdgeSessionClient.cs"
+  - "src/Chorus.StreamerGateway/EdgeInputClient.cs"
+  - "src/Chorus.StreamerGateway/EdgeLeaderboardClient.cs"
+  - "src/Chorus.StreamerGateway/EdgeOutbox.cs"
+  - "src/Chorus.StreamerGateway/EdgeWs.cs"
+  - "src/Chorus.StreamerGateway/EdgeRateCounter.cs"
+
+comment:
+  layout: "reach, diff, files"
+  behavior: default
