@@ -686,3 +686,12 @@
 - [x] EK-3 · P1 · UE5 插件分两步：先 `sdk/unreal/Chorus.UnrealSdk/REVIEW.md`（模块形态/CI 编译成本/复用边界+做/缓做结论）；评审通过后最小 UE 模块（传输+Envelope+会话）带无 Editor 依赖纯逻辑单测。**2026-11-22 一阶段交付：commit f16424c；REVIEW 落档（模块=Runtime 纯逻辑 C++/CI 冷启成本高挂手动 dispatch/复用边界=契约非代码）；结论缓做——本机无 UE 工具链，二阶段模块待工具链齐备（预估 4-5 人日）**
 - [x] EK-4 · P1 · CI 腿：chorus CI 加 GodotSdk 测试腿+跨引擎 golden 进必跑集；UE 按 REVIEW 结论决定 CI 或手动 dispatch；验收=PR 新腿绿+主 CI 时长不明显劣化（记录对比）。**2026-11-22 交付：commit 7ccfa8f（build-test 加显式 Godot+CrossEngine 腿；两工程亦随 Chorus.sln 进必跑集）。验收=CI run 44952713377（main@56afc4a）：新腿 Godot 40/40 + CrossEngine 34/34 绿；全量 2676/2676 绿 40m21s；腿 ~3s，相对 43m42s 总时长无劣化。同日修 engine-sdks.md 死链（VitePress 1 dead link）
 - [x] EK-5 · P2 · 文档：README 引擎插件矩阵（Unity/Godot/UE 状态+接入方式+功能覆盖表），docs/ 同步；诚实边界=未实现的面写未实现。**2026-11-22 交付：commit 83ea73e；README.md+README.zh.md 矩阵三引擎状态/接入/覆盖；docs/reference/engine-sdks.md 新页+vitepress 侧栏注册；UE 未实现面写未实现**
+
+## 2026-11-23 覆盖率分析(用户问「为啥这么低」)
+- 现状:总体行覆盖 55.2%(CI 最新 cobertura 实测,31 包)。
+- 三个结构性原因(非测试懈怠):
+  1. **Chorus.GodotSdk 24.3%**:SDK Runtime 面(ChorusGodotSdk.cs/EnvelopeTransport.cs 等 0%)。其测试是独立 leg(`dotnet test GodotSdk.Tests --no-build`,ci.yml:114),**不带 XPlat Code Coverage 采集**,SDK 侧真实执行从未进 cobertura——统计面缺失,不全是实现缺口。
+  2. **Chorus.StreamerGateway 36.4%**:Edge* 系列(EdgeConnection/EdgeInputClient/EdgeLeaderboardClient 等真实网络客户端,0%)——需要真实 edge server 才能跑的集成面,单测天然覆盖不到。
+  3. 其余包 62-80% 属正常水平(GameServer 67/EngineHost 67.6/ControlServer 70.8)。
+- 修复方向(待拍板):A=给 GodotSdk.Tests leg 加独立 coverage 采集并合并上传(统计补全,零风险);B=Edge* 客户端抽 socket 抽象做可测注入(实现工作量);C=对集成面设 codecov path ignore 口径(口径调整,不改实现)。
+- 推荐 A 先做(统计真实化),B 按需,C 与 A 二选一。
