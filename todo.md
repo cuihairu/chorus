@@ -694,4 +694,4 @@
   2. **Chorus.StreamerGateway 36.4%**:Edge* 系列(EdgeConnection/EdgeInputClient/EdgeLeaderboardClient 等真实网络客户端,0%)——需要真实 edge server 才能跑的集成面,单测天然覆盖不到。
   3. 其余包 62-80% 属正常水平(GameServer 67/EngineHost 67.6/ControlServer 70.8)。
 - 修复方向(待拍板):A=给 GodotSdk.Tests leg 加独立 coverage 采集并合并上传(统计补全,零风险);B=Edge* 客户端抽 socket 抽象做可测注入(实现工作量);C=对集成面设 codecov path ignore 口径(口径调整,不改实现)。
-- 推荐 A 先做(统计真实化),B 按需,C 与 A 二选一。
+- 【2026-11-23 执行】用户拍板「A 先做+不适合统计的排除」:①ci.yml GodotSdk.Tests leg 加 XPlat Code Coverage 采集;②新增 .codecov.yml 排除 Edge* 七个真实网络客户端文件。落 ed5b55a。B(Edge* 可测注入)仍留待需要时再做。
